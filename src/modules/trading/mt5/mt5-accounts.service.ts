@@ -1,7 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import Decimal from 'decimal.js';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, ne, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../../database/database.module';
 import type { Db } from '../../../database/db';
 import { tradingAccounts, users } from '../../../database/schema';
@@ -12,7 +12,11 @@ import { assertActorCan } from '../../../common/security/actor';
 import { maskedFieldsFor } from '../../../common/security/field-mask';
 import { clientScopePredicate } from '../../../common/security/client-scope';
 import type { AuthenticatedAdmin } from '../../admin/guards/admin.guard';
-import { NotFoundError, ValidationError } from '../../../common/errors/domain-errors';
+import {
+  AccountNameTakenError,
+  NotFoundError,
+  ValidationError,
+} from '../../../common/errors/domain-errors';
 import { AppSettingsStore } from '../../../store/app-settings.store';
 import { ProductsStore } from '../../../store/products.store';
 import { Mt5AccountSyncService } from './mt5-account-sync.service';
@@ -601,34 +605,22 @@ export class Mt5AccountsService {
      * trading account the client cannot see, cannot name and did not know was
      * opened.
      *
-     * ── AN ACCOUNT IS NOT NAMED BY THE CLIENT ANY MORE (owner, 25 Sep 2026) ──
-     *
-     * This used to take a name from the client and send THAT to MT5. The admin
-     * path a few hundred lines above always sent the client's own name, so the
-     * same broker saw two different naming schemes depending on who opened the
-     * account: a manager terminal showed "ibrahim srour" beside "Swing
-     * trading", and only one of those identifies the person who owns it.
-     *
-     * The holder name in MT5 is an IDENTITY field, not a label. It is what a
-     * statement, a support ticket and the manager terminal all identify the
-     * account holder by, so it has exactly one correct value — the name the CRM
-     * holds for that client — and it is not the client's to choose.
-     *
-     * The local `name` column therefore stays NULL on this path, exactly as it
-     * does on the admin one. The portal no longer reads it for a heading: it
-     * shows the client's own name from their profile, so a correction in the
-     * CRM reaches every account at once instead of leaving stale copies behind.
-     * NULL also cannot collide, so `trading_accounts_user_name_uq` stops being
-     * reachable from here — a client may open any number of accounts.
+     * Only when the client actually chose one. An unnamed account stores NULL
+     * (see the insert below), and NULL is not a name that can collide — a
+     * client may open any number of accounts without naming them.
      */
+    const chosenName = input.name?.trim() || null;
+    if (chosenName) await this.assertNameFree(client.id, chosenName);
+
     // Before the bridge, for the reason the admin path gives.
     const productId = await this.productForGroup(input.group, input.productId);
 
     const created = await this.bridge.createAccount({
       group: input.group,
-      // The CRM's name for this client, always — the same value and the same
-      // expression the admin path uses.
-      name: `${client.firstName} ${client.lastName}`.trim(),
+      // The client's own name when they did not choose one — that is what MT5
+      // expects in this field and what makes a row in the manager terminal
+      // identifiable.
+      name: chosenName || `${client.firstName} ${client.lastName}`.trim(),
       email: client.email,
       country: client.country ?? undefined,
       phone: client.phone ?? undefined,
@@ -679,13 +671,11 @@ export class Mt5AccountsService {
       .values({
         userId: client.id,
         login: String(created.login),
-        /*
-         * ALWAYS NULL now. The holder name is the client's CRM name and is
-         * derived for display rather than copied here, so there is no stale
-         * duplicate to keep in step with a corrected profile. Existing rows
-         * keep whatever label they were given; nothing writes a new one.
-         */
-        name: null,
+        // Stored so the PORTAL can label this account without asking the
+        // bridge. The same string went to MT5 above as the holder name; NULL
+        // when the client chose nothing, so the portal falls back to the login
+        // rather than showing a name nobody picked.
+        name: chosenName,
         /*
          * THE GROUP — see the note on the admin path above, which this omitted
          * for the same reason and with the same consequence.
@@ -879,24 +869,121 @@ export class Mt5AccountsService {
     return { login: account.login, credentialsSentTo: account.email };
   }
 
-  /*
-   * `renameOwnAccount` WAS HERE, and is gone (owner, 25 Sep 2026).
+  /**
+   * Rename the client's own trading account.
    *
-   * It wrote a client-chosen string into the MT5 holder-name field, and took
-   * real care doing it — MT5 first, the database second, so a failure at the
-   * trading server left nothing changed. The care was not the problem.
+   * ## Two writes, and the order is the point
    *
-   * The field is an IDENTITY. A statement, a support ticket and the manager
-   * terminal all identify the account holder by it, so it has exactly one
-   * correct value — the name the CRM holds for that client — and it is not the
-   * client's to choose. The admin creation path had always sent that name,
-   * which is why the same broker saw two schemes side by side: "ibrahim srour"
-   * next to "Swing trading", and only one of those names a person.
+   * `trading_accounts.name` is what the PORTAL reads — a label must not depend
+   * on the trading server being reachable — and MT5 holds the same string as
+   * the account holder's name, so the terminal and the portal agree.
    *
-   * The portal now shows the client's own name from their profile, so a
-   * correction in the CRM reaches every account at once rather than leaving
-   * stale copies in a column. Nothing replaced this method.
+   * MT5 goes FIRST and the database second. MT5 is the write that can fail for
+   * reasons of its own (unreachable, unknown login, a name it refuses), and a
+   * failure there must leave nothing changed. The reverse order would show the
+   * client a renamed account in the portal while their terminal still said
+   * something else, with no error to explain the difference.
+   *
+   * If the local write failed after MT5 succeeded the two would disagree the
+   * other way — which is why the database update is the last statement and its
+   * failure propagates: a 500 the client can retry is better than a silent
+   * divergence, and retrying is safe because both writes are idempotent for the
+   * same name.
    */
+  /**
+   * Refuse a name this client has already used.
+   *
+   * ## Before MT5, always
+   *
+   * Both callers run this ahead of the bridge call. Ordering is the whole point:
+   * creating the account on the trading server and THEN discovering the name is
+   * taken leaves a real MT5 account behind that the client never got told about
+   * and cannot see — the broker's server has no rollback, and our transaction
+   * does not reach it.
+   *
+   * ## Case-insensitive
+   *
+   * "Swing trading" and "swing trading" are the same name to the person reading
+   * a list of them, and the unique index on the table uses `lower(name)` for the
+   * same reason. The two must agree, or this reports a name as free that the
+   * insert then rejects with a database error.
+   *
+   * ## Why this exists when the index does
+   *
+   * The index is what makes the rule TRUE — a check-then-insert races itself on
+   * a double submit. This is what makes it USABLE: a 409 carrying
+   * `ACCOUNT_NAME_TAKEN` lets the portal put the message on the name field,
+   * where the one thing the client can change is. A unique-violation escaping to
+   * the exception filter would be a 500 saying nothing.
+   *
+   * `exceptAccountId` is for the rename path: an account keeps its own name, so
+   * renaming "Swing trading" to "Swing trading" must not be a conflict with
+   * itself. Trimming a name, or changing its capitalisation, is a real edit and
+   * still reaches MT5.
+   */
+  private async assertNameFree(userId: string, name: string, exceptAccountId?: string) {
+    const [clash] = await this.db
+      .select({ id: tradingAccounts.id })
+      .from(tradingAccounts)
+      .where(
+        and(
+          eq(tradingAccounts.userId, userId),
+          sql`lower(${tradingAccounts.name}) = lower(${name})`,
+          ...(exceptAccountId ? [ne(tradingAccounts.id, exceptAccountId)] : []),
+        ),
+      )
+      .limit(1);
+
+    if (clash) {
+      throw new AccountNameTakenError(
+        `You already have an account named "${name}". Choose a different name.`,
+      );
+    }
+  }
+
+  async renameOwnAccount(input: { userId: string; accountId: string; name: string }) {
+    this.assertBridge();
+
+    /*
+     * Trimmed and length-checked HERE, not only at the DTO: MT5 accepts a name
+     * of nothing but spaces and the terminal then shows an account belonging to
+     * nobody. The ceiling matches what MT5 stores — a longer name is truncated
+     * server-side, which would silently disagree with what the client typed.
+     */
+    const name = input.name.trim();
+    if (name.length === 0) {
+      throw new ValidationError('Enter a name for this account.');
+    }
+    if (name.length > 128) {
+      throw new ValidationError('That name is too long — use 128 characters or fewer.');
+    }
+
+    const account = await this.ownAccount(input.userId, input.accountId);
+
+    // Itself excluded — see `assertNameFree`. Before the bridge call, so a
+    // refusal cannot leave MT5 holding a name this database does not.
+    await this.assertNameFree(input.userId, name, account.id);
+
+    const renamed = await this.bridge.updateName(account.login, name);
+    if (!renamed) {
+      this.logger.error(
+        `Trading account ${account.id} has login ${account.login}, which MT5 does not know.`,
+      );
+      throw new ValidationError(
+        'This account could not be found on the trading server. Please contact support.',
+      );
+    }
+
+    // Second, and only once MT5 has accepted it — see the note above.
+    await this.db
+      .update(tradingAccounts)
+      .set({ name, updatedAt: new Date() })
+      .where(eq(tradingAccounts.id, account.id));
+
+    this.logger.log(`Client ${input.userId} renamed their MT5 account ${account.login}`);
+
+    return { id: account.id, login: account.login, name };
+  }
 
   /**
    * Top a DEMO account up with more practice money, on the client's own ask.

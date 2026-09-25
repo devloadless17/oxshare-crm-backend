@@ -16,7 +16,7 @@ import { ProductsStore } from '../src/store/products.store';
 import { AppSettingsStore } from '../src/store/app-settings.store';
 import { UNRESTRICTED } from '../src/common/security/client-scope';
 import { EMPTY_MASK } from '../src/common/security/field-mask';
-import { ValidationError } from '../src/common/errors/domain-errors';
+import { AccountNameTakenError, ValidationError } from '../src/common/errors/domain-errors';
 import { auditStubAs } from './audit-stub';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
 
@@ -202,5 +202,70 @@ describe('the product fallback for accounts that recorded none', () => {
 
     expect(rows).toHaveLength(1);
     expect(rows[0]?.product).toBe('Choice Standard');
+  });
+});
+
+/*
+ * The account NAME a client gives on the portal's open form — restored after
+ * its removal (backend e6fce0f), at the owner's request (25 Sep 2026).
+ *
+ * The name is what MT5 records as the account holder and what the portal
+ * labels the account with. A client who leaves it blank gets their own name on
+ * MT5 and NULL locally. A client may not use one name twice, and that refusal
+ * has to come BEFORE MT5 opens anything: the trading server has no rollback.
+ */
+describe('the name a client gives an account they open', () => {
+  let holderId: string;
+
+  beforeAll(async () => {
+    const { rows } = await ctx.db.execute<{ id: string }>(sql`
+      INSERT INTO users (email, password_hash, first_name, last_name)
+      VALUES ('open-name@oxshare-e2e.test', 'x', 'Named', 'Holder')
+      RETURNING id
+    `);
+    holderId = rows[0].id;
+  });
+
+  async function storedName(accountId: string): Promise<string | null> {
+    const { rows } = await ctx.db.execute<{ name: string | null }>(
+      sql`SELECT name FROM trading_accounts WHERE id = ${accountId}`,
+    );
+    return rows[0].name;
+  }
+
+  it('sends the chosen name to MT5 and stores it for the portal', async () => {
+    const opened = await accounts.createOwnAccount({
+      userId: holderId,
+      environment: 'live',
+      group: 'real\\ECN',
+      name: '  Swing trading  ',
+    });
+
+    expect(createOnMt5).toHaveBeenCalledWith(expect.objectContaining({ name: 'Swing trading' }));
+    expect(await storedName(opened.id)).toBe('Swing trading');
+  });
+
+  it("uses the client's own name on MT5 when none is chosen, and stores none", async () => {
+    const opened = await accounts.createOwnAccount({
+      userId: holderId,
+      environment: 'live',
+      group: 'real\\ECN',
+    });
+
+    expect(createOnMt5).toHaveBeenCalledWith(expect.objectContaining({ name: 'Named Holder' }));
+    expect(await storedName(opened.id)).toBeNull();
+  });
+
+  it('refuses a name the client already uses, whatever its case — before MT5', async () => {
+    await expect(
+      accounts.createOwnAccount({
+        userId: holderId,
+        environment: 'live',
+        group: 'real\\ECN',
+        name: 'SWING TRADING',
+      }),
+    ).rejects.toBeInstanceOf(AccountNameTakenError);
+
+    expect(createOnMt5).not.toHaveBeenCalled();
   });
 });
