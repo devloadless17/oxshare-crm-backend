@@ -231,10 +231,11 @@ export class IbCommissionRowDto {
   clientName: string;
 
   @ApiProperty({
-    enum: ['position', 'transaction'],
+    enum: ['deal', 'position', 'transaction'],
     description:
-      'What produced it. `position` is a closed trade — the only source that pays a revenue ' +
-      'share. `transaction` rows are historical: commission is no longer earned on deposits.',
+      'What produced it. `deal` is a trade closed on MT5, from the live feed — every new ' +
+      'commission. `position` is a closed trade from the older CRM path. `transaction` rows ' +
+      'are historical: commission is no longer earned on deposits.',
   })
   source: string;
 

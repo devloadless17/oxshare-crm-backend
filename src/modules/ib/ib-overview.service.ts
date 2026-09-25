@@ -446,6 +446,15 @@ export class IbOverviewService {
    * Scoped by `ib_user_id`, which the accrual already carries — so it needs no
    * join back through the chain and cannot widen to somebody else's earnings
    * if that chain were ever mis-resolved.
+   *
+   * ## Commission rows ONLY — never a rebate
+   *
+   * A rebate row carries the introducing partner in `ib_user_id` because their
+   * rung priced it, but the money is the CLIENT's and is paid into the client's
+   * own wallet. Listing it here showed it under "Your share" and added it to
+   * the partner's totals, so a partner saw every trade twice: once for their
+   * commission and once for a rebate that was never theirs. The client sees
+   * their rebate in their own wallet statement once it is paid.
    */
   async commissionsFor(
     userId: string,
@@ -468,7 +477,7 @@ export class IbOverviewService {
       })
       .from(ibAccruals)
       .innerJoin(users, eq(users.id, ibAccruals.clientUserId))
-      .where(eq(ibAccruals.ibUserId, userId))
+      .where(and(eq(ibAccruals.ibUserId, userId), eq(ibAccruals.kind, 'commission')))
       .orderBy(desc(ibAccruals.createdAt))
       .limit(limit);
 
