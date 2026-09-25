@@ -297,6 +297,12 @@ export class StatementLineDto {
   @ApiProperty({
     type: String,
     nullable: true,
+    description: 'Trading account name, for a transfer line.',
+  })
+  tradingAccountName: string | null;
+  @ApiProperty({
+    type: String,
+    nullable: true,
     enum: ['wallet_to_account', 'account_to_wallet'],
   })
   transferDirection: string | null;

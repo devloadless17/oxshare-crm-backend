@@ -33,6 +33,8 @@ export interface StatementLine {
   provider: string | null;
   /** The MT5 login, for a line that moved money to or from a trading account. */
   tradingAccountLogin: string | null;
+  /** The account's own name, so a transfer line can say WHICH account. */
+  tradingAccountName: string | null;
   /** `wallet_to_account` / `account_to_wallet`, for a transfer line. */
   transferDirection: string | null;
 }
@@ -135,6 +137,7 @@ export class StatementService {
           COALESCE(pm.name, wpm.name)   AS method_name,
           t.provider                    AS provider,
           ta.login                      AS trading_account_login,
+          ta.name                       AS trading_account_name,
           tr.direction::text            AS transfer_direction
         FROM ledger_entries le
         -- split_part: a refused withdrawal's REFUND is keyed '<id>:refund' so it
@@ -169,6 +172,7 @@ export class StatementService {
       method_name: string | null;
       provider: string | null;
       trading_account_login: string | null;
+      trading_account_name: string | null;
       transfer_direction: string | null;
     }[];
     const truncated = rawLines.length > MAX_STATEMENT_LINES;
@@ -191,6 +195,7 @@ export class StatementService {
         methodName: row.method_name,
         provider: row.provider,
         tradingAccountLogin: row.trading_account_login,
+        tradingAccountName: row.trading_account_name,
         transferDirection: row.transfer_direction,
       };
     });
