@@ -80,7 +80,7 @@ async function onboard(person: (typeof CLIENTS)[number]): Promise<string> {
     lastName: person.last,
     email: person.email,
     password: PASSWORD,
-    country: 'LB',
+    country: 'Lebanon',
   });
   if (res.status >= 400) throw new Error(`register: ${JSON.stringify(res.body)}`);
 
@@ -105,7 +105,7 @@ async function fileKyc(person: (typeof CLIENTS)[number], phone: string) {
       lastName: person.last,
       dateOfBirth: '1990-04-12',
       phone,
-      nationality: 'Lebanon',
+      nationality: 'Lebanese',
       country: 'Lebanon',
     },
   });

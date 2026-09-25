@@ -1,3 +1,5 @@
+import { PROFILE_FIELD_KEYS } from '../profile/client-profile';
+
 /**
  * Which keys inside `audit_log.details` carry a CLIENT-OWNED value, per action.
  *
@@ -29,8 +31,42 @@
  * the difference between a redacted VIEW and a redacted RECORD — only the first
  * is compatible with the log being evidence.
  */
-export const AUDIT_DETAIL_FIELDS: Readonly<Record<string, Readonly<Record<string, string>>>> = {
+/**
+ * What a declared detail key holds: ONE client-owned value (its catalogue key),
+ * or an OBJECT of profile fields, each with its own — the `{ before: {…},
+ * after: {…} }` shape every profile change writes.
+ */
+export type AuditDetailDeclaration = string | Readonly<Record<string, string>>;
+
+/**
+ * Each profile field's catalogue key (`client.<field>`, as `client-fields.json`
+ * names them), for the nested before/after maps below.
+ *
+ * ## Why the profile actions are declared now
+ *
+ * `client.profile_update` wrote `{ before, after }` holding names, phones and
+ * countries from the day it existed, and nothing declared them — so an operator
+ * masked from a client's phone read it in the audit log, the one screen that
+ * lists every change. 0139 put date of birth, nationality and the address into
+ * the same rows, which made the gap worth a census rather than a comment. Each
+ * FIELD is masked on its own: a reader allowed the name but not the date of
+ * birth sees the rename and not the birthday.
+ */
+const PROFILE_DETAIL_FIELDS: Readonly<Record<string, string>> = Object.fromEntries(
+  PROFILE_FIELD_KEYS.map((field) => [field, `client.${field}`]),
+);
+
+export const AUDIT_DETAIL_FIELDS: Readonly<
+  Record<string, Readonly<Record<string, AuditDetailDeclaration>>>
+> = {
   'client.email_change': { before: 'client.email', after: 'client.email' },
+  'client.profile_update': { before: PROFILE_DETAIL_FIELDS, after: PROFILE_DETAIL_FIELDS },
+  'kyc.identity_correct': { before: PROFILE_DETAIL_FIELDS, after: PROFILE_DETAIL_FIELDS },
+  'client.profile_consolidated': {
+    before: PROFILE_DETAIL_FIELDS,
+    after: PROFILE_DETAIL_FIELDS,
+    discarded: PROFILE_DETAIL_FIELDS,
+  },
 };
 
 /**
@@ -47,18 +83,30 @@ export function maskAuditDetails<T>(action: string, details: T, mask: readonly s
   }
 
   const hidden = new Set(mask);
-  const row = details as Record<string, unknown>;
-  const doomed = Object.keys(row).filter((key) => {
-    const catalogueKey = declared[key];
-    return catalogueKey !== undefined && hidden.has(catalogueKey);
-  });
-  if (doomed.length === 0) return details;
-
+  let narrowed = false;
   const kept: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(row)) {
-    if (!doomed.includes(key)) kept[key] = value;
+  for (const [key, value] of Object.entries(details as Record<string, unknown>)) {
+    const declaration = declared[key];
+    if (declaration === undefined) {
+      kept[key] = value;
+    } else if (typeof declaration === 'string') {
+      // One value, one catalogue key: withheld whole.
+      if (hidden.has(declaration)) narrowed = true;
+      else kept[key] = value;
+    } else if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+      kept[key] = value;
+    } else {
+      // An object of fields: each withheld on its own key, the rest kept.
+      const inner: Record<string, unknown> = {};
+      for (const [field, fieldValue] of Object.entries(value as Record<string, unknown>)) {
+        const catalogueKey = declaration[field];
+        if (catalogueKey !== undefined && hidden.has(catalogueKey)) narrowed = true;
+        else inner[field] = fieldValue;
+      }
+      kept[key] = inner;
+    }
   }
-  return kept as T;
+  return (narrowed ? kept : details) as T;
 }
 
 /**

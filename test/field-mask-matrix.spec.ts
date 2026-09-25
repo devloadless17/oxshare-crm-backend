@@ -8,10 +8,12 @@ import {
   admins,
   clientTagAssignments,
   clientTags,
+  kycConfigSteps,
   kycSubmissions,
   roles,
   users,
 } from '../src/database/schema';
+import { DEFAULT_KYC_STEPS } from '../src/store/kyc-config.store';
 
 /**
  * EACH MASKABLE FIELD, ON ITS OWN.
@@ -28,8 +30,8 @@ import {
  *
  * The second is the one nothing else covers. `client.firstName` and
  * `client.lastName` differ by four characters and expand to eight aliases
- * between them; `kyc.personalInfo.address` is a prefix of nothing but sits
- * beside `addressProof`, which is a document reference and must survive. A
+ * between them; `client.address` is a prefix of nothing but sits beside
+ * `addressProof`, which is a document reference and must survive. A
  * mask that over-reaches is invisible to a suite that only looks for what
  * should be gone.
  *
@@ -55,6 +57,13 @@ const TARGET = {
   lastName: 'MatrixLast',
   phone: '+961 9 999 001',
   country: 'Lebanon',
+  // The rest of the PROFILE (0139) — stored on the client, shown on the client
+  // screen AND inside the KYC review's personal answers, masked in both.
+  dateOfBirth: '1979-03-14',
+  nationality: 'MatrixNationality',
+  address: 'MatrixStreet 12',
+  city: 'MatrixCity',
+  postalCode: 'MX 9901',
 };
 
 /** What a value looks like once the catalogue key is hidden, per key. */
@@ -64,17 +73,24 @@ const SENTINEL: Record<string, string> = {
   'client.email': TARGET.email,
   'client.phone': TARGET.phone,
   'client.country': TARGET.country,
-  'kyc.personalInfo.dateOfBirth': '1979-03-14',
-  'kyc.personalInfo.nationality': 'MatrixNationality',
-  'kyc.personalInfo.address': 'MatrixStreet 12',
+  'client.dateOfBirth': TARGET.dateOfBirth,
+  'client.nationality': TARGET.nationality,
+  'client.address': TARGET.address,
+  'client.city': TARGET.city,
+  'client.postalCode': TARGET.postalCode,
   /*
-   * A CUSTOM step's answers, masked as ONE unit rather than per field.
+   * A BROKER'S OWN questions, masked as ONE unit rather than per field.
    *
    * The slugs and field names are invented by a broker after this file ships,
    * so no catalogue entry could name them and no reader's mask could contain
    * one — `responses.dto.ts` records why a `@ClientFieldMap` prefix would have
    * looked like a control and masked nothing for ever. The sentinel is the
    * ANSWER, because that is the value a masked reader must stop seeing.
+   *
+   * It is the answer on a custom STEP and on the PERSONAL step both (below):
+   * the personal step's own custom answers used to be maskable by nothing at
+   * all, because they live in `personalInfo` under a key no catalogue entry
+   * names. `ClientFieldMap`'s `others` rule puts them under this key too.
    */
   'kyc.stepData': 'MatrixSourceOfFunds',
   // Filled in `beforeAll`: one is a tag label, the other the row's real
@@ -174,32 +190,41 @@ beforeAll(async () => {
 
   const [client] = await db
     .insert(users)
-    .values({
-      email: TARGET.email,
-      passwordHash: 'x',
-      firstName: TARGET.firstName,
-      lastName: TARGET.lastName,
-      phone: TARGET.phone,
-      country: TARGET.country,
-      emailVerified: true,
-    })
+    .values({ ...TARGET, passwordHash: 'x', emailVerified: true })
     .returning();
   clientId = client.id;
+
+  /*
+   * The KYC form, with a broker's own question on the personal step. The
+   * review's personal answers are the PROFILE's values for the fields this step
+   * asks for, merged with the step's own answers — so without the config the
+   * KYC screen would carry none of the profile, and this file would test the
+   * masking of the client screen alone.
+   */
+  await db.insert(kycConfigSteps).values(
+    DEFAULT_KYC_STEPS.map((step, idx) => ({
+      id: step.id,
+      stepNumber: idx + 1,
+      slug: step.slug,
+      title: step.title,
+      description: step.description,
+      icon: step.icon,
+      enabled: step.enabled,
+      fields: (step.slug === 'personal'
+        ? [
+            ...step.fields,
+            { id: 'f-occupation', name: 'customField_1', label: 'Occupation', type: 'text' },
+          ]
+        : step.fields) as unknown as Record<string, unknown>[],
+    })),
+  );
 
   await db.insert(kycSubmissions).values({
     userId: clientId,
     status: 'submitted',
     submittedAt: new Date(),
-    personalInfo: {
-      firstName: TARGET.firstName,
-      lastName: TARGET.lastName,
-      email: TARGET.email,
-      phone: TARGET.phone,
-      country: TARGET.country,
-      dateOfBirth: SENTINEL['kyc.personalInfo.dateOfBirth'],
-      nationality: SENTINEL['kyc.personalInfo.nationality'],
-      address: SENTINEL['kyc.personalInfo.address'],
-    },
+    // Only what a broker invented lives here (0139); the identity is the profile's.
+    personalInfo: { customField_1: SENTINEL['kyc.stepData'] },
     document: { docType: 'passport' },
     // One custom step, so `kyc.stepData` has something to hide. Without it the
     // key is maskable in the catalogue and untested here, which this file's own

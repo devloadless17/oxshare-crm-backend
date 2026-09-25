@@ -1,5 +1,10 @@
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { lockoutMessage } from '../../common/security/lockout-message';
+import {
+  checkProfile,
+  firstProfileError,
+  type ProfileKey,
+} from '../../common/profile/client-profile';
 import { ALERT_KINDS, raiseAlert } from '../../common/logging/alerts';
 import { normaliseReferralCode } from '../../common/referral-code';
 import { JwtService } from '@nestjs/jwt';
@@ -22,6 +27,7 @@ import {
   AuthenticationError,
   AuthorizationError,
   EmailCodeInvalidError,
+  FieldValidationError,
   EmailNotVerifiedError,
   NotFoundError,
   SessionReplayedError,
@@ -274,6 +280,45 @@ export class AuthService {
         'and if you already have an account, we have sent you a sign-in link instead.',
     };
 
+    /*
+     * ── THE PROFILE IS CHECKED BEFORE WE LOOK THE ADDRESS UP ────────────────
+     *
+     * Registration now seeds the whole client profile (25 Sep 2026) — name,
+     * date of birth, nationality, phone, residence — by the same rules every
+     * later writer obeys (`common/profile/client-profile.ts`).
+     *
+     * FIRST, deliberately: a profile refused for a new address and accepted for
+     * a taken one would be a membership oracle — send an underage date of birth
+     * with somebody's email and read which answer comes back. Checked here, the
+     * refusal is the same whoever the address belongs to.
+     *
+     * Optional on the wire beyond the name, so a portal build that predates the
+     * fields keeps registering; the portal asks for all of them, and KYC
+     * completeness is enforced at submission either way.
+     */
+    const profile = checkProfile(
+      {
+        firstName: dto.firstName,
+        lastName: dto.lastName,
+        ...(dto.dateOfBirth !== undefined ? { dateOfBirth: dto.dateOfBirth } : {}),
+        ...(dto.nationality !== undefined ? { nationality: dto.nationality } : {}),
+        ...(dto.phone !== undefined ? { phone: dto.phone } : {}),
+        ...(dto.country !== undefined ? { country: dto.country } : {}),
+        ...(dto.address !== undefined ? { address: dto.address } : {}),
+        ...(dto.city !== undefined ? { city: dto.city } : {}),
+        ...(dto.postalCode !== undefined ? { postalCode: dto.postalCode } : {}),
+      },
+      { required: ['firstName', 'lastName'] },
+    );
+    const profileError = firstProfileError(profile.errors);
+    if (profileError) {
+      throw new FieldValidationError(profileError, profile.errors);
+    }
+    // A blank optional field is simply not stored — there is nothing to clear yet.
+    const seeded = Object.fromEntries(
+      Object.entries(profile.values).filter(([, value]) => value !== null),
+    ) as Partial<Record<ProfileKey, string>>;
+
     const existing = await this.users.findByEmail(dto.email);
     if (existing) {
       // Awaited, not fire-and-forget: this is the ONLY signal the legitimate
@@ -307,8 +352,9 @@ export class AuthService {
     const user = await this.users.create({
       email: dto.email.toLowerCase(),
       passwordHash,
-      firstName: dto.firstName,
-      lastName: dto.lastName,
+      ...seeded,
+      firstName: seeded.firstName!,
+      lastName: seeded.lastName!,
       type: 'individual',
       status: 'active',
       verificationLevel: 0,
@@ -318,8 +364,6 @@ export class AuthService {
       // exactly "outstanding".
       emailVerificationTokenHash: hashEmailedToken(verificationToken),
       emailVerificationExpiry: verificationExpiry,
-      country: dto.country,
-      phone: dto.phone,
       referredByIbUserId,
     });
 
@@ -1339,6 +1383,12 @@ export class AuthService {
       emailVerified: user.emailVerified,
       country: user.country,
       phone: user.phone,
+      // The rest of the client's own profile (0139) — theirs to read.
+      dateOfBirth: user.dateOfBirth,
+      nationality: user.nationality,
+      address: user.address,
+      city: user.city,
+      postalCode: user.postalCode,
       createdAt: user.createdAt,
       /*
        * A URL, composed here, from a FILENAME stored in the column.

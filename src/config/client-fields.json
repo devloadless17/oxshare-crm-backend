@@ -47,7 +47,15 @@
     "'financial.*' / 'financialExport.*': the Financial page (GET /admin/transactions) joins the",
     "same person in both shapes again \u2014 nested `user` on the list rows ('financial.'), flattened",
     "`userEmail` in its CSV ('financialExport.') \u2014 split for exactly the desk's reason above:",
-    "`maskedFields` is a promise about THIS response's rows."
+    "`maskedFields` is a promise about THIS response's rows.",
+    "",
+    "PROFILE FIELDS MOVED HERE (0139). Date of birth, nationality and address used to be",
+    "'kyc.personalInfo.*' entries of their own, because they existed only inside a KYC",
+    "submission. They are the client's PROFILE now, stored once on `users`, so they are",
+    "'client.*' keys like the name and phone, and their KYC spelling is an ALIAS: hiding",
+    "'client.dateOfBirth' hides it on the profile, the KYC review and the audit log alike.",
+    "Migration 0139 moved every stored mask onto the new keys \u2014 and a mask on the address",
+    "also took the city and postal code that complete it."
   ],
   "identity": {
     "groupName": "Identity",
@@ -107,6 +115,18 @@
           "ibPartner.parent.lastName",
           "ibPartner.directPartners.lastName"
         ]
+      },
+      {
+        "key": "client.dateOfBirth",
+        "label": "Date of birth",
+        "maskable": true,
+        "aliases": ["kyc.personalInfo.dateOfBirth"]
+      },
+      {
+        "key": "client.nationality",
+        "label": "Nationality",
+        "maskable": true,
+        "aliases": ["kyc.personalInfo.nationality"]
       }
     ]
   },
@@ -141,6 +161,24 @@
         "label": "Phone number",
         "maskable": true,
         "aliases": ["kyc.personalInfo.phone", "kyc.user.phone"]
+      },
+      {
+        "key": "client.address",
+        "label": "Street address",
+        "maskable": true,
+        "aliases": ["kyc.personalInfo.address"]
+      },
+      {
+        "key": "client.city",
+        "label": "City",
+        "maskable": true,
+        "aliases": ["kyc.personalInfo.city"]
+      },
+      {
+        "key": "client.postalCode",
+        "label": "Postal code",
+        "maskable": true,
+        "aliases": ["kyc.personalInfo.postalCode"]
       }
     ]
   },
@@ -199,23 +237,8 @@
   },
   "kyc": {
     "groupName": "KYC detail",
-    "description": "Fields that exist only inside a KYC submission",
+    "description": "Answers to fields a broker added to the KYC form",
     "fields": [
-      {
-        "key": "kyc.personalInfo.dateOfBirth",
-        "label": "Date of birth",
-        "maskable": true
-      },
-      {
-        "key": "kyc.personalInfo.nationality",
-        "label": "Nationality",
-        "maskable": true
-      },
-      {
-        "key": "kyc.personalInfo.address",
-        "label": "Address",
-        "maskable": true
-      },
       {
         "key": "kyc.stepData",
         "label": "Custom step answers",

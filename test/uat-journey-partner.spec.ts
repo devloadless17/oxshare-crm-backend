@@ -94,7 +94,7 @@ async function onboard(
       lastName: 'Person',
       email: credentials.email,
       password: credentials.password,
-      country: 'LB',
+      country: 'Lebanon',
       ...extra,
     });
   if (res.status >= 400) {
@@ -131,7 +131,7 @@ async function verifyKyc(
       lastName: 'Person',
       dateOfBirth: '1990-04-12',
       phone,
-      nationality: 'Lebanon',
+      nationality: 'Lebanese',
       country: 'Lebanon',
     },
   });
@@ -389,7 +389,7 @@ describe('§14 J2 — step 2: a client signs up through the link and is attribut
       lastName: 'Stranger',
       email: 'uat-j2-stranger@oxshare-e2e.test',
       password: 'StrangerPass123!',
-      country: 'LB',
+      country: 'Lebanon',
       referralCode: 'NOSUCHCODE',
     });
     expect(res.status).toBe(400);

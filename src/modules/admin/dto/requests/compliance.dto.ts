@@ -8,6 +8,7 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
+  MaxLength,
   ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
@@ -275,9 +276,32 @@ export class CorrectKycIdentityDto {
   @IsNotEmpty()
   dateOfBirth?: string;
 
-  @ApiPropertyOptional({ example: '12 Rue Verdun, Beirut' })
+  @ApiPropertyOptional({ example: '12 Rue Verdun', maxLength: 200 })
   @IsOptional()
   @IsString()
   @IsNotEmpty()
+  @MaxLength(200)
   address?: string;
+
+  /*
+   * City and postal code complete the address (0139) — a client who moves
+   * street usually moves all three, and correcting one without the others
+   * leaves an approved record describing no real place.
+   */
+  @ApiPropertyOptional({ example: 'Beirut', maxLength: 100 })
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(100)
+  city?: string;
+
+  @ApiPropertyOptional({
+    example: '1103 2080',
+    maxLength: 12,
+    description: 'Send an empty string to clear it — many addresses have none.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(12)
+  postalCode?: string;
 }

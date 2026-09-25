@@ -172,6 +172,27 @@ export const DEFAULT_KYC_STEPS: KycStepConfig[] = [
         type: 'text',
         required: false,
       },
+      /*
+       * Named ids rather than f-8 / f-9: those were the identity-document
+       * fields before 0074, and an id is matched across the whole config, so
+       * reusing one could turn an old config into a false "rename". 0139 adds
+       * the same two fields, with the same ids, to a config already saved.
+       */
+      {
+        id: 'f-city',
+        name: 'city',
+        label: 'City',
+        type: 'text',
+        required: false,
+      },
+      {
+        id: 'f-postal-code',
+        name: 'postalCode',
+        label: 'Postal / ZIP code',
+        type: 'text',
+        required: false,
+        hint: 'Leave blank if your address has none',
+      },
     ],
   },
   {
@@ -294,18 +315,33 @@ type Row = typeof kycConfigSteps.$inferSelect;
  *
  * Nobody is going to hand-enter 250 countries into the builder, and a list that
  * was typed once would then drift from the `countries-list` package. So these
- * two resolve from `common/kyc/country-options.ts` when the field carries no
- * options of its own.
+ * two resolve from `common/kyc/country-options.ts`.
  *
- * Matched on the field NAME, which is the one piece of name-coupling left and
- * is deliberate: `nationality` and `country` are the names the portal has
- * always submitted and the columns are keyed on them. An operator who wants a
- * different list gives the field its own `options`, and this defers.
+ * Matched on the field NAME, which is deliberate: `nationality` and `country`
+ * are profile fields (0139), and the name IS the profile column.
+ *
+ * ⚠️ **ALWAYS the system list now — stored options are ignored, not deferred to.**
+ * This used to say "an operator who wants a different list gives the field its
+ * own `options`, and this defers". Two things ended that:
+ *
+ *  - the answer lands in the client's profile, which accepts exactly the system
+ *    list (`client-profile.ts`) — an operator's "UAE" would be a choice no client
+ *    could save, and registration would still accept the countries it removed;
+ *  - the "strip it back out" below compared by IDENTITY, which a JSON round trip
+ *    never preserves — so the first save from the builder baked the whole list
+ *    into the row (found on the dev database: 187 nationalities, 251 countries).
+ *    A baked copy stops tracking the package the day it is written.
+ *
+ * The builder refuses an edited list (`assertProfileFieldsKeepTheirPlace`), and
+ * a stored one — baked or not — is never served.
  */
-const SYSTEM_OPTIONS: Record<string, string[]> = {
+const SYSTEM_OPTIONS: Readonly<Record<string, readonly string[]>> = {
   nationality: KYC_NATIONALITY_OPTIONS,
   country: KYC_COUNTRY_OPTIONS,
 };
+
+const hasSystemOptions = (name: string): boolean =>
+  Object.prototype.hasOwnProperty.call(SYSTEM_OPTIONS, name);
 
 const withResolvedDocuments = (fields: KycFieldConfig[]): KycFieldConfig[] =>
   fields.map((field) => {
@@ -314,14 +350,13 @@ const withResolvedDocuments = (fields: KycFieldConfig[]): KycFieldConfig[] =>
     if (document) return { ...field, document };
 
     /*
-     * A `select` with no options of its own gets the system list, if one exists
-     * for its name. The admin builder showed both of these as "Dropdown with no
-     * choices" because that is exactly what they were — the portal filled them
-     * in locally, so the config never knew.
+     * A `select` named for a system list gets that list — whatever the row
+     * holds. The admin builder showed both of these as "Dropdown with no
+     * choices" when the portal filled them in locally; now the config carries
+     * them, and always the current ones (see SYSTEM_OPTIONS).
      */
-    if (field.type === 'select' && !field.options?.length) {
-      const system = SYSTEM_OPTIONS[field.name];
-      if (system) return { ...field, options: system };
+    if (field.type === 'select' && hasSystemOptions(field.name)) {
+      return { ...field, options: [...SYSTEM_OPTIONS[field.name]] };
     }
     return field;
   });
@@ -347,14 +382,14 @@ const stripResolved = (fields: KycFieldConfig[]): KycFieldConfig[] =>
   fields.map(({ document: _resolved, ...field }) => {
     /*
      * A system list is stripped back out on the way IN, or the first save from
-     * the builder would bake 250 country names into the row — a snapshot that
-     * stops tracking the package the moment it is written.
+     * the builder bakes 250 country names into the row — a snapshot that stops
+     * tracking the package the moment it is written.
      *
-     * Compared by identity: an operator who edits the list is holding a
-     * different array, and theirs is kept.
+     * Stripped by NAME, whatever arrived. This compared by identity once, which
+     * a JSON round trip never preserves, so every save baked the list in. An
+     * edited list never reaches here: the builder's rules refuse it first.
      */
-    const system = SYSTEM_OPTIONS[field.name];
-    if (system && field.options === system) {
+    if (field.type === 'select' && hasSystemOptions(field.name)) {
       const { options: _system, ...rest } = field;
       return rest;
     }

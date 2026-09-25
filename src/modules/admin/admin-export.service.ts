@@ -513,11 +513,12 @@ export class AdminExportService {
     { header: 'Last name', value: (r) => r.user.lastName },
     { header: 'Status', value: (r) => r.status },
     /*
-     * The one field taken from `personal_info`, and the only one.
+     * The client's country of residence — the PROFILE's (0139), the one field
+     * of the identity the queue shows, and the only one.
      *
-     * The queue query extracts `country` out of the jsonb rather than selecting
-     * the blob, so date of birth, address, nationality and phone are not in
-     * this result set at all — they cannot leak into the file by accident.
+     * The queue query selects that one column rather than the profile, so date
+     * of birth, address, nationality and phone are not in this result set at
+     * all — they cannot leak into the file by accident.
      */
     { header: 'Country', value: (r) => r.personalInfo?.country },
     { header: 'Submitted at', value: (r) => r.submittedAt },

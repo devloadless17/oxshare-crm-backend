@@ -65,9 +65,41 @@ function actionsWritingDetails(): string[] {
       const action = /'([a-z_]+\.[a-z_.]+)'/.exec(call)?.[1];
       if (action !== undefined && call.includes('{')) found.add(action);
     }
+    /*
+     * A PROFILE change writes its row through `ClientProfileService.update`, and
+     * a caller names its action in `audit: { action: '…' }` rather than in a
+     * `.record(` call of its own. The details are always `{ before, after }` —
+     * client-owned by construction — so such an action writes a payload.
+     *
+     * Only in a file that USES the profile service: the same `audit: { action }`
+     * shape is also a route policy elsewhere (the document reads in
+     * `uploads.controller.ts`), which writes no details at all.
+     */
+    if (text.includes('ClientProfileService')) {
+      for (const match of text.matchAll(/audit:\s*\{[^}]*?action:\s*'([a-z_]+\.[a-z_.]+)'/g)) {
+        found.add(match[1]);
+      }
+    }
+  }
+  /*
+   * Rows a MIGRATION wrote, which no TypeScript call site will ever show. Named
+   * with the file that writes them, and the file is checked to — so the entry
+   * cannot outlive the migration it describes.
+   */
+  for (const [action, file] of Object.entries(WRITTEN_BY_MIGRATIONS)) {
+    const sql = readFileSync(join(SRC, 'database', 'migrations', file), 'utf8');
+    if (sql.includes(`'${action}'`)) found.add(action);
   }
   return [...found].sort();
 }
+
+/**
+ * Audit rows written by SQL, once: 0139 consolidated every client's two copies
+ * of their identity into one profile and recorded each client's before/after.
+ */
+const WRITTEN_BY_MIGRATIONS: Readonly<Record<string, string>> = {
+  'client.profile_consolidated': '0139_client_profile_single_home.sql',
+};
 
 /**
  * Every action that passes a details object today. SHRINK-ONLY in spirit: an
@@ -93,6 +125,7 @@ const WRITES_DETAILS: readonly string[] = [
   'api_key.create',
   'api_key.revoke',
   'client.email_change',
+  'client.profile_consolidated',
   'client.profile_update',
   'client.referrer_set',
   'client.suspend',

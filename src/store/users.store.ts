@@ -16,6 +16,7 @@ import {
   sql,
 } from 'drizzle-orm';
 import type { CursorPosition } from '../common/pagination';
+import { PROFILE_FIELD_KEYS, type ProfileKey } from '../common/profile/client-profile';
 import { sortKey, sortOrder } from '../common/sorting';
 import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
@@ -181,8 +182,19 @@ export interface User {
   passwordChangedAt?: Date;
   /** Stored filename of the profile photo - see the column comment. */
   avatarFilename?: string;
+  /*
+   * THE CLIENT PROFILE — each field's one home (0139). Written through
+   * `ClientProfileService`, which applies `common/profile/client-profile.ts`;
+   * `country` is the country of residence and `phone` is E.164.
+   */
   country?: string;
   phone?: string;
+  /** `YYYY-MM-DD` — a Postgres DATE, so never a timestamp and never "2026-02-31". */
+  dateOfBirth?: string;
+  nationality?: string;
+  address?: string;
+  city?: string;
+  postalCode?: string;
   /**
    * The partner who introduced them, or undefined for a direct signup.
    *
@@ -227,6 +239,11 @@ const toUser = ({
   avatarFilename: r.avatarFilename ?? undefined,
   country: r.country ?? undefined,
   phone: r.phone ?? undefined,
+  dateOfBirth: r.dateOfBirth ?? undefined,
+  nationality: r.nationality ?? undefined,
+  address: r.address ?? undefined,
+  city: r.city ?? undefined,
+  postalCode: r.postalCode ?? undefined,
   referredByIbUserId: r.referredByIbUserId ?? undefined,
 });
 
@@ -347,8 +364,27 @@ export class UsersStore {
     return toUser(row);
   }
 
-  async findById(id: string): Promise<User | undefined> {
-    const [row] = await this.db.select(USER_COLUMNS).from(users).where(eq(users.id, id)).limit(1);
+  async findById(id: string, executor?: Executor): Promise<User | undefined> {
+    const [row] = await (executor ?? this.db)
+      .select(USER_COLUMNS)
+      .from(users)
+      .where(eq(users.id, id))
+      .limit(1);
+    return row ? toUser(row) : undefined;
+  }
+
+  /**
+   * The row, LOCKED for the rest of the caller's transaction — for a writer
+   * that reads "before", decides, and writes, so a second writer waits instead
+   * of deciding against the same stale "before" (`ClientProfileService`).
+   */
+  async findByIdForUpdate(id: string, executor: Executor): Promise<User | undefined> {
+    const [row] = await executor
+      .select(USER_COLUMNS)
+      .from(users)
+      .where(eq(users.id, id))
+      .limit(1)
+      .for('update');
     return row ? toUser(row) : undefined;
   }
 
@@ -720,7 +756,26 @@ export class UsersStore {
    * have to be one atomic act: they are what opens the withdrawal gate, and a
    * crash between them used to leave one of two states.
    */
-  async update(id: string, patch: Partial<User>, executor?: Executor): Promise<User | undefined> {
+  async update(
+    id: string,
+    patch: Partial<Omit<User, ProfileKey>>,
+    executor?: Executor,
+  ): Promise<User | undefined> {
+    /*
+     * ⚠️ NOT THE PROFILE. Name, date of birth, nationality, phone, country and
+     * address have ONE write path — `ClientProfileService.update` — which
+     * validates, locks the row, writes only what changed and audits it in the
+     * same transaction (0139). The type above already refuses those keys; this
+     * refuses a caller that got around the type with a cast, because a second
+     * write path is how a client came to hold two names.
+     */
+    const smuggled = PROFILE_FIELD_KEYS.filter((key) => key in patch);
+    if (smuggled.length > 0) {
+      throw new Error(
+        `users.update cannot write the client profile (${smuggled.join(', ')}) — ` +
+          'use ClientProfileService.update, the one validated and audited write path.',
+      );
+    }
     const { id: _ignored, createdAt: _also, ...rest } = patch;
 
     /*

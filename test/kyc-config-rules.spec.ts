@@ -201,10 +201,28 @@ describe('patching a single step', () => {
      * so renaming one changes which special handling that step gets. That is
      * now the operator's call — the API states what it was asked to do and the
      * audit row records it.
+     *
+     * The SELFIE step, since 0139: a camera may stand on any step, so renaming
+     * this one breaks nothing the builder guards. The personal step is the one
+     * that now cannot be renamed while it asks for the profile — below.
      */
     const service = makeService();
-    await service.updateKycStep('step-personal', { slug: 'profile' }, ACTOR);
-    expect(updateStep).toHaveBeenCalledWith('step-personal', { slug: 'profile' });
+    await service.updateKycStep('step-selfie', { slug: 'face-check' }, ACTOR);
+    expect(updateStep).toHaveBeenCalledWith('step-selfie', { slug: 'face-check' });
+  });
+
+  it('refuses to re-slug the personal step while it still asks for the profile', async () => {
+    /*
+     * The personal step is where the KYC form reads and writes the client's
+     * profile (0139). Renamed, its name and date-of-birth fields would become a
+     * broker's own step holding a SECOND copy of the identity beside the
+     * profile — the defect the single profile removed, rebuilt by a rename.
+     */
+    const service = makeService();
+    await expect(
+      service.updateKycStep('step-personal', { slug: 'profile' }, ACTOR),
+    ).rejects.toThrow(/Personal Information step only/);
+    expect(updateStep).not.toHaveBeenCalled();
   });
 
   it('refuses to re-slug a document step while it still holds documents', async () => {

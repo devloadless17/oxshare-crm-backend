@@ -344,6 +344,8 @@ export async function runSeeds(): Promise<void> {
         verificationLevel: 1,
         country: 'United Arab Emirates',
         phone: '+971500000000',
+        dateOfBirth: '1990-01-01',
+        nationality: 'Lebanese',
       })
       .onConflictDoNothing({ target: users.email });
 
@@ -472,14 +474,9 @@ export async function runSeeds(): Promise<void> {
           status: 'approved',
           submittedAt: new Date(),
           reviewedAt: new Date(),
-          personalInfo: {
-            firstName: 'Eve',
-            lastName: 'Endtoend',
-            dateOfBirth: '1990-01-01',
-            nationality: 'Lebanon',
-            country: 'United Arab Emirates',
-            phone: '+971500000000',
-          },
+          // The identity is the PROFILE's (above) — `personal_info` holds only
+          // answers to fields a broker invented, and this client gave none (0139).
+          personalInfo: {},
           document: { docType: 'passport' },
           addressProof: { docType: 'utility_bill' },
         })
@@ -780,6 +777,7 @@ export async function runSeeds(): Promise<void> {
          */
         level: 0,
         country: 'Lebanon',
+        profile: { phone: '+96170000001', dateOfBirth: '1991-01-01', nationality: 'Lebanese' },
       },
       {
         local: 'bravo',
@@ -860,6 +858,7 @@ export async function runSeeds(): Promise<void> {
           emailVerified: true,
           verificationLevel: client.level,
           country: client.country,
+          ...('profile' in client ? client.profile : {}),
         })
         .onConflictDoNothing({ target: users.email });
     }
@@ -931,11 +930,18 @@ export async function runSeeds(): Promise<void> {
         // reboot re-running the seeds is a no-op rather than a duplicate-key error.
         .onConflictDoNothing();
       /*
-       * A SUBMITTED (undecided) KYC row for alpha, carrying the person's email
-       * and phone under `personalInfo.*` — the fixture the masking specs read
-       * through the review screen (`kyc.user.*` and `kyc.personalInfo.*` must
-       * both be absent for a masked reviewer). Never decided by any spec:
-       * approval is terminal, and `onConflictDoNothing` keeps a human decision.
+       * A SUBMITTED (undecided) KYC row for alpha — the fixture the masking
+       * specs read through the review screen (`kyc.user.*` and
+       * `kyc.personalInfo.*` must both be absent for a masked reviewer). Never
+       * decided by any spec: approval is terminal, and `onConflictDoNothing`
+       * keeps a human decision.
+       *
+       * The name, phone, date of birth and nationality are alpha's PROFILE
+       * (0139) and reach `personalInfo` through the review's merged view. The
+       * one key stored here is `email`, and it is a deliberate PROBE rather
+       * than data: no KYC form asks for it, so it stands for an answer the
+       * catalogue does not name, which a masked reviewer must lose as well
+       * (`kyc.personalInfo.email`, and `kyc.stepData` for unnamed keys).
        */
       await db
         .insert(kycSubmissions)
@@ -943,15 +949,7 @@ export async function runSeeds(): Promise<void> {
           userId: alphaClient.id,
           status: 'submitted',
           submittedAt: new Date(),
-          personalInfo: {
-            firstName: 'Alpha',
-            lastName: 'Aardvark',
-            email: `alpha@${E2E_DOMAIN}`,
-            phone: '+96170000001',
-            dateOfBirth: '1991-01-01',
-            nationality: 'Lebanon',
-            country: 'Lebanon',
-          },
+          personalInfo: { email: `alpha@${E2E_DOMAIN}` },
           document: { docType: 'passport' },
           addressProof: { docType: 'utility_bill' },
         })
@@ -1175,7 +1173,7 @@ export async function reassertReviewPool(db: ReturnType<typeof getDb>): Promise<
         status: 'active',
         emailVerified: true,
         verificationLevel: 0,
-        country: 'Lebanon',
+        ...POOL_PROFILE,
       })
       .onConflictDoUpdate({
         target: users.email,
@@ -1204,7 +1202,19 @@ export async function reassertReviewPool(db: ReturnType<typeof getDb>): Promise<
          * can move money with their verification in the queue — and any spec
          * using them to exercise that gate passes for the wrong reason.
          */
-        set: { emailVerified: true, status: 'active', verificationLevel: 0 },
+        /*
+         * The PROFILE too (0139): it is what the submission below shows a
+         * reviewer, so a spec that corrects a pool client's identity must find
+         * the original again next run — the same "pending again" contract.
+         */
+        set: {
+          emailVerified: true,
+          status: 'active',
+          verificationLevel: 0,
+          firstName: 'Pool',
+          lastName: label,
+          ...POOL_PROFILE,
+        },
       })
       .returning();
 
@@ -1214,15 +1224,8 @@ export async function reassertReviewPool(db: ReturnType<typeof getDb>): Promise<
         userId: pooled.id,
         status: 'submitted',
         submittedAt: new Date(),
-        personalInfo: {
-          firstName: 'Pool',
-          lastName: label,
-          email,
-          phone: '+96170000900',
-          dateOfBirth: '1990-06-15',
-          nationality: 'Lebanon',
-          country: 'Lebanon',
-        },
+        // Identity is the profile's (above); no broker-invented answers here.
+        personalInfo: {},
         document: { docType: 'passport', fileName: 'pool-doc.png' },
         selfie: { fileName: 'pool-selfie.png' },
         addressProof: { docType: 'utility_bill', fileName: 'pool-address.png' },
@@ -1241,6 +1244,17 @@ export async function reassertReviewPool(db: ReturnType<typeof getDb>): Promise<
 
   return REVIEW_POOL.length;
 }
+
+/** Every pool client's profile — a real, complete identity a reviewer can check. */
+const POOL_PROFILE = {
+  phone: '+96170000900',
+  dateOfBirth: '1990-06-15',
+  nationality: 'Lebanese',
+  country: 'Lebanon',
+  address: 'Hamra Street, Building 12',
+  city: 'Beirut',
+  postalCode: '1103',
+} as const;
 
 /**
  * A BRAND-NEW client with a pending KYC submission, unique to this call.
@@ -1290,6 +1304,9 @@ export async function createFreshE2eClient(
       emailVerified: true,
       verificationLevel: 0,
       country: 'Lebanon',
+      phone: '+96170000901',
+      dateOfBirth: '1990-06-15',
+      nationality: 'Lebanese',
     })
     .returning();
 
@@ -1297,15 +1314,8 @@ export async function createFreshE2eClient(
     userId: client.id,
     status: 'submitted',
     submittedAt: new Date(),
-    personalInfo: {
-      firstName: 'Fresh',
-      lastName: stamp,
-      email,
-      phone: '+96170000901',
-      dateOfBirth: '1990-06-15',
-      nationality: 'Lebanon',
-      country: 'Lebanon',
-    },
+    // Identity is the profile's (above); no broker-invented answers here.
+    personalInfo: {},
     document: { docType: 'passport', fileName: 'fresh-doc.png' },
     selfie: { fileName: 'fresh-selfie.png' },
     addressProof: { docType: 'utility_bill', fileName: 'fresh-address.png' },

@@ -4,6 +4,7 @@ import {
   boolean,
   char,
   check,
+  date,
   foreignKey,
   uniqueIndex,
   index,
@@ -256,8 +257,30 @@ export const users = pgTable(
      */
     passwordResetTokenHash: varchar('password_reset_token_hash', { length: 64 }),
     passwordResetExpiry: timestamp('password_reset_expiry', { withTimezone: true }),
+    /*
+     * THE CLIENT PROFILE lives in these columns and NOWHERE ELSE (0139) — see
+     * `common/profile/client-profile.ts` for the rules every writer obeys.
+     *
+     * `country` is the country of RESIDENCE, as the name `countries-list` gives
+     * it (the KYC select's own list). `phone` is E.164 (`+96170123456`).
+     * `date_of_birth` is a DATE, not text: the KYC blob used to hold whatever
+     * string parsed, including a timestamp, and a column that cannot hold
+     * "2026-02-31" is the cheapest validation there is.
+     *
+     * Until 0139, date of birth, nationality and address lived only in
+     * `kyc_submissions.personal_info`, while name, phone and country lived here
+     * AND there — two copies that nothing kept equal, so a client could hold one
+     * name on their account and another on their verification. The KYC personal
+     * step now reads and writes these columns, and `personal_info` keeps only
+     * answers to fields a broker invented.
+     */
     country: varchar('country', { length: 100 }),
     phone: varchar('phone', { length: 32 }),
+    dateOfBirth: date('date_of_birth', { mode: 'string' }),
+    nationality: varchar('nationality', { length: 100 }),
+    address: varchar('address', { length: 200 }),
+    city: varchar('city', { length: 100 }),
+    postalCode: varchar('postal_code', { length: 12 }),
     /**
      * The partner who introduced this client, captured at registration.
      *

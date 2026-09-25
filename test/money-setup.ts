@@ -39,7 +39,15 @@ function containerUri(): string {
   return uri;
 }
 
-export async function startMoneyTestDb(): Promise<MoneyTestContext> {
+/**
+ * @param options.migrationsFolder a folder to migrate from instead of the
+ *   committed one — for a spec that stops the history at a point (a copy with
+ *   the later migrations left out) to prove what ONE migration does to data
+ *   written before it (`migration-0139-profile.spec.ts`).
+ */
+export async function startMoneyTestDb(
+  options: { migrationsFolder?: string } = {},
+): Promise<MoneyTestContext> {
   // A valid identifier, unique per suite. `randomUUID` has hyphens, which would
   // need quoting everywhere; underscores keep it unquoted and greppable.
   const databaseName = `money_${randomUUID().replace(/-/g, '')}`;
@@ -59,7 +67,7 @@ export async function startMoneyTestDb(): Promise<MoneyTestContext> {
 
   const pool = new Pool({ connectionString });
   const db = drizzle(pool, { schema });
-  await migrate(db, { migrationsFolder: './src/database/migrations' });
+  await migrate(db, { migrationsFolder: options.migrationsFolder ?? './src/database/migrations' });
 
   // The stores and the money services resolve their connection from
   // DATABASE_URL through the lazy singleton, so point that at this suite's

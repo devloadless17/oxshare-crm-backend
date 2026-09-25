@@ -297,19 +297,23 @@ export class AdminComplianceService {
     const patch: Record<string, unknown> = {};
     if (dto.dateOfBirth !== undefined) patch['dateOfBirth'] = dto.dateOfBirth;
     if (dto.address !== undefined) patch['address'] = dto.address;
+    if (dto.city !== undefined) patch['city'] = dto.city;
+    if (dto.postalCode !== undefined) patch['postalCode'] = dto.postalCode;
     if (Object.keys(patch).length === 0) {
-      throw new ValidationError('Send a dateOfBirth or an address to correct.');
+      throw new ValidationError('Send a date of birth or an address to correct.');
     }
 
-    const result = await this.kycService.correctIdentity(userId, patch);
-
-    // AFTER the write and describing the OBSERVED change — see the block above
-    // `approveKyc` on why this is not fire-and-forget before the fact.
-    this.audit.record(actor.id, 'kyc.identity_correct', 'kyc_submission', userId, {
-      before: result.before,
-      after: result.after,
+    /*
+     * The audit row is written BY the profile write, in its transaction — the
+     * observed before → after, never a claim made before the fact, and never a
+     * change without its row. Filed as `kyc.identity_correct` on the submission,
+     * where a reviewer reading its history looks.
+     */
+    const result = await this.kycService.correctIdentity(userId, patch, {
+      kind: 'admin',
+      id: actor.id,
+      email: actor.email,
     });
-
     return result.submission;
   }
 

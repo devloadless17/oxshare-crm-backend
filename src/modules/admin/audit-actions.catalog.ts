@@ -64,6 +64,19 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
    * without reading every clerical correction.
    */
   { action: 'client.profile_update', label: 'Client profile edited', group: 'Clients' },
+  /*
+   * One row per client, written ONCE by migration 0139 when each client's two
+   * copies of their identity became one profile: what changed, and any KYC
+   * answer that was not taken because the desk had corrected the profile since.
+   */
+  {
+    action: 'client.profile_consolidated',
+    label: 'Client profile consolidated (one-time merge)',
+    group: 'Clients',
+    // Written ONCE, by migration 0139's SQL, which no TypeScript scan can see —
+    // the rows exist from the day it runs, and no code writes another.
+    historical: true,
+  },
   { action: 'client.email_change', label: 'Client sign-in email changed', group: 'Clients' },
   { action: 'client.suspend', label: 'Client suspended', group: 'Clients' },
   {

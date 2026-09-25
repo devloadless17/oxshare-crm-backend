@@ -21,6 +21,8 @@ import {
   ReferrerAlreadySetError,
   ExternalServiceError,
   DomainError,
+  FieldValidationError,
+  ProfileLockedError,
   MailNotConfiguredError,
   MoneyRuleError,
   QuotaExceededError,
@@ -66,6 +68,9 @@ const DOMAIN_STATUS = new Map<new (...args: never[]) => DomainError, HttpStatus>
   // Its own code (KYC_CORRECTION_REFUSED) but the same status: the caller
   // branches on the code, and 409 is still what happened.
   [KycCorrectionRefusedError, HttpStatus.CONFLICT],
+  // A field the verification has locked — nothing wrong with the value, the
+  // record's state refuses it. Carries `fields`, like a validation error.
+  [ProfileLockedError, HttpStatus.CONFLICT],
   [ReferralCodeUnknownError, HttpStatus.BAD_REQUEST],
   [ReferralSelfError, HttpStatus.BAD_REQUEST],
   [ReferralPartnerInactiveError, HttpStatus.BAD_REQUEST],
@@ -251,9 +256,14 @@ export class AllExceptionsFilter implements ExceptionFilter {
   } {
     // 1. Domain errors — the layer services are supposed to throw from.
     if (exception instanceof DomainError) {
+      // Per-field messages from a service rule, in the request validator's shape.
+      const fields =
+        exception instanceof FieldValidationError || exception instanceof ProfileLockedError
+          ? exception.fields
+          : undefined;
       for (const [type, status] of DOMAIN_STATUS) {
         if (exception instanceof type) {
-          return { status, message: exception.message, code: exception.code };
+          return { status, message: exception.message, code: exception.code, fields };
         }
       }
       return {

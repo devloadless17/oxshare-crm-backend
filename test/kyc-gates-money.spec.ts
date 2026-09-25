@@ -2,6 +2,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import { sql } from 'drizzle-orm';
 import { ConfigService } from '@nestjs/config';
 import { KycService } from '../src/modules/compliance/kyc.service';
+import { ClientProfileService } from '../src/modules/profile/client-profile.service';
 import { TransactionsService } from '../src/modules/payments/transactions.service';
 import { TransfersService } from '../src/modules/payments/transfers.service';
 import { WalletService } from '../src/modules/wallet/wallet.service';
@@ -132,6 +133,13 @@ beforeAll(async () => {
     // Appended LAST, matching the constructor: resolves the holder's name when a
     // decision is refused because another reviewer is holding the submission.
     new AdminsStore(db),
+    // The one write path for the client's identity (0139), on the real tables.
+    new ClientProfileService(
+      db,
+      new UsersStore(db),
+      new AuditLogStore(db),
+      new KycStore(db, new StoredObjectsStore(db)),
+    ),
   );
   const { rows } = await ctx.db.execute<{ id: string }>(sql`
     INSERT INTO admins (email, password_hash, name, role, permissions)
