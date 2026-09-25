@@ -7,6 +7,7 @@ import {
   desc,
   eq,
   inArray,
+  or,
   sql,
   type SQLWrapper,
 } from 'drizzle-orm';
@@ -72,6 +73,13 @@ export const IB_PARTNER_SORT_COLUMNS = {
 } as const;
 
 export type IbPartnerSortKey = keyof typeof IB_PARTNER_SORT_COLUMNS;
+
+/** One currency's commission for one partner — decimal strings (§6.1). */
+export interface PartnerEarnings {
+  currency: string;
+  confirmed: string;
+  pending: string;
+}
 
 /** Newest approval first — what the list showed before it was sortable. */
 export const DEFAULT_IB_PARTNER_SORT: IbPartnerSortKey = 'approvedAt';
@@ -474,8 +482,33 @@ export class IbStore {
     /** R-2.5 server-side sort. Validated by `sortKey` before it gets here. */
     sort?: IbPartnerSortKey;
     order?: SortOrder;
+    /**
+     * A Portal ID, a name or an email — through `clientIdentitySearch`, the one
+     * definition every client search shares — OR a referral code.
+     *
+     * The code is the one thing an operator is most often handed about a
+     * partner ("a client signed up with ABC123 — whose is that?"), and it was
+     * findable nowhere: the directory took no search at all and the client list
+     * does not know codes exist. Matched EXACTLY, upper-cased the way
+     * `recordReferrer` normalises one, so it rides the column's unique index.
+     *
+     * AND-ed with `visible` like every other term, so a scoped admin cannot
+     * find a partner outside their territory by guessing a code — the search
+     * narrows what they may see and never widens it.
+     */
+    q?: string;
+    /** `true` active partners only, `false` suspended only, absent both. */
+    active?: boolean;
   }) {
     const visible = clientScopePredicate(filter.scope ?? UNRESTRICTED, users.id);
+    const term = filter.q?.trim();
+    const where = and(
+      visible,
+      ...(term
+        ? [or(clientIdentitySearch(term, users), eq(ibAccounts.referralCode, term.toUpperCase()))]
+        : []),
+      ...(filter.active === undefined ? [] : [eq(ibAccounts.active, filter.active)]),
+    );
     /*
      * The PARENT, by Portal ID — the number the console names people by. Only
      * when the parent is inside the reader's territory: the list is scoped on
@@ -520,7 +553,7 @@ export class IbStore {
        * `account.level` carries what the programme name used to: which terms
        * this partner is on.
        */
-      .where(visible)
+      .where(where)
       // `user_id` is this table's PRIMARY KEY — one partner account per client —
       // so it is the unique tiebreak here, where the applications queue uses
       // `id`. Load-bearing for the same reason: a catalogue has a handful of
@@ -530,11 +563,12 @@ export class IbStore {
       .limit(filter.limit)
       .offset((filter.page - 1) * filter.limit);
 
+    // The SAME `where`, so the total counts exactly the rows a page can show.
     const [{ value: total }] = await this.db
       .select({ value: count() })
       .from(ibAccounts)
       .innerJoin(users, eq(users.id, ibAccounts.userId))
-      .where(visible);
+      .where(where);
 
     return { rows, total };
   }
@@ -831,12 +865,34 @@ export class IbStore {
    * absent — the caller renders zero, which is the honest reading of "nothing
    * has been earned" and avoids inventing a row that does not exist.
    */
+  /**
+   * What each partner has earned, ONE ENTRY PER CURRENCY — never one total.
+   *
+   * ⚠️ This grouped by `(ib_user_id, status)` alone and summed `amount` across
+   * whatever currencies the accruals were in. An accrual takes the currency of
+   * the trade that produced it, so a partner earning 100 USD and 90 EUR was
+   * reported as having earned 190 — and the profile's Partner tab then printed
+   * that 190 as the platform's default currency. A plausible number describing
+   * nothing, on the one figure a partner is paid against; the same rule the
+   * portal's `largestBalance` and every per-currency summary here keep (there
+   * is no FX source in this system, so there is nothing to convert WITH).
+   *
+   * Sorted by currency so the order is stable between reads. A partner with no
+   * commission in any currency is absent from the map — callers report `[]`,
+   * "nothing earned yet", rather than a zero in a currency nobody chose.
+   *
+   * Reversed accruals are excluded in the query rather than skipped in the
+   * loop: they never counted towards either figure, and grouping them would
+   * give a currency that only ever held a clawback a row of zeroes.
+   */
   async earningsByPartner(ibUserIds: string[]) {
-    if (ibUserIds.length === 0) return new Map<string, { confirmed: string; pending: string }>();
+    const byPartner = new Map<string, PartnerEarnings[]>();
+    if (ibUserIds.length === 0) return byPartner;
 
     const rows = await this.db
       .select({
         ibUserId: ibAccruals.ibUserId,
+        currency: ibAccruals.currency,
         status: ibAccruals.status,
         amount: sql<string>`coalesce(sum(${ibAccruals.amount}), 0)::text`,
       })
@@ -844,6 +900,7 @@ export class IbStore {
       .where(
         and(
           inArray(ibAccruals.ibUserId, ibUserIds),
+          inArray(ibAccruals.status, ['confirmed', 'pending']),
           /*
            * ── COMMISSION ONLY. A REBATE IS NOT THIS PARTNER'S EARNING ───────
            *
@@ -867,16 +924,21 @@ export class IbStore {
           eq(ibAccruals.kind, 'commission'),
         ),
       )
-      .groupBy(ibAccruals.ibUserId, ibAccruals.status);
+      .groupBy(ibAccruals.ibUserId, ibAccruals.currency, ibAccruals.status)
+      .orderBy(asc(ibAccruals.currency));
 
-    const map = new Map<string, { confirmed: string; pending: string }>();
     for (const row of rows) {
-      const entry = map.get(row.ibUserId) ?? { confirmed: '0', pending: '0' };
+      const entries = byPartner.get(row.ibUserId) ?? [];
+      let entry = entries.find((candidate) => candidate.currency === row.currency);
+      if (!entry) {
+        entry = { currency: row.currency, confirmed: '0', pending: '0' };
+        entries.push(entry);
+        byPartner.set(row.ibUserId, entries);
+      }
       if (row.status === 'confirmed') entry.confirmed = row.amount;
       if (row.status === 'pending') entry.pending = row.amount;
-      map.set(row.ibUserId, entry);
     }
-    return map;
+    return byPartner;
   }
 
   async updateAccount(

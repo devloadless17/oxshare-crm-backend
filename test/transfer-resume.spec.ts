@@ -73,14 +73,16 @@ function alertsRaised() {
  * make every case here pass by never running the job, the worst kind of green.
  */
 function scheduler(execute = vi.fn().mockResolvedValue({ state: 'pending' })) {
+  const notifications = { notifyAdmins: vi.fn().mockResolvedValue(undefined) };
   return {
     sched: new TransferResumeScheduler(
       ctx.db,
       { execute } as never,
       { run: (_n: string, _t: number, work: () => Promise<void>) => work() } as never,
-      { notifyAdmins: vi.fn().mockResolvedValue(undefined) } as never,
+      notifications as never,
     ),
     execute,
+    notifications,
   };
 }
 
@@ -144,6 +146,58 @@ describe('the stuck-transfer alarm counts the BACKLOG, not the batch', () => {
     await scheduler().sched.resume();
 
     expect(alertsRaised().filter((a) => a.kind === ALERT_KINDS.TRANSFER_STUCK)).toHaveLength(0);
+  });
+});
+
+describe('a stuck transfer is a TASK for whoever can release it (0140)', () => {
+  /*
+   * The page above reaches an alert channel — with no sink registered, nobody.
+   * The task reaches the desk's own bell. Same backlog rule as the page: its
+   * own query, so a transfer that never reaches the front of the ten-row batch
+   * is still announced.
+   */
+  it('announces EVERY stuck transfer, about its client, not only the batch', async () => {
+    const userId = await seedStuck(25);
+    const { sched, notifications } = scheduler();
+
+    await sched.resume();
+
+    expect(notifications.notifyAdmins).toHaveBeenCalledTimes(25);
+    const { rows } = await ctx.db.execute<{ id: string }>(sql`SELECT id FROM transfers LIMIT 1`);
+    expect(notifications.notifyAdmins).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'admin.transfer.stuck',
+        dedupeKey: `admin.transfer.stuck:${rows[0].id}`,
+        subject: { id: rows[0].id, clientId: userId },
+      }),
+    );
+  });
+
+  it('announces a transfer ONCE — an open task means it was already told', async () => {
+    await seedStuck(1);
+    const { rows } = await ctx.db.execute<{ id: string; user_id: string }>(
+      sql`SELECT id, user_id FROM transfers LIMIT 1`,
+    );
+    // The task an earlier run left, still open because the transfer is pending.
+    await ctx.db.execute(sql`
+      INSERT INTO notifications
+        (recipient_kind, recipient_id, kind, subject_kind, subject_id, subject_user_id)
+      VALUES ('admin', gen_random_uuid(), 'admin.transfer.stuck', 'transfer', ${rows[0].id}, ${rows[0].user_id})
+    `);
+    const { sched, notifications } = scheduler();
+
+    await sched.resume();
+
+    expect(notifications.notifyAdmins).not.toHaveBeenCalled();
+  });
+
+  it('announces nothing while the pending transfers are young', async () => {
+    await seedStuck(4, 2);
+    const { sched, notifications } = scheduler();
+
+    await sched.resume();
+
+    expect(notifications.notifyAdmins).not.toHaveBeenCalled();
   });
 });
 

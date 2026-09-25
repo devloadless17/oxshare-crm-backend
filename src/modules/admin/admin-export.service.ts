@@ -744,6 +744,8 @@ export class AdminExportService {
     actor: AuthenticatedAdmin,
     offset: number,
     limit: number,
+    /** The directory's own search and state filter, so the file is the list. */
+    filter: { q?: string; active?: boolean } = {},
   ): Promise<IbPartnerExportRow[]> {
     assertActorCan(actor, 'ib.view', 'export partners');
 
@@ -751,6 +753,8 @@ export class AdminExportService {
       page: Math.floor(offset / limit) + 1,
       limit,
       scope: actor.clientScope,
+      q: filter.q,
+      active: filter.active,
     });
     // Same reasoning as `ibApplicationBatch` above.
     return maskByShape(IbPartnerExportRowDto, rows, actor.fieldMask);

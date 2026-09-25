@@ -2670,7 +2670,7 @@
     },
     "/v1/admin/ib/partners": {
       "get": {
-        "description": "Joined to the person and the programme they are paid on, newest approval first.",
+        "description": "Every partner the acting admin may see, joined to the person, their agency and what they have earned (one entry per currency). Searchable by Portal ID, name, email or referral code; newest approval first.",
         "operationId": "AdminIbController_listPartners",
         "parameters": [
           {
@@ -2715,11 +2715,39 @@
               ],
               "type": "string"
             }
+          },
+          {
+            "name": "q",
+            "required": false,
+            "in": "query",
+            "description": "A Portal ID (exact), a name or email, or a referral code (exact).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "active",
+                "suspended"
+              ],
+              "type": "string"
+            }
           }
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IbPartnerListResponseDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -2727,7 +2755,7 @@
             "cookie": []
           }
         ],
-        "summary": "The partner list",
+        "summary": "The partner directory",
         "tags": [
           "admin"
         ]
@@ -2735,7 +2763,7 @@
     },
     "/v1/admin/ib/partners/export": {
       "get": {
-        "description": "Every partner the acting admin may see, joined to the person and their programme. The list takes no filters, so neither does its export.",
+        "description": "Every partner the acting admin may see, joined to the person and their level — narrowed by the same `q` and `status` the directory takes, so the file is the list on screen.",
         "operationId": "AdminIbController_exportPartners",
         "parameters": [
           {
@@ -2745,6 +2773,26 @@
             "schema": {
               "enum": [
                 "csv"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "active",
+                "suspended"
               ],
               "type": "string"
             }
@@ -13027,6 +13075,160 @@
           "reason"
         ]
       },
+      "IbPartnerListAccountDto": {
+        "type": "object",
+        "properties": {
+          "userId": {
+            "type": "string"
+          },
+          "level": {
+            "type": "number",
+            "example": 1,
+            "description": "The rung, which decides their terms (0112)."
+          },
+          "referralCode": {
+            "type": "string",
+            "description": "What a client types at registration to be attributed here."
+          },
+          "active": {
+            "type": "boolean",
+            "description": "A suspended partner keeps their code and tree, and stops earning."
+          },
+          "agencyId": {
+            "type": "string",
+            "nullable": true
+          },
+          "approvedAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "userId",
+          "level",
+          "referralCode",
+          "active",
+          "agencyId",
+          "approvedAt"
+        ]
+      },
+      "IbPartnerListPersonDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "portalId": {
+            "type": "integer",
+            "example": 1000245,
+            "description": "Their Portal ID."
+          },
+          "email": {
+            "type": "string"
+          },
+          "firstName": {
+            "type": "string",
+            "nullable": true
+          },
+          "lastName": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": [
+          "id",
+          "portalId"
+        ]
+      },
+      "IbPartnerEarningsDto": {
+        "type": "object",
+        "properties": {
+          "currency": {
+            "type": "string",
+            "example": "USD",
+            "description": "The currency both figures are in."
+          },
+          "confirmed": {
+            "type": "string",
+            "example": "73.50000000"
+          },
+          "pending": {
+            "type": "string",
+            "example": "0.00000000"
+          }
+        },
+        "required": [
+          "currency",
+          "confirmed",
+          "pending"
+        ]
+      },
+      "IbPartnerRowDto": {
+        "type": "object",
+        "properties": {
+          "account": {
+            "$ref": "#/components/schemas/IbPartnerListAccountDto"
+          },
+          "user": {
+            "$ref": "#/components/schemas/IbPartnerListPersonDto"
+          },
+          "parentPortalId": {
+            "type": "integer",
+            "nullable": true,
+            "example": 1000210
+          },
+          "parentOutsideTerritory": {
+            "type": "boolean",
+            "description": "True when this partner has a parent the reader may not see. With `parentPortalId` null and this false, they deal with the broker directly."
+          },
+          "agencyName": {
+            "type": "string",
+            "nullable": true,
+            "description": "Null when they are on no agency, which means the full catalogue."
+          },
+          "earnings": {
+            "description": "Commission only (a rebate is the client’s money), one entry per currency.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IbPartnerEarningsDto"
+            }
+          }
+        },
+        "required": [
+          "account",
+          "user",
+          "parentPortalId",
+          "parentOutsideTerritory",
+          "agencyName",
+          "earnings"
+        ]
+      },
+      "IbPartnerListResponseDto": {
+        "type": "object",
+        "properties": {
+          "rows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IbPartnerRowDto"
+            }
+          },
+          "total": {
+            "type": "number",
+            "description": "Every partner matching the filters that this reader may see."
+          },
+          "maskedFields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "rows",
+          "total",
+          "maskedFields"
+        ]
+      },
       "IbPartnerPersonDto": {
         "type": "object",
         "properties": {
@@ -13113,23 +13315,6 @@
           "referralCode",
           "active",
           "approvedAt"
-        ]
-      },
-      "IbPartnerEarningsDto": {
-        "type": "object",
-        "properties": {
-          "confirmed": {
-            "type": "string",
-            "example": "73.50000000"
-          },
-          "pending": {
-            "type": "string",
-            "example": "0.00000000"
-          }
-        },
-        "required": [
-          "confirmed",
-          "pending"
         ]
       },
       "IbPartnerDetailDto": {
@@ -13239,7 +13424,11 @@
             "description": "How many clients they introduced."
           },
           "earnings": {
-            "$ref": "#/components/schemas/IbPartnerEarningsDto"
+            "description": "One entry per currency they have earned in, sorted by currency. Empty when nothing has accrued yet — never a zero in a currency nobody chose.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IbPartnerEarningsDto"
+            }
           },
           "maskedFields": {
             "type": "array",
