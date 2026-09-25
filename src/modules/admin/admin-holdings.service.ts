@@ -1,10 +1,11 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, asc, desc, eq, sql, type SQL, type SQLWrapper, lte } from 'drizzle-orm';
+import Decimal from 'decimal.js';
+import { and, asc, desc, eq, inArray, sql, type SQL, type SQLWrapper, lte } from 'drizzle-orm';
 import { clientIdByPortalId, clientIdentitySearch, parsePortalId } from '../../store/users.store';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
 import {
-  positions,
+  mt5Deals,
   tradingAccounts,
   tradingProductGroups,
   transactions,
@@ -41,6 +42,7 @@ import { enumQuery } from '../../common/query-params';
 import { tradingAccountStatusEnum, tradingEnvironmentEnum } from '../../database/schema';
 import type { AuthenticatedAdmin } from './guards/admin.guard';
 import { ClientVisibilityService } from '../../common/security/client-visibility.service';
+import { CLOSING_ENTRIES, ENTRY_IN, TRADE_ACTIONS, dealSide } from '../trading/mt5/deal-codes';
 
 /**
  * The two client-HOLDINGS lists: every wallet, and every trading account.
@@ -970,94 +972,155 @@ export class AdminHoldingsService {
   // ── One client's trading activity ─────────────────────────────────────────
 
   /**
-   * A client's POSITIONS, open or closed, newest first.
+   * A client's CLOSED positions — the profile's Positions tab, on every client
+   * type.
    *
-   * ## Read locally, not from the bridge
+   * ## From the ingested deals, not the `positions` table
    *
-   * The obvious alternative is to resolve the client's logins and ask MT5 for
-   * their open trades. It is the wrong source for a page render, for three
-   * reasons that all bite at once: the bridge is not reachable in development
-   * (`assertBridge` refuses), a profile view would then depend on a third
-   * party's latency and uptime, and the answer would disagree with every other
-   * screen in this console — the partner dashboard, the commission engine and
-   * the accrual ledger all read `positions`.
+   * This read `positions`, which nothing on the live path writes: MT5 delivers
+   * DEALS, and the bridge's feed lands them in `mt5_deals`. So the tab showed
+   * "No closed positions yet." for clients with hundreds of closed trades. It
+   * now reads the same rows the portal's account history and the commission
+   * engine read, so all three agree.
    *
-   * That table IS the system's record of a trade. The bridge's job is to keep
-   * it current; a screen's job is to read it. Fetching around it would make the
-   * profile the one place showing a number nothing else can reconcile against.
+   * One row per CLOSING deal — the deal that carries the realised result, the
+   * definition `isRealisedTrade` gives and the portal uses. Its opening deal
+   * (same login and MT5 position id, `ENTRY_IN`) supplies the open price, the
+   * open time and the side; it may be missing when the trade was opened before
+   * this CRM ingested anything, and those fields are then null rather than
+   * guessed — except the side, which is the reverse of the closing deal's.
    *
-   * ## Scope in the WHERE clause
+   * Open positions are not listed here (owner, 26 Sep 2026): the tab shows
+   * closed trades only.
    *
-   * `clientScopePredicate` on `positions.user_id`, so an out-of-scope client's
-   * trades never enter the result — the same shape as the wallet and trading
-   * account lists above, and for the same reason: filtering after the fact
-   * leaks the row count.
+   * ## Commission is the whole trade's
+   *
+   * MT5 may charge on the opening deal, the closing deal or both, depending on
+   * the group's rule. The row carries the SUM of the two, so a $3 charge taken
+   * when the trade opened is not lost from the trade that paid it.
    */
-  async listClientPositions(filter: {
+  async listClientClosedPositions(filter: {
     userId: string;
-    status?: 'open' | 'closed';
     page?: number;
     limit?: number;
     scope?: ClientScope;
   }) {
-    /*
-     * VISIBILITY FIRST, so an out-of-scope client is a 404 like every sibling.
-     *
-     * The predicate below already protects the DATA — it is in the WHERE clause
-     * and always was — so this is not closing a leak. It is closing the gap
-     * between "you may not see this client" and "this client has nothing",
-     * which the scoped query alone reports identically. That collapse is the one
-     * `lib/masking.ts` exists to prevent on the frontend, and it is how an
-     * operator ends up reasoning from an emptiness that was never real.
-     *
-     * No oracle either way: a client id that names nobody answered 200 with an
-     * empty list before this and answers 404 now, exactly as an out-of-scope one
-     * does. Found by the by-id census in `client-scope-enforcement.spec.ts`,
-     * which drove these two for the first time.
-     */
+    // Visibility first, so an out-of-scope client is a 404 like every sibling.
     await this.visibility.assertVisible(filter.userId, filter.scope ?? UNRESTRICTED);
 
     const page = Math.max(1, filter.page ?? 1);
     const limit = Math.min(100, Math.max(1, filter.limit ?? 25));
-    const scoped = clientScopePredicate(filter.scope ?? UNRESTRICTED, positions.userId);
+    const scoped = clientScopePredicate(filter.scope ?? UNRESTRICTED, tradingAccounts.userId);
 
     const where = and(
-      eq(positions.userId, filter.userId),
-      ...(filter.status ? [eq(positions.status, filter.status)] : []),
+      eq(tradingAccounts.userId, filter.userId),
+      inArray(mt5Deals.action, [...TRADE_ACTIONS]),
+      inArray(mt5Deals.entry, [...CLOSING_ENTRIES]),
       ...(scoped ? [scoped] : []),
     );
 
-    const rows = await this.db
+    const closing = await this.db
       .select({
-        id: positions.id,
-        ticket: positions.ticket,
-        symbol: positions.symbol,
-        side: positions.side,
-        volume: positions.volume,
-        openPrice: positions.openPrice,
-        closePrice: positions.closePrice,
-        /* Floating while open, realised once closed — one column, two meanings,
-           decided by `status`. The screen labels it accordingly. */
-        profit: positions.profit,
-        swap: positions.swap,
-        commission: positions.commission,
-        currency: positions.currency,
-        status: positions.status,
-        openedAt: positions.openedAt,
-        closedAt: positions.closedAt,
-        login: tradingAccounts.login,
+        id: mt5Deals.id,
+        ticket: mt5Deals.mt5DealId,
+        positionId: mt5Deals.mt5PositionId,
+        login: mt5Deals.login,
+        symbol: mt5Deals.symbol,
+        action: mt5Deals.action,
+        volume: mt5Deals.volume,
+        closePrice: mt5Deals.price,
+        profit: mt5Deals.profit,
+        commission: mt5Deals.commission,
+        swap: mt5Deals.swap,
+        closedAt: mt5Deals.dealtAt,
+        currency: tradingAccounts.currency,
+        environment: tradingAccounts.environment,
       })
-      .from(positions)
-      .innerJoin(tradingAccounts, eq(tradingAccounts.id, positions.tradingAccountId))
+      .from(mt5Deals)
+      // By LOGIN, because that is what a deal names — see `historyMine`.
+      .innerJoin(tradingAccounts, eq(tradingAccounts.login, mt5Deals.login))
       .where(where)
-      .orderBy(desc(positions.openedAt), desc(positions.id))
+      .orderBy(desc(mt5Deals.dealtAt), desc(mt5Deals.id))
       .limit(limit)
       .offset((page - 1) * limit);
 
     const [{ value: total = 0 } = {}] = await this.db
       .select({ value: sql<number>`count(*)::int` })
-      .from(positions)
+      .from(mt5Deals)
+      .innerJoin(tradingAccounts, eq(tradingAccounts.login, mt5Deals.login))
       .where(where);
+
+    /*
+     * The opening deals for THIS page, in one query. Matched in memory on
+     * login + position id: a position id is unique per MT5 server, and the
+     * login pins it to the account the closing deal named.
+     */
+    const positionIds = [
+      ...new Set(closing.map((row) => row.positionId).filter((id): id is string => Boolean(id))),
+    ];
+    const opening =
+      positionIds.length === 0
+        ? []
+        : await this.db
+            .select({
+              login: mt5Deals.login,
+              positionId: mt5Deals.mt5PositionId,
+              action: mt5Deals.action,
+              price: mt5Deals.price,
+              commission: mt5Deals.commission,
+              dealtAt: mt5Deals.dealtAt,
+            })
+            .from(mt5Deals)
+            .where(
+              and(
+                inArray(mt5Deals.mt5PositionId, positionIds),
+                eq(mt5Deals.entry, ENTRY_IN),
+                inArray(mt5Deals.action, [...TRADE_ACTIONS]),
+              ),
+            )
+            .orderBy(asc(mt5Deals.dealtAt));
+
+    const openedBy = new Map<string, (typeof opening)[number]>();
+    for (const deal of opening) {
+      const key = `${deal.login}:${deal.positionId}`;
+      // The EARLIEST opening deal is the position's open.
+      if (!openedBy.has(key)) openedBy.set(key, deal);
+    }
+
+    const rows = closing.map((row) => {
+      const opened = row.positionId ? openedBy.get(`${row.login}:${row.positionId}`) : undefined;
+      /*
+       * The POSITION's side. A buy is closed by a sell deal and a sell by a
+       * buy, so without the opening deal the side is the closing deal's
+       * reversed — never the closing deal's own, which would label every
+       * closed buy a sell.
+       */
+      const side = opened
+        ? dealSide(opened.action)
+        : dealSide(row.action) === 'buy'
+          ? 'sell'
+          : 'buy';
+      return {
+        id: row.id,
+        ticket: row.ticket,
+        positionId: row.positionId,
+        login: row.login,
+        environment: row.environment,
+        symbol: row.symbol,
+        side,
+        volume: row.volume,
+        openPrice: opened?.price ?? null,
+        closePrice: row.closePrice,
+        profit: row.profit,
+        commission: opened
+          ? new Decimal(row.commission).plus(opened.commission).toFixed(8)
+          : row.commission,
+        swap: row.swap,
+        currency: row.currency,
+        openedAt: opened?.dealtAt ?? null,
+        closedAt: row.closedAt,
+      };
+    });
 
     return { rows, total, page, limit };
   }

@@ -74,6 +74,14 @@ export function isClosingEntry(entry: number): boolean {
   return entry === ENTRY_OUT || entry === ENTRY_INOUT || entry === ENTRY_OUT_BY;
 }
 
+/**
+ * The side of a BUY or SELL deal. Only meaningful for `TRADE_ACTIONS`; a
+ * position's side is its OPENING deal's, and a closing deal's is the reverse.
+ */
+export function dealSide(action: number): 'buy' | 'sell' {
+  return action === DEAL_BUY ? 'buy' : 'sell';
+}
+
 /** A completed round trip: the row a statistic may count. */
 export function isRealisedTrade(deal: { action: number; entry: number }): boolean {
   return isTradeAction(deal.action) && isClosingEntry(deal.entry);

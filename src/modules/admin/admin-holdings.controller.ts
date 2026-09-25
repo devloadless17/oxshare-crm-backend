@@ -16,7 +16,7 @@ import { AdminExportService } from './admin-export.service';
 import { AdminAuditService } from './admin-audit.service';
 import { exportFormat, streamCsv, EXPORT_RATE_LIMIT } from '../../common/export/export-response';
 import {
-  ClientPositionsPageDto,
+  ClientClosedPositionsPageDto,
   ClientTransactionsPageDto,
   TradingAccountListResponseDto,
   WalletListResponseDto,
@@ -28,11 +28,7 @@ import {
 } from './guards/admin.guard';
 import { enumQuery, uuidQuery } from '../../common/query-params';
 import { ClientRefPipe } from '../../common/client-ref.pipe';
-import {
-  tradingAccountStatusEnum,
-  tradingEnvironmentEnum,
-  positionStatusEnum,
-} from '../../database/schema';
+import { tradingAccountStatusEnum, tradingEnvironmentEnum } from '../../database/schema';
 import { ScopedToClients } from './guards/client-scope.decorator';
 import { Audited } from './guards/audited.decorator';
 
@@ -412,58 +408,39 @@ export class AdminHoldingsController {
   // ── One client's trading activity ─────────────────────────────────────────
 
   /**
-   * A client's positions — the profile's Positions tab.
+   * A client's CLOSED positions — the profile's Positions tab.
    *
-   * Read from the `positions` TABLE rather than from the MT5 bridge, and the
-   * service records why: the bridge is unreachable in development, a profile
-   * render would inherit a third party's latency, and every other screen in
-   * this console — the partner dashboard, the commission engine, the accrual
-   * ledger — reads this same table. Asking elsewhere would make the profile the
-   * one place showing a figure nothing else can reconcile against.
+   * Built from the ingested MT5 deals, the same rows the portal's account
+   * history and the commission engine read. The `positions` table this used to
+   * read is never written on the live path, so the tab was always empty. Open
+   * positions are not listed (owner, 26 Sep 2026).
    */
-  @Get('clients/:id/positions')
+  @Get('clients/:id/closed-positions')
   @UseGuards(PermissionsGuard)
   @RequirePermissions('trading.view')
   @ApiCookieAuth()
   @ApiOperation({
-    summary: 'One client’s positions, open or closed',
+    summary: 'One client’s closed positions, from the ingested MT5 deals',
     description:
-      'Newest first, joined to the account they were traded on. `profit` is the FLOATING result ' +
-      'while a position is open and the REALISED one once it has closed — one column, ' +
-      'disambiguated by `status`. Prices and money are strings (§6.1).',
+      'One row per closing deal on any of the client’s accounts, newest first. The opening ' +
+      'deal supplies the open price, open time and side when it was ingested; they are null ' +
+      'otherwise, except the side. Commission is the opening and closing deal together. ' +
+      'Prices and money are strings (§6.1).',
   })
-  @ApiOkResponse({ type: ClientPositionsPageDto })
-  @ApiQuery({ name: 'status', required: false, enum: ['open', 'closed'] })
+  @ApiOkResponse({ type: ClientClosedPositionsPageDto })
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
   @ScopedToClients(
-    'AdminHoldingsService.listClientPositions applies clientScopePredicate to positions.user_id, in the WHERE clause.',
+    'AdminHoldingsService.listClientClosedPositions applies clientScopePredicate to trading_accounts.user_id, in the WHERE clause.',
   )
-  listClientPositions(
+  listClientClosedPositions(
     @Req() req: Request & { admin: AuthenticatedAdmin },
     @Param('id', ClientRefPipe) id: string,
-    @Query('status') status?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
   ) {
-    return this.holdings.listClientPositions({
+    return this.holdings.listClientClosedPositions({
       userId: id,
-      /*
-       * REFUSED, not ignored — the same answer `GET /trading/positions` gives
-       * for the same column.
-       *
-       * This read "anything that is not one of the two known values is treated
-       * as 'no filter' rather than refused: a stray query string should not 400
-       * a read-only screen." The sibling route runs the identical enum through
-       * `enumQuery` and 400s, so one admin screen and one portal screen
-       * disagreed about what `?status=opne` means.
-       *
-       * The tie-breaker is R-2.5's rule for sorts, which is the same question:
-       * a filter the server ignored is a lie the screen tells. "No filter"
-       * returns open AND closed positions — a superset — and an operator who
-       * asked for open ones has no way to tell they are looking at both.
-       */
-      status: enumQuery(status, positionStatusEnum.enumValues, 'status'),
       page: page ? Number(page) : undefined,
       limit: limit ? Number(limit) : undefined,
       scope: req.admin.clientScope,
