@@ -367,3 +367,103 @@ describe('the MT5 Groups screen', () => {
     expect(listGroups).not.toHaveBeenCalled();
   });
 });
+
+/*
+ * MT5's OWN commission and margin levels on a group (0144) — what the trading
+ * server takes from a client's deals, as opposed to what the CRM pays partners.
+ * An operator saw a new $1,000 account read $997 and had nowhere to look.
+ */
+describe("a group's MT5 commission and margin levels", () => {
+  const perLot = {
+    name: 'Standard commission',
+    description: '',
+    symbolPath: 'Forex\\*',
+    mode: 'standard',
+    rangeMode: 'volume',
+    chargeMode: 'instant',
+    entryMode: 'in',
+    tiers: [
+      {
+        mode: 'deposit_currency',
+        type: 'per_lot',
+        value: '3.00000000',
+        currency: null,
+        minimal: '0.00000000',
+        maximal: '0.00000000',
+        rangeFrom: '0.00000000',
+        rangeTo: null,
+      },
+    ],
+  };
+
+  function reported(name: string, commissions: unknown): Mt5Group {
+    return {
+      ...group(name),
+      marginCall: '100.00000000',
+      marginStopOut: '50.00000000',
+      marginStopOutMode: 'percent',
+      commissions,
+    };
+  }
+
+  it('records what the bridge reports and shows it on the MT5 groups screen', async () => {
+    serverGroups = [reported('real\\Pro', [perLot])];
+    await groups.sync();
+
+    const [row] = await groups.listForAdmin();
+
+    expect(row?.commissions).toEqual([perLot]);
+    expect(row?.marginCall).toBe('100.00000000');
+    expect(row?.marginStopOut).toBe('50.00000000');
+    expect(row?.marginStopOutMode).toBe('percent');
+  });
+
+  it('keeps the recorded terms when an older bridge does not report them', async () => {
+    serverGroups = [reported('real\\Pro', [perLot])];
+    await groups.sync();
+    // The same group from a bridge that predates the fields.
+    serverGroups = [group('real\\Pro')];
+    await groups.sync();
+
+    const [row] = await groups.listForAdmin();
+
+    expect(row?.commissions).toEqual([perLot]);
+    expect(row?.marginCall).toBe('100.00000000');
+  });
+
+  it('tells a group that charges nothing from one that was never reported', async () => {
+    serverGroups = [reported('real\\Free', []), group('real\\Unknown')];
+    await groups.sync();
+
+    const rows = await groups.listForAdmin();
+    const byName = new Map(rows.map((row) => [row.name, row]));
+
+    expect(byName.get('real\\Free')?.commissions).toEqual([]);
+    expect(byName.get('real\\Unknown')?.commissions).toBeNull();
+    expect(byName.get('real\\Unknown')?.marginCall).toBeNull();
+  });
+
+  it('drops what it cannot read instead of failing the sync', async () => {
+    serverGroups = [
+      reported('real\\Odd', [
+        'not a rule',
+        { name: 'no tiers field' },
+        {
+          ...perLot,
+          chargeMode: 'SOMETHING NEW',
+          tiers: [perLot.tiers[0], { ...perLot.tiers[0], value: 'three dollars' }],
+        },
+      ]),
+      group('real\\Standard'),
+    ];
+
+    const run = await groups.sync();
+    const rows = await groups.listForAdmin();
+    const odd = rows.find((row) => row.name === 'real\\Odd');
+
+    expect(run?.onServer).toBe(2);
+    expect(odd?.commissions).toHaveLength(1);
+    expect(odd?.commissions?.[0]?.chargeMode).toBe('unknown');
+    expect(odd?.commissions?.[0]?.tiers).toEqual([perLot.tiers[0]]);
+  });
+});

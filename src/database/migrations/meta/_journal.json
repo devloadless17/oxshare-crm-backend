@@ -1009,6 +1009,13 @@
       "when": 1789139298750,
       "tag": "0143_withdrawal_method_logos",
       "breakpoints": true
+    },
+    {
+      "idx": 145,
+      "version": "7",
+      "when": 1789139358750,
+      "tag": "0144_mt5_group_commissions",
+      "breakpoints": true
     }
   ]
 }

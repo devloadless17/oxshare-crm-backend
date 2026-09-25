@@ -20,6 +20,8 @@ import {
   uuid,
   varchar,
 } from 'drizzle-orm/pg-core';
+// Type-only: the stored shape of `mt5_groups.commissions`. Erased at runtime.
+import type { Mt5GroupCommission } from '../common/mt5-group-terms';
 
 // Drizzle schema for the LIVE domain model, aligned with ARCHITECTURE §5 where
 // that section defines the table (users) and with the in-memory stores being
@@ -2888,6 +2890,21 @@ export const mt5Groups = pgTable(
      * make an unset group indistinguishable from one with no leverage at all.
      */
     leverageDefault: integer('leverage_default'),
+    /**
+     * MT5's OWN commission rules on this group (0144), as the bridge reported
+     * them. What the trading server takes from a client's deals — separate from
+     * the CRM's commission types, which pay partners.
+     *
+     * NULL means "not reported" (a bridge that predates the field), never
+     * "none": a group that charges nothing is an EMPTY array.
+     */
+    commissions: jsonb('commissions').$type<Mt5GroupCommission[]>(),
+    /** The margin-call level, in the unit `marginStopOutMode` names. NULL: not reported. */
+    marginCall: numeric('margin_call', { precision: 28, scale: 8 }),
+    /** The stop-out level, in the unit `marginStopOutMode` names. NULL: not reported. */
+    marginStopOut: numeric('margin_stop_out', { precision: 28, scale: 8 }),
+    /** 'percent' (a margin level) or 'money' (an equity in the group currency). */
+    marginStopOutMode: varchar('margin_stop_out_mode', { length: 10 }),
     /** First time any sync saw this group. Never rewritten. */
     firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).notNull().defaultNow(),
     /** The most recent sync that saw it. This is what makes staleness readable. */

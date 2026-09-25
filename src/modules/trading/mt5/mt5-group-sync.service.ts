@@ -10,6 +10,7 @@ import {
 } from '../../../database/schema';
 import type { Mt5GroupDto } from './dto/mt5-group.dto';
 import { Mt5BridgeClient, type Mt5Group } from './mt5-bridge.client';
+import { amountFrom, commissionsFrom, stopOutModeFrom } from '../../../common/mt5-group-terms';
 
 /** One group as the mirror holds it, plus how fresh that record is. */
 export interface CachedGroup {
@@ -143,6 +144,7 @@ export class Mt5GroupSyncService {
           name: group.name,
           currency: group.currency,
           leverageDefault: this.leverageOf(group),
+          ...this.termsOf(group),
         })
         .onConflictDoNothing()
         .returning({ id: mt5Groups.id });
@@ -166,6 +168,7 @@ export class Mt5GroupSyncService {
           name: group.name,
           currency: group.currency,
           leverageDefault: this.leverageOf(group),
+          ...this.termsOf(group),
           lastSeenAt: new Date(),
           removedAt: null,
         })
@@ -236,6 +239,10 @@ export class Mt5GroupSyncService {
           name: mt5Groups.name,
           currency: mt5Groups.currency,
           leverageDefault: mt5Groups.leverageDefault,
+          commissions: mt5Groups.commissions,
+          marginCall: mt5Groups.marginCall,
+          marginStopOut: mt5Groups.marginStopOut,
+          marginStopOutMode: mt5Groups.marginStopOutMode,
         })
         .from(mt5Groups)
         .where(isNull(mt5Groups.removedAt))
@@ -414,5 +421,25 @@ export class Mt5GroupSyncService {
    */
   private leverageOf(group: Mt5Group): number | null {
     return group.leverageDefault > 0 ? group.leverageDefault : null;
+  }
+
+  /**
+   * MT5's own commission rules and margin levels on the group (0144), as the
+   * columns to write — or NOTHING when the bridge did not report them.
+   *
+   * An older bridge sends none of these fields. Writing nulls then would erase
+   * what a newer bridge recorded the day before, and "not reported" would
+   * overwrite a real answer. So an unreported group keeps what is stored, and
+   * the four fields move together: they come from the same MT5 answer.
+   */
+  private termsOf(group: Mt5Group) {
+    const commissions = commissionsFrom(group.commissions);
+    if (commissions === null) return {};
+    return {
+      commissions,
+      marginCall: amountFrom(group.marginCall),
+      marginStopOut: amountFrom(group.marginStopOut),
+      marginStopOutMode: stopOutModeFrom(group.marginStopOutMode),
+    };
   }
 }

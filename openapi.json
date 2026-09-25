@@ -15915,6 +15915,144 @@
           "environment"
         ]
       },
+      "Mt5GroupCommissionTierDto": {
+        "type": "object",
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "deposit_currency",
+              "specified_currency",
+              "base_currency",
+              "profit_currency",
+              "margin_currency",
+              "points",
+              "percent",
+              "unknown"
+            ],
+            "description": "The unit of `value`: the group deposit currency, the currency in `currency`, a symbol currency, points, or a percentage of turnover."
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "per_lot",
+              "per_deal",
+              "unknown"
+            ]
+          },
+          "value": {
+            "type": "string",
+            "example": "3.00000000"
+          },
+          "currency": {
+            "type": "string",
+            "nullable": true,
+            "description": "Only set for \"specified_currency\"."
+          },
+          "minimal": {
+            "type": "string",
+            "nullable": true,
+            "description": "The smallest charge. MT5 uses zero for \"no minimum\"."
+          },
+          "maximal": {
+            "type": "string",
+            "nullable": true,
+            "description": "The largest charge. MT5 uses zero for \"no maximum\"."
+          },
+          "rangeFrom": {
+            "type": "string",
+            "nullable": true,
+            "description": "Where the tier band starts."
+          },
+          "rangeTo": {
+            "type": "string",
+            "nullable": true,
+            "description": "Where the tier band ends; null when it is open-ended."
+          }
+        },
+        "required": [
+          "mode",
+          "type",
+          "value",
+          "currency",
+          "minimal",
+          "maximal",
+          "rangeFrom",
+          "rangeTo"
+        ]
+      },
+      "Mt5GroupCommissionDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "Standard commission"
+          },
+          "description": {
+            "type": "string",
+            "example": ""
+          },
+          "symbolPath": {
+            "type": "string",
+            "example": "Forex\\*",
+            "description": "The symbols it applies to, as an MT5 path mask."
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "standard",
+              "agent",
+              "unknown"
+            ],
+            "description": "\"standard\" is charged to the client; \"agent\" is paid to an agent account."
+          },
+          "rangeMode": {
+            "type": "string",
+            "enum": [
+              "volume",
+              "turnover_money",
+              "turnover_volume",
+              "unknown"
+            ]
+          },
+          "chargeMode": {
+            "type": "string",
+            "enum": [
+              "instant",
+              "daily",
+              "monthly",
+              "unknown"
+            ],
+            "description": "When MT5 takes it: with the deal, or at the end of the day or month."
+          },
+          "entryMode": {
+            "type": "string",
+            "enum": [
+              "all",
+              "in",
+              "out",
+              "unknown"
+            ],
+            "description": "Which deals pay it: every deal, opening deals or closing deals."
+          },
+          "tiers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Mt5GroupCommissionTierDto"
+            }
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "symbolPath",
+          "mode",
+          "rangeMode",
+          "chargeMode",
+          "entryMode",
+          "tiers"
+        ]
+      },
       "Mt5GroupProductDto": {
         "type": "object",
         "properties": {
@@ -15960,6 +16098,35 @@
             "example": 100,
             "description": "The leverage the server assigns by default, when it reports one."
           },
+          "commissions": {
+            "nullable": true,
+            "description": "MT5's own commission rules on this group — what the trading server takes from a client's deals, set by the broker in MT5 and separate from the partner commission types. Empty when the group charges none; null when the bridge has not reported them.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Mt5GroupCommissionDto"
+            }
+          },
+          "marginCall": {
+            "type": "string",
+            "nullable": true,
+            "example": "100.00000000",
+            "description": "The margin-call level, in the unit marginStopOutMode names."
+          },
+          "marginStopOut": {
+            "type": "string",
+            "nullable": true,
+            "example": "50.00000000",
+            "description": "The stop-out level, in the unit marginStopOutMode names."
+          },
+          "marginStopOutMode": {
+            "type": "string",
+            "enum": [
+              "percent",
+              "money"
+            ],
+            "nullable": true,
+            "description": "\"percent\" is a margin level; \"money\" is an equity in the group currency."
+          },
           "products": {
             "description": "Every product that sells this group, by name — several since 0142. Empty when no product does, in which case no client can open an account in it from the portal.",
             "type": "array",
@@ -15977,6 +16144,10 @@
           "name",
           "currency",
           "leverageDefault",
+          "commissions",
+          "marginCall",
+          "marginStopOut",
+          "marginStopOutMode",
           "products",
           "accountCount"
         ]
