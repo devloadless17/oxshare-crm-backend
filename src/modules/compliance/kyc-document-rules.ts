@@ -101,6 +101,39 @@ export function outstandingDocumentFlags(
   });
 }
 
+/**
+ * A reviewer's flags, with a WHOLE document named as its PAGES.
+ *
+ * The reject dialog names a canonical document's page by its slot
+ * (`doc_back`), and a whole document by its field name (`nationalId`) when it
+ * could not see which pages were sent. A whole-document flag was then settled
+ * by ANY upload on the step — replace the back of a refused national ID and
+ * the flag on its front went with it, unanswered. As pages, each flag is
+ * settled by its own new file, and "this document is not acceptable" means
+ * what it says: every page of it again.
+ */
+export function asPageFlags(flags: readonly string[], steps: readonly RuleStep[]): string[] {
+  const pages = flags.flatMap((id) => {
+    for (const step of steps) {
+      const slots =
+        step.slug === 'document'
+          ? DOCUMENT_SLOTS
+          : step.slug === 'address'
+            ? ADDRESS_SLOTS
+            : undefined;
+      const field = slots && step.fields.find((f) => f.name === id && f.type.startsWith('doc:'));
+      if (!slots || !field) continue;
+      const entry = catalogueDocument(field.type.slice('doc:'.length));
+      return entry ? entry.parts.map((_, index) => slots[index]).filter(Boolean) : [slots[0]];
+    }
+    return [id];
+  });
+  return [...new Set(pages)];
+}
+
+const DOCUMENT_SLOTS = ['doc_front', 'doc_back'] as const;
+const ADDRESS_SLOTS = ['address_proof', 'address_proof_2'] as const;
+
 /** The half of a submission `documentFlagLabel` reads. */
 export interface StoredDocumentTypes {
   document?: { docType?: string };

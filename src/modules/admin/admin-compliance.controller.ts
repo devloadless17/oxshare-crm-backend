@@ -15,6 +15,7 @@ import {
   Controller,
   Delete,
   Get,
+  Headers,
   Param,
   Patch,
   Post,
@@ -41,6 +42,7 @@ import {
   RejectDto,
   RejectionReasonDto,
   CorrectKycIdentityDto,
+  ReverifyKycDto,
 } from './dto/requests/compliance.dto';
 import {
   KycAttemptDto,
@@ -63,6 +65,18 @@ import { kycStatusEnum } from '../../database/schema';
 import { NotClientScoped, ScopedToClients } from './guards/client-scope.decorator';
 import { Audited } from './guards/audited.decorator';
 import { AnnouncesChange } from '../../common/realtime/announces-change.decorator';
+
+/**
+ * The version an `If-Match` header names: the bare digest, with the quotes and
+ * any weak-validator prefix an HTTP client may have kept on the `ETag` removed.
+ * Absent means the caller named none — a builder predating the check, which is
+ * let through rather than refused, so deploying the API first breaks no screen.
+ */
+function versionFrom(ifMatch: string | undefined): string | undefined {
+  const value = ifMatch?.trim();
+  if (!value) return undefined;
+  return value.replace(/^W\//, '').replace(/^"|"$/g, '');
+}
 
 /** KYC review queue, configurable rejection reasons and the KYC step configurator. */
 @ApiTags('admin')
@@ -378,6 +392,34 @@ export class AdminComplianceController {
     );
   }
 
+  @Post('kyc/:userId/reverify')
+  @AnnouncesChange('kyc')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('kyc.review')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Return an APPROVED verification to the client to update (re-verification)',
+    description:
+      'For a verified detail that changed materially — a new passport, a move abroad. The ' +
+      'verification returns to the client with the items to redo, the level goes back to 0 ' +
+      '(deposits and withdrawals pause until re-approval), and the client is emailed the ' +
+      'reason — as a request to update, not as a rejection. `reverificationRequestedAt` is set ' +
+      'until the next approval. A typo is a correction instead (`PATCH .../personal-info`).',
+  })
+  @ApiOkResponse({ type: KycSubmissionDto })
+  @ScopedToClients(
+    'ClientVisibilityService.assertVisible before the submission is read — an out-of-scope ' +
+      'client 404s exactly as a missing one does.',
+  )
+  @Audited('kyc.reverification_request')
+  requestReverification(
+    @Param('userId', ClientRefPipe) userId: string,
+    @Body() dto: ReverifyKycDto,
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+  ) {
+    return this.compliance.requestReverification(userId, req.admin, dto.reason, dto.items);
+  }
+
   // ── Rejection reasons (FR-ADM-03 configurable list) ───────────────────────
   @AnyAdmin(
     'A shared reference list of configured reasons, shown beside the reject button on both the ' +
@@ -448,10 +490,18 @@ export class AdminComplianceController {
   @UseGuards(PermissionsGuard)
   @RequirePermissions('kyc.view', 'kyc.edit')
   @ApiCookieAuth()
-  @ApiOperation({ summary: 'Get current KYC onboarding steps configuration' })
+  @ApiOperation({
+    summary: 'Get current KYC onboarding steps configuration',
+    description:
+      "The form as every reader sees it: the platform's identity fields, built-in steps and " +
+      "documents included (`system` / `core`), the broker's own parts as stored. The `ETag` " +
+      'header is the version a save must name in `If-Match`.',
+  })
   @NotClientScoped("The KYC form definition — a schema, not anybody's submission.")
-  getKycConfig() {
-    return this.compliance.getKycConfig();
+  async getKycConfig(@Res({ passthrough: true }) res: Response) {
+    const { steps, version } = await this.compliance.getKycConfig();
+    res.setHeader('ETag', `"${version}"`);
+    return steps;
   }
 
   /**
@@ -477,11 +527,26 @@ export class AdminComplianceController {
   @UseGuards(PermissionsGuard)
   @RequirePermissions('kyc.edit')
   @ApiCookieAuth()
-  @ApiOperation({ summary: 'Update entire KYC onboarding steps configuration' })
+  @ApiOperation({
+    summary: 'Update entire KYC onboarding steps configuration',
+    description:
+      'Send `If-Match` with the `ETag` the form was read with: a form somebody else has ' +
+      'changed since answers **409 `KYC_CONFIG_STALE`** instead of silently replacing their ' +
+      'work. Adding a step also needs `kyc.create`, removing one `kyc.delete`. A refusal names ' +
+      'where it is in the posted form — `fields` is keyed `steps.<i>` or `steps.<i>.fields.<j>`.',
+  })
   @NotClientScoped('The KYC form definition; contains no client data.')
   @Audited('kyc_config.replace')
-  updateKycConfig(@Body() dto: KycConfigDto, @Req() req: Request & { admin: AuthenticatedAdmin }) {
-    return this.compliance.updateKycConfig(dto.steps as unknown as KycStepConfig[], req.admin);
+  updateKycConfig(
+    @Body() dto: KycConfigDto,
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+    @Headers('if-match') ifMatch?: string,
+  ) {
+    return this.compliance.updateKycConfig(
+      dto.steps as unknown as KycStepConfig[],
+      req.admin,
+      versionFrom(ifMatch),
+    );
   }
 
   @Post('kyc-config/steps')

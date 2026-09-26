@@ -1,408 +1,415 @@
 import { describe, expect, it } from 'vitest';
-import {
-  assertFieldKeysUniquePerStep,
-  assertFieldsFitTheirStep,
-  assertKycConfigIntegrity,
-  assertProfileFieldsKeepTheirPlace,
-  assertReservedKeysNotRenamed,
-} from './kyc-config-integrity';
+import { FieldValidationError } from '../../common/errors/domain-errors';
+import { platformStep } from '../../common/kyc/identity-core';
 import { DEFAULT_KYC_STEPS, type KycStepConfig } from '../../store/kyc-config.store';
 import {
-  PROFILE_CHOICES,
-  PROFILE_FIELD_KEYS,
-  PROFILE_FIELD_TYPE,
-} from '../../common/profile/client-profile';
+  assertCoreSteps,
+  assertFieldKeys,
+  assertIdentityUnchanged,
+  assertKycConfigIntegrity,
+  assertNoSecondCopies,
+  assertStepAddresses,
+  assertStepsHoldWhatTheyAreFor,
+} from './kyc-config-integrity';
 
 /**
- * The rules that stop the builder saving a form that cannot work.
+ * The KYC form's rules, one at a time (the owner's ruling, 26 Sep 2026).
  *
- * Each case below was ACCEPTED before these existed, and each failed later and
- * somewhere else — in a client's browser, in a reviewer's card, or not at all.
- * The last of those is the reason this file is worth its run time: a renamed
- * `dateOfBirth` does not fail, it SKIPS, and the form still looks right.
- *
- * The "allowed" cases matter as much as the refusals. `admin-compliance.service`
- * records that the mandatory-step rule was dropped on purpose — a flow that
- * refuses to drop four of its steps is not configurable — so a guard that
- * quietly reinstates it by another route would be the worse bug.
+ * The fixture is the default form AS THE BUILDER RECEIVES IT — identity fields,
+ * selfie camera and documents included (`platformStep`) — because that is what
+ * a save sends back, and a rule that only held for a hand-trimmed fixture would
+ * refuse the builder's own round trip.
  */
+const FORM: KycStepConfig[] = DEFAULT_KYC_STEPS.map((step) => platformStep(step));
 
-const field = (over: Partial<KycStepConfig['fields'][number]> = {}) => ({
-  id: 'f1',
-  name: 'firstName',
-  label: 'First Name',
-  type: 'text',
-  required: true,
-  ...over,
-});
+const at = (slug: string, steps: readonly KycStepConfig[] = FORM) =>
+  steps.findIndex((step) => step.slug === slug);
 
-const step = (over: Partial<KycStepConfig> = {}) =>
-  ({
-    id: 's1',
-    slug: 'personal',
-    title: 'Personal',
-    stepNumber: 1,
+function edit(
+  slug: string,
+  change: (step: KycStepConfig) => KycStepConfig,
+  steps: readonly KycStepConfig[] = FORM,
+): KycStepConfig[] {
+  return steps.map((step) => (step.slug === slug ? change(step) : step));
+}
+
+function custom(over: Partial<KycStepConfig> = {}): KycStepConfig {
+  return {
+    id: 'step-funds',
+    stepNumber: FORM.length + 1,
+    slug: 'source-of-funds',
+    title: 'Source of funds',
+    description: '',
+    icon: 'FileText',
     enabled: true,
-    fields: [field()],
+    fields: [
+      { id: 'field-1', name: 'customField_1', label: 'Employer', type: 'text', required: true },
+    ],
     ...over,
-  }) as KycStepConfig;
+  };
+}
 
-/*
- * The step-slug rule that used to be tested here was WITHDRAWN — see the long
- * note in `kyc-config-integrity.ts`. Its facts were right and its scope was not:
- * the configuration layer advertises arbitrary steps (`kyc-config-round-trip`
- * saves ones slugged `other` and `audit` on purpose), and refusing them also
- * broke a PERMISSION test in `kyc-http.spec.ts` for an unrelated reason, so the
- * boundary that test exists to prove stopped being exercised.
- *
- * The cases below are the two that hold under every reading of what a step is.
- */
+/** What a refusal says, and where it lands in the posted form. */
+function refusal(run: () => void): { message: string; fields: Record<string, string> } {
+  try {
+    run();
+  } catch (error) {
+    expect(error).toBeInstanceOf(FieldValidationError);
+    const refused = error as FieldValidationError;
+    return { message: refused.message, fields: refused.fields };
+  }
+  throw new Error('expected a refusal, and the form was accepted');
+}
 
-describe('two fields in one step cannot share a key', () => {
-  /*
-   * Answers merge into one object per step, so the second field's value
-   * overwrites the first's. The client answers twice and the reviewer sees one.
-   */
-  it('refuses a duplicate key, naming the step and the key', () => {
-    const clash = step({
-      fields: [field({ id: 'a', name: 'firstName' }), field({ id: 'b', name: 'firstName' })],
-    });
-    expect(() => assertFieldKeysUniquePerStep([clash])).toThrow(/firstName/);
-    expect(() => assertFieldKeysUniquePerStep([clash])).toThrow(/Personal/);
-  });
-
-  /** Different steps are different columns, so the same key is fine. */
-  it('allows the same key in two DIFFERENT steps', () => {
-    expect(() =>
-      assertFieldKeysUniquePerStep([
-        step({ id: 's1', slug: 'personal', fields: [field({ name: 'notes' })] }),
-        step({ id: 's2', slug: 'address', fields: [field({ id: 'f2', name: 'notes' })] }),
-      ]),
-    ).not.toThrow();
+describe('the default form', () => {
+  it('is accepted as the builder receives it, and as the table stores it', () => {
+    expect(() => assertKycConfigIntegrity(FORM, FORM)).not.toThrow();
+    expect(() => assertKycConfigIntegrity(DEFAULT_KYC_STEPS, DEFAULT_KYC_STEPS)).not.toThrow();
   });
 });
 
-describe('a reserved key cannot be renamed out from under the server', () => {
-  const reserved = (name: string) => [step({ fields: [field({ id: 'f1', name })] })];
-
-  /*
-   * EVERY profile field since 0139: the key IS the profile column the answer
-   * is stored in, so a renamed key stops reaching the profile — the answer
-   * lands in `personal_info` as an anonymous custom answer, and the reviewer's
-   * record of the client stops matching what the client typed.
-   */
-  it.each(PROFILE_FIELD_KEYS.filter((key) => key !== 'dateOfBirth'))(
-    'refuses renaming %s, and names what would break',
-    (key) => {
-      const before = reserved(key);
-      const after = [step({ fields: [field({ id: 'f1', name: 'renamed' })] })];
-      expect(() => assertReservedKeysNotRenamed(before, after)).toThrow(/client's profile/);
+describe('the four built-in steps', () => {
+  it.each(['personal', 'document', 'selfie', 'address'])(
+    'refuses a form without %s, as a refusal about the whole form',
+    (slug) => {
+      const { message, fields } = refusal(() =>
+        assertCoreSteps(FORM.filter((step) => step.slug !== slug)),
+      );
+      expect(message).toMatch(/cannot be removed/);
+      expect(Object.keys(fields)).toEqual(['steps']);
     },
   );
 
-  it('refuses renaming dateOfBirth, naming the age check it would switch off', () => {
-    const after = [step({ fields: [field({ id: 'f1', name: 'dob' })] })];
-    expect(() => assertReservedKeysNotRenamed(reserved('dateOfBirth'), after)).toThrow(
-      /minimum-age/,
+  it('points the two that may be switched off at the switch', () => {
+    expect(
+      refusal(() => assertCoreSteps(FORM.filter((step) => step.slug !== 'address'))).message,
+    ).toMatch(/Switch it off/);
+    expect(
+      refusal(() => assertCoreSteps(FORM.filter((step) => step.slug !== 'personal'))).message,
+    ).not.toMatch(/Switch it off/);
+  });
+
+  it('refuses a built-in step twice, at the second one', () => {
+    const twice = [...FORM, { ...FORM[at('document')], id: 'step-copy' }];
+    const { message, fields } = refusal(() => assertCoreSteps(twice));
+    expect(message).toMatch(/Identity Document appears 2 times/);
+    expect(Object.keys(fields)).toEqual([`steps.${twice.length - 1}`]);
+  });
+
+  it.each(['personal', 'document'])('refuses switching %s off', (slug) => {
+    const off = edit(slug, (step) => ({ ...step, enabled: false }));
+    expect(refusal(() => assertCoreSteps(off)).message).toMatch(/always on/);
+  });
+
+  it.each(['selfie', 'address'])('ALLOWS switching %s off', (slug) => {
+    const off = edit(slug, (step) => ({ ...step, enabled: false }));
+    expect(() => assertKycConfigIntegrity(FORM, off)).not.toThrow();
+  });
+
+  it('refuses renaming a built-in step, and allows rewording its description', () => {
+    const renamed = edit('address', (step) => ({ ...step, title: 'Address check' }));
+    expect(refusal(() => assertCoreSteps(renamed)).message).toMatch(/keeps its name/);
+
+    const reworded = edit('address', (step) => ({
+      ...step,
+      description: 'Dated within the last 6 months.',
+    }));
+    expect(() => assertKycConfigIntegrity(FORM, reworded)).not.toThrow();
+  });
+
+  it('keeps Personal Information first, and says so at its own position', () => {
+    const moved = [...FORM.slice(1), FORM[0]];
+    const { message, fields } = refusal(() => assertCoreSteps(moved));
+    expect(message).toMatch(/Personal Information comes first/);
+    expect(Object.keys(fields)).toEqual([`steps.${moved.length - 1}`]);
+  });
+});
+
+describe("the client's identity is the platform's", () => {
+  const personal = at('personal');
+  const firstName = FORM[personal].fields.findIndex((field) => field.name === 'firstName');
+
+  it('THE REPORTED CASE: leaving First Name out of a save removes nothing', () => {
+    /*
+     * The builder used to let an operator delete First Name; re-adding it made
+     * a custom box. The identity fields are not stored now, so a save without
+     * them is simply a save — the store serves them on the next read
+     * (`identity-core.spec.ts` pins that half).
+     */
+    const without = edit('personal', (step) => ({
+      ...step,
+      fields: step.fields.filter((field) => field.name !== 'firstName'),
+    }));
+    expect(() => assertKycConfigIntegrity(FORM, without)).not.toThrow();
+  });
+
+  it('THE REPORTED CASE, second half: a custom question called "firstname" is refused', () => {
+    const shadow = edit('personal', (step) => ({
+      ...step,
+      fields: [
+        ...step.fields.filter((field) => field.name !== 'firstName'),
+        {
+          id: 'field-1790402959161',
+          name: 'customField_1790402959161',
+          label: 'firstname',
+          type: 'text',
+          required: true,
+        },
+      ],
+    }));
+    const { message, fields } = refusal(() => assertKycConfigIntegrity(FORM, shadow));
+    expect(message).toMatch(/already collected by the platform \(First Name\)/);
+    expect(Object.keys(fields)[0]).toMatch(new RegExp(`^steps\\.${personal}\\.fields\\.\\d+$`));
+  });
+
+  it.each([
+    ['a new label', { label: 'Given name' }],
+    ['a new type', { type: 'date' }],
+    ['a new key', { name: 'givenName' }],
+  ])('refuses giving First Name %s', (_, change) => {
+    const changed = edit('personal', (step) => ({
+      ...step,
+      fields: step.fields.map((field, index) =>
+        index === firstName ? { ...field, ...change } : field,
+      ),
+    }));
+    const { message, fields } = refusal(() => assertIdentityUnchanged(changed));
+    expect(message).toMatch(/fixed by the platform/);
+    expect(fields).toHaveProperty(`steps.${personal}.fields.${firstName}`);
+  });
+
+  it('refuses making a required identity field optional, and the postal code required', () => {
+    const optional = edit('personal', (step) => ({
+      ...step,
+      fields: step.fields.map((field) =>
+        field.name === 'address' ? { ...field, required: false } : field,
+      ),
+    }));
+    expect(refusal(() => assertIdentityUnchanged(optional)).message).toMatch(/always required/);
+
+    const required = edit('personal', (step) => ({
+      ...step,
+      fields: step.fields.map((field) =>
+        field.name === 'postalCode' ? { ...field, required: true } : field,
+      ),
+    }));
+    expect(refusal(() => assertIdentityUnchanged(required)).message).toMatch(/always optional/);
+  });
+
+  it('refuses asking for an identity field on any other step', () => {
+    const phone = FORM[personal].fields.find((field) => field.name === 'phone')!;
+    const moved = [...FORM, custom({ fields: [{ ...phone, system: undefined }] })];
+    expect(refusal(() => assertIdentityUnchanged(moved)).message).toMatch(
+      /asked for once — on Personal Information/,
     );
   });
 
-  /**
-   * ⚠️ REMOVING the field is ALLOWED, and this is the case that keeps the rule
-   * mechanical rather than political.
-   *
-   * A broker may decide not to collect a date of birth at all — that is their
-   * jurisdiction's call, and the dropped mandatory-step rule says so. What is
-   * refused is keeping the field and changing only its key, because that reads
-   * on screen as a cosmetic edit while switching a server check off.
-   */
-  it('ALLOWS removing a reserved field entirely', () => {
-    expect(() => assertReservedKeysNotRenamed(reserved('dateOfBirth'), [])).not.toThrow();
-    expect(() =>
-      assertReservedKeysNotRenamed(reserved('dateOfBirth'), [step({ fields: [] })]),
-    ).not.toThrow();
-  });
+  it.each(['First name', 'SURNAME', 'Date of birth', 'E-mail', 'Mobile', 'Passport', 'ZIP'])(
+    'refuses a question labelled "%s" — a second copy of something the platform collects',
+    (label) => {
+      const shadow = [
+        ...FORM,
+        custom({
+          fields: [{ id: 'f-x', name: 'customField_x', label, type: 'text', required: false }],
+        }),
+      ];
+      expect(refusal(() => assertNoSecondCopies(shadow)).message).toMatch(
+        /already collected by the platform/,
+      );
+    },
+  );
 
-  /** Relabelling and reordering are cosmetic and must stay free. */
-  it('allows changing the LABEL of a reserved field', () => {
-    const after = [
-      step({ fields: [field({ id: 'f1', name: 'dateOfBirth', label: 'Birth date' })] }),
+  it('leaves the broker free to ask anything else', () => {
+    const own = [
+      ...FORM,
+      custom({
+        fields: ['Employer name', 'Previous address', 'Occupation', 'Source of funds'].map(
+          (label, index) => ({
+            id: `q-${index}`,
+            name: `customField_${index}`,
+            label,
+            type: 'text',
+            required: false,
+          }),
+        ),
+      }),
     ];
-    expect(() => assertReservedKeysNotRenamed(reserved('dateOfBirth'), after)).not.toThrow();
+    expect(() => assertKycConfigIntegrity(FORM, own)).not.toThrow();
+  });
+});
+
+describe('each built-in step holds what it is for, and nothing else', () => {
+  const passport = FORM[at('document')].fields.find((field) => field.type === 'doc:passport')!;
+
+  it('refuses a passport on a step of the broker’s own — a client has one passport', () => {
+    const second = [...FORM, custom({ fields: [{ ...passport, id: 'f-second', name: 'pp2' }] })];
+    expect(refusal(() => assertStepsHoldWhatTheyAreFor(second)).message).toMatch(
+      /once each, so there is never a second one/,
+    );
   });
 
-  it('leaves ordinary keys freely renameable', () => {
-    const before = [step({ fields: [field({ id: 'f1', name: 'middleName' })] })];
-    const after = [step({ fields: [field({ id: 'f1', name: 'secondName' })] })];
-    expect(() => assertReservedKeysNotRenamed(before, after)).not.toThrow();
+  it('refuses a document of the other kind — it would be filed as the wrong one', () => {
+    const bill = FORM[at('address')].fields.find((field) => field.type === 'doc:utility_bill')!;
+    const wrong = edit('document', (step) => ({ ...step, fields: [...step.fields, bill] }));
+    expect(refusal(() => assertStepsHoldWhatTheyAreFor(wrong)).message).toMatch(
+      /cannot accept a Utility Bill/,
+    );
   });
 
-  /**
-   * Matched on `id`, so a rename cannot hide behind a reorder or a relabel —
-   * the two edits most likely to be made in the same save.
-   */
-  it('catches a rename even when the field has MOVED and been relabelled', () => {
-    const after = [
-      step({
+  it('refuses the same document twice on its step', () => {
+    const twice = edit('document', (step) => ({ ...step, fields: [...step.fields, passport] }));
+    expect(refusal(() => assertStepsHoldWhatTheyAreFor(twice)).message).toMatch(
+      /lists the Passport twice/,
+    );
+  });
+
+  it.each(['document', 'address'])('refuses %s accepting no document at all', (slug) => {
+    const none = edit(slug, (step) => ({ ...step, fields: [] }));
+    expect(refusal(() => assertStepsHoldWhatTheyAreFor(none)).message).toMatch(
+      /at least one document/,
+    );
+  });
+
+  it.each(['document', 'address', 'selfie'])(
+    'refuses any field of the broker’s own on %s',
+    (slug) => {
+      const extra = edit(slug, (step) => ({
+        ...step,
         fields: [
-          field({ id: 'other', name: 'nickname' }),
-          field({ id: 'f1', name: 'dob', label: 'DOB' }),
+          ...step.fields,
+          { id: 'f-x', name: 'customField_x', label: 'Bank letter', type: 'file', required: true },
+        ],
+      }));
+      expect(refusal(() => assertStepsHoldWhatTheyAreFor(extra)).message).toMatch(
+        /on a step of your own/,
+      );
+    },
+  );
+
+  it.each(['file', 'camera'])('refuses a %s upload on Personal Information', (type) => {
+    const upload = edit('personal', (step) => ({
+      ...step,
+      fields: [
+        ...step.fields,
+        { id: 'f-x', name: 'customField_x', label: 'Payslip', type, required: false },
+      ],
+    }));
+    expect(refusal(() => assertStepsHoldWhatTheyAreFor(upload)).message).toMatch(
+      /Uploads go on a step of your own/,
+    );
+  });
+
+  it('ALLOWS questions on Personal Information, and uploads on a step of the broker’s own', () => {
+    const questions = edit('personal', (step) => ({
+      ...step,
+      fields: [
+        ...step.fields,
+        { id: 'f-q1', name: 'customField_q1', label: 'Occupation', type: 'text', required: true },
+        {
+          id: 'f-q2',
+          name: 'customField_q2',
+          label: 'I am not a politically exposed person',
+          type: 'checkbox',
+          required: true,
+        },
+      ],
+    }));
+    const uploads = [
+      ...questions,
+      custom({
+        fields: [
+          {
+            id: 'f-u1',
+            name: 'customField_u1',
+            label: 'Bank letter',
+            type: 'file',
+            required: true,
+          },
+          {
+            id: 'f-u2',
+            name: 'customField_u2',
+            label: 'Holding card',
+            type: 'camera',
+            required: false,
+          },
         ],
       }),
     ];
-    expect(() => assertReservedKeysNotRenamed(reserved('dateOfBirth'), after)).toThrow(
-      /dateOfBirth/,
-    );
+    expect(() => assertKycConfigIntegrity(FORM, uploads)).not.toThrow();
   });
 });
 
-describe('documents at home, every other field anywhere, and no step left impossible', () => {
-  /*
-   * Reported from local testing: documents on a step the broker added, and the
-   * week of bugs that came from giving them a second home there. And the other
-   * half, asked for the same day: extra questions and uploads on the built-in
-   * steps, which must WORK rather than be refused.
-   */
-  const passport = field({ id: 'p', name: 'passport', label: 'Passport', type: 'doc:passport' });
-  const bill = field({ id: 'b', name: 'bill', label: 'Utility Bill', type: 'doc:utility_bill' });
-  const camera = field({ id: 's', name: 'selfie', label: 'Selfie', type: 'camera' });
-  /** The step's core, so what is asserted is only the field added beside it. */
-  const coreOf = (slug: string) =>
-    slug === 'document'
-      ? [passport]
-      : slug === 'address'
-        ? [bill]
-        : slug === 'selfie'
-          ? [camera]
-          : [];
-  const check =
-    (slug: string, ...extra: ReturnType<typeof field>[]) =>
-    () =>
-      assertFieldsFitTheirStep([step({ slug, title: slug, fields: [...coreOf(slug), ...extra] })]);
-
-  it('keeps every document off a step the broker added, and says what to use instead', () => {
-    expect(check('source-of-funds', passport)).toThrow(/document type.*File field/);
-    expect(check('source-of-funds', bill)).toThrow(/document type/);
-  });
-
-  it('keeps every document off the personal and selfie steps', () => {
-    expect(check('personal', field({ type: 'doc:national_id' }))).toThrow(/document type/);
-    expect(check('selfie', field({ id: 'x', name: 'x', type: 'doc:passport' }))).toThrow(
-      /document type/,
-    );
-  });
-
-  it('refuses a document of the other KIND on a document step — its pages would be filed as the wrong one', () => {
-    expect(check('document', bill)).toThrow(/Utility Bill.*proof of address.*wrong document/);
-    expect(check('address', passport)).toThrow(/Passport.*identity document.*wrong document/);
-  });
-
-  it('ALLOWS every other field on EVERY step — the extra questions and uploads a broker adds', () => {
-    for (const slug of ['personal', 'document', 'address', 'selfie', 'source-of-funds']) {
-      for (const type of ['text', 'date', 'phone', 'select', 'checkbox', 'file', 'camera']) {
-        expect(
-          check(slug, field({ id: 'extra', name: 'extra', type })),
-          `${type} on ${slug}`,
-        ).not.toThrow();
-      }
-    }
-  });
-
-  it('refuses a document step that offers no document — nobody could complete it', () => {
-    expect(() =>
-      assertFieldsFitTheirStep([
-        step({ slug: 'address', title: 'Proof of Address', fields: [field()] }),
-      ]),
-    ).toThrow(/"Proof of Address" offers no document.*disable the step/);
-  });
-
-  it('refuses a selfie step without its selfie camera', () => {
-    expect(() =>
-      assertFieldsFitTheirStep([step({ slug: 'selfie', title: 'Selfie', fields: [field()] })]),
-    ).toThrow(/needs its selfie camera/);
-    expect(() =>
-      assertFieldsFitTheirStep([
-        step({ slug: 'selfie', title: 'Selfie', fields: [{ ...camera, type: 'text' }] }),
-      ]),
-    ).toThrow(/needs its selfie camera/);
-  });
-
-  it('accepts the default configuration exactly as seeded', () => {
-    expect(() => assertFieldsFitTheirStep(DEFAULT_KYC_STEPS)).not.toThrow();
-  });
-
-  it('tolerates a document the catalogue has withdrawn, beside one it knows', () => {
-    expect(
-      check('document', field({ id: 'old', name: 'old', type: 'doc:old_card' })),
-    ).not.toThrow();
-  });
-
-  it('reads the step table by OWN key — a slug is typed by an operator', () => {
-    // `constructor` is a step somebody added, not an entry on the prototype.
-    expect(check('constructor', passport)).toThrow(/document type/);
-    expect(check('constructor', field({ type: 'file' }))).not.toThrow();
-  });
-});
-
-describe('a profile field keeps its kind, its list, and its step (0139)', () => {
-  /*
-   * The personal step is where the KYC form reads and writes the client's
-   * PROFILE, and each profile field lands in a typed column. The broker still
-   * owns the form — relabel, reorder, require, remove — but three edits would
-   * break the client's record rather than the form, and each is refused here.
-   */
-  const personal = (fields: ReturnType<typeof field>[]) => [
-    step({ slug: 'personal', title: 'Personal Information', fields }),
-  ];
-  const profileField = (name: string, over: Partial<ReturnType<typeof field>> = {}) =>
-    field({
-      id: `f-${name}`,
-      name,
-      label: name,
-      type: PROFILE_FIELD_TYPE[name as keyof typeof PROFILE_FIELD_TYPE],
-      ...over,
-    });
-
-  it('accepts the default configuration, and every profile field in it at its own type', () => {
-    expect(() => assertProfileFieldsKeepTheirPlace(DEFAULT_KYC_STEPS)).not.toThrow();
-    expect(() => assertKycConfigIntegrity(DEFAULT_KYC_STEPS, DEFAULT_KYC_STEPS)).not.toThrow();
-    const onPersonal = DEFAULT_KYC_STEPS.find((s) => s.slug === 'personal')!.fields.map(
-      (f) => f.name,
-    );
-    // The seeded form asks for the WHOLE profile, city and postal code included.
-    expect([...onPersonal].sort()).toEqual([...PROFILE_FIELD_KEYS].sort());
-  });
-
-  it.each(
-    PROFILE_FIELD_KEYS.flatMap((key) =>
-      ['text', 'date', 'select', 'phone', 'checkbox', 'file']
-        .filter((type) => type !== PROFILE_FIELD_TYPE[key])
-        .map((type) => [key, type] as const),
-    ),
-  )('refuses %s re-typed as %s — its answer lands in a typed column', (key, type) => {
-    expect(() =>
-      assertProfileFieldsKeepTheirPlace(personal([profileField(key, { type })])),
-    ).toThrow(/must stay a .* field/);
-  });
-
-  it.each(PROFILE_FIELD_KEYS)(
-    'refuses %s on any other step — it would be a second copy beside the profile',
-    (key) => {
-      for (const slug of ['document', 'address', 'selfie', 'source-of-funds']) {
-        expect(
-          () =>
-            assertProfileFieldsKeepTheirPlace([
-              step({ slug, title: slug, fields: [profileField(key)] }),
-            ]),
-          `${key} on ${slug}`,
-        ).toThrow(/Personal Information step only/);
-      }
+describe('the keys a broker’s own field may take', () => {
+  it.each(['doc_front', 'selfie', 'address_proof_2', 'passport', 'docType', 'firstName'])(
+    'refuses "%s" — the system reads it by name',
+    (name) => {
+      const clash = [
+        ...FORM,
+        custom({
+          fields: [{ id: 'f-x', name, label: 'Something', type: 'text', required: false }],
+        }),
+      ];
+      expect(() => assertKycConfigIntegrity(FORM, clash)).toThrow(FieldValidationError);
     },
   );
 
-  it('ALLOWS relabelling, requiring, un-requiring and hinting a profile field', () => {
-    expect(() =>
-      assertProfileFieldsKeepTheirPlace(
-        personal([
-          profileField('dateOfBirth', { label: 'Birth date', required: false, hint: 'As on ID' }),
-          profileField('city', { label: 'Town', required: true }),
-        ]),
-      ),
-    ).not.toThrow();
+  it.each(['__proto__', 'constructor', '__secret'])('refuses the internal name "%s"', (name) => {
+    const clash = [
+      ...FORM,
+      custom({ fields: [{ id: 'f-x', name, label: 'Something', type: 'text', required: false }] }),
+    ];
+    expect(refusal(() => assertFieldKeys(clash)).message).toMatch(/internally/);
   });
 
-  it('ALLOWS removing profile fields — the broker decides what is collected', () => {
-    expect(() => assertProfileFieldsKeepTheirPlace(personal([]))).not.toThrow();
-    expect(() =>
-      assertKycConfigIntegrity(DEFAULT_KYC_STEPS, [
-        ...DEFAULT_KYC_STEPS.filter((s) => s.slug !== 'personal'),
-        {
-          ...DEFAULT_KYC_STEPS.find((s) => s.slug === 'personal')!,
-          fields: DEFAULT_KYC_STEPS.find((s) => s.slug === 'personal')!.fields.filter(
-            (f) => f.name !== 'postalCode' && f.name !== 'nationality',
-          ),
-        },
-      ]),
-    ).not.toThrow();
+  it('refuses one key on two steps — a reviewer’s flag names a field by its key alone', () => {
+    const [first, second] = ['Employer', 'Employer (again)'].map((label) => ({
+      id: `f-${label}`,
+      name: 'customField_1',
+      label,
+      type: 'text',
+      required: false,
+    }));
+    const twice = edit('personal', (step) => ({ ...step, fields: [...step.fields, first] }), [
+      ...FORM,
+      custom({ fields: [second] }),
+    ]);
+    expect(refusal(() => assertFieldKeys(twice)).message).toMatch(/share one key/);
+  });
+});
+
+describe('every step has its own address, and keeps it', () => {
+  it('refuses two steps on one address', () => {
+    const twice = [...FORM, custom(), custom({ id: 'step-other', title: 'Other' })];
+    expect(refusal(() => assertStepAddresses(FORM, twice)).message).toMatch(/share one address/);
   });
 
-  it('leaves a broker’s own fields alone — any type, any step', () => {
-    for (const slug of ['personal', 'document', 'source-of-funds']) {
-      for (const type of ['text', 'date', 'select', 'phone', 'checkbox', 'file']) {
-        expect(() =>
-          assertProfileFieldsKeepTheirPlace([
-            step({ slug, fields: [field({ id: 'x', name: 'customField_1', type })] }),
-          ]),
-        ).not.toThrow();
-      }
-    }
-  });
-
-  it('reads the profile keys by OWN name — a key is typed by an operator', () => {
-    // `constructor` and `toString` are a broker's words, not profile fields.
-    for (const name of ['constructor', 'toString', '__proto__', 'Phone', 'first_name']) {
-      expect(() =>
-        assertProfileFieldsKeepTheirPlace([
-          step({ slug: 'document', fields: [field({ id: 'x', name, type: 'text' })] }),
-        ]),
-      ).not.toThrow();
-    }
-  });
-
-  describe('the drop-downs offer the platform’s list, and only that', () => {
-    it.each(['country', 'nationality'] as const)(
-      '%s: the list arriving back unchanged is an ordinary save',
-      (key) => {
-        const options = [...PROFILE_CHOICES[key]!];
-        expect(() =>
-          assertProfileFieldsKeepTheirPlace(personal([profileField(key, { options })])),
-        ).not.toThrow();
-        // …and so is no list at all — it is served on every read.
-        expect(() =>
-          assertProfileFieldsKeepTheirPlace(personal([profileField(key, { options: [] })])),
-        ).not.toThrow();
-      },
+  it('refuses moving an existing step to a new address — its answers are filed there', () => {
+    const before = [...FORM, custom()];
+    const moved = [...FORM, custom({ slug: 'funds' })];
+    expect(refusal(() => assertStepAddresses(before, moved)).message).toMatch(
+      /cannot move to a new address/,
     );
-
-    it.each(['country', 'nationality'] as const)(
-      '%s: refuses an added choice — the profile could never store it',
-      (key) => {
-        const options = [...PROFILE_CHOICES[key]!, 'UAE'];
-        expect(() =>
-          assertProfileFieldsKeepTheirPlace(personal([profileField(key, { options })])),
-        ).toThrow(/choices cannot be edited/);
-      },
-    );
-
-    it.each(['country', 'nationality'] as const)(
-      '%s: refuses a removed choice — registration would still accept it',
-      (key) => {
-        const options = PROFILE_CHOICES[key]!.slice(1);
-        expect(() =>
-          assertProfileFieldsKeepTheirPlace(personal([profileField(key, { options })])),
-        ).toThrow(/choices cannot be edited/);
-      },
-    );
-
-    it('refuses a reordered list too — it is not the list the profile is judged by', () => {
-      const options = [...PROFILE_CHOICES.country!].reverse();
-      expect(() =>
-        assertProfileFieldsKeepTheirPlace(personal([profileField('country', { options })])),
-      ).toThrow(/choices cannot be edited/);
-    });
   });
 
-  it('is part of every save — `assertKycConfigIntegrity` runs it', () => {
-    const retyped = DEFAULT_KYC_STEPS.map((s) =>
-      s.slug === 'personal'
-        ? {
-            ...s,
-            fields: s.fields.map((f) => (f.name === 'dateOfBirth' ? { ...f, type: 'text' } : f)),
-          }
-        : s,
+  it.each([
+    ['review', /platform uses that address/],
+    ['Source Of Funds', /lower-case letters/],
+    ['funds!', /lower-case letters/],
+  ])('refuses a new step at "%s"', (slug, why) => {
+    expect(refusal(() => assertStepAddresses(FORM, [...FORM, custom({ slug })])).message).toMatch(
+      why,
     );
-    expect(() => assertKycConfigIntegrity(DEFAULT_KYC_STEPS, retyped)).toThrow(
-      /must stay a date field/,
+  });
+
+  it('leaves an address an older build accepted alone — clients have answered under it', () => {
+    const old = custom({ slug: 'custom slug 1' });
+    expect(() => assertKycConfigIntegrity([...FORM, old], [...FORM, old])).not.toThrow();
+  });
+
+  it('refuses a step of the broker’s own wearing a built-in step’s name', () => {
+    const lookalike = [...FORM, custom({ title: 'Identity document' })];
+    expect(refusal(() => assertStepAddresses(FORM, lookalike)).message).toMatch(
+      /name of a built-in step/,
     );
   });
 });

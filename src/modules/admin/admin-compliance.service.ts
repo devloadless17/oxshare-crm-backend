@@ -1,14 +1,28 @@
-import { Injectable } from '@nestjs/common';
-import { KycConfigStore, KycStepConfig } from '../../store/kyc-config.store';
+import { Inject, Injectable } from '@nestjs/common';
+import { v4 as uuidv4 } from 'uuid';
+import {
+  DEFAULT_KYC_STEPS,
+  KycConfigStore,
+  kycConfigVersion,
+  type KycStepConfig,
+} from '../../store/kyc-config.store';
 import { DEFAULT_KYC_SORT, KYC_SORT_COLUMNS } from '../../store/kyc.store';
 import { sortKey, sortOrder } from '../../common/sorting';
 import { RejectionContext, RejectionReasonsStore } from '../../store/rejection-reasons.store';
 import { KycService } from '../compliance/kyc.service';
-import { NotFoundError, ValidationError } from '../../common/errors/domain-errors';
+import {
+  KycConfigStaleError,
+  NotFoundError,
+  ValidationError,
+} from '../../common/errors/domain-errors';
 import { AdminAuditService } from './admin-audit.service';
 import { maskedFieldsFor } from '../../common/security/field-mask';
 import { assertActorCan, assertActorCanAny } from '../../common/security/actor';
 import { assertKycConfigIntegrity } from './kyc-config-integrity';
+import { describeKycConfigChanges } from './kyc-config-diff';
+import { newCustomSlug } from '../../common/kyc/identity-core';
+import { DRIZZLE_DB } from '../../database/database.module';
+import type { Db } from '../../database/db';
 import { ClientVisibilityService } from '../../common/security/client-visibility.service';
 import type { CorrectKycIdentityDto } from './dto/requests/compliance.dto';
 import type { AuthenticatedAdmin } from './guards/admin.guard';
@@ -30,6 +44,12 @@ export class AdminComplianceService {
     private readonly audit: AdminAuditService,
     private readonly visibility: ClientVisibilityService,
     private readonly admins: AdminsStore,
+    /**
+     * For the one transaction every change to the KYC form runs in
+     * (`changeKycConfig`). APPENDED LAST: this class is constructed
+     * positionally in tests.
+     */
+    @Inject(DRIZZLE_DB) private readonly db: Db,
   ) {}
 
   /**
@@ -294,13 +314,12 @@ export class AdminComplianceService {
     // as a missing one does, so nothing about the response says they exist.
     await this.visibility.assertVisible(userId, actor.clientScope);
 
-    const patch: Record<string, unknown> = {};
-    if (dto.dateOfBirth !== undefined) patch['dateOfBirth'] = dto.dateOfBirth;
-    if (dto.address !== undefined) patch['address'] = dto.address;
-    if (dto.city !== undefined) patch['city'] = dto.city;
-    if (dto.postalCode !== undefined) patch['postalCode'] = dto.postalCode;
+    const { reason, ...fields } = dto;
+    const patch: Record<string, unknown> = Object.fromEntries(
+      Object.entries(fields).filter(([, value]) => value !== undefined),
+    );
     if (Object.keys(patch).length === 0) {
-      throw new ValidationError('Send a date of birth or an address to correct.');
+      throw new ValidationError('Name a detail to correct.');
     }
 
     /*
@@ -309,11 +328,12 @@ export class AdminComplianceService {
      * change without its row. Filed as `kyc.identity_correct` on the submission,
      * where a reviewer reading its history looks.
      */
-    const result = await this.kycService.correctIdentity(userId, patch, {
-      kind: 'admin',
-      id: actor.id,
-      email: actor.email,
-    });
+    const result = await this.kycService.correctIdentity(
+      userId,
+      patch,
+      { kind: 'admin', id: actor.id, email: actor.email },
+      reason,
+    );
     return result.submission;
   }
 
@@ -474,6 +494,31 @@ export class AdminComplianceService {
       maskedFields: maskedFieldsFor('kyc', actor.fieldMask),
     };
   }
+  /**
+   * Return an APPROVED verification to the client to update — the reviewer's
+   * answer to a detail that changed materially (`KycService.requestReverification`).
+   * The same power as a rejection (`kyc.review`, in scope), audited with the
+   * reason and the items asked for.
+   */
+  async requestReverification(
+    userId: string,
+    actor: AuthenticatedAdmin,
+    reason: string,
+    items: string[],
+  ) {
+    assertActorCan(actor, 'kyc.review', 'return a verification to the client');
+    await this.visibility.assertVisible(userId, actor.clientScope);
+    const result = await this.kycService.requestReverification(userId, actor.id, reason, items);
+    this.audit.record(actor.id, 'kyc.reverification_request', 'kyc_submission', userId, {
+      reason,
+      items: result.rejectedFields,
+    });
+    return {
+      ...result,
+      maskedFields: maskedFieldsFor('kyc', actor.fieldMask),
+    };
+  }
+
   // ─── Rejection reasons (FR-ADM-03 configurable list) ──────────────────────
   async listRejectionReasons(context?: RejectionContext) {
     return await this.rejectionReasons.findAll(context);
@@ -520,130 +565,169 @@ export class AdminComplianceService {
     return { message: 'Rejection reason deleted.' };
   }
   // ─── KYC Configurator ───────────────────────────────────────────────────────
-  getKycConfig() {
-    return this.kycConfig.getSteps();
+  /** The form, and the version the builder's next save must name (`If-Match`). */
+  async getKycConfig(): Promise<{ steps: KycStepConfig[]; version: string }> {
+    const steps = await this.kycConfig.getSteps();
+    return { steps, version: kycConfigVersion(steps) };
   }
+
   /*
-   * ── THERE IS NO MANDATORY STEP ANY MORE (owner's call, 15 Aug 2026) ───────
+   * ── WHAT THE BROKER OWNS, AND WHAT THE PLATFORM DOES (26 Sep 2026) ────────
    *
-   * `personal`, `document`, `selfie` and `address` used to be undeletable and
-   * undisablable here, in the admin UI, and by omission in the portal — three
-   * copies of one rule citing FR-CORE-15/FR-IND-03.
+   * This block used to open "THERE IS NO MANDATORY STEP ANY MORE (owner's call,
+   * 15 Aug 2026)", and argued — correctly — that a KYC flow sold as configurable
+   * that refuses to drop four of its steps is not configurable, because which
+   * documents a jurisdiction requires is the broker's decision.
    *
-   * The objection that retired it is simple and correct: a KYC flow sold as
-   * configurable that refuses to drop four of its steps is not configurable.
-   * Which documents a jurisdiction requires is the broker's decision and
-   * differs by licence; encoding one regulator's answer in a service made
-   * every other answer unreachable without a code change.
+   * Then a broker's edit removed a client's first name from the form, and
+   * re-adding it made an anonymous custom box instead. So the owner ruled again:
+   * the client's IDENTITY is not configuration. The identity fields, the four
+   * built-in steps and the documents that prove identity and address belong to
+   * the platform (`common/kyc/identity-core.ts`); Personal Information and
+   * Identity Document are always on; Selfie and Proof of Address can still be
+   * switched off — which keeps the half of the old argument that was right.
+   * Everything else stays the broker's.
    *
-   * WHAT REPLACES IT is the audit trail, not nothing. `kyc_config.replace`
-   * records the full slug list and the enabled subset on every save, so
-   * "onboarding stopped asking for proof of address on the 12th" is an
-   * answerable question with a name attached. That is the control a compliance
-   * review actually needs — the previous rule could only say the step was
-   * never removed, which is a weaker claim than knowing who removed it.
-   *
-   * The portal degrades safely: it resolves steps by `stepNumber` from the
-   * config and branches on slug for its uploader, camera and passport paths,
-   * so a slug that is gone simply takes its branch out of the flow.
+   * Every change — the whole-form save and the four per-step routes alike —
+   * goes through ONE path below, so none of them can skip a rule the others
+   * enforce. They used to differ: the delete route checked nothing and could
+   * leave a form with no steps at all.
    */
 
-  // `async` so this REJECTS rather than throwing synchronously. deleteKycStep and
-  // updateKycStep both await the current config before guarding, so they reject; a
-  // sibling that throws sync instead is a footgun for any caller that only handles
-  // one of the two.
-  /*
-   * The KYC configuration is AUDITED for the same reason the rejection reasons
-   * are: it governs what every client must submit to be verified, and
-   * verification is what opens the withdrawal gate. A step quietly disabled is
-   * a control quietly removed, and `setSteps` replaces the WHOLE
-   * configuration — so the recorded slug list is the only way to reconstruct
-   * what onboarding looked like on a given day.
-   */
-  async updateKycConfig(steps: KycStepConfig[], actor: Admin) {
-    /*
-     * Refused BEFORE the write, and refused here rather than in the DTO.
-     *
-     * Two of the three rules need the CURRENT configuration to judge the new one
-     * — a reserved key renamed is only visible by comparing the two — and a
-     * class-validator decorator cannot read the database. The third (unique keys
-     * per step) could live in the DTO and is kept beside its siblings instead,
-     * because an operator who fixes one and then meets the next in a different
-     * voice learns the screen is guessing.
-     *
-     * `kyc-config-integrity.ts` states at length that none of this is the
-     * mandatory-step rule coming back: a broker may still delete any step and
-     * stop collecting anything. What is refused is a configuration that cannot
-     * work — answers with nowhere to go, an answer silently overwritten, or a
-     * server-side check silently switched off.
-     */
-    const current = await this.kycConfig.getSteps();
-    assertKycConfigIntegrity(current, steps);
+  async updateKycConfig(steps: KycStepConfig[], actor: AuthenticatedAdmin, version?: string) {
+    const { after } = await this.changeKycConfig(
+      actor,
+      { action: 'kyc_config.replace', version },
+      () => steps,
+    );
+    return after;
+  }
 
-    const result = await this.kycConfig.setSteps(steps);
-    this.audit.record(actor.id, 'kyc_config.replace', 'kyc_config', 'steps', {
-      slugs: steps.map((step) => step.slug),
-      enabled: steps.filter((step) => step.enabled).map((step) => step.slug),
-    });
-    return result;
+  async addKycStep(stepData: Omit<KycStepConfig, 'id' | 'stepNumber'>, actor: AuthenticatedAdmin) {
+    const id = `step-${uuidv4()}`;
+    const { after } = await this.changeKycConfig(
+      actor,
+      { action: 'kyc_config.step_add' },
+      (current) => [...current, { ...stepData, id, stepNumber: current.length + 1 }],
+    );
+    return after.find((step) => step.id === id)!;
   }
-  async addKycStep(stepData: Omit<KycStepConfig, 'id' | 'stepNumber'>, actor: Admin) {
-    /*
-     * The same rules as a whole-configuration save. The two per-step routes
-     * checked nothing, so anything `updateKycConfig` refuses — a document on a
-     * step that cannot hold it, two fields sharing a key — went through here.
-     */
-    const current = await this.kycConfig.getSteps();
-    assertKycConfigIntegrity(current, [
-      ...current,
-      { ...stepData, id: '', stepNumber: current.length + 1 },
-    ]);
-    const created = await this.kycConfig.addStep(stepData);
-    this.audit.record(actor.id, 'kyc_config.step_add', 'kyc_config', created.id, {
-      slug: stepData.slug,
-      title: stepData.title,
-    });
-    return created;
+
+  async updateKycStep(id: string, patch: Partial<KycStepConfig>, actor: AuthenticatedAdmin) {
+    const { after } = await this.changeKycConfig(
+      actor,
+      { action: 'kyc_config.step_update' },
+      (current) => {
+        if (!current.some((step) => step.id === id)) throw new NotFoundError('KYC step not found.');
+        return current.map((step) => (step.id === id ? { ...step, ...patch, id } : step));
+      },
+    );
+    return after.find((step) => step.id === id)!;
   }
-  async updateKycStep(id: string, patch: Partial<KycStepConfig>, actor: Admin) {
-    const steps = await this.kycConfig.getSteps();
-    const target = steps.find((s) => s.id === id);
-    // Judged as the configuration it would produce — see `addKycStep`.
-    if (target) {
-      assertKycConfigIntegrity(
-        steps,
-        steps.map((step) => (step.id === id ? { ...step, ...patch, id } : step)),
-      );
-    }
-    /*
-     * NO MANDATORY-STEP GUARD. See `assertMandatoryStepsIntact` below for why
-     * the whole rule was dropped: a configurable flow that refuses to drop four
-     * of its steps is not configurable, and the broker — not this service —
-     * owns which jurisdiction needs what.
-     */
-    const updated = await this.kycConfig.updateStep(id, patch);
-    this.audit.record(actor.id, 'kyc_config.step_update', 'kyc_config', id, {
-      slug: target?.slug,
-      // The whole patch, because "enabled: false" on a KYC step is a control
-      // being switched off and the field name is the evidence.
-      patch,
+
+  async deleteKycStep(id: string, actor: AuthenticatedAdmin) {
+    await this.changeKycConfig(actor, { action: 'kyc_config.step_delete' }, (current) => {
+      if (!current.some((step) => step.id === id)) throw new NotFoundError('KYC step not found.');
+      return current.filter((step) => step.id !== id);
     });
-    return updated;
+    return true;
   }
-  async deleteKycStep(id: string, actor: Admin) {
-    const steps = await this.kycConfig.getSteps();
-    const target = steps.find((s) => s.id === id);
-    const result = await this.kycConfig.deleteStep(id);
-    this.audit.record(actor.id, 'kyc_config.step_delete', 'kyc_config', id, {
-      slug: target?.slug,
-      title: target?.title,
+
+  /**
+   * Back to the default form. The built-in steps keep their ids — they are the
+   * same four steps, returned to their defaults — so the audit reads as what
+   * happened rather than as four removals and four additions.
+   */
+  async resetKycConfig(actor: AuthenticatedAdmin) {
+    const { after } = await this.changeKycConfig(actor, { action: 'kyc_config.reset' }, (current) =>
+      DEFAULT_KYC_STEPS.map((step) => ({
+        ...step,
+        id: current.find((existing) => existing.slug === step.slug)?.id ?? step.id,
+      })),
+    );
+    return after;
+  }
+
+  /**
+   * THE ONE WAY THE FORM CHANGES: locked, checked against the version it was
+   * edited from, checked for permission and integrity, written, and audited —
+   * as one transaction.
+   *
+   *  - LOCKED, so two saves cannot both read version N and both write: the
+   *    second waits, then finds version N+1 and is refused rather than silently
+   *    replacing the first operator's work.
+   *  - PERMISSION by what the save DOES. `PUT /admin/kyc-config` needs only
+   *    `kyc.edit`, and a whole-form save can add or remove steps — so a role
+   *    without `kyc.create` / `kyc.delete` could do through PUT exactly what the
+   *    per-step routes refuse it. Now adding a step needs `kyc.create` and
+   *    removing one `kyc.delete`, whichever route carried the change.
+   *  - AUDITED IN THE TRANSACTION, with what changed in the builder's own words
+   *    (`describeKycConfigChanges`). The form decides what every client must
+   *    hand over to be verified; a change to it without its record must not
+   *    stand.
+   */
+  private async changeKycConfig(
+    actor: AuthenticatedAdmin,
+    /** What the audit row records it as, and the version the change was made from. */
+    { action, version }: { action: string; version?: string },
+    change: (current: KycStepConfig[]) => KycStepConfig[],
+  ): Promise<{ before: KycStepConfig[]; after: KycStepConfig[] }> {
+    return this.db.transaction(async (tx) => {
+      await this.kycConfig.lockForChange(tx);
+      const before = await this.kycConfig.getSteps(tx);
+      if (version !== undefined && version !== kycConfigVersion(before)) {
+        throw new KycConfigStaleError(
+          'Someone else changed the KYC form while you were editing it. Reload to see their ' +
+            'changes, then make yours again.',
+        );
+      }
+      const next = withStepAddresses(before, change(before));
+      assertMayChangeSteps(actor, before, next);
+      assertKycConfigIntegrity(before, next);
+
+      const after = await this.kycConfig.setSteps(next, tx);
+      await this.audit.recordWithin(tx, actor.id, action, 'kyc_config', 'steps', {
+        slugs: after.map((step) => step.slug),
+        enabled: after.filter((step) => step.enabled).map((step) => step.slug),
+        changes: describeKycConfigChanges(before, after),
+      });
+      return { before, after };
     });
-    return result;
   }
-  async resetKycConfig(actor: Admin) {
-    // The most destructive of the five: it discards the entire configuration.
-    const result = await this.kycConfig.resetDefaults();
-    this.audit.record(actor.id, 'kyc_config.reset', 'kyc_config', 'steps', {});
-    return result;
+}
+
+/**
+ * A new step of the broker's gets its address from its title
+ * (`newCustomSlug`) when none was given; an existing step sent without one
+ * keeps the one it has. Addresses given are left for the integrity rules to
+ * judge.
+ */
+function withStepAddresses(
+  before: readonly KycStepConfig[],
+  next: readonly KycStepConfig[],
+): KycStepConfig[] {
+  const taken = new Set(next.map((step) => step.slug).filter(Boolean));
+  return next.map((step) => {
+    if (step.slug) return step;
+    const known = before.find((existing) => existing.id === step.id)?.slug;
+    const slug = known ?? newCustomSlug(step.title ?? '', taken);
+    taken.add(slug);
+    return { ...step, slug };
+  });
+}
+
+/** Adding a step needs `kyc.create`, removing one `kyc.delete` — whichever route carries it. */
+function assertMayChangeSteps(
+  actor: AuthenticatedAdmin,
+  before: readonly KycStepConfig[],
+  after: readonly KycStepConfig[],
+): void {
+  const had = new Set(before.map((step) => step.id));
+  const has = new Set(after.map((step) => step.id));
+  if (after.some((step) => !step.id || !had.has(step.id))) {
+    assertActorCan(actor, 'kyc.create', 'add a step to the KYC form');
+  }
+  if (before.some((step) => !has.has(step.id))) {
+    assertActorCan(actor, 'kyc.delete', 'remove a step from the KYC form');
   }
 }

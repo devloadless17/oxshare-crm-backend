@@ -193,6 +193,7 @@
   "POST /v1/admin/ip-allowlist",
   "POST /v1/admin/kyc-config/reset",
   "POST /v1/admin/kyc-config/steps",
+  "POST /v1/admin/kyc/{userId}/reverify",
   "POST /v1/admin/leverages",
   "POST /v1/admin/notifications/read-all",
   "POST /v1/admin/notifications/read-subject",

@@ -95,15 +95,26 @@ function actionsWritingDetails(): string[] {
 
 /**
  * Audit rows written by SQL, once: 0139 consolidated every client's two copies
- * of their identity into one profile and recorded each client's before/after.
+ * of their identity into one profile and recorded each client's before/after;
+ * 0147 fitted every saved KYC form to the identity core and recorded the form
+ * before and after (no client data — the form is a schema).
  */
 const WRITTEN_BY_MIGRATIONS: Readonly<Record<string, string>> = {
   'client.profile_consolidated': '0139_client_profile_single_home.sql',
+  'kyc_config.consolidated': '0147_kyc_identity_core.sql',
 };
 
 /**
  * Every action that passes a details object today. SHRINK-ONLY in spirit: an
  * entry leaving is fine, an entry arriving needs the check in the header.
+ *
+ * ⚠️ BLIND TO `recordWithin`. The scan reads `.record(` calls, so an action
+ * audited INSIDE its transaction is not seen here: the money decisions
+ * (`withdrawal.*`, `deposit.*`, `ib.approve`, `transaction.attention_resolve`)
+ * and, since 26 Sep 2026, every change to the KYC form (`kyc_config.replace`,
+ * `.reset`, `.step_*` — their payloads are the form's before/after and a
+ * sentence per change, no client data). They left this list when they moved
+ * into their transactions, not because they stopped writing.
  */
 const WRITES_DETAILS: readonly string[] = [
   'admin.avatar_change',
@@ -167,11 +178,8 @@ const WRITES_DETAILS: readonly string[] = [
   'kyc.identity_correct',
   'kyc.reject',
   'kyc.release',
-  'kyc_config.replace',
-  'kyc_config.reset',
-  'kyc_config.step_add',
-  'kyc_config.step_delete',
-  'kyc_config.step_update',
+  'kyc.reverification_request',
+  'kyc_config.consolidated',
   'leverage.create',
   'leverage.delete',
   'payment_method.create',

@@ -18,6 +18,7 @@ import {
   VerificationTokenExpiredError,
 } from '../src/common/errors/domain-errors';
 import { createHash } from 'node:crypto';
+import { SIGN_UP_DETAILS } from './support/registration';
 
 /**
  * AuthService — the portal's front door, and until now untested.
@@ -168,6 +169,7 @@ describe('register', () => {
     password: 'a-good-password-123',
     firstName: 'New',
     lastName: 'Person',
+    ...SIGN_UP_DETAILS,
   };
 
   it('does not create a second account for an address that already has one', async () => {

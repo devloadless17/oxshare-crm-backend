@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { anonymous, startHttpTestApp, stopHttpTestApp, type HttpTestContext } from './http-setup';
 import { users } from '../src/database/schema';
+import { SIGN_UP_DETAILS } from './support/registration';
 
 /**
  * REGISTRATION MUST NOT SAY WHETHER AN ADDRESS IS TAKEN.
@@ -60,6 +61,7 @@ const body = (email: string) => ({
   lastName: 'Probe',
   email,
   password: 'probe-password-123',
+  ...SIGN_UP_DETAILS,
 });
 
 beforeAll(async () => {

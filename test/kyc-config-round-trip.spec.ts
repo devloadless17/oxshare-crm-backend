@@ -132,7 +132,9 @@ describe('the KYC config round trip', () => {
     expect(steps.length, 'need two steps to swap').toBeGreaterThan(1);
 
     const before = steps.map((s) => s.slug);
-    const swapped = [steps[1], steps[0], ...steps.slice(2)];
+    expect(before[0], 'Personal Information is always first').toBe('personal');
+    // Two steps AFTER Personal Information — which is pinned first (identity core).
+    const swapped = [steps[0], steps[2], steps[1], ...steps.slice(3)];
 
     const write = await session.put('/v1/admin/kyc-config').send({ steps: swapped });
     expect(write.status, `reorder refused: ${JSON.stringify(write.body).slice(0, 200)}`).toBe(200);
@@ -148,13 +150,27 @@ describe('the KYC config round trip', () => {
     ).map((s) => s.slug);
 
     expect(afterOrder, 'the save answered 200 and the order did not move').toEqual([
-      before[1],
       before[0],
-      ...before.slice(2),
+      before[2],
+      before[1],
+      ...before.slice(3),
     ]);
 
     // Leave the config as it was found.
     await session.put('/v1/admin/kyc-config').send({ steps });
+  });
+
+  it('refuses moving Personal Information from the front, and changes nothing', async () => {
+    const read = await session.get('/v1/admin/kyc-config');
+    const steps = read.body as { slug: string }[];
+    const moved = [...steps.slice(1), steps[0]];
+
+    const write = await session.put('/v1/admin/kyc-config').send({ steps: moved });
+    expect(write.status).toBe(400);
+    expect(JSON.stringify(write.body)).toMatch(/Personal Information comes first/);
+    expect(((await session.get('/v1/admin/kyc-config')).body as { slug: string }[])[0].slug).toBe(
+      'personal',
+    );
   });
 });
 
@@ -242,23 +258,26 @@ describe('a step the caller did not name', () => {
     const before = await session.get('/v1/admin/kyc-config');
     const original = (Array.isArray(before.body) ? before.body : before.body.steps) as unknown[];
 
+    // Keys are unique across the whole form, so each step's note has its own.
     const field = (id: string) => ({
       id,
-      name: 'note',
+      name: `note_${id}`,
       label: 'Note',
       type: 'text',
       required: false,
     });
 
     /*
-     * The collision, built on purpose: the FIRST step explicitly claims
+     * The collision, built on purpose: the FIRST added step explicitly claims
      * `step-audit`, which is exactly what the second — slug `audit`, no id —
-     * would otherwise be given.
+     * would otherwise be given. Both are added after the built-in steps, which
+     * every form now keeps.
      */
     const write = await session.put('/v1/admin/kyc-config').send({
       steps: [
-        { id: 'step-audit', slug: 'other', title: 'Other', enabled: true, fields: [field('f-a')] },
-        { slug: 'audit', title: 'Audit', enabled: true, fields: [field('f-b')] },
+        ...original,
+        { id: 'step-audit', slug: 'other', title: 'Other', enabled: true, fields: [field('fa')] },
+        { slug: 'audit', title: 'Audit', enabled: true, fields: [field('fb')] },
       ],
     });
 
@@ -273,14 +292,17 @@ describe('a step the caller did not name', () => {
       slug: string;
     }[];
 
+    const added = saved.slice(original.length);
     expect(
-      saved.map((s) => s.slug),
+      added.map((s) => s.slug),
       'the save answered 200 and did not persist',
     ).toEqual(['other', 'audit']);
-    const ids = saved.map((s) => s.id);
+    const ids = added.map((s) => s.id);
     expect(ids[0], "the caller's own id was overwritten").toBe('step-audit');
     expect(ids[1], 'the assigned id is empty').toBeTruthy();
-    expect(new Set(ids).size, 'two steps were saved under one id').toBe(2);
+    expect(new Set(saved.map((s) => s.id)).size, 'two steps were saved under one id').toBe(
+      saved.length,
+    );
 
     // Leave the config as it was found.
     await session.put('/v1/admin/kyc-config').send({ steps: original });
@@ -411,7 +433,10 @@ describe('a field goes only on a step that can store it', () => {
       steps: [...before, { slug: 'extra-docs', title: 'Extra', enabled: true, fields: [passport] }],
     });
     expect(write.status, JSON.stringify(write.body).slice(0, 300)).toBe(400);
-    expect(JSON.stringify(write.body)).toMatch(/Passport.*document type/);
+    // A client has one passport: it is collected on the Identity Document step, once.
+    expect(JSON.stringify(write.body)).toMatch(
+      /Passport.*collected on the Identity Document and Proof of Address steps only/,
+    );
 
     const after = stepsOf((await session.get('/v1/admin/kyc-config')).body);
     expect(after.map((s) => s.id)).toEqual(before.map((s) => s.id));
@@ -541,7 +566,15 @@ describe('0137 puts every catalogue document on the step that holds its kind', (
     const second = await ctx.db.db.execute(sql.raw(migration));
     expect(second.rowCount).toBe(0);
 
-    // And what it leaves is a configuration the builder can save.
+    /*
+     * And what it leaves — once 0147 has fitted it to the identity core, as it
+     * does on every database that ran 0137 — is a configuration the builder
+     * can save. 0137 alone no longer is: its "Passport" File field is a second
+     * copy of the passport, which the owner ruled out (26 Sep 2026).
+     */
+    await ctx.db.db.execute(
+      sql.raw(readFileSync('src/database/migrations/0147_kyc_identity_core.sql', 'utf8')),
+    );
     const read = await session.get('/v1/admin/kyc-config');
     const write = await session
       .put('/v1/admin/kyc-config')

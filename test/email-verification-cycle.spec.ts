@@ -9,6 +9,7 @@ import { AuthService } from '../src/modules/identity/auth.service';
 import { PasswordService } from '../src/common/security/password.service';
 import { ValidationError, VerificationTokenExpiredError } from '../src/common/errors/domain-errors';
 import { storedFilesStub } from './storage-stub';
+import { SIGN_UP_DETAILS } from './support/registration';
 
 /**
  * Email verification, end to end against real Postgres — UX-BACKLOG UX-01.
@@ -46,6 +47,7 @@ async function register(email: string) {
     password: 'AGoodPassword123!',
     firstName: 'Test',
     lastName: 'Client',
+    ...SIGN_UP_DETAILS,
   });
   const token = mailed.at(-1)!.token;
   const row = await reloadByEmail(email);

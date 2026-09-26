@@ -150,9 +150,27 @@ export interface KycSubmission {
    * so consumers never branch on null, only on whether a slug is present.
    */
   stepData: Record<string, Record<string, string | { filePath: string; fileName: string }>>;
+  /**
+   * When a reviewer returned an APPROVED verification for the client to redo
+   * (0147). Cleared by the approval that follows.
+   */
+  reverificationRequestedAt?: Date;
+  /**
+   * What the broker's own steps asked when the client submitted (0147) — the
+   * review labels their answers from it. Internal: never part of a client's
+   * view of their own submission.
+   */
+  formSnapshot?: KycFormSnapshot;
   createdAt: Date;
   updatedAt: Date;
 }
+
+/** The broker's own questions as a client answered them — see `KycSubmission.formSnapshot`. */
+export type KycFormSnapshot = {
+  slug: string;
+  title: string;
+  fields: { name: string; label: string; type: string }[];
+}[];
 
 type Row = typeof kycSubmissions.$inferSelect;
 
@@ -169,6 +187,8 @@ const toSubmission = (r: Row): KycSubmission => ({
   selfie: (r.selfie as unknown as SelfieInfo) ?? undefined,
   addressProof: (r.addressProof as unknown as AddressInfo) ?? undefined,
   stepData: r.stepData ?? {},
+  reverificationRequestedAt: r.reverificationRequestedAt ?? undefined,
+  formSnapshot: r.formSnapshot ?? undefined,
   createdAt: r.createdAt,
   updatedAt: r.updatedAt,
 });
@@ -191,6 +211,8 @@ const toColumns = (
     ['selfie', 'selfie'],
     ['addressProof', 'addressProof'],
     ['stepData', 'stepData'],
+    ['reverificationRequestedAt', 'reverificationRequestedAt'],
+    ['formSnapshot', 'formSnapshot'],
   ];
   /*
    * `key in patch`, not a truthiness test: a key present with `null` MEANS

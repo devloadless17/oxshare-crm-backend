@@ -142,6 +142,13 @@ export class KycFieldConfigDto {
     description: 'Resolved from the field type. Read-only — writes are ignored.',
   })
   document?: KycDocumentTypeDto;
+  /**
+   * The PLATFORM's field: one of the client's identity fields, or the selfie
+   * camera. Its label, type and whether it is required are fixed, and it can be
+   * neither removed nor moved (`common/kyc/identity-core.ts`).
+   */
+  @ApiPropertyOptional({ description: "The platform's own field — fixed, never editable." })
+  system?: boolean;
 }
 
 /**
@@ -164,6 +171,12 @@ export class KycStepConfigDto {
   @ApiPropertyOptional({ description: 'lucide icon name.', example: 'User' }) icon?: string;
   @ApiProperty() enabled: boolean;
   @ApiProperty({ type: [KycFieldConfigDto] }) fields: KycFieldConfigDto[];
+  /** One of the four built-in steps: it exists once, and keeps its name and address. */
+  @ApiPropertyOptional({ description: 'One of the four built-in steps.' })
+  core?: boolean;
+  /** A built-in step that cannot be switched off — Personal Information, Identity Document. */
+  @ApiPropertyOptional({ description: 'A built-in step that cannot be switched off.' })
+  alwaysOn?: boolean;
 }
 
 export class KycDocumentStateDto {
@@ -261,6 +274,14 @@ export class KycStatusDto {
     description: 'Field names the client must re-submit.',
   })
   rejectedFields?: string[];
+
+  /**
+   * Set when a reviewer returned an APPROVED verification to be updated — the
+   * screen says "please update your verification", not "rejected": the client
+   * did nothing wrong, a detail changed. Cleared by the next approval.
+   */
+  @ApiPropertyOptional({ type: Date, description: 'A returned APPROVED verification.' })
+  reverificationRequestedAt?: Date;
 
   @ApiProperty({
     type: [KycStepStateDto],

@@ -1,10 +1,18 @@
+import { createHash } from 'crypto';
 import { documentForFieldType } from '../common/kyc/document-catalogue';
 import { KYC_COUNTRY_OPTIONS, KYC_NATIONALITY_OPTIONS } from '../common/kyc/country-options';
-import { v4 as uuidv4 } from 'uuid';
-import { asc, eq } from 'drizzle-orm';
+import {
+  CORE_STEPS,
+  DOCUMENT_CATALOGUE_BY_CATEGORY,
+  documentField,
+  inFormOrder,
+  platformStep,
+  storedStep,
+} from '../common/kyc/identity-core';
+import { asc, sql } from 'drizzle-orm';
 import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
-import type { Db } from '../database/db';
+import type { Db, Executor } from '../database/db';
 import { kycConfigSteps } from '../database/schema';
 
 /** One upload slot a document type asks for. See `KycDocumentType`. */
@@ -53,48 +61,12 @@ export interface KycFieldConfig {
    * never hold a stale copy of what a passport requires.
    */
   document?: KycDocumentType;
+  /**
+   * The PLATFORM's field — an identity field, or the selfie camera. Served on
+   * every read, never stored, never editable (`common/kyc/identity-core.ts`).
+   */
+  system?: boolean;
 }
-
-/**
- * Steps the KYC flow cannot be configured without.
- *
- * FR-CORE-15 mandates the identity document, selfie and proof-of-address steps;
- * FR-IND-03 mandates the profile step. The client portal submits by slug and the
- * FSD's §14 acceptance criteria depend on all four existing and being enabled, so
- * removing or disabling one silently breaks onboarding for every new client
- * (DECISIONS D-29).
- *
- * The admin UI has always blocked this. The API did not — verified against a
- * running server: `PUT /admin/kyc-config` accepted a config with `personal`
- * disabled (200), and `DELETE /admin/kyc-config/steps/step-2` removed the identity
- * document step (200). So the rule held only for users of one screen, and any
- * script, integration or future admin client bypassed it.
- *
- * ⚠️ **THE ENFORCEMENT THIS PARAGRAPH USED TO PROMISE IS GONE, ON PURPOSE.**
- * It said "it is enforced in AdminComplianceService now". That stopped being
- * true on 15 Aug 2026, when the owner retired the rule — see the block above
- * `updateKycConfig` in `admin-compliance.service.ts`, which states it at
- * length. The objection that retired it: a KYC flow sold as configurable that
- * refuses to drop four of its steps is not configurable, and which documents a
- * jurisdiction requires is the broker's decision, not this file's.
- *
- * So today NOTHING stops a step being disabled or deleted, by design. What
- * replaces the rule is the AUDIT TRAIL — `kyc_config.replace` records the full
- * slug list and the enabled subset on every save, so "onboarding stopped asking
- * for proof of address on the 12th" is answerable with a name attached.
- *
- * This constant survives as the DEFAULT set and as a test fixture
- * (`test/kyc-config-rules.spec.ts`), not as a guard. The name is now a
- * misnomer and is left alone only because renaming it would touch the seed;
- * read it as DEFAULT_REQUIRED_SLUGS and do not write code that assumes it is
- * enforced.
- *
- * Corrected 10 Sep 2026. It is recorded rather than deleted because the
- * paragraph asserted an enforcement that did not exist for roughly four weeks,
- * which is the same shape as ARCHITECTURE §6.4's append-only claim surviving
- * the loss of its triggers: a guarantee stated in a comment is not a guarantee.
- */
-export const MANDATORY_KYC_SLUGS: readonly string[] = ['personal', 'document', 'selfie', 'address'];
 
 export interface KycStepConfig {
   id: string;
@@ -105,187 +77,56 @@ export interface KycStepConfig {
   icon: string;
   enabled: boolean;
   fields: KycFieldConfig[];
+  /** One of the four built-in steps. Served on read, never stored. */
+  core?: boolean;
+  /** A built-in step that cannot be switched off. Served on read, never stored. */
+  alwaysOn?: boolean;
 }
 
-// The five default onboarding steps. Seeded idempotently at bootstrap
-// (src/database/seed.ts); the builder edits the table from there.
-export const DEFAULT_KYC_STEPS: KycStepConfig[] = [
-  {
-    id: 'step-1',
-    stepNumber: 1,
-    slug: 'personal',
-    title: 'Personal Information',
-    description: 'Legal identity details exactly as they appear on your government ID.',
-    icon: 'User',
-    enabled: true,
-    fields: [
-      {
-        id: 'f-1',
-        name: 'firstName',
-        label: 'First Name',
-        type: 'text',
-        required: true,
-        hint: 'As on your ID',
-      },
-      {
-        id: 'f-2',
-        name: 'lastName',
-        label: 'Last Name',
-        type: 'text',
-        required: true,
-        hint: 'As on your ID',
-      },
-      {
-        id: 'f-3',
-        name: 'dateOfBirth',
-        label: 'Date of Birth',
-        type: 'date',
-        required: true,
-        hint: 'Must be 18+',
-      },
-      {
-        id: 'f-4',
-        name: 'phone',
-        label: 'Phone Number',
-        type: 'phone',
-        required: true,
-        hint: 'International format',
-      },
-      {
-        id: 'f-5',
-        name: 'nationality',
-        label: 'Nationality',
-        type: 'select',
-        required: true,
-      },
-      {
-        id: 'f-6',
-        name: 'country',
-        label: 'Country of Residence',
-        type: 'select',
-        required: true,
-      },
-      {
-        id: 'f-7',
-        name: 'address',
-        label: 'Residential Address',
-        type: 'text',
-        required: false,
-      },
-      /*
-       * Named ids rather than f-8 / f-9: those were the identity-document
-       * fields before 0074, and an id is matched across the whole config, so
-       * reusing one could turn an old config into a false "rename". 0139 adds
-       * the same two fields, with the same ids, to a config already saved.
-       */
-      {
-        id: 'f-city',
-        name: 'city',
-        label: 'City',
-        type: 'text',
-        required: false,
-      },
-      {
-        id: 'f-postal-code',
-        name: 'postalCode',
-        label: 'Postal / ZIP code',
-        type: 'text',
-        required: false,
-        hint: 'Leave blank if your address has none',
-      },
-    ],
-  },
-  {
-    id: 'step-2',
-    stepNumber: 2,
-    slug: 'document',
-    title: 'Identity Document',
-    description: 'Upload a valid Passport, National ID, or Driving License.',
-    icon: 'FileText',
-    enabled: true,
-    fields: [
-      /*
-       * THREE FIELDS, one per accepted document — the alternatives the client
-       * chooses between, written the way they read.
-       *
-       * The type IS the document (`doc:passport`), so how many photos each
-       * needs is a fact in `common/kyc/document-catalogue.ts` rather than
-       * something re-entered per step.
-       */
-      {
-        id: 'f-doc-passport',
-        name: 'passport',
-        label: 'Passport',
-        type: 'doc:passport',
-        required: false,
-      },
-      {
-        id: 'f-doc-national-id',
-        name: 'nationalId',
-        label: 'National ID',
-        type: 'doc:national_id',
-        required: false,
-      },
-      {
-        id: 'f-doc-driving-license',
-        name: 'drivingLicense',
-        label: 'Driving License',
-        type: 'doc:driving_license',
-        required: false,
-      },
-    ],
-  },
-  {
-    id: 'step-3',
-    stepNumber: 3,
-    slug: 'selfie',
-    title: 'Selfie Verification',
-    description: 'Live selfie photo matching your identity document.',
-    icon: 'Camera',
-    enabled: true,
-    fields: [
-      {
-        id: 'f-11',
-        name: 'selfie',
-        label: 'Selfie Photo',
-        type: 'camera',
-        required: true,
-      },
-    ],
-  },
-  {
-    id: 'step-4',
-    stepNumber: 4,
-    slug: 'address',
-    title: 'Proof of Address',
-    description: 'Document dated within the last 3 months showing your residential address.',
-    icon: 'Home',
-    enabled: true,
-    fields: [
-      {
-        id: 'f-addr-utility',
-        name: 'utilityBill',
-        label: 'Utility Bill',
-        type: 'doc:utility_bill',
-        required: false,
-      },
-      {
-        id: 'f-addr-bank',
-        name: 'bankStatement',
-        label: 'Bank Statement',
-        type: 'doc:bank_statement',
-        required: false,
-      },
-      {
-        id: 'f-addr-tenancy',
-        name: 'tenancyAgreement',
-        label: 'Tenancy Agreement',
-        type: 'doc:tenancy_agreement',
-        required: false,
-      },
-    ],
-  },
-];
+/*
+ * ── `MANDATORY_KYC_SLUGS` IS GONE, AND THE RULE IT NAMED IS BACK — PARTLY ────
+ *
+ * The constant listed personal/document/selfie/address and its docblock said,
+ * at length, that it was NOT enforced: the owner retired the mandatory-step rule
+ * on 15 Aug 2026, and the list survived as a default and a test fixture.
+ *
+ * On 26 Sep 2026 the owner ruled again, after a broker's edit silently removed a
+ * client's first name from the form: the four built-in steps exist exactly
+ * once, Personal Information and Identity Document are always on, and Selfie
+ * and Proof of Address may be switched off. That model lives in
+ * `common/kyc/identity-core.ts` (`CORE_STEPS`) and is ENFORCED — by the store
+ * below on every read and write, and by `kyc-config-integrity.ts` on every
+ * save. Nothing here restates it.
+ */
+
+/**
+ * The default flow, as the TABLE holds it. Seeded idempotently at bootstrap
+ * (src/database/seed.ts); the builder edits the table from there.
+ *
+ * Not what a reader SEES: the identity fields and the selfie camera are the
+ * platform's and are never stored, so `getSteps` adds them on the way out
+ * (`platformStep`). What is written here is only what the broker could change —
+ * which documents each document step accepts, whether a step is on, and its
+ * description.
+ */
+const identityDocuments = DOCUMENT_CATALOGUE_BY_CATEGORY.identity.map(documentField);
+const addressDocuments = DOCUMENT_CATALOGUE_BY_CATEGORY.address.map(documentField);
+
+export const DEFAULT_KYC_STEPS: KycStepConfig[] = CORE_STEPS.map((core, index) => ({
+  id: `step-${index + 1}`,
+  stepNumber: index + 1,
+  slug: core.slug,
+  title: core.title,
+  description: core.description,
+  icon: core.icon,
+  enabled: true,
+  fields:
+    core.documents === 'identity'
+      ? identityDocuments
+      : core.documents === 'address'
+        ? addressDocuments
+        : [],
+}));
 
 /*
  * ── THERE IS NO `review` STEP IN HERE, DELIBERATELY ───────────────────────
@@ -303,14 +144,6 @@ export const DEFAULT_KYC_STEPS: KycStepConfig[] = [
 type Row = typeof kycConfigSteps.$inferSelect;
 
 /**
- * Resolves `acceptedDocuments` into the full catalogue entries on the way OUT.
- *
- * The row stores values only, so a step configured last year cannot hold a
- * stale copy of what a passport requires — change the catalogue and every step
- * that accepts one follows on the next read. Storing the resolved shape would
- * mean a migration each time a document's slots changed.
- */
-/**
  * Field names whose options are a SYSTEM LIST rather than an operator's typing.
  *
  * Nobody is going to hand-enter 250 countries into the builder, and a list that
@@ -320,20 +153,13 @@ type Row = typeof kycConfigSteps.$inferSelect;
  * Matched on the field NAME, which is deliberate: `nationality` and `country`
  * are profile fields (0139), and the name IS the profile column.
  *
- * ⚠️ **ALWAYS the system list now — stored options are ignored, not deferred to.**
- * This used to say "an operator who wants a different list gives the field its
- * own `options`, and this defers". Two things ended that:
- *
- *  - the answer lands in the client's profile, which accepts exactly the system
- *    list (`client-profile.ts`) — an operator's "UAE" would be a choice no client
- *    could save, and registration would still accept the countries it removed;
- *  - the "strip it back out" below compared by IDENTITY, which a JSON round trip
- *    never preserves — so the first save from the builder baked the whole list
- *    into the row (found on the dev database: 187 nationalities, 251 countries).
- *    A baked copy stops tracking the package the day it is written.
- *
- * The builder refuses an edited list (`assertProfileFieldsKeepTheirPlace`), and
- * a stored one — baked or not — is never served.
+ * ⚠️ **ALWAYS the system list — stored options are ignored, not deferred to.**
+ * The answer lands in the client's profile, which accepts exactly the system
+ * list (`client-profile.ts`), and a "strip it back out" that compared by
+ * IDENTITY — which a JSON round trip never preserves — once baked the whole list
+ * into the row (found on the dev database: 187 nationalities, 251 countries).
+ * Since the identity core, those two fields are never stored at all; the strip
+ * below still runs, for the rows written before.
  */
 const SYSTEM_OPTIONS: Readonly<Record<string, readonly string[]>> = {
   nationality: KYC_NATIONALITY_OPTIONS,
@@ -343,52 +169,53 @@ const SYSTEM_OPTIONS: Readonly<Record<string, readonly string[]>> = {
 const hasSystemOptions = (name: string): boolean =>
   Object.prototype.hasOwnProperty.call(SYSTEM_OPTIONS, name);
 
+/**
+ * Resolves each document field's catalogue entry, and each system list, on the
+ * way OUT.
+ *
+ * The row stores the TYPE only, so a step configured last year cannot hold a
+ * stale copy of what a passport requires — change the catalogue and every step
+ * that accepts one follows on the next read. Storing the resolved shape would
+ * mean a migration each time a document's slots changed.
+ */
 const withResolvedDocuments = (fields: KycFieldConfig[]): KycFieldConfig[] =>
   fields.map((field) => {
     const document = documentForFieldType(field.type);
     // A base type (`text`, `date`, …) resolves to nothing and passes through.
     if (document) return { ...field, document };
-
-    /*
-     * A `select` named for a system list gets that list — whatever the row
-     * holds. The admin builder showed both of these as "Dropdown with no
-     * choices" when the portal filled them in locally; now the config carries
-     * them, and always the current ones (see SYSTEM_OPTIONS).
-     */
     if (field.type === 'select' && hasSystemOptions(field.name)) {
       return { ...field, options: [...SYSTEM_OPTIONS[field.name]] };
     }
     return field;
   });
 
-const toStep = (r: Row): KycStepConfig => ({
-  id: r.id,
-  stepNumber: r.stepNumber,
-  slug: r.slug,
-  title: r.title,
-  description: r.description ?? '',
-  icon: r.icon ?? 'FileText',
-  enabled: r.enabled,
-  fields: withResolvedDocuments((r.fields as unknown as KycFieldConfig[]) ?? []),
-});
+/**
+ * A row as every reader sees it: the platform's parts rebuilt from code
+ * (`platformStep`), then the catalogue and the system lists resolved.
+ */
+const toStep = (r: Row): KycStepConfig => {
+  const step = platformStep<KycStepConfig>({
+    id: r.id,
+    stepNumber: r.stepNumber,
+    slug: r.slug,
+    title: r.title,
+    description: r.description ?? '',
+    icon: r.icon ?? 'FileText',
+    enabled: r.enabled,
+    fields: (r.fields as unknown as KycFieldConfig[]) ?? [],
+  });
+  return { ...step, fields: withResolvedDocuments(step.fields) };
+};
 
 /*
- * `documentTypes` is stripped on the way IN. It is derived from the catalogue,
- * so persisting it would create a second copy that drifts — and a client
- * posting a hand-crafted one could otherwise declare a passport needs no
- * upload at all.
+ * What is resolved on the way out is stripped on the way in. `document` is
+ * derived from the catalogue, so persisting it would create a second copy that
+ * drifts — and a client posting a hand-crafted one could otherwise declare a
+ * passport needs no upload at all. A system list is stripped by NAME, whatever
+ * arrived.
  */
 const stripResolved = (fields: KycFieldConfig[]): KycFieldConfig[] =>
   fields.map(({ document: _resolved, ...field }) => {
-    /*
-     * A system list is stripped back out on the way IN, or the first save from
-     * the builder bakes 250 country names into the row — a snapshot that stops
-     * tracking the package the moment it is written.
-     *
-     * Stripped by NAME, whatever arrived. This compared by identity once, which
-     * a JSON round trip never preserves, so every save baked the list in. An
-     * edited list never reaches here: the builder's rules refuse it first.
-     */
     if (field.type === 'select' && hasSystemOptions(field.name)) {
       const { options: _system, ...rest } = field;
       return rest;
@@ -396,56 +223,74 @@ const stripResolved = (fields: KycFieldConfig[]): KycFieldConfig[] =>
     return field;
   });
 
-const toRow = (s: KycStepConfig) => ({
-  id: s.id,
-  stepNumber: s.stepNumber,
-  slug: s.slug,
-  title: s.title,
-  description: s.description,
-  icon: s.icon,
-  enabled: s.enabled,
-  fields: stripResolved(s.fields) as unknown as Record<string, unknown>[],
-});
+/** A step as it is STORED — the platform's parts removed (`storedStep`). */
+const toRow = (s: KycStepConfig) => {
+  const stored = storedStep(s);
+  return {
+    id: stored.id,
+    stepNumber: stored.stepNumber,
+    slug: stored.slug,
+    title: stored.title,
+    description: stored.description,
+    icon: stored.icon,
+    enabled: stored.enabled,
+    fields: stripResolved(stored.fields) as unknown as Record<string, unknown>[],
+  };
+};
+
+/**
+ * THE CONFIGURATION'S VERSION, as the builder's save must name it.
+ *
+ * A digest of the form exactly as `getSteps` serves it. Two operators editing
+ * the form at once used to be settled by whoever pressed Save last, silently
+ * discarding the other's work; the save now states the version it was edited
+ * from (`If-Match`), and a version that no longer matches is refused (409).
+ *
+ * A digest rather than a counter because it needs no column and cannot fall
+ * out of step with what it describes: it IS what it describes.
+ */
+export function kycConfigVersion(steps: readonly KycStepConfig[]): string {
+  return createHash('sha256').update(JSON.stringify(steps)).digest('hex');
+}
 
 @Injectable()
 export class KycConfigStore {
   constructor(@Inject(DRIZZLE_DB) private readonly db: Db) {}
 
-  async getSteps(): Promise<KycStepConfig[]> {
-    const rows = await this.db
+  /** The form as every reader sees it: Personal Information first, then the rest in order. */
+  async getSteps(executor: Executor = this.db): Promise<KycStepConfig[]> {
+    const rows = await executor
       .select()
       .from(kycConfigSteps)
       .orderBy(asc(kycConfigSteps.stepNumber));
-    return rows.map(toStep);
+    return inFormOrder(rows.map(toStep));
   }
 
-  async setSteps(steps: KycStepConfig[]): Promise<KycStepConfig[]> {
+  /**
+   * Serialise every change to the form behind one transaction-scoped lock, so
+   * "read the version, check it, write" is one act. Transaction-scoped rather
+   * than session-scoped, because behind a pool a session lock can be released
+   * on a different connection than took it (see `JobLeaseService`).
+   */
+  async lockForChange(executor: Executor): Promise<void> {
+    await executor.execute(sql`SELECT pg_advisory_xact_lock(hashtext('kyc_config_steps'))`);
+  }
+
+  /**
+   * Replace the whole form. Joins the caller's transaction when given one —
+   * the service locks, checks and writes as one act.
+   */
+  async setSteps(steps: KycStepConfig[], executor?: Executor): Promise<KycStepConfig[]> {
     /*
      * ⚠️ `id` IS ASSIGNED HERE WHEN THE CALLER OMITS IT, AND THAT IS NOT COSMETIC.
      *
      * `kyc_config_steps.id` is `text().primaryKey()` with NO database default,
-     * while `KycStepDto.id` is declared OPTIONAL and `stepNumber` is documented
-     * as "server-assigned ordering; ignored on create". So a caller adding a new
-     * step the way the DTO invites — slug, title, fields, no id — reached
-     * `toRow` with `id: undefined`, Drizzle wrote `default` for a column that
-     * has none, and the insert failed. The caller got a **500 INTERNAL_ERROR**
-     * with an opaque "an unexpected error occurred", on a request that was
-     * exactly what the published contract asked for.
-     *
-     * It stayed hidden because every caller that exists today happens to carry
-     * one: the builder does `steps = draft ?? query.data`, so its steps come
-     * from GET with their ids attached, and `addStep` mints its own. Found
-     * while writing the FR-CORE-15 case in `kyc-http.spec.ts`, which is the
-     * first caller to construct a step from nothing.
-     *
-     * Assigned rather than made required, because `id` is genuinely the
-     * server's to decide — the same reasoning that makes `stepNumber`
-     * server-assigned one line below. Derived from the SLUG, matching the
-     * schema's own comment ("human slugs like 'step-personal' from the
-     * builder"), and de-duplicated against ids already spoken for in this same
-     * payload: slugs are not unique-constrained, and two steps colliding on a
-     * generated id would reintroduce the failure this removes, more rarely and
-     * therefore worse.
+     * while `KycStepDto.id` is declared OPTIONAL. A caller adding a step the way
+     * the DTO invites — slug, title, fields, no id — once reached the insert
+     * with `id: undefined` and got a 500 on a request the contract asked for.
+     * Assigned rather than made required, because the id is the server's to
+     * decide, like `stepNumber`; derived from the slug and de-duplicated
+     * against ids already spoken for in this payload.
      */
     const taken = new Set(steps.map((s) => s.id).filter((id): id is string => Boolean(id)));
     const assignId = (s: KycStepConfig, idx: number): string => {
@@ -458,55 +303,12 @@ export class KycConfigStore {
       return candidate;
     };
 
-    const reindexed = steps.map((s, idx) => ({ ...s, id: assignId(s, idx), stepNumber: idx + 1 }));
-    const db = this.db;
-    await db.transaction(async (tx) => {
+    const ordered = inFormOrder(steps.map((s, idx) => ({ ...s, id: assignId(s, idx) })));
+    const write = async (tx: Executor) => {
       await tx.delete(kycConfigSteps);
-      if (reindexed.length > 0) await tx.insert(kycConfigSteps).values(reindexed.map(toRow));
-    });
-    return this.getSteps();
-  }
-
-  async addStep(stepData: Omit<KycStepConfig, 'id' | 'stepNumber'>): Promise<KycStepConfig> {
-    const existing = await this.getSteps();
-    const newStep: KycStepConfig = {
-      ...stepData,
-      id: `step-${uuidv4()}`,
-      stepNumber: existing.length + 1,
+      if (ordered.length > 0) await tx.insert(kycConfigSteps).values(ordered.map(toRow));
+      return this.getSteps(tx);
     };
-    await this.db.insert(kycConfigSteps).values(toRow(newStep));
-    return newStep;
-  }
-
-  async updateStep(id: string, patch: Partial<KycStepConfig>): Promise<KycStepConfig | undefined> {
-    const [existing] = await this.db
-      .select()
-      .from(kycConfigSteps)
-      .where(eq(kycConfigSteps.id, id))
-      .limit(1);
-    if (!existing) return undefined;
-    const merged = { ...toStep(existing), ...patch, id };
-    const [row] = await this.db
-      .update(kycConfigSteps)
-      .set(toRow(merged))
-      .where(eq(kycConfigSteps.id, id))
-      .returning();
-    return toStep(row);
-  }
-
-  async deleteStep(id: string): Promise<boolean> {
-    const deleted = await this.db
-      .delete(kycConfigSteps)
-      .where(eq(kycConfigSteps.id, id))
-      .returning();
-    if (deleted.length === 0) return false;
-    // Re-index the remaining steps
-    const remaining = await this.getSteps();
-    await this.setSteps(remaining);
-    return true;
-  }
-
-  resetDefaults(): Promise<KycStepConfig[]> {
-    return this.setSteps([...DEFAULT_KYC_STEPS]);
+    return executor ? write(executor) : this.db.transaction(write);
   }
 }

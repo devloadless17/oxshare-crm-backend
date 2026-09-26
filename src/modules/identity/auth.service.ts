@@ -1,5 +1,6 @@
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { lockoutMessage } from '../../common/security/lockout-message';
+import { REGISTRATION_REQUIRED } from '../../common/kyc/identity-core';
 import {
   checkProfile,
   firstProfileError,
@@ -290,9 +291,13 @@ export class AuthService {
      * with somebody's email and read which answer comes back. Checked here, the
      * refusal is the same whoever the address belongs to.
      *
-     * Optional on the wire beyond the name, so a portal build that predates the
-     * fields keeps registering; the portal asks for all of them, and KYC
-     * completeness is enforced at submission either way.
+     * REQUIRED since 26 Sep 2026, the owner's ruling: who the person is and how
+     * to reach them — names, date of birth, nationality, phone, residence
+     * (`REGISTRATION_REQUIRED`). Enforced here, per field and in the profile's
+     * own words, rather than trusted to a form. The address, city and postal
+     * code stay optional: they are completed in the verification, pre-filled
+     * from whatever was given here. Every portal build since 25 Sep sends all
+     * six, so enforcing them breaks no live screen.
      */
     const profile = checkProfile(
       {
@@ -306,7 +311,7 @@ export class AuthService {
         ...(dto.city !== undefined ? { city: dto.city } : {}),
         ...(dto.postalCode !== undefined ? { postalCode: dto.postalCode } : {}),
       },
-      { required: ['firstName', 'lastName'] },
+      { required: REGISTRATION_REQUIRED },
     );
     const profileError = firstProfileError(profile.errors);
     if (profileError) {

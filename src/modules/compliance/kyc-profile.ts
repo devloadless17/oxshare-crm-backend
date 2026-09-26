@@ -1,66 +1,42 @@
 /**
- * What a KYC profile must contain before it can be submitted — a pure seam.
+ * Whether a verification's answers are complete — a pure seam, beside
+ * `kyc-step-state.ts` (the one judge that uses it) and `kyc-answers.ts`.
  *
- * No Nest, no Drizzle, no fs: the caller passes the values and the field
- * configuration in, so this is unit-testable without a container.
+ * No Nest, no Drizzle, no fs: the caller passes the values in, so every rule is
+ * one assertion in `kyc-profile.spec.ts`.
  *
- * ## Why it exists
+ * ## Two kinds of answer, judged two ways (26 Sep 2026)
+ *
+ * The client's IDENTITY — the nine profile fields — is judged by the
+ * PLATFORM's rules and nothing else: `VERIFICATION_REQUIRED` says what must be
+ * there, and `normaliseProfileValue` — the very function every profile WRITE
+ * goes through — says whether a value is acceptable. So:
+ *
+ *  - nothing the writer would refuse can pass as answered. A country typed as
+ *    "Lebanon " or picked from a list the broker once edited, a phone cut
+ *    short, a date of birth that makes the client fourteen — each used to have
+ *    one verdict at the door and another at submission;
+ *  - nothing the builder configures can switch a rule off. The required set
+ *    and the minimum age used to be read from the personal step's fields, so
+ *    deleting the date-of-birth field took the age check with it, and disabling
+ *    the step made submission answer 500.
+ *
+ * The broker's OWN questions are judged by their configuration, because they
+ * are the broker's: required or not, a checkbox ticked or not (`isAnswered`).
+ *
+ * ## History worth keeping
  *
  * FR-IND-03 requires an individual to "maintain a personal profile (including
- * date of birth and address)" before reaching level 1, and the seeded profile
- * step asks for a date of birth with the hint `Must be 18+`.
- *
- * None of that was enforced anywhere on the server. The chain, as it stood:
- *
- *   1. `SaveKycStepDto` declares `data: Record<string, unknown>` with `@IsObject()`
- *      and nothing else — deliberately, because the step set is admin-configurable
- *      and a hardcoded enum would reject a valid custom step. So the global
- *      ValidationPipe validated no field of any step.
- *   2. `saveStep()` merged the payload into the stored blob without consulting the
- *      step's configured `fields` at all, so `required: true` was decoration.
- *   3. `submit()` tested `!finalSub.personalInfo` — the truthiness of an OBJECT.
- *      `{}` is truthy.
- *
- * Which meant this sequence returned 200 at every step:
- *
- *     POST /kyc/step   { "step": "personal", "data": {} }
- *     POST /kyc/upload × 3
- *     POST /kyc/submit
- *
- * — a submission reaching the review queue with no name, no date of birth and no
- * address, behind three genuine document images. The only remaining control was
- * the reviewer noticing an empty personal-information card.
- *
- * The age rule was weaker still. `Must be 18+` is a hint string rendered as
- * placeholder text (`kyc-config.store.ts`), and the actual check lived in the
- * client portal (`app/kyc/step/[step]/page.tsx`), in the browser, bypassed by any
- * direct API call. A broker onboarding a minor is a licensing matter, not a bug
- * report, and the rule was enforced by a form.
- *
- * ## Why the rules come from the configuration
- *
- * The required set is read from the step's own `fields` rather than hardcoded
- * here, because the admin KYC builder owns that configuration (D-29). Hardcoding
- * it would mean the API enforced one thing while the portal rendered another —
- * which is the class of defect this file exists to close, reintroduced from the
- * other side.
+ * date of birth and address)" before reaching level 1, and for a long time
+ * nothing on the server enforced it: `submit()` tested `!personalInfo`, and `{}`
+ * is truthy, so a submission with no name, no date of birth and no address
+ * reached the review queue behind three genuine document images. The age rule
+ * was a hint string and a check in the browser, bypassed by any direct API call
+ * — and a broker onboarding a minor is a licensing matter, not a bug report.
  */
-
-import { isBarePhonePrefix, isCompletePhone } from './kyc-answers';
-import { isFileField } from './step-slugs';
-
-/**
- * The minimum age to hold an account.
- *
- * An ASSUMPTION, not a specification: no authoritative document states a minimum
- * age, and none states whether it varies by country of residence. 18 is what the
- * seeded profile step's hint has always claimed and what the client portal has
- * always enforced, so this makes the server agree with both rather than inventing
- * a third answer. It is deliberately a constant and not configuration — a rule
- * nobody has written down should not acquire an environment variable before it
- * acquires a decision.
- */
-export const MINIMUM_AGE_YEARS = 18;
+import { IDENTITY_FIELDS } from '../../common/kyc/identity-core';
+import { normaliseProfileValue, type ProfileKey } from '../../common/profile/client-profile';
+import { isBarePhonePrefix } from './kyc-answers';
 
 /** A field as the KYC configuration describes it — the subset this module needs. */
 export interface ProfileFieldRule {
@@ -72,13 +48,16 @@ export interface ProfileFieldRule {
   options?: readonly string[];
 }
 
-/** What a caller must fix, or `undefined` when the profile is acceptable. */
-export interface ProfileProblem {
-  /** Stable, for the error envelope's details. */
-  kind: 'missing_fields' | 'underage' | 'invalid_date_of_birth' | 'invalid_phone';
+/** What is wrong with one identity field. */
+export interface IdentityProblem {
+  key: ProfileKey;
+  /** The platform's label for it: "Date of Birth". */
+  label: string;
+  kind: 'missing' | 'invalid';
+  /** Ready to print. */
   message: string;
-  /** Field names the client must fill, for `missing_fields`. */
-  fields?: string[];
+  /** For `invalid`: the rule, when a caller branches on it (`underage`, …). */
+  code?: string;
 }
 
 /**
@@ -97,143 +76,66 @@ function scalar(value: unknown): string | undefined {
   return undefined;
 }
 
-/** Blank, whitespace, absent and non-scalar all mean "not provided". */
-function isBlank(value: unknown): boolean {
-  return scalar(value) === undefined;
-}
-
-/** A phone field holding a country code and nothing after it — see `isBarePhonePrefix`. */
-function isBarePhone(field: ProfileFieldRule, value: unknown): boolean {
-  const text = scalar(value);
-  return field.type === 'phone' && text !== undefined && isBarePhonePrefix(text);
-}
-
 /**
- * Whole years between `dateOfBirth` and `asOf`.
- *
- * Calendar arithmetic rather than `(now - dob) / MS_PER_YEAR`: the division form
- * is wrong across leap years, and it is wrong in the direction that admits
- * someone a day early. Someone born on 29 February turns 18 on 1 March in a
- * common year, which is what subtracting the calendar parts gives.
+ * Every problem with the client's identity, in the order the form shows it —
+ * all of them, not the first, so the client is told once rather than one
+ * refusal at a time.
  */
-export function ageInYears(dateOfBirth: Date, asOf: Date): number {
-  let age = asOf.getUTCFullYear() - dateOfBirth.getUTCFullYear();
-  const monthDelta = asOf.getUTCMonth() - dateOfBirth.getUTCMonth();
-  if (monthDelta < 0 || (monthDelta === 0 && asOf.getUTCDate() < dateOfBirth.getUTCDate())) {
-    age -= 1;
-  }
-  return age;
-}
-
-/**
- * Is this profile submittable?
- *
- * Returns the first problem found, or `undefined`. Deliberately not a thrower:
- * this is the pure half, and mapping a problem onto a `DomainError` belongs to
- * the service, which is the layer allowed to know about them.
- *
- * `values` is the stored `personalInfo` blob, which is why everything is
- * `unknown` — it is `jsonb` and its shape is whatever the configuration asked
- * for.
- */
-export function findProfileProblem(
-  values: Record<string, unknown> | undefined,
-  rules: readonly ProfileFieldRule[],
+export function identityProblems(
+  profile: Readonly<Partial<Record<string, unknown>>> | undefined,
   asOf: Date,
-): ProfileProblem | undefined {
-  const provided = values ?? {};
-
-  // File, camera and document fields are satisfied by an uploaded path, not by
-  // a value in this blob — `submit()` checks those separately, and demanding
-  // them here would reject every complete submission.
-  const missing = rules
-    .filter((f) => f.required && !isFileField(f))
-    .filter((f) => !isAnswered(f, provided[f.name]))
-    .map((f) => f.name);
-
-  if (missing.length > 0) {
-    return {
-      kind: 'missing_fields',
-      message: `These profile fields are required before submitting: ${missing.join(', ')}.`,
-      fields: missing,
-    };
+): IdentityProblem[] {
+  const problems: IdentityProblem[] = [];
+  for (const field of IDENTITY_FIELDS) {
+    const raw = scalar(profile?.[field.name]);
+    // A phone holding only its dial code is a number nobody typed — missing, not wrong.
+    const text =
+      field.name === 'phone' && raw !== undefined && isBarePhonePrefix(raw) ? undefined : raw;
+    if (text === undefined) {
+      if (field.required) {
+        problems.push({
+          key: field.name,
+          label: field.label,
+          kind: 'missing',
+          message: `${field.label} is required.`,
+        });
+      }
+      continue;
+    }
+    const outcome = normaliseProfileValue(field.name, text, asOf);
+    if (!outcome.ok) {
+      problems.push({
+        key: field.name,
+        label: field.label,
+        kind: 'invalid',
+        message: outcome.message,
+        code: outcome.code ?? 'invalid_answer',
+      });
+    }
   }
-  return profileValueProblem(provided, rules, asOf);
+  return problems;
 }
 
 /**
- * Is a REQUIRED typed field answered? One definition, shared by the profile
- * rules above and every other step (`kyc-step-state.ts`).
+ * Is a REQUIRED answer to one of the broker's own fields given?
  *
  *  - blank is not an answer;
- *  - a phone holding only its country code is not a number (see `isBarePhone`);
+ *  - a phone holding only its country code is not a number;
  *  - a CHECKBOX is answered only when TICKED. Unticked is stored as `'false'`,
  *    which is a perfectly non-empty string — so "required" on a consent box
  *    used to be satisfied by leaving it unticked. One with CHOICES ("tick all
- *    that apply") is answered when at least one is ticked.
+ *    that apply") is answered when at least one is ticked;
+ *  - a DROP-DOWN is answered only by one of its choices: a value the list no
+ *    longer offers renders as an empty box, and must not pass as answered
+ *    behind it.
  */
 export function isAnswered(field: ProfileFieldRule, value: unknown): boolean {
+  const text = scalar(value);
   if (field.type === 'checkbox') {
-    return field.options?.length ? !isBlank(value) : scalar(value) === 'true';
+    return field.options?.length ? text !== undefined : text === 'true';
   }
-  return !isBlank(value) && !isBarePhone(field, value);
-}
-
-/**
- * What is wrong with the answers GIVEN — a phone number cut short, a date of
- * birth that is not a date, in the future, or under the minimum age. Missing
- * answers are `isAnswered`'s business; this judges only what is there.
- */
-export function profileValueProblem(
-  values: Record<string, unknown> | undefined,
-  rules: readonly ProfileFieldRule[],
-  asOf: Date,
-): ProfileProblem | undefined {
-  const provided = values ?? {};
-
-  /*
-   * A phone number must be one somebody can dial.
-   *
-   * Reported from production: the picker emits the country code the moment a
-   * country is chosen, so "+961" alone satisfied a required field and reached
-   * the reviewer as the client's phone number. A code alone counts as MISSING
-   * above; anything longer must be a complete number for its country.
-   */
-  const badPhone = rules.find(
-    (f) =>
-      f.type === 'phone' &&
-      !isBlank(provided[f.name]) &&
-      !isBarePhone(f, provided[f.name]) &&
-      !isCompletePhone(scalar(provided[f.name])!),
-  );
-  if (badPhone) {
-    return {
-      kind: 'invalid_phone',
-      message: `${badPhone.label} is incomplete. Enter the full number after the country code.`,
-      fields: [badPhone.name],
-    };
-  }
-
-  // Only when one was supplied. Whether a date of birth is REQUIRED is the
-  // configuration's call, handled above; whether a supplied one is acceptable is
-  // this rule, and it applies either way — an optional date of birth that says
-  // the client is fourteen is still disqualifying.
-  const rawDob = scalar(provided['dateOfBirth']);
-  if (rawDob === undefined) return undefined;
-
-  const dob = new Date(rawDob);
-  if (Number.isNaN(dob.getTime())) {
-    return { kind: 'invalid_date_of_birth', message: 'Date of birth is not a valid date.' };
-  }
-  if (dob.getTime() > asOf.getTime()) {
-    return { kind: 'invalid_date_of_birth', message: 'Date of birth cannot be in the future.' };
-  }
-  if (ageInYears(dob, asOf) < MINIMUM_AGE_YEARS) {
-    return {
-      kind: 'underage',
-      message: `You must be at least ${MINIMUM_AGE_YEARS} years old to open an account.`,
-    };
-  }
-
-  return undefined;
+  if (text === undefined) return false;
+  if (field.type === 'phone' && isBarePhonePrefix(text)) return false;
+  if (field.type === 'select' && field.options?.length) return field.options.includes(text);
+  return true;
 }

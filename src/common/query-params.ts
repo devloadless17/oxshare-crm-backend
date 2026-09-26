@@ -67,8 +67,8 @@ export const UuidParam = new ParseUUIDPipe({
  *
  * `PUT` and `DELETE /admin/kyc-config/steps/:id` both parsed this id with
  * `UuidParam`, and `kyc_config_steps.id` is a `text` column that has never held
- * a bare uuid. The seeded steps are `step-1`…`step-4` and `KycConfigStore.addStep`
- * mints `step-<uuid>`, so EVERY id that can exist was refused with
+ * a bare uuid. The seeded steps are `step-1`…`step-4` and
+ * `AdminComplianceService.addKycStep` mints `step-<uuid>`, so EVERY id that can exist was refused with
  * `must be a UUID` — both routes answered 400 for every input, always. A step
  * could be added and then never updated or deleted through its own endpoint.
  *

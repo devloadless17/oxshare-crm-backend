@@ -14,6 +14,7 @@ import { EmailService } from '../src/modules/email/email.service';
 import { UsersStore } from '../src/store/users.store';
 import { users } from '../src/database/schema';
 import { COOKIE_BASES } from '../src/common/security/session-cookies';
+import { SIGN_UP_DETAILS } from './support/registration';
 
 /**
  * SIGN-UP ENDS ON A CODE — asked for by the client, 25 Sep 2026: register, type
@@ -52,6 +53,7 @@ async function register(): Promise<{ email: string; code: string; token: string 
     lastName: 'Client',
     email,
     password: PASSWORD,
+    ...SIGN_UP_DETAILS,
   });
   expect(res.status, JSON.stringify(res.body)).toBeLessThan(300);
   const sent = mail.latest('sendVerificationEmail', email);

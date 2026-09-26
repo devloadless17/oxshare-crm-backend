@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  asPageFlags,
   documentFlagLabel,
   flagsSettledByUpload,
   missingRequiredPage,
@@ -174,5 +175,20 @@ describe('every required page of the chosen document', () => {
     expect(missingRequiredPage({ docType: 'utility_bill', files: [] }, 'identity')).toEqual({
       index: 0,
     });
+  });
+});
+
+describe('a whole document returned is every page of it returned', () => {
+  it('names a two-sided card by both its pages, and a passport by its one', () => {
+    expect(asPageFlags(['nationalId'], STEPS)).toEqual(['doc_front', 'doc_back']);
+    expect(asPageFlags(['passport'], STEPS)).toEqual(['doc_front']);
+  });
+
+  it('leaves page flags, answers and a broker’s own uploads as they are, once each', () => {
+    expect(asPageFlags(['doc_back', 'firstName', 'nationalId'], STEPS)).toEqual([
+      'doc_back',
+      'firstName',
+      'doc_front',
+    ]);
   });
 });

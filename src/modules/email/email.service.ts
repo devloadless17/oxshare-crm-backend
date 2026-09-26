@@ -8,6 +8,8 @@ import {
   adminInvite,
   adminPasswordReset,
   kycDecision,
+  kycDetailsCorrected,
+  kycReverification,
   partnerDecision,
   depositOutcome,
   walletCredit,
@@ -251,6 +253,37 @@ export class EmailService {
       email,
       `KYC ${decision} email`,
       kycDecision(firstName, decision, this.portalUrl(), reason, rejectedFields),
+    );
+  }
+
+  /**
+   * A reviewer corrected an APPROVED client's verified details. Names which, not
+   * their values. Fire-and-forget like every decision email: the correction has
+   * already committed.
+   */
+  async sendKycDetailsCorrectedEmail(
+    email: string,
+    firstName: string,
+    details: readonly string[],
+  ): Promise<void> {
+    await this.send(
+      email,
+      'KYC details corrected email',
+      kycDetailsCorrected(firstName, details, this.portalUrl()),
+    );
+  }
+
+  /** A reviewer returned an APPROVED verification for the client to update. */
+  async sendKycReverificationEmail(
+    email: string,
+    firstName: string,
+    reason: string,
+    items: readonly string[],
+  ): Promise<void> {
+    await this.send(
+      email,
+      'KYC re-verification email',
+      kycReverification(firstName, reason, items, this.portalUrl()),
     );
   }
 

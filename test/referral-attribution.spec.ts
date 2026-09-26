@@ -10,6 +10,7 @@ import { WalletProvisioningService } from '../src/modules/wallet/wallet-provisio
 import { CurrenciesService } from '../src/modules/currencies/currencies.service';
 import { auditStubAs } from './audit-stub';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
+import { SIGN_UP_DETAILS } from './support/registration';
 
 /**
  * Attribution: which partner introduced a client.
@@ -119,6 +120,7 @@ function registration(email: string, referralCode?: string) {
     lastName: 'Client',
     email,
     password: 'StrongPass123!',
+    ...SIGN_UP_DETAILS,
     ...(referralCode === undefined ? {} : { referralCode }),
   };
 }

@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { stepStates, type StateStep, type StateSubmission } from './kyc-step-state';
+import { IDENTITY_FIELDS } from '../../common/kyc/identity-core';
+import {
+  approvalBlockers,
+  stepStates,
+  type StateStep,
+  type StateSubmission,
+} from './kyc-step-state';
 
 /**
  * The one judgement of every KYC step — what `submit` refuses, what
@@ -19,11 +25,8 @@ const STEPS: StateStep[] = [
     slug: 'personal',
     title: 'Personal Information',
     enabled: true,
-    fields: [
-      f('firstName', 'text', true, 'First Name'),
-      f('dateOfBirth', 'date', true, 'Date of Birth'),
-      f('phone', 'phone', true, 'Phone Number'),
-    ],
+    // As served: the platform's identity fields, then a question of the broker's.
+    fields: [...IDENTITY_FIELDS, f('occupation', 'text', false, 'Occupation')],
   },
   {
     slug: 'document',
@@ -41,23 +44,35 @@ const STEPS: StateStep[] = [
     slug: 'address',
     title: 'Proof of Address',
     enabled: true,
-    // The report: an extra upload and a checkbox on a BUILT-IN step.
-    fields: [
-      f('utilityBill', 'doc:utility_bill', false),
-      f('prooof3', 'file', true, 'Lease'),
-      f('confirm', 'checkbox', true, 'I live here'),
-    ],
+    fields: [f('utilityBill', 'doc:utility_bill', false)],
+  },
+  {
+    // The report: an extra upload and a checkbox. They live on a step of the
+    // broker's own now (the identity core), and are judged the same way.
+    slug: 'additional-documents',
+    title: 'Additional documents',
+    enabled: true,
+    fields: [f('prooof3', 'file', true, 'Lease'), f('confirm', 'checkbox', true, 'I live here')],
   },
 ];
 
 const PNG = (name: string) => ({ filePath: `uploads/kyc/${name}.png`, fileName: `${name}.png` });
 
 const COMPLETE: StateSubmission = {
-  personalInfo: { firstName: 'Jane', dateOfBirth: '1990-01-01', phone: '+961 70 123 456' },
+  personalInfo: {
+    firstName: 'Jane',
+    lastName: 'Haddad',
+    dateOfBirth: '1990-01-01',
+    nationality: 'Lebanese',
+    phone: '+96170123456',
+    country: 'Lebanon',
+    address: 'Hamra Street 12',
+    city: 'Beirut',
+  },
   document: { docType: 'passport', frontFilePath: 'uploads/kyc/pp.png' },
   selfie: { filePath: 'uploads/kyc/selfie.png' },
   addressProof: { docType: 'utility_bill', filePath: 'uploads/kyc/bill.png' },
-  stepData: { address: { prooof3: PNG('lease'), confirm: 'true' } },
+  stepData: { 'additional-documents': { prooof3: PNG('lease'), confirm: 'true' } },
 };
 
 const NOW = new Date('2026-09-25T12:00:00Z');
@@ -72,11 +87,40 @@ describe('every step, judged once', () => {
   it('an empty one owes each step its own kind of thing, in the order the step shows it', () => {
     const states = stepStates(STEPS, {}, NOW);
     expect(states.map((s) => [s.slug, s.missing.map((m) => `${m.kind}:${m.id}`)])).toEqual([
-      ['personal', ['answer:firstName', 'answer:dateOfBirth', 'answer:phone']],
+      [
+        'personal',
+        [
+          'answer:firstName',
+          'answer:lastName',
+          'answer:dateOfBirth',
+          'answer:nationality',
+          'answer:phone',
+          'answer:country',
+          'answer:address',
+          'answer:city',
+        ],
+      ],
       ['document', ['choice:docType']],
       ['selfie', ['upload:selfie']],
-      ['address', ['choice:docType', 'upload:prooof3', 'answer:confirm']],
+      ['address', ['choice:docType']],
+      ['additional-documents', ['upload:prooof3', 'answer:confirm']],
     ]);
+  });
+
+  it('judges the identity by the platform’s rules, whatever the builder flags say', () => {
+    // A form whose personal step lost its identity fields — the reported case —
+    // still owes the identity, and a required flag set to false changes nothing.
+    const stripped = STEPS.map((step) =>
+      step.slug === 'personal'
+        ? { ...step, fields: step.fields.map((field) => ({ ...field, required: false })) }
+        : step,
+    );
+    const noIdentity = { ...COMPLETE, personalInfo: {} };
+    expect(stateOf('personal', noIdentity, stripped).missing).toHaveLength(8);
+    const noFields = STEPS.map((step) =>
+      step.slug === 'personal' ? { ...step, fields: [] } : step,
+    );
+    expect(stateOf('personal', noIdentity, noFields).missing).toHaveLength(8);
   });
 
   it('leaves out disabled steps and the review screen', () => {
@@ -114,10 +158,10 @@ describe('a document step', () => {
   });
 });
 
-describe('extra fields on a built-in step (reported: a required upload blocked nothing)', () => {
+describe('the broker’s own fields (reported: a required upload blocked nothing)', () => {
   it('owes a required extra upload and a required extra answer until they are there', () => {
     const without = { ...COMPLETE, stepData: {} };
-    expect(stateOf('address', without).missing).toEqual([
+    expect(stateOf('additional-documents', without).missing).toEqual([
       { id: 'prooof3', label: 'Lease', kind: 'upload' },
       { id: 'confirm', label: 'I live here', kind: 'answer' },
     ]);
@@ -126,14 +170,14 @@ describe('extra fields on a built-in step (reported: a required upload blocked n
   it('a required checkbox is answered only when TICKED — unticked is stored as "false"', () => {
     const unticked = {
       ...COMPLETE,
-      stepData: { address: { prooof3: PNG('l'), confirm: 'false' } },
+      stepData: { 'additional-documents': { prooof3: PNG('l'), confirm: 'false' } },
     };
-    expect(stateOf('address', unticked).missing.map((m) => m.id)).toEqual(['confirm']);
+    expect(stateOf('additional-documents', unticked).missing.map((m) => m.id)).toEqual(['confirm']);
   });
 
   it('a required "tick all that apply" is answered by any one ticked choice', () => {
     const steps = STEPS.map((step) =>
-      step.slug === 'address'
+      step.slug === 'additional-documents'
         ? {
             ...step,
             fields: [
@@ -143,19 +187,16 @@ describe('extra fields on a built-in step (reported: a required upload blocked n
           }
         : step,
     );
-    const none = {
-      ...COMPLETE,
-      stepData: { address: { ...COMPLETE.stepData!.address, funds: '' } },
-    };
-    expect(stateOf('address', none, steps).missing.map((m) => m.id)).toEqual(['funds']);
-    const one = {
-      ...COMPLETE,
-      stepData: { address: { ...COMPLETE.stepData!.address, funds: 'Gift' } },
-    };
-    expect(stateOf('address', one, steps).complete).toBe(true);
+    const extras = COMPLETE.stepData!['additional-documents'];
+    const none = { ...COMPLETE, stepData: { 'additional-documents': { ...extras, funds: '' } } };
+    expect(stateOf('additional-documents', none, steps).missing.map((m) => m.id)).toEqual([
+      'funds',
+    ]);
+    const one = { ...COMPLETE, stepData: { 'additional-documents': { ...extras, funds: 'Gift' } } };
+    expect(stateOf('additional-documents', one, steps).complete).toBe(true);
   });
 
-  it('keeps uploads on the personal and selfie steps under their own slugs', () => {
+  it('still judges an upload an OLDER form left on a built-in step, under its own slug', () => {
     const steps = STEPS.map((step) =>
       step.slug === 'personal' || step.slug === 'selfie'
         ? { ...step, fields: [...step.fields, f(`${step.slug}Scan`, 'file')] }
@@ -175,6 +216,44 @@ describe('extra fields on a built-in step (reported: a required upload blocked n
       },
     };
     expect(stepStates(steps, filed, NOW).every((s) => s.complete)).toBe(true);
+  });
+});
+
+describe('what approval re-asks (the evidence a verification rests on)', () => {
+  it('holds approval for a missing identity field and a missing document page', () => {
+    const lost = {
+      ...COMPLETE,
+      personalInfo: { ...COMPLETE.personalInfo, city: '' },
+      document: { docType: 'passport' },
+    };
+    expect(approvalBlockers(STEPS, lost, NOW).map((item) => item.id)).toEqual([
+      'city',
+      'doc_front',
+    ]);
+  });
+
+  it('does NOT hold it for the broker’s own questions — a question added later strands no review', () => {
+    // Required, unanswered: on a step of the broker's own, and on Personal Information.
+    const steps = STEPS.map((step) =>
+      step.slug === 'personal'
+        ? { ...step, fields: [...step.fields, f('employer', 'text', true, 'Employer')] }
+        : step,
+    );
+    const unanswered = { ...COMPLETE, stepData: {} };
+    expect(stepStates(steps, unanswered, NOW).some((state) => !state.complete)).toBe(true);
+    expect(approvalBlockers(steps, unanswered, NOW)).toEqual([]);
+  });
+
+  it('holds it for the selfie and the proof of address only while they are asked for', () => {
+    const bare = { ...COMPLETE, selfie: null, addressProof: null };
+    expect(approvalBlockers(STEPS, bare, NOW).map((item) => item.id)).toEqual([
+      'selfie',
+      'docType',
+    ]);
+    const off = STEPS.map((step) =>
+      step.slug === 'selfie' || step.slug === 'address' ? { ...step, enabled: false } : step,
+    );
+    expect(approvalBlockers(off, bare, NOW)).toEqual([]);
   });
 });
 
@@ -224,8 +303,8 @@ describe('what the reviewer returned', () => {
     ]);
   });
 
-  it('a returned extra upload on a built-in step blocks like any document', () => {
-    const state = stateOf('address', { ...COMPLETE, rejectedFields: ['prooof3'] });
+  it('a returned upload of the broker’s own blocks like any document', () => {
+    const state = stateOf('additional-documents', { ...COMPLETE, rejectedFields: ['prooof3'] });
     expect(state.complete).toBe(false);
     expect(state.returned).toEqual([
       { id: 'prooof3', label: 'Lease', kind: 'returned', blocking: true },

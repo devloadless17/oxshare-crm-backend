@@ -1,303 +1,370 @@
-import { ValidationError } from '../../common/errors/domain-errors';
-import { DOCUMENT_TYPE_PREFIX, documentForFieldType } from '../../common/kyc/document-catalogue';
-import type { KycStepConfig } from '../../store/kyc-config.store';
+import { FieldValidationError } from '../../common/errors/domain-errors';
+import { documentForFieldType } from '../../common/kyc/document-catalogue';
 import {
-  isProfileKey,
-  PROFILE_CHOICES,
-  PROFILE_FIELD_KEYS,
-  PROFILE_FIELD_TYPE,
-} from '../../common/profile/client-profile';
+  CORE_STEPS,
+  coreStepOf,
+  coreTitleMatching,
+  customSlugProblem,
+  identityField,
+  IDENTITY_FIELDS,
+  isDocumentField,
+  isPlatformField,
+  platformMeaningOf,
+  reservedFieldName,
+} from '../../common/kyc/identity-core';
+import type { KycStepConfig } from '../../store/kyc-config.store';
 
 /**
- * What a saved KYC configuration must satisfy to be a working form.
+ * What a saved KYC configuration must satisfy — judged BEFORE anything is written.
  *
- * ## These are MECHANICAL rules, not policy — and the difference is the point
+ * ## Two kinds of rule
  *
- * `admin-compliance.service.ts` records that the mandatory-step rule was
- * deliberately dropped: a flow that refuses to drop four of its steps is not
- * configurable, and the broker owns which jurisdiction needs what. Nothing here
- * reinstates that. A broker may delete any step, reorder the flow, drop the
- * address proof, or stop collecting a date of birth entirely.
+ * The IDENTITY CORE (`common/kyc/identity-core.ts`, the owner's ruling of
+ * 26 Sep 2026): the client's identity fields, the four built-in steps and the
+ * documents that prove identity and address are the platform's, fixed. A save
+ * that tries to change one is refused here, in words, rather than quietly
+ * normalised by the store — an operator who dragged Personal Information to
+ * third place deserves to be told why it went back.
  *
- * Each rule below refuses only a configuration that CANNOT WORK — one whose
- * answers have nowhere to go, or that silently discards an answer, or that
- * silently switches off a check. Every one of them was previously accepted, and
- * every one failed later and somewhere else: in the client's browser, in a
- * reviewer's card, or not at all.
+ * The MECHANICAL rules that were here before: a configuration whose answers
+ * would have nowhere to go, or would overwrite each other, or would switch a
+ * server-side check off without anybody noticing. Every one of them was once
+ * accepted, and failed later somewhere else — in the client's browser, in a
+ * reviewer's card, or not at all. A configuration screen that accepts a broken
+ * form and lets the client discover it is the worst place to find out, because
+ * the person who typed it is not the person who hits it.
  *
- * A configuration screen that accepts a broken form and lets the client
- * discover it is the worst place to find out, because the person who typed it
- * is not the person who hits it.
+ * ## Where a refusal lands
+ *
+ * Each one is a `FieldValidationError` keyed by where the problem is in the
+ * posted configuration — `steps.2` or `steps.2.fields.0` — so the builder can
+ * put the sentence under the step or field it is about. The sentences name
+ * what the operator SEES (labels, titles), never a key.
  */
 
-/**
- * Keys the SERVER reads by literal string. Renaming one silently disables it.
- *
- * Since 0139 that is every profile field: the KEY is the column the answer is
- * stored in. `dateOfBirth` renamed to `dob` is not a relabel — the answer stops
- * reaching the profile, lands in `personal_info` as an anonymous custom answer,
- * and the minimum-age rule, which reads the profile, stops running. The form
- * still looks right, which makes these the most expensive keys on the screen.
- */
-const RESERVED_FIELD_KEYS: Readonly<Record<string, string>> = {
-  ...Object.fromEntries(
-    PROFILE_FIELD_KEYS.map((key) => [key, "the client's profile, where that answer is stored"]),
-  ),
-  dateOfBirth:
-    "the client's profile and the minimum-age check (clients under 18 would no longer be refused)",
-};
+/** A refusal about the whole form, one step, or one field of a step. */
+function refuse(message: string, step?: number, field?: number): FieldValidationError {
+  const at =
+    step === undefined
+      ? 'steps'
+      : field === undefined
+        ? `steps.${step}`
+        : `steps.${step}.fields.${field}`;
+  return new FieldValidationError(message, { [at]: message });
+}
+
+const titleOf = (step: KycStepConfig) => step.title || step.slug;
+const labelOf = (field: { label: string; name: string }) => field.label || field.name;
 
 /**
- * A PROFILE FIELD KEEPS ITS KIND, AND LIVES ON THE PERSONAL STEP (0139).
+ * THE FOUR BUILT-IN STEPS: each exactly once, never renamed, Personal
+ * Information first, and the two that ARE a verification never switched off.
  *
- * The broker owns the KYC form: any of these fields may be relabelled,
- * reordered, required, made optional or removed. Two edits are refused, because
- * each quietly breaks the client's record rather than the form:
- *
- *  - **Re-typing one.** The answer lands in a typed column. A date of birth
- *    re-typed as free text hands that column "next spring"; a country re-typed
- *    as text offers a box where the list of valid answers used to be, and every
- *    answer typed into it is then refused by the profile's own rules.
- *  - **Asking for one on another step.** The personal step is the ONE place the
- *    KYC form reads and writes the profile. A `phone` field on another step
- *    would store a second phone number beside the profile's — the two-copies
- *    defect 0139 removed, rebuilt from the builder.
+ * Missing, duplicated or retitled, a built-in step breaks what the rest of the
+ * system reads by slug — the portal's uploader and camera, the reviewer's
+ * document tiles, the columns the answers are stored in. Deleted, it took the
+ * client's identity with it: the reported defect.
  */
-export function assertProfileFieldsKeepTheirPlace(steps: readonly KycStepConfig[]): void {
-  for (const step of steps) {
-    for (const field of step.fields ?? []) {
-      if (!isProfileKey(field.name)) continue;
-      const where = `"${field.label || field.name}" in "${step.title || step.slug}"`;
-      if (step.slug !== 'personal') {
-        throw new ValidationError(
-          `${where} uses the key "${field.name}", which is the client's profile. The profile is ` +
-            `asked for on the Personal Information step only — anywhere else the answer would be ` +
-            `a second copy beside the profile. Move the field there, or give it another key.`,
-        );
-      }
-      const kind = PROFILE_FIELD_TYPE[field.name];
-      if (field.type !== kind) {
-        throw new ValidationError(
-          `${where} must stay a ${TYPE_NAME[kind] ?? kind} field: its answer is stored in the ` +
-            `client's profile, which holds ${TYPE_NAME[kind] ?? kind} values there. You can relabel ` +
-            `it, require it or remove it — but not change its type.`,
-        );
-      }
-      /*
-       * The choices are the platform's list, served on every read. The builder
-       * sends back what it was served, so the list arriving unchanged is the
-       * ordinary save; anything else is an edit the profile would refuse.
-       */
-      const choices = PROFILE_CHOICES[field.name];
-      if (choices && field.options?.length && !sameList(field.options, choices)) {
-        throw new ValidationError(
-          `${where} offers the platform's own list, and its choices cannot be edited here: ` +
-            `the answer is stored in the client's profile, which accepts exactly that list — so ` +
-            `a choice added here could never be saved, and one removed here could still be ` +
-            `registered with.`,
-        );
-      }
+export function assertCoreSteps(next: readonly KycStepConfig[]): void {
+  for (const core of CORE_STEPS) {
+    const found = next
+      .map((step, index) => ({ step, index }))
+      .filter(({ step }) => step.slug === core.slug);
+    if (found.length === 0) {
+      throw refuse(
+        core.alwaysOn
+          ? `${core.title} is part of every verification and cannot be removed.`
+          : `${core.title} is a built-in step and cannot be removed. Switch it off to stop asking for it.`,
+      );
+    }
+    if (found.length > 1) {
+      throw refuse(
+        `${core.title} appears ${found.length} times. Each built-in step exists once, so a client's ` +
+          'answers always have one place to go.',
+        found[1].index,
+      );
+    }
+    const { step, index } = found[0];
+    if (core.alwaysOn && step.enabled === false) {
+      throw refuse(`${core.title} is always on: a verification without it verifies nobody.`, index);
+    }
+    if (step.title.trim() !== core.title) {
+      throw refuse(
+        `${core.title} is a built-in step and keeps its name. You can reword its description.`,
+        index,
+      );
     }
   }
-}
-
-function sameList(a: readonly string[], b: readonly string[]): boolean {
-  return a.length === b.length && a.every((value, index) => value === b[index]);
-}
-
-/** How the builder names each field type, for the sentence above. */
-const TYPE_NAME: Readonly<Record<string, string>> = {
-  text: 'text',
-  date: 'date',
-  select: 'drop-down',
-  phone: 'phone-number',
-};
-
-/**
- * ## NOT ENFORCED: a step slug with no storage column
- *
- * There was a rule here and it was withdrawn, because it decided a product
- * question that is not this file's to decide.
- *
- * The facts are real. Answers are written to a column per step —
- * `personal_info`, `document`, `selfie`, `address_proof` — and
- * `KycService.saveStep` refuses anything else with `Unknown step: …`. So a step
- * configured with a custom slug renders in the portal, accepts what the client
- * types, and fails when they press Continue.
- *
- * But the configuration layer advertises the opposite: `addKycStep` exists, the
- * builder offers Add Step, and `kyc-config-round-trip.spec.ts` deliberately
- * saves steps slugged `other` and `audit` to prove id assignment works for
- * steps nobody named. Refusing those made that spec fail, and made
- * `kyc-http.spec.ts`'s PERMISSION test fail for an unrelated reason — so the
- * boundary it was written to prove stopped being exercised, which is worse than
- * the gap it was papering over.
- *
- * Two honest resolutions exist and both are somebody's call, not a validator's:
- * give the submission a generic per-slug store so custom steps work, or stop
- * offering steps the storage cannot hold. Guessing in here would have shipped
- * the second one silently, under the name of a bug fix.
- *
- * The two rules below stay because neither has that problem: a duplicate key
- * and a renamed reserved key are wrong under every reading of what a step is.
- */
-
-/**
- * Two fields sharing a key WITHIN a step.
- *
- * Answers are merged into one object per step (`{ ...existing, ...data }`), so
- * two fields with the same key are one column: the second silently overwrites
- * the first, and a reviewer sees one answer where the client gave two. Across
- * DIFFERENT steps the same key is fine — separate columns — so this is scoped
- * per step rather than globally, which is also the less disruptive rule.
- */
-export function assertFieldKeysUniquePerStep(steps: readonly KycStepConfig[]): void {
-  for (const step of steps) {
-    const seen = new Set<string>();
-    for (const field of step.fields ?? []) {
-      if (seen.has(field.name)) {
-        throw new ValidationError(
-          `Two fields in "${step.title || step.slug}" share the key "${field.name}". ` +
-            `Answers are stored under the key, so one would silently overwrite the other.`,
-        );
-      }
-      seen.add(field.name);
-    }
+  if (next[0]?.slug !== 'personal') {
+    throw refuse(
+      'Personal Information comes first: every later step is checked against the identity it ' +
+        'collects.',
+      Math.max(
+        0,
+        next.findIndex((step) => step.slug === 'personal'),
+      ),
+    );
   }
 }
 
 /**
- * A reserved key renamed on a field that is being KEPT.
+ * EVERY STEP HAS ITS OWN ADDRESS, AND KEEPS IT.
  *
- * The distinction is deliberate and it is the whole rule: DELETING the field is
- * allowed, because the broker owns whether a date of birth is collected at all.
- * What is refused is keeping the same field — same `id`, same position, same
- * label — and changing only the key, because that reads on screen as a cosmetic
- * edit and is in fact switching a server-side check off.
+ * A step's slug is where its answers are filed (`step_data[slug]`) and the
+ * address the client's browser opens. Two steps on one address would merge
+ * their answers; a step moved to a new address would orphan every answer
+ * already given under the old one. So a new step of the broker's takes a fresh,
+ * well-formed address (the service generates one from its title), and an
+ * existing step — matched by id — keeps the one it has.
  *
- * Matched on `id` rather than on label or position: an id survives a rename, a
- * reorder and a relabel, which are exactly the edits that would otherwise
- * disguise this one.
+ * Existing addresses are not re-judged for their SHAPE: builds before this let
+ * an operator type "custom slug 1", clients have answered under it, and it
+ * works. Refusing it on the next save would lock the operator out of the form.
  */
-export function assertReservedKeysNotRenamed(
+export function assertStepAddresses(
   previous: readonly KycStepConfig[],
   next: readonly KycStepConfig[],
 ): void {
-  const nextById = new Map<string, string>();
-  for (const step of next) {
-    for (const field of step.fields ?? []) nextById.set(field.id, field.name);
-  }
-
-  for (const step of previous) {
-    for (const field of step.fields ?? []) {
-      const breaks = RESERVED_FIELD_KEYS[field.name];
-      if (!breaks) continue;
-
-      const renamedTo = nextById.get(field.id);
-      // Absent from the new config = the field was removed. That is allowed.
-      if (renamedTo === undefined || renamedTo === field.name) continue;
-
-      throw new ValidationError(
-        `"${field.name}" cannot be renamed to "${renamedTo}": the server reads that exact key ` +
-          `for ${breaks}. Renaming it would switch that off silently — the form would still ` +
-          `look correct. Remove the field instead if you no longer want to collect it.`,
+  const seen = new Map<string, string>();
+  next.forEach((step, index) => {
+    const clash = seen.get(step.slug);
+    if (clash !== undefined) {
+      throw refuse(
+        `"${titleOf(step)}" and "${clash}" would share one address, and their answers one ` +
+          'place. Give each step its own.',
+        index,
       );
     }
-  }
+    seen.set(step.slug, titleOf(step));
+    if (coreStepOf(step.slug)) return;
+
+    const before = previous.find((candidate) => candidate.id === step.id);
+    if (before && before.slug !== step.slug) {
+      throw refuse(
+        `"${titleOf(step)}" cannot move to a new address — the answers clients already gave ` +
+          'are filed under the one it has.',
+        index,
+      );
+    }
+    if (!before) {
+      const problem = customSlugProblem(step.slug);
+      if (problem) {
+        throw refuse(
+          `"${titleOf(step)}" cannot use the address "${step.slug}": ${problem}.`,
+          index,
+        );
+      }
+    }
+    const core = coreTitleMatching(step.title);
+    if (core) {
+      throw refuse(
+        `"${titleOf(step)}" is the name of a built-in step. Name your step for what it asks, so ` +
+          'nobody confuses the two.',
+        index,
+      );
+    }
+  });
 }
-
-/** The kind of document each document step holds. Any other step holds none. */
-const DOCUMENT_STEPS: Readonly<Record<string, 'identity' | 'address'>> = {
-  document: 'identity',
-  address: 'address',
-};
-
-function documentKindOf(slug: string): 'identity' | 'address' | undefined {
-  // Own keys only: a slug is typed by an operator, and `constructor` is a step
-  // they added, not an entry on the prototype chain.
-  return Object.prototype.hasOwnProperty.call(DOCUMENT_STEPS, slug)
-    ? DOCUMENT_STEPS[slug]
-    : undefined;
-}
-
-const kindName = (kind: 'identity' | 'address') =>
-  kind === 'address' ? 'proof of address' : 'an identity document';
 
 /**
- * A catalogue document where it cannot be held — and a built-in step without
- * the one thing it exists to collect.
+ * THE CLIENT'S IDENTITY IS NOT EDITABLE, WHEREVER IT IS SENT.
  *
- * ## Documents have ONE home each (reported from local testing, 25 Sep 2026)
- *
- * A passport, a national ID, a utility bill live on the identity step and the
- * proof-of-address step, where a document is stored with its type and every
- * page in typed columns — read by the review screen, the reviewer's page flags
- * and the approval. The builder also offered them on steps a broker ADDS, and
- * each attempt to give them a home there built a second, weaker copy of the
- * same machinery: the two sides of a national ID sharing one upload slot,
- * "required" on several cards meaning all of them to the server and one of them
- * to the client. So elsewhere, a File field per photo does the job — migration
- * 0137 converted the ones already configured exactly that way.
- *
- * A document of the other KIND is refused on a document step too: its pages are
- * filed by category, so a utility bill offered on the identity step would be
- * filed as the client's proof of address, over the real one. A `doc:` value the
- * catalogue no longer knows is tolerated there, as `resolveAcceptedDocuments`
- * tolerates it.
- *
- * ## Every other field goes anywhere
- *
- * Text, date, phone, dropdown, checkbox, File and Camera fields are welcome on
- * EVERY step, built-in or added: the answers of a built-in step's extra fields
- * are kept in `step_data` under its slug, checked by the one judgement that
- * gates submission (`kyc-step-state.ts`) and shown to the reviewer.
- *
- * ## What a built-in step cannot lose
- *
- * An enabled identity or address step is a promise that the client uploads one
- * of its documents, and the selfie step that they take the selfie. Offering no
- * document, or no selfie camera, leaves a step nobody can complete and a flow
- * nobody can submit — so those are refused, and disabling the step is the way
- * to stop asking.
+ * The store never stores the identity fields and serves them on every read, so
+ * a save may leave them out entirely — the builder's round trip echoes them back
+ * unchanged, which is also fine. What is refused is anything that would make a
+ * second copy or a different field of them: moving one to another step, or the
+ * same field (by key or by id) with another label, type or required flag, or a
+ * new key on an identity field's id — each of which is a server-side check
+ * switched off with the form still looking right.
  */
-export function assertFieldsFitTheirStep(steps: readonly KycStepConfig[]): void {
-  for (const step of steps) {
-    const title = step.title || step.slug;
-    const holds = documentKindOf(step.slug);
-    const fields = step.fields ?? [];
-    for (const field of fields) {
-      if (!field.type?.startsWith(DOCUMENT_TYPE_PREFIX)) continue;
-      const where = `"${field.label || field.name}" in "${title}"`;
-      if (!holds) {
-        throw new ValidationError(
-          `${where} is a document type. Documents are collected on the Identity Document and ` +
-            `Proof of Address steps — here, add a File field for each photo you need.`,
+export function assertIdentityUnchanged(next: readonly KycStepConfig[]): void {
+  next.forEach((step, stepIndex) => {
+    step.fields.forEach((field, fieldIndex) => {
+      const byName = identityField(field.name);
+      const byId = IDENTITY_FIELDS.find((candidate) => candidate.id === field.id);
+      const core = byName ?? byId;
+      if (!core) return;
+      if (step.slug !== 'personal') {
+        throw refuse(
+          `${core.label} is part of the client's identity, which is asked for once — on Personal ` +
+            `Information. It cannot be added to "${titleOf(step)}".`,
+          stepIndex,
+          fieldIndex,
         );
       }
-      const document = documentForFieldType(field.type);
-      if (document && document.category !== holds) {
-        throw new ValidationError(
-          `${where} cannot collect a ${document.label}: it is ${kindName(document.category)}, ` +
-            `and this step collects ${kindName(holds)} — its pages would be filed as the wrong document.`,
+      if (field.name !== core.name || field.label !== core.label || field.type !== core.type) {
+        throw refuse(
+          `${core.label} is part of the client's identity and is fixed by the platform: its ` +
+            'name and kind cannot be changed.',
+          stepIndex,
+          fieldIndex,
+        );
+      }
+      if (field.required !== core.required) {
+        throw refuse(
+          core.required
+            ? `${core.label} is always required: a verification cannot be completed without it.`
+            : `${core.label} is always optional: many addresses have none.`,
+          stepIndex,
+          fieldIndex,
+        );
+      }
+    });
+  });
+}
+
+/**
+ * EACH BUILT-IN STEP HOLDS WHAT IT IS FOR, AND NOTHING ELSE (the owner's ruling).
+ *
+ *  - Identity Document holds identity documents; Proof of Address holds address
+ *    documents — each document once, at least one. A client has ONE passport:
+ *    asking for it twice, or on a step of the broker's own, leaves two files
+ *    nobody can tell apart and a second upload that silently replaces the first.
+ *  - Selfie holds its camera.
+ *  - Personal Information holds the identity and the broker's own QUESTIONS —
+ *    never an upload, so a document a client sends is never mixed in with who
+ *    they are.
+ *
+ * Anything else a broker wants — a bank letter, a source-of-funds form, a
+ * second photo — goes on a step of their own, where it is reviewed as what it
+ * is: additional information, in its own section.
+ */
+export function assertStepsHoldWhatTheyAreFor(next: readonly KycStepConfig[]): void {
+  next.forEach((step, stepIndex) => {
+    const core = coreStepOf(step.slug);
+    step.fields.forEach((field, fieldIndex) => {
+      if (isDocumentField(field)) {
+        const document = documentForFieldType(field.type);
+        if (!core?.documents) {
+          throw refuse(
+            `"${labelOf(field)}" is an identity or address document, and those are collected on ` +
+              'the Identity Document and Proof of Address steps only — once each, so there is ' +
+              'never a second one to tell apart from the first. To collect another file here, ' +
+              'add an Upload field.',
+            stepIndex,
+            fieldIndex,
+          );
+        }
+        if (document && document.category !== core.documents) {
+          throw refuse(
+            `"${titleOf(step)}" cannot accept a ${document.label}: it collects ` +
+              `${core.documents === 'identity' ? 'identity documents' : 'proof of address'}, and ` +
+              'the file would be filed as the wrong document.',
+            stepIndex,
+            fieldIndex,
+          );
+        }
+        return;
+      }
+      if (!core || isPlatformField(core.slug, field)) return;
+      if (core.slug !== 'personal') {
+        throw refuse(
+          `"${titleOf(step)}" holds only ${
+            core.slug === 'selfie' ? 'the selfie' : 'its documents'
+          }. Put "${labelOf(field)}" on a step of your own.`,
+          stepIndex,
+          fieldIndex,
+        );
+      }
+      if (field.type === 'file' || field.type === 'camera') {
+        throw refuse(
+          `"${labelOf(field)}" is an upload. Uploads go on a step of your own, so a document ` +
+            'a client sends is never mixed in with their identity.',
+          stepIndex,
+          fieldIndex,
+        );
+      }
+    });
+
+    if (core?.documents) {
+      const types = step.fields.filter(isDocumentField).map((field) => field.type);
+      if (types.length === 0) {
+        throw refuse(
+          core.alwaysOn
+            ? `${core.title} must accept at least one document.`
+            : `${core.title} must accept at least one document. Switch the step off to stop asking.`,
+          stepIndex,
+        );
+      }
+      const twice = types.find((type, index) => types.indexOf(type) !== index);
+      if (twice) {
+        throw refuse(
+          `${core.title} lists the ${documentForFieldType(twice)?.label ?? 'same document'} ` +
+            'twice. Each document is accepted once.',
+          stepIndex,
         );
       }
     }
-    if (holds && !fields.some((field) => documentForFieldType(field.type))) {
-      throw new ValidationError(
-        `"${title}" offers no document to upload, so no client could complete it. ` +
-          `Add one, or disable the step to stop asking.`,
-      );
-    }
-    if (step.slug === 'selfie') {
-      const selfie = fields.find((field) => field.name === 'selfie');
-      if (!selfie || selfie.type !== 'camera') {
-        throw new ValidationError(
-          `"${title}" needs its selfie camera — without it no client could complete the step. ` +
-            `Disable the step to stop asking for a selfie.`,
+  });
+}
+
+/**
+ * THE BROKER'S OWN FIELDS: a usable key, never one the system reads by name,
+ * never one another field already has — anywhere in the form.
+ *
+ * Across the whole form, not per step: a reviewer's flag names a field by its
+ * key alone, so two fields sharing one on different steps would make "please
+ * redo X" ambiguous — the reviewer returns one and the client is shown both.
+ */
+export function assertFieldKeys(next: readonly KycStepConfig[]): void {
+  const seen = new Map<string, string>();
+  next.forEach((step, stepIndex) => {
+    step.fields.forEach((field, fieldIndex) => {
+      if (isPlatformField(step.slug, field)) return;
+      const reserved = reservedFieldName(field.name);
+      if (reserved) {
+        throw refuse(
+          `"${labelOf(field)}" cannot be stored under "${field.name}": that is ${reserved}.`,
+          stepIndex,
+          fieldIndex,
         );
       }
-    }
-  }
+      if (!/^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(field.name)) {
+        throw refuse(
+          `"${labelOf(field)}" has a key the form cannot store answers under. Remove the field ` +
+            'and add it again.',
+          stepIndex,
+          fieldIndex,
+        );
+      }
+      const clash = seen.get(field.name);
+      if (clash !== undefined) {
+        throw refuse(
+          `"${labelOf(field)}" and "${clash}" share one key, so one answer would overwrite the ` +
+            'other and a reviewer could not tell them apart. Remove one and add it again.',
+          stepIndex,
+          fieldIndex,
+        );
+      }
+      seen.set(field.name, labelOf(field));
+    });
+  });
+}
+
+/**
+ * A BROKER'S QUESTION MAY NOT ASK FOR WHAT THE PLATFORM ALREADY COLLECTS.
+ *
+ * The reported defect by its other door: with First Name fixed, a question
+ * labelled "First name" is still a second box for the same fact — a second
+ * answer that can disagree with the real one, beside it on the reviewer's
+ * screen. Matched on the whole label once normalised (`platformMeaningOf`), so
+ * "Employer name" and "Previous address" stay the broker's to ask.
+ */
+export function assertNoSecondCopies(next: readonly KycStepConfig[]): void {
+  next.forEach((step, stepIndex) => {
+    step.fields.forEach((field, fieldIndex) => {
+      if (isPlatformField(step.slug, field)) return;
+      const meaning = platformMeaningOf(field.label);
+      if (meaning) {
+        throw refuse(
+          `"${field.label}" is already collected by the platform (${meaning}), in its fixed ` +
+            'place. A second box would be a second answer that can disagree with the first.',
+          stepIndex,
+          fieldIndex,
+        );
+      }
+    });
+  });
 }
 
 /** Every rule, in the order whose message is most useful first. */
@@ -305,8 +372,10 @@ export function assertKycConfigIntegrity(
   previous: readonly KycStepConfig[],
   next: readonly KycStepConfig[],
 ): void {
-  assertFieldKeysUniquePerStep(next);
-  assertFieldsFitTheirStep(next);
-  assertProfileFieldsKeepTheirPlace(next);
-  assertReservedKeysNotRenamed(previous, next);
+  assertCoreSteps(next);
+  assertStepAddresses(previous, next);
+  assertIdentityUnchanged(next);
+  assertStepsHoldWhatTheyAreFor(next);
+  assertFieldKeys(next);
+  assertNoSecondCopies(next);
 }

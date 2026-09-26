@@ -38,6 +38,9 @@ const COMPLETE_PROFILE = {
   phone: '+961 70 123 456',
   nationality: 'Lebanese',
   country: 'Lebanon',
+  // Required to verify, by the platform (the identity core, 26 Sep 2026).
+  address: 'Hamra Street 12',
+  city: 'Beirut',
 };
 
 /** Starts with the PNG signature, which is what the upload route checks. */
@@ -135,6 +138,8 @@ describe('a step stores what it asks for, and nothing else', () => {
         phone: users.phone,
         nationality: users.nationality,
         country: users.country,
+        address: users.address,
+        city: users.city,
       })
       .from(users)
       .where(eq(users.id, id));

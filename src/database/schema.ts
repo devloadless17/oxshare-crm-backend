@@ -816,6 +816,24 @@ export const kycSubmissions = pgTable(
       .default({}),
     rejectionReason: text('rejection_reason'),
     rejectedFields: jsonb('rejected_fields').$type<string[]>(),
+    /**
+     * When a reviewer returned an APPROVED verification to the client to redo
+     * the items named in `rejected_fields` (0147). Set with the return, cleared
+     * by the next submission — it is what lets the client be told "please
+     * update your verification" rather than "rejected", and the reviewer see
+     * that this resubmission follows a re-verification.
+     */
+    reverificationRequestedAt: timestamp('reverification_requested_at', { withTimezone: true }),
+    /**
+     * What the broker's OWN steps asked, as the client answered them (0147):
+     * each step's slug and title, each field's name, label and type, written at
+     * submission. The review labels custom answers from it, so a question the
+     * builder later relabels or removes still reads as what was asked.
+     */
+    formSnapshot:
+      jsonb('form_snapshot').$type<
+        { slug: string; title: string; fields: { name: string; label: string; type: string }[] }[]
+      >(),
     submittedAt: timestamp('submitted_at', { withTimezone: true }),
     reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
     /*

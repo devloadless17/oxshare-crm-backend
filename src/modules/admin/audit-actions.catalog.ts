@@ -121,6 +121,13 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
     label: 'KYC identity details corrected',
     group: 'Verification',
   },
+  {
+    // An APPROVED verification returned to the client to update — the level
+    // goes back to 0 with it, so it is a money-gate event as well as a review one.
+    action: 'kyc.reverification_request',
+    label: 'KYC re-verification requested',
+    group: 'Verification',
+  },
 
   /*
    * ── Money ────────────────────────────────────────────────────────────────
@@ -291,6 +298,14 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   { action: 'kyc_config.step_add', label: 'KYC step added', group: 'Configuration' },
   { action: 'kyc_config.step_update', label: 'KYC step changed', group: 'Configuration' },
   { action: 'kyc_config.step_delete', label: 'KYC step deleted', group: 'Configuration' },
+  {
+    action: 'kyc_config.consolidated',
+    label: 'KYC form repaired to the identity core (one-time)',
+    group: 'Configuration',
+    // Written ONCE, by migration 0147's SQL, which no TypeScript scan can see —
+    // the row exists from the day it runs, and no code writes another.
+    historical: true,
+  },
   { action: 'platform_link.set', label: 'Download link changed', group: 'Configuration' },
   /*
    * ── The catalogue: what is sold, and who may sell it ─────────────────────

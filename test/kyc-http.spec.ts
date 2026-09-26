@@ -48,6 +48,9 @@ const COMPLETE_PROFILE = {
   phone: '+971501234567',
   nationality: 'Lebanese',
   country: 'United Arab Emirates',
+  // Required to verify, by the platform (the identity core, 26 Sep 2026).
+  address: '12 Sheikh Zayed Road',
+  city: 'Dubai',
 };
 
 let ctx: HttpTestContext;
@@ -125,7 +128,17 @@ beforeAll(async () => {
         emailVerified: c.email !== UNVERIFIED.email,
         // The CLIENT's contact details live on its profile (0139), as the KYC
         // personal step would have stored them — E.164, trimmed.
-        ...(c.email === CLIENT.email ? { phone: '+96170111111', country: 'Lebanon' } : {}),
+        ...(c.email === CLIENT.email
+          ? {
+              phone: '+96170111111',
+              country: 'Lebanon',
+              // The rest of a complete identity: approval re-asks the judge.
+              dateOfBirth: '1990-01-01',
+              nationality: 'Lebanese',
+              address: 'Hamra Street 12',
+              city: 'Beirut',
+            }
+          : {}),
       })),
     )
     .returning();
@@ -339,103 +352,45 @@ describe('the step configurator is a different permission from reviewing', () =>
     expect(res.status).toBe(403);
   });
 
-  it('lets an admin with kyc.edit delete every step FR-CORE-15 mandated', async () => {
+  it('refuses even kyc.edit a form without the four built-in steps — the identity core', async () => {
     /*
-     * This asserted a 400: `personal`, `document`, `selfie` and `address` were
-     * mandated by FR-CORE-15 and could not be removed by anyone.
+     * This asserted a 200 for a form holding one step that was none of the
+     * four: the owner had retired the mandatory-step rule on 15 Aug 2026.
      *
-     * The owner retired that rule on 15 Aug 2026 — a KYC flow sold as
-     * configurable that refuses to drop four of its steps is not configurable,
-     * and which documents a jurisdiction demands is the broker's decision.
-     *
-     * ⚠️ THE PROBE CHANGED ON 10 Sep 2026, AND THE PROPERTY DID NOT.
-     *
-     * It used to send `{ steps: [] }`, on the reasoning that the empty config is
-     * the extreme case and therefore the sharpest test — if any step were still
-     * secretly required, an empty save is what would reveal it. `KycConfigDto`
-     * now carries `@ArrayNotEmpty`, so that call answers 400 and this case had
-     * to be rewritten or deleted.
-     *
-     * It is rewritten, because the empty config was the WEAKER probe of the two.
-     * A refusal of `[]` is consistent with every step being freely deletable —
-     * it says nothing about WHICH steps are required, only that a configuration
-     * must exist. What actually pins the owner's decision is a config holding
-     * ONE step that is none of the four: it deletes `personal`, `document`,
-     * `selfie` and `address` in a single save and is accepted. If any of them
-     * were still secretly mandated, THIS is the call that fails.
-     *
-     * ## Why the floor is not the retired rule wearing a new name
-     *
-     * The retired rule named four steps and refused to let them go. The floor
-     * names none: every step here is deletable, including all four, down to
-     * whichever one an operator chooses to keep. What it refuses is a save that
-     * leaves nothing behind — and zero steps is not a flow anybody configured,
-     * it is the absence of one. `KycConfigStore.setSteps` is a DELETE followed
-     * by an INSERT, so an empty save wiped onboarding for every client: the
-     * wizard renders nothing, nobody can submit, no reviewer receives anything,
-     * and no client can reach a money screen again. It answered 200 and looked
-     * entirely normal until the next registration.
-     *
-     * The old probe was also AMBIGUOUS, which is a reason to prefer this one
-     * independently of the floor: a reader meeting `[] → 200` cannot tell
-     * whether the system permits an empty configuration DELIBERATELY or merely
-     * fails to forbid it. This case cannot be misread that way — it asserts one
-     * property and names it.
-     *
-     * If the owner wants zero savable, this is one decorator out of
-     * `compliance.dto.ts`. What should NOT come back is a bare `{ steps: [] }` /
-     * 200 with no sentence saying which of those two it is asserting; that is
-     * the ambiguity above, and it is what let this stand as evidence for a
-     * decision it only half describes. The reasoning is in `compliance.dto.ts`
-     * beside the decorator, and the cost of the 200 is in
-     * `kyc-config-round-trip.spec.ts`.
-     *
-     * The PERMISSION split above is untouched and still the real control — a
-     * reviewer gets 403, only `kyc.edit` gets this far. What replaced the block
-     * is the audit trail; see test/kyc-config-rules.spec.ts.
+     * On 26 Sep 2026 the owner ruled again, after a builder edit removed a
+     * client's first name from the form: the client's identity is not
+     * configuration. Personal Information and Identity Document are always on,
+     * Selfie and Proof of Address can be switched off, and none of the four can
+     * be deleted (`common/kyc/identity-core.ts`). The permission split above is
+     * still the first control; this is the second, and it holds for everybody.
      */
     const master = await actingAs(ctx, 'admin', ADMIN);
+    const before = (await master.get('/v1/admin/kyc-config')).body as { slug: string }[];
 
-    const before = await master.get('/v1/admin/kyc-config');
-    const original = (Array.isArray(before.body) ? before.body : before.body.steps) as unknown[];
-
-    const onlyStep = {
-      slug: 'proof-of-funds',
-      title: 'Proof of Funds',
-      enabled: true,
-      fields: [
+    const res = await master.put('/v1/admin/kyc-config', {
+      steps: [
         {
-          id: 'pof-1',
-          name: 'sourceOfWealth',
-          label: 'Source of wealth',
-          type: 'text',
-          required: true,
+          slug: 'proof-of-funds',
+          title: 'Proof of Funds',
+          enabled: true,
+          fields: [
+            {
+              id: 'pof-1',
+              name: 'sourceOfWealth',
+              label: 'Source of wealth',
+              type: 'text',
+              required: true,
+            },
+          ],
         },
       ],
-    };
+    });
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(res.body)).toMatch(/cannot be removed/);
 
-    const res = await master.put('/v1/admin/kyc-config', { steps: [onlyStep] });
-    expect(
-      res.status,
-      `dropping all four FR-CORE-15 steps answered ${res.status}: ` +
-        JSON.stringify(res.body).slice(0, 200),
-    ).toBe(200);
-
-    /*
-     * RE-READ. A 200 that did not persist would satisfy the line above while
-     * leaving the four steps in place, which is the outcome this case exists to
-     * refuse.
-     */
-    const after = await master.get('/v1/admin/kyc-config');
-    const slugs = (
-      (Array.isArray(after.body) ? after.body : after.body.steps) as { slug: string }[]
-    ).map((s) => s.slug);
-    expect(slugs, 'a mandated step survived a save that did not include it').toEqual([
-      'proof-of-funds',
-    ]);
-
-    // Leave the config as it was found — later cases in this file read it.
-    await master.put('/v1/admin/kyc-config', { steps: original });
+    // RE-READ: nothing was written.
+    const after = (await master.get('/v1/admin/kyc-config')).body as { slug: string }[];
+    expect(after.map((s) => s.slug)).toEqual(before.map((s) => s.slug));
   });
 });
 
@@ -513,13 +468,21 @@ describe('the review lifecycle, over HTTP', () => {
         lastName: 'Fields',
         phone: '+96170999999',
         country: 'Cyprus',
+        dateOfBirth: '1985-06-01',
+        nationality: 'Cypriot',
+        address: 'Makarios Avenue 3',
+        city: 'Nicosia',
         emailVerified: true,
       })
       .returning();
+    // Complete — approval re-asks the one judge — and carrying no phone of its own.
     await ctx.db.db.insert(kycSubmissions).values({
       userId: fresh.id,
       status: 'submitted',
-      personalInfo: { firstName: 'No', lastName: 'Fields' },
+      personalInfo: {},
+      document: { docType: 'passport', frontFilePath: '/uploads/kyc/n1.png' },
+      selfie: { filePath: '/uploads/kyc/n2.png' },
+      addressProof: { docType: 'utility_bill', filePath: '/uploads/kyc/n3.png' },
     });
 
     const master = await actingAs(ctx, 'admin', ADMIN);
@@ -529,6 +492,47 @@ describe('the review lifecycle, over HTTP', () => {
     expect(after.phone).toBe('+96170999999');
     expect(after.country).toBe('Cyprus');
     expect(after.verificationLevel).toBe(1);
+  });
+
+  it('refuses to APPROVE a record the one judge finds incomplete, naming what is missing', async () => {
+    /*
+     * Approval checked nothing but the status. A submission from before today's
+     * rules — or one whose profile moved after it was sent — could be raised to
+     * level 1, the gate every withdrawal checks, with no city, no identity
+     * document, or an under-age date of birth. It now asks the same judgement
+     * the client's Submit gets.
+     */
+    const [thin] = await ctx.db.db
+      .insert(users)
+      .values({
+        email: `approve-thin-${Date.now()}@oxshare-e2e.test`,
+        passwordHash: 'x',
+        firstName: 'Thin',
+        lastName: 'Record',
+        dateOfBirth: '1990-01-01',
+        nationality: 'Lebanese',
+        phone: '+96170888888',
+        country: 'Lebanon',
+        address: 'Hamra Street 12',
+        emailVerified: true,
+      })
+      .returning();
+    await ctx.db.db.insert(kycSubmissions).values({
+      userId: thin.id,
+      status: 'submitted',
+      personalInfo: {},
+      selfie: { filePath: '/uploads/kyc/t2.png' },
+      addressProof: { docType: 'utility_bill', filePath: '/uploads/kyc/t3.png' },
+    });
+
+    const master = await actingAs(ctx, 'admin', ADMIN);
+    const res = await master.patch(`/v1/admin/kyc/${thin.id}/approve`);
+    expect(res.status).toBe(409);
+    expect(res.body.message).toMatch(/City/);
+    expect(res.body.message).toMatch(/Identity Document/);
+
+    const [after] = await ctx.db.db.select().from(users).where(eq(users.id, thin.id));
+    expect(after.verificationLevel, 'an incomplete record was verified').toBe(0);
   });
 
   it('takes the level back when the same submission is later rejected', async () => {

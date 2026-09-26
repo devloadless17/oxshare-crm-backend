@@ -1218,6 +1218,7 @@ export async function reassertReviewPool(db: ReturnType<typeof getDb>): Promise<
       })
       .returning();
 
+    const evidence = fixtureEvidence(`pool-${label}`);
     await db
       .insert(kycSubmissions)
       .values({
@@ -1226,9 +1227,7 @@ export async function reassertReviewPool(db: ReturnType<typeof getDb>): Promise<
         submittedAt: new Date(),
         // Identity is the profile's (above); no broker-invented answers here.
         personalInfo: {},
-        document: { docType: 'passport', fileName: 'pool-doc.png' },
-        selfie: { fileName: 'pool-selfie.png' },
-        addressProof: { docType: 'utility_bill', fileName: 'pool-address.png' },
+        ...evidence,
       })
       .onConflictDoUpdate({
         target: kycSubmissions.userId,
@@ -1238,11 +1237,43 @@ export async function reassertReviewPool(db: ReturnType<typeof getDb>): Promise<
           reviewedAt: null,
           reviewedBy: null,
           rejectionReason: null,
+          // A re-verification request is part of the decision being reset.
+          reverificationRequestedAt: null,
+          // And the evidence: approval re-asks the judge, which reads pages.
+          ...evidence,
         },
       });
   }
 
   return REVIEW_POOL.length;
+}
+
+/**
+ * A fixture's documents, each page ON FILE as far as the record goes.
+ *
+ * Approval re-asks the one judge (26 Sep 2026), and the judge reads a page by
+ * its stored path — these fixtures carried a file NAME only, so every approval
+ * of one was refused as "photo page missing". The paths are placeholders: no
+ * object is written (dev storage is the real R2 bucket, and a fixture per run
+ * would fill it), so opening one answers the route's ordinary 404. Each is
+ * unique to its fixture, never another client's file.
+ */
+function fixtureEvidence(tag: string) {
+  const page = (name: string) => `uploads/kyc/e2e-fixture-${tag}-${name}.png`;
+  return {
+    document: {
+      docType: 'passport',
+      fileName: `${tag}-passport.png`,
+      frontFilePath: page('passport'),
+      frontFileName: `${tag}-passport.png`,
+    },
+    selfie: { fileName: `${tag}-selfie.png`, filePath: page('selfie') },
+    addressProof: {
+      docType: 'utility_bill',
+      fileName: `${tag}-bill.png`,
+      filePath: page('bill'),
+    },
+  };
 }
 
 /** Every pool client's profile — a real, complete identity a reviewer can check. */
@@ -1298,15 +1329,15 @@ export async function createFreshE2eClient(
       email,
       passwordHash: await new PasswordService().hash(password),
       firstName: 'Fresh',
-      lastName: stamp,
+      // Unique, and a NAME: letters as on an ID (0139) — the stamp's digits are
+      // spelled as letters, or approval's re-check refuses the surname.
+      lastName: stamp.replace(/\d/g, (digit) => 'abcdefghij'.charAt(Number(digit))),
       type: 'individual',
       status: 'active',
       emailVerified: true,
       verificationLevel: 0,
-      country: 'Lebanon',
+      ...POOL_PROFILE,
       phone: '+96170000901',
-      dateOfBirth: '1990-06-15',
-      nationality: 'Lebanese',
     })
     .returning();
 
@@ -1316,9 +1347,7 @@ export async function createFreshE2eClient(
     submittedAt: new Date(),
     // Identity is the profile's (above); no broker-invented answers here.
     personalInfo: {},
-    document: { docType: 'passport', fileName: 'fresh-doc.png' },
-    selfie: { fileName: 'fresh-selfie.png' },
-    addressProof: { docType: 'utility_bill', fileName: 'fresh-address.png' },
+    ...fixtureEvidence(`fresh-${stamp}`),
   });
 
   return { id: client.id, email, password };

@@ -17,6 +17,7 @@ import { RivalWithdrawalsService } from '../src/modules/payments/rival/rival-wit
 import { PasswordService } from '../src/common/security/password.service';
 import { DEFAULT_KYC_STEPS } from '../src/store/kyc-config.store';
 import { admins, kycConfigSteps, roles, users } from '../src/database/schema';
+import { SIGN_UP_DETAILS } from './support/registration';
 
 /**
  * FSD §14, JOURNEY 4 — the administrator's day.
@@ -75,13 +76,17 @@ const idem = () => ({ headers: { 'idempotency-key': randomUUID() } });
 const PORTAL_ORIGIN = process.env['PORTAL_URL'] ?? 'http://localhost:3000';
 
 async function onboard(person: (typeof CLIENTS)[number]): Promise<string> {
-  const res = await anonymous(ctx).post('/v1/auth/register').set('Origin', PORTAL_ORIGIN).send({
-    firstName: person.first,
-    lastName: person.last,
-    email: person.email,
-    password: PASSWORD,
-    country: 'Lebanon',
-  });
+  const res = await anonymous(ctx)
+    .post('/v1/auth/register')
+    .set('Origin', PORTAL_ORIGIN)
+    .send({
+      firstName: person.first,
+      lastName: person.last,
+      email: person.email,
+      password: PASSWORD,
+      ...SIGN_UP_DETAILS,
+      country: 'Lebanon',
+    });
   if (res.status >= 400) throw new Error(`register: ${JSON.stringify(res.body)}`);
 
   const sent = mail.find('sendVerificationEmail', person.email);
@@ -107,6 +112,9 @@ async function fileKyc(person: (typeof CLIENTS)[number], phone: string) {
       phone,
       nationality: 'Lebanese',
       country: 'Lebanon',
+      // Required to verify, by the platform (the identity core, 26 Sep 2026).
+      address: 'Hamra Street 12',
+      city: 'Beirut',
     },
   });
   // Uploaded, as a client's are — see test/support/kyc-upload.ts.
