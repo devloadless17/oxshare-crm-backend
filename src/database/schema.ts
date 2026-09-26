@@ -948,6 +948,23 @@ export const kycConfigSteps = pgTable('kyc_config_steps', {
   fields: jsonb('fields').$type<Record<string, unknown>[]>().notNull().default([]),
 });
 
+/*
+ * THE NAME OF EVERY QUESTION A BROKER HAS EVER ASKED (0148, reported 26 Sep 2026).
+ *
+ * An answer is stored under its field's KEY (`customField_1790263641710`); the
+ * question's name lived only in the form. Delete the question — or its step,
+ * or reset the form — and every answer already given lost its name: the review
+ * could only print the key. This keeps the name, written by the one path every
+ * form change takes (`KycConfigStore.setSteps`), and never deleted. Keys are
+ * generated and unique, so a name here belongs to exactly one question.
+ */
+export const kycFieldLabels = pgTable('kyc_field_labels', {
+  name: text('name').primaryKey(),
+  label: text('label').notNull(),
+  type: text('type').notNull().default('text'),
+  recordedAt: timestamp('recorded_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const rejectionReasons = pgTable(
   'rejection_reasons',
   {

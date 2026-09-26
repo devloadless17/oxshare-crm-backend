@@ -20,7 +20,8 @@
  * address and the selfie when they were asked for, and the broker's own
  * questions grouped by step — as they were ASKED (`formSnapshot`, written at
  * submission), with any answer to a question no longer on the form listed
- * rather than lost. The VALUES stay where they are in the response, under the
+ * rather than lost — under the name it was last given (`kyc_field_labels`,
+ * 0148), never its key. The VALUES stay where they are in the response, under the
  * masks that already govern them; this carries labels only, so it can never be
  * the route a masked value leaks by.
  *
@@ -82,6 +83,30 @@ export interface KycReviewLayout {
 const IDENTITY_SLOTS = ['doc_front', 'doc_back'] as const;
 const ADDRESS_SLOTS = ['address_proof', 'address_proof_2'] as const;
 
+/**
+ * The name each key was last given, kept after its question left the form
+ * (`kyc_field_labels`, 0148; read by `KycConfigStore.recordedLabels`).
+ */
+export type RecordedLabels = ReadonlyMap<string, { label: string; type: string }>;
+
+/**
+ * What a removed question is called when nothing ever recorded its name — said
+ * as it is, never its key: "Custom Field 1790263641710" told a reviewer nothing
+ * and looked like a bug (reported 26 Sep 2026).
+ */
+export const UNRECORDED_QUESTION = 'Question name not on record';
+
+/** Every key a client answered with a question of the broker's — what to look names up for. */
+export function answerKeysOf(
+  submission: Pick<KycSubmission, 'personalInfo' | 'stepData'>,
+): string[] {
+  const keys = Object.keys(submission.personalInfo ?? {}).filter((key) => !isProfileKey(key));
+  for (const answers of Object.values(submission.stepData ?? {})) {
+    keys.push(...Object.keys(answers ?? {}));
+  }
+  return [...new Set(keys)];
+}
+
 /** The reviewer's layout of one submission. */
 export function reviewLayout(
   steps: readonly KycStepConfig[],
@@ -89,9 +114,10 @@ export function reviewLayout(
     KycSubmission,
     'document' | 'addressProof' | 'personalInfo' | 'stepData' | 'formSnapshot' | 'rejectedFields'
   >,
+  recorded: RecordedLabels = new Map(),
 ): KycReviewLayout {
   const asked = (slug: string) => steps.some((step) => step.slug === slug && step.enabled);
-  const additional = additionalSections(steps, submission);
+  const additional = additionalSections(steps, submission, recorded);
   return {
     identity: IDENTITY_FIELDS.map((field) => ({
       key: field.name,
@@ -150,6 +176,7 @@ function documentOf(
 function additionalSections(
   steps: readonly KycStepConfig[],
   submission: Pick<KycSubmission, 'personalInfo' | 'stepData' | 'formSnapshot'>,
+  recorded: RecordedLabels,
 ): KycReviewSection[] {
   const asked: KycFormSnapshot =
     submission.formSnapshot ??
@@ -172,12 +199,15 @@ function additionalSections(
 
   const listed = new Set(sections.flatMap((s) => s.fields.map((f) => `${f.step}\u0000${f.name}`)));
   const unlisted: KycReviewField[] = [];
+  // A removed question keeps the name it was last given (0148) — and its type, so
+  // a checkbox still reads Yes/No and a date as a date.
   const consider = (step: string, name: string, value: unknown) => {
     if (listed.has(`${step}\u0000${name}`)) return;
+    const known = recorded.get(name);
     unlisted.push({
       name,
-      label: humanise(name),
-      type: isStoredFile(value) ? 'file' : 'text',
+      label: known?.label ?? UNRECORDED_QUESTION,
+      type: isStoredFile(value) ? 'file' : (known?.type ?? 'text'),
       step,
     });
   };

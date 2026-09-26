@@ -666,3 +666,55 @@ describe('0137 puts every catalogue document on the step that holds its kind', (
       );
   });
 });
+
+describe('a question’s name outlives the question (0148, reported 26 Sep 2026)', () => {
+  it('names an answer by the question’s last name after the question is deleted — never its key', async () => {
+    /*
+     * Production's review printed "Custom Field 1790263641710": the question was
+     * deleted, and the answer kept only its key. Every form save now records
+     * each question's name (`KycConfigStore.setSteps`) and nothing deletes it.
+     */
+    const field = { id: 'f-employer', name: 'customField_employer', type: 'text', required: false };
+    const created = await session.post('/v1/admin/kyc-config/steps').send({
+      slug: 'employment',
+      title: 'Employment',
+      enabled: true,
+      fields: [{ ...field, label: 'Employer' }],
+    });
+    expect(created.status, JSON.stringify(created.body).slice(0, 200)).toBe(201);
+    const id = (created.body as { id: string }).id;
+    // Renamed after clients answered: the name kept is the latest.
+    const renamed = await session.put(`/v1/admin/kyc-config/steps/${id}`).send({
+      slug: 'employment',
+      title: 'Employment',
+      enabled: true,
+      fields: [{ ...field, label: 'Employer name' }],
+    });
+    expect(renamed.status, JSON.stringify(renamed.body).slice(0, 200)).toBe(200);
+
+    const client = await ctx.db.db.execute<{ id: string }>(
+      sql`INSERT INTO users (email, password_hash, first_name, last_name, email_verified)
+          VALUES ('names-outlive@oxshare-e2e.test', 'x', 'Layla', 'Haddad', true) RETURNING id`,
+    );
+    const clientId = client.rows[0].id;
+    await ctx.db.db.execute(
+      sql`INSERT INTO kyc_submissions (user_id, status, submitted_at, step_data)
+          VALUES (${clientId}, 'submitted', now(), ${JSON.stringify({ employment: { customField_employer: 'Acme' } })}::jsonb)`,
+    );
+
+    // The question goes — its whole step with it.
+    expect((await session.del(`/v1/admin/kyc-config/steps/${id}`)).status).toBeLessThan(400);
+
+    const review = await session.get(`/v1/admin/kyc/${clientId}`);
+    expect(review.status).toBe(200);
+    const sections = (
+      review.body as {
+        layout: { additional: { slug: string; fields: { name: string; label: string }[] }[] };
+      }
+    ).layout.additional;
+    const removed = sections.find((section) => section.slug === 'unlisted');
+    expect(removed?.fields).toEqual([
+      expect.objectContaining({ name: 'customField_employer', label: 'Employer name' }),
+    ]);
+  });
+});

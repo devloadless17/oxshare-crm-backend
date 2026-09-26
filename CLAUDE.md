@@ -1066,6 +1066,7 @@ they live here:
 | `modules/compliance/kyc-step-state.ts` | the one judge; `approvalBlockers` is what approval re-asks |
 | `modules/compliance/kyc-review-layout.ts` | the review's `layout`, from `form_snapshot` then the config |
 | `KycService.requestReverification` | `POST /admin/kyc/:id/reverify` — level 0, the stamp, its own email |
+| `kyc_field_labels` (0148) | every question's name, written by `setSteps` and never deleted — so an answer to a question since removed is named in the review, not printed as its key |
 
 - **`If-Match` is optional on `PUT /admin/kyc-config`.** The builder always sends it; a caller that
   omits it gets last-write-wins, which is what the e2e restore relies on. Sent and stale, it is 409
