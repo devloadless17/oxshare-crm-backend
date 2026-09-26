@@ -25,7 +25,7 @@ import { IbCommissionRowDto, IbOverviewDto } from './dto/ib-overview.dto';
 import { IbWalletTransferDto, IbWalletTransferResultDto } from './dto/ib-wallet.dto';
 import { PublicAgencyDto } from '../products/dto/catalogue.dto';
 import { WalletDto } from '../wallet/dto/wallet-response.dto';
-import { OpenWalletDto } from '../wallet/dto/open-wallet.dto';
+import { OpenOwnWalletDto } from '../wallet/dto/open-wallet.dto';
 import { ProductsStore } from '../../store/products.store';
 
 /**
@@ -189,7 +189,7 @@ export class IbController {
       'opened on the first confirmed payout anyway; this shows the card before then.',
   })
   @ApiCreatedResponse({ type: WalletDto })
-  openCommissionWallet(@Req() req: Request & { user: User }, @Body() dto: OpenWalletDto) {
+  openCommissionWallet(@Req() req: Request & { user: User }, @Body() dto: OpenOwnWalletDto) {
     return this.ibWallets.openCommissionWallet(req.user.id, dto.currency);
   }
 

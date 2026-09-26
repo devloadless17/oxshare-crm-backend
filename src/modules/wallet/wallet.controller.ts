@@ -13,7 +13,7 @@ import { EmailVerifiedGuard } from '../identity/guards/email-verified.guard';
 import { User } from '../../store/users.store';
 import { WalletService } from './wallet.service';
 import { LedgerListResponseDto, StatementDto, WalletDto } from './dto/wallet-response.dto';
-import { OpenWalletDto } from './dto/open-wallet.dto';
+import { OpenOwnWalletDto } from './dto/open-wallet.dto';
 import { StatementService } from './statement.service';
 import { decodeCursor } from '../../common/pagination';
 import { enumQuery } from '../../common/query-params';
@@ -70,7 +70,7 @@ export class WalletController {
       'already holds returns it unchanged.',
   })
   @ApiCreatedResponse({ type: WalletDto })
-  openWallet(@Req() req: Request & { user: User }, @Body() dto: OpenWalletDto) {
+  openWallet(@Req() req: Request & { user: User }, @Body() dto: OpenOwnWalletDto) {
     return this.wallets.openOwnWallet(req.user.id, dto.currency);
   }
 
