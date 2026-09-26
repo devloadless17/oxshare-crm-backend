@@ -1,11 +1,19 @@
-import { Controller, Get, ParseUUIDPipe, Query, Req, UseGuards } from '@nestjs/common';
-import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Body, Controller, Get, ParseUUIDPipe, Post, Query, Req, UseGuards } from '@nestjs/common';
+import {
+  ApiCookieAuth,
+  ApiCreatedResponse,
+  ApiOkResponse,
+  ApiOperation,
+  ApiTags,
+} from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { Request } from 'express';
 import { JwtAuthGuard } from '../identity/guards/jwt-auth.guard';
 import { EmailVerifiedGuard } from '../identity/guards/email-verified.guard';
 import { User } from '../../store/users.store';
 import { WalletService } from './wallet.service';
 import { LedgerListResponseDto, StatementDto, WalletDto } from './dto/wallet-response.dto';
+import { OpenWalletDto } from './dto/open-wallet.dto';
 import { StatementService } from './statement.service';
 import { decodeCursor } from '../../common/pagination';
 import { enumQuery } from '../../common/query-params';
@@ -42,6 +50,28 @@ export class WalletController {
   @ApiOkResponse({ type: [WalletDto] })
   myWallets(@Req() req: Request & { user: User }) {
     return this.wallets.listWallets(req.user.id);
+  }
+
+  /**
+   * Open a wallet in an offered currency — the portal's "Open wallet" card.
+   *
+   * Adding a currency opens no wallets (a write per client does not scale);
+   * the client opens the one they want. Idempotent, so a double click returns
+   * the same wallet. Throttled loosely: it writes one row, but nothing should
+   * be able to hammer it.
+   */
+  @Post()
+  @Throttle({ default: { ttl: 60_000, limit: 20 } })
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Open a wallet in an offered currency for the signed-in client',
+    description:
+      'Refused for a currency that does not exist or is disabled. Opening one the client ' +
+      'already holds returns it unchanged.',
+  })
+  @ApiCreatedResponse({ type: WalletDto })
+  openWallet(@Req() req: Request & { user: User }, @Body() dto: OpenWalletDto) {
+    return this.wallets.openOwnWallet(req.user.id, dto.currency);
   }
 
   /**

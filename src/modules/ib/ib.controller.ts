@@ -1,5 +1,13 @@
 import { Body, Controller, Get, Post, Req, UseGuards, UseInterceptors } from '@nestjs/common';
-import { ApiCookieAuth, ApiHeader, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  ApiCookieAuth,
+  ApiCreatedResponse,
+  ApiHeader,
+  ApiOkResponse,
+  ApiOperation,
+  ApiTags,
+} from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import {
   IDEMPOTENCY_HEADER,
   Idempotent,
@@ -16,6 +24,8 @@ import { CreateIbApplicationDto, IbApplicationDto, IbStatusDto } from './dto/ib-
 import { IbCommissionRowDto, IbOverviewDto } from './dto/ib-overview.dto';
 import { IbWalletTransferDto, IbWalletTransferResultDto } from './dto/ib-wallet.dto';
 import { PublicAgencyDto } from '../products/dto/catalogue.dto';
+import { WalletDto } from '../wallet/dto/wallet-response.dto';
+import { OpenWalletDto } from '../wallet/dto/open-wallet.dto';
 import { ProductsStore } from '../../store/products.store';
 
 /**
@@ -162,6 +172,25 @@ export class IbController {
   @ApiOkResponse({ type: [PublicAgencyDto] })
   openAgencies() {
     return this.listOpenAgencies();
+  }
+
+  /**
+   * Open a commission wallet in an offered currency — the partner screen's
+   * "Open commission wallet" card. Active partners only; idempotent.
+   */
+  @Post('wallet/commission')
+  @Throttle({ default: { ttl: 60_000, limit: 20 } })
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Open a commission wallet in an offered currency',
+    description:
+      'For an active partner. Refused for a currency that does not exist or is disabled. ' +
+      'Opening one already held returns it unchanged. Commission is credited into a wallet ' +
+      'opened on the first confirmed payout anyway; this shows the card before then.',
+  })
+  @ApiCreatedResponse({ type: WalletDto })
+  openCommissionWallet(@Req() req: Request & { user: User }, @Body() dto: OpenWalletDto) {
+    return this.ibWallets.openCommissionWallet(req.user.id, dto.currency);
   }
 
   @Get('wallet/transfers')

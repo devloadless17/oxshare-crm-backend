@@ -6,14 +6,14 @@ import type { Db } from '../database/db';
 /**
  * Wallet reads and writes that belong to no single module.
  *
- * ## Its callers
+ * ## Its one caller is a SCRIPT
  *
- * `CurrenciesService`, when a currency is ADDED ENABLED or ENABLED later: every
- * client gets a wallet in it and every partner a commission wallet (owner,
- * 26 Sep 2026). Run in the background after the save commits, so the request
- * that saved the form does not wait on a write per client. And
- * `scripts/backfill-wallets.mjs`, through `WalletProvisioningService`, for an
- * operator repairing a gap by hand.
+ * `openForAllClients` is reached through `WalletProvisioningService`, which
+ * wraps it in the never-throws contract its siblings hold, and that method is
+ * called from `scripts/backfill-wallets.mjs` and nowhere else. Nothing in the
+ * request path opens wallets in bulk — see the note in `CurrenciesService`,
+ * which called it on enable for exactly one commit before the trigger was
+ * removed.
  *
  * ## Why it is a store even so
  *
@@ -76,29 +76,6 @@ export class WalletsStore {
     const result = await this.db.execute(sql`
       INSERT INTO wallets (user_id, currency, kind)
       SELECT id, ${currency}, 'main' FROM users
-      ON CONFLICT (user_id, currency, kind) DO NOTHING`);
-
-    return result.rowCount ?? 0;
-  }
-
-  /**
-   * Open one currency's COMMISSION wallet for every partner. Returns the number
-   * actually added.
-   *
-   * Every row in `ib_accounts` — suspended partners included, for the reason
-   * `openForAllClients` gives for suspended clients: the row is empty, grants
-   * nothing, and is what keeps the partner screen complete the day they are
-   * reinstated. The same `ON CONFLICT DO NOTHING`, so an existing commission
-   * wallet and its balance are never touched.
-   *
-   * A partner is paid in the currency of the trade that earned it, so this is
-   * what makes a new currency's commission card appear on every partner's
-   * screen as a true zero, rather than only after their first payout in it.
-   */
-  async openCommissionForAllPartners(currency: string): Promise<number> {
-    const result = await this.db.execute(sql`
-      INSERT INTO wallets (user_id, currency, kind)
-      SELECT user_id, ${currency}, 'commission' FROM ib_accounts
       ON CONFLICT (user_id, currency, kind) DO NOTHING`);
 
     return result.rowCount ?? 0;
