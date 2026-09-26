@@ -19,26 +19,13 @@ import { WalletService, type Executor } from './wallet.service';
  *                 `openWalletForAllClients`, reached only from
  *                 `scripts/backfill-wallets.mjs`.
  *
- * ## Enabling a currency does NOT open wallets, and that was decided twice
+ * ## A currency that goes live opens wallets too (owner, 26 Sep 2026)
  *
- * `CurrenciesService` called `openWalletForAllClients` on create and on enable
- * for exactly one commit. The argument for it still holds on its own terms: the
- * wallet SCREEN lists what exists rather than what is offered, so a client who
- * registered when only USD and USDT were live sees those two for as long as they
- * never transact in anything else, while the currency screen says six are
- * offered.
- *
- * It was removed at the operator's request, and the cost is why: adding one
- * currency wrote a row per client — tens of thousands here — inside the request
- * that saved the form. A configuration change should not be a bulk write against
- * the money tables. So the operation stayed and its TRIGGER went: an operator
- * runs the script when they mean to, and nothing happens by side effect.
- *
- * Worth recording, because the comment here once claimed otherwise: the
- * KYC-APPROVAL catch-up this block used to name as the safety net WAS NEVER
- * WIRED. `KycService.approve` does not touch wallets and never has. Lazy
- * creation through `getOrCreateWallet` on the money paths is the real fallback,
- * and it is a real one — it just does not cover the list screen.
+ * Adding or enabling a currency opens it for every existing client and
+ * partner — `CurrenciesService.openWalletsFor`, after the save commits. So the
+ * three moments are registration, partner approval and a currency going live,
+ * and between them every wallet screen lists every currency on offer. Lazy
+ * creation through `getOrCreateWallet` on the money paths remains the backstop.
  *
  * ## Never fatal to the thing that triggered it
  *
@@ -149,48 +136,38 @@ export class WalletProvisioningService {
   }
 
   /**
-   * A partner's COMMISSION wallet, opened at approval.
+   * A partner's COMMISSION wallets, opened at approval — one per ENABLED
+   * currency (owner, 26 Sep 2026).
    *
-   * ## Why at approval rather than at first payout
+   * A partner is paid in the currency of the trade that earned it, and a client
+   * of theirs may trade in any currency the platform offers. So the partner
+   * screen shows a commission card for each of those, a true zero until paid,
+   * matching what `CurrenciesService.openWalletsFor` gives every existing
+   * partner when a currency goes live. It used to open the default currency
+   * only, and the rest appeared after their first payout.
    *
-   * `WalletService.post` opens it lazily on the first confirmed accrual, so this
-   * is not what makes commission work — it is what makes the partner SCREEN
-   * work on day one. Without it a newly approved partner opens /partner and
-   * finds a placeholder where their commission card will eventually be, which
-   * reads as an unfinished feature rather than as an empty balance.
+   * The lazy path stays: `WalletService.post` opens a commission wallet on the
+   * first confirmed accrual in a currency this did not open.
    *
-   * The lazy path stays and is still the real guarantee: it covers partners
-   * approved before this existed, and it covers a commission arriving in a
-   * currency this never opened.
-   *
-   * ## The DEFAULT currency only, not every enabled one
-   *
-   * Registration opens a wallet in every enabled currency because a client can
-   * deposit in any of them. A partner cannot choose what they earn in — the
-   * accrual takes the currency of the trade that produced it — so opening one
-   * per currency would put a row of empty commission cards in front of somebody
-   * who will only ever be paid in one. The rest arrive lazily, if they arrive.
-   *
-   * ## What this does NOT change
-   *
-   * The wallet is opened EMPTY, and an empty wallet is a true zero rather than a
-   * missing one: the partner has been paid nothing yet, and the screen says so
-   * through the earnings total and the engine notice beside it. This does not
-   * credit anything, and it must not — a balance nobody earned is the one thing
-   * the whole commission separation exists to make impossible.
+   * Opened EMPTY. This credits nothing, and must not — a balance nobody earned
+   * is the one thing the commission separation exists to make impossible.
    */
   async openCommissionWallet(userId: string, executor?: Executor): Promise<void> {
     try {
-      const currency = await this.currencies.getDefault();
-      if (!currency) {
+      const enabled = await this.currencies.listEnabled();
+      if (enabled.length === 0) {
         this.logger.error(
-          `No default currency is configured, so no commission wallet was opened for partner ` +
+          `No currencies are enabled, so no commission wallet was opened for partner ` +
             `${userId}. It will be opened by their first confirmed commission instead.`,
         );
         return;
       }
-      await this.wallets.getOrCreateWallet(userId, currency.code, 'commission', executor);
-      this.logger.log(`Opened ${currency.code} commission wallet for partner ${userId}.`);
+      for (const currency of enabled) {
+        await this.wallets.getOrCreateWallet(userId, currency.code, 'commission', executor);
+      }
+      this.logger.log(
+        `Opened commission wallets for partner ${userId}: ${enabled.map((c) => c.code).join(', ')}.`,
+      );
     } catch (error) {
       /*
        * Swallowed and logged, like every other method here, and the reason is

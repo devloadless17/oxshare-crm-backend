@@ -1,13 +1,14 @@
-import { Inject, Injectable } from '@nestjs/common';
-import { and, asc, eq, ne } from 'drizzle-orm';
+import { Inject, Injectable, Logger } from '@nestjs/common';
+import { and, asc, count, eq, ne, or, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { getDb } from '../../database/db';
-import { currencies } from '../../database/schema';
+import { currencies, wallets } from '../../database/schema';
 import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/domain-errors';
 import { AdminAuditService } from '../admin/admin-audit.service';
 import type { Actor } from '../../common/security/actor';
 import { placeInOrder } from '../../common/ordering';
 import type { CreateCurrencyDto, UpdateCurrencyDto } from './dto/currency.dto';
+import { WalletsStore } from '../../store/wallets.store';
 
 type Db = ReturnType<typeof getDb>;
 type Executor = Db | Parameters<Parameters<Db['transaction']>[0]>[0];
@@ -33,35 +34,42 @@ type Executor = Db | Parameters<Parameters<Db['transaction']>[0]>[0];
  */
 @Injectable()
 export class CurrenciesService {
+  private readonly logger = new Logger(CurrenciesService.name);
+
   constructor(
     @Inject(DRIZZLE_DB) private readonly db: Db,
     private readonly audit: AdminAuditService,
+    /*
+     * Opens the wallets when a currency goes live — see `openWalletsFor`.
+     * From the @Global() StoreModule, which adds no module edge (the note in
+     * `wallets.store.ts` records why the provisioning SERVICE cannot be
+     * injected here). OPTIONAL and appended last: the many specs that build
+     * this service positionally for other reasons keep working, and without it
+     * nothing is opened.
+     */
+    private readonly walletsStore?: WalletsStore,
   ) {}
 
   /*
-   * ── ADDING A CURRENCY OPENS NO WALLETS ──────────────────────────────────────
+   * ── A CURRENCY THAT GOES LIVE OPENS ITS WALLETS (owner, 26 Sep 2026) ────────
    *
-   * `create` and `update` briefly backfilled: enabling a currency gave every
-   * existing client a wallet in it, on the reasoning that the wallet SCREEN
-   * lists what exists rather than what is offered, so a client who registered
-   * earlier would never see the new one.
+   * Adding an ENABLED currency, or enabling one, opens a wallet in it for every
+   * client and a commission wallet for every partner — the same set a client
+   * who registers afterwards gets, so every wallet screen lists every currency
+   * the platform offers. See `openWalletsFor`.
    *
-   * Removed at the operator's request, and the cost of the old behaviour is why:
-   * adding one currency wrote a row per client — tens of thousands on this
-   * platform, hundreds of thousands on a real one — inside the request that
-   * enabled it. A configuration change should not be a bulk write against the
-   * money tables, and a currency an operator adds to try out should not be
-   * irreversible the moment they save it.
+   * This was tried once before and removed, for two costs that are now handled
+   * rather than accepted:
    *
-   * Existing clients get theirs from `getOrCreateWallet`, which every money path
-   * already calls, and clients who register afterwards get the full set from
-   * `openAllEnabledWallets`. What is left uncovered is the wallet LIST for a
-   * client who never transacts in the new currency — a screen that under-reports
-   * rather than a balance that is wrong.
+   *   - A write per client INSIDE the request that saved the form. It now runs
+   *     AFTER the save commits and the response is not held for it: one
+   *     set-based INSERT per wallet kind, which adds only the missing rows.
+   *   - A currency added to try out became permanent the moment it had wallets.
+   *     `remove` now deletes the wallets that were opened and never used, so an
+   *     unused currency can still be deleted; one that has seen money cannot.
    *
-   * `scripts/backfill-wallets.mjs` remains, deliberately: the operation is still
-   * the right one to run, it is simply an explicit decision an operator makes
-   * rather than a side effect of saving a form.
+   * Disabling a currency keeps its wallets — a balance is the client's — and
+   * `WalletService.listWallets` stops showing the EMPTY ones.
    */
 
   /**
@@ -265,6 +273,9 @@ export class CurrenciesService {
       isDefault: row.isDefault,
     });
 
+    // After the commit, and not awaited — see `openWalletsFor`.
+    if (row.enabled) void this.openWalletsFor(row.code);
+
     return row;
   }
 
@@ -342,24 +353,74 @@ export class CurrenciesService {
         changed[field] = { before: current[field], after: row[field] };
     }
     this.audit.record(actor.id, 'currency.update', 'currency', normalised, { changed });
+
+    // Switched ON: open its wallets, after the commit and not awaited.
+    if (!current.enabled && row.enabled) void this.openWalletsFor(row.code);
+
     return row;
   }
 
   /**
-   * Delete a currency.
+   * Open a wallet in this currency for every client, and a commission wallet
+   * for every partner. Returns how many of each were added.
    *
-   * ⚠️ THIS IS TEMPORARILY UNGUARDED, and that is a known gap rather than a
-   * simplification. It used to count `wallets` in this currency first and
-   * refuse with a 409 naming the number, because the `ON DELETE RESTRICT`
-   * foreign keys would refuse anyway and a raw FK violation surfaces as a 500
-   * with a Postgres string in it.
+   * ## After the save, never inside it
    *
-   * The `wallets` table is gone with the money teardown, so there is nothing
-   * left to count and nothing left referencing `currencies.code`. Deleting a
-   * currency right now is genuinely safe — there are no balances to orphan.
+   * Called without `await` once the currency row has committed, so the operator
+   * is not kept waiting on a write per client. Two set-based statements, each
+   * adding only the rows that are missing (`ON CONFLICT DO NOTHING`), so running
+   * it again — a re-enable, two instances, a retry — changes nothing and never
+   * touches a balance.
    *
-   * WHEN MONEY RETURNS, this check must return with it. A currency delete that
-   * silently succeeds while wallets hold it is how a balance loses its unit.
+   * ## Never throws
+   *
+   * The currency is already saved. A failure here is LOGGED with the currency's
+   * code, and nothing is lost by it: every money path opens the wallet it needs
+   * on first use (`getOrCreateWallet`), and `scripts/backfill-wallets.mjs`
+   * repairs the list by hand.
+   */
+  async openWalletsFor(code: string): Promise<{ clients: number; partners: number }> {
+    if (!this.walletsStore) return { clients: 0, partners: 0 };
+    try {
+      const clients = await this.walletsStore.openForAllClients(code);
+      const partners = await this.walletsStore.openCommissionForAllPartners(code);
+      this.logger.log(
+        `Opened ${code} wallets: ${clients} for clients, ${partners} commission wallet(s) for partners.`,
+      );
+      return { clients, partners };
+    } catch (error) {
+      this.logger.error(
+        `Could not open ${code} wallets for existing clients and partners: ${String(error)}. ` +
+          'They open on first use, or run scripts/backfill-wallets.mjs.',
+        error instanceof Error ? error.stack : undefined,
+      );
+      return { clients: 0, partners: 0 };
+    }
+  }
+
+  /**
+   * Delete a currency — possible only while it has never held money.
+   *
+   * ## The wallets opened for it go with it, if they were never used
+   *
+   * Adding an enabled currency opens a wallet in it for every client and
+   * partner (see `openWalletsFor`). Those EMPTY, UNUSED wallets are deleted with
+   * the currency, in one transaction, so a currency added by mistake or to try
+   * out can still be removed.
+   *
+   * ## Refused, with a reason, once money has touched it
+   *
+   *   - A wallet in it holds a balance or funds on hold: the money is a client's,
+   *     and deleting its unit is how a balance loses its meaning.
+   *   - A wallet in it has any history (a ledger entry, a transaction, a
+   *     transfer): the RESTRICT foreign keys refuse, inside a savepoint, and
+   *     that refusal is turned into a sentence.
+   *   - Anything else still uses the code (a payment method, a trading account,
+   *     a record): the same, from the currency row's own foreign keys.
+   *
+   * In every refused case NOTHING is deleted — the transaction rolls back, the
+   * wallets included. Disabling is the way to stop offering a currency that has
+   * been used.
    */
   async remove(code: string, actor: Actor) {
     const normalised = this.normalise(code);
@@ -372,7 +433,50 @@ export class CurrenciesService {
       );
     }
 
-    await this.db.delete(currencies).where(eq(currencies.code, normalised));
+    await this.db.transaction(async (tx) => {
+      const [funded] = await tx
+        .select({ n: count() })
+        .from(wallets)
+        .where(
+          and(
+            eq(wallets.currency, normalised),
+            or(sql`${wallets.balance} <> 0`, sql`${wallets.onHold} <> 0`),
+          ),
+        );
+      if ((funded?.n ?? 0) > 0) {
+        throw new ConflictError(
+          `${normalised} cannot be deleted: ${funded?.n} wallet(s) in it hold money. Disable it instead.`,
+        );
+      }
+
+      try {
+        await tx.transaction(async (savepoint) => {
+          await savepoint.delete(wallets).where(eq(wallets.currency, normalised));
+        });
+      } catch (error) {
+        if (isForeignKeyViolation(error)) {
+          throw new ConflictError(
+            `${normalised} cannot be deleted: its wallets have a history of money movements. ` +
+              'Disable it instead.',
+          );
+        }
+        throw error;
+      }
+
+      try {
+        await tx.transaction(async (savepoint) => {
+          await savepoint.delete(currencies).where(eq(currencies.code, normalised));
+        });
+      } catch (error) {
+        if (isForeignKeyViolation(error)) {
+          throw new ConflictError(
+            `${normalised} cannot be deleted: payment methods, trading accounts or records still ` +
+              'use it. Disable it instead.',
+          );
+        }
+        throw error;
+      }
+    });
 
     // The row as it was, because the DELETE is the last place it existed.
     this.audit.record(actor.id, 'currency.delete', 'currency', normalised, {
@@ -391,4 +495,10 @@ export class CurrenciesService {
       .set({ isDefault: false, updatedAt: new Date() })
       .where(and(eq(currencies.isDefault, true), ne(currencies.code, '')));
   }
+}
+
+/** A Postgres foreign-key refusal, however the driver wrapped it. */
+function isForeignKeyViolation(error: unknown): boolean {
+  const wrapped = error as { code?: string; cause?: { code?: string } } | null;
+  return (wrapped?.cause?.code ?? wrapped?.code) === '23503';
 }
