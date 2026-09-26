@@ -1053,6 +1053,29 @@ because new uploads are interleaved with old orphans.
 
 The dev database was reset this way on 10 Sep 2026.
 
+## KYC: the identity core (migration 0147, 26 Sep 2026)
+
+The rules are cross-repo and live in `../CLAUDE.md` ("The identity core is the PLATFORM's"). Where
+they live here:
+
+| file | owns |
+|---|---|
+| `common/kyc/identity-core.ts` | the pure seam: `IDENTITY_FIELDS`, the tiers, `CORE_STEPS`, reserved slugs and names, `newCustomSlug`, label normalising |
+| `store/kyc-config.store.ts` | injects the identity into Personal Information on READ, strips it on WRITE; the `ETag` version |
+| `modules/admin/kyc-config-integrity.ts` | every refusal, keyed `steps.i[.fields.j]` — run by EVERY config write |
+| `modules/compliance/kyc-step-state.ts` | the one judge; `approvalBlockers` is what approval re-asks |
+| `modules/compliance/kyc-review-layout.ts` | the review's `layout`, from `form_snapshot` then the config |
+| `KycService.requestReverification` | `POST /admin/kyc/:id/reverify` — level 0, the stamp, its own email |
+
+- **`If-Match` is optional on `PUT /admin/kyc-config`.** The builder always sends it; a caller that
+  omits it gets last-write-wins, which is what the e2e restore relies on. Sent and stale, it is 409
+  `KYC_CONFIG_STALE`, decided under `pg_advisory_xact_lock`.
+- **Approval re-asks the judge, so an e2e fixture must satisfy it.** `fixtureEvidence` in `seed.ts` gives the
+  review pool and the fresh client placeholder page paths. They are never real objects, and the file route
+  answers 404 for them.
+- Pinned by `common/kyc/identity-core.spec.ts`, `kyc-config-integrity.spec.ts`,
+  `test/migration-0147-kyc-identity-core.spec.ts` and `test/kyc-reverification.spec.ts`.
+
 ## Validation
 
 The global `ValidationPipe` (`whitelist`, `transform`) only validates where a **DTO class**

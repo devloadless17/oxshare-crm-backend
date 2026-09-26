@@ -255,6 +255,106 @@ export class KycAddressProofDto {
   @ApiPropertyOptional() page2FileName?: string;
 }
 
+const LAYOUT_ONLY =
+  'the STRUCTURE and LABELS of the form a submission answered — no value of the client\u2019s';
+
+/** One page of a document, as the reviewer is shown it. */
+@NoClientFields(LAYOUT_ONLY)
+export class KycReviewPageDto {
+  @ApiProperty({ example: 'doc_back', description: 'Where the file is stored on the submission.' })
+  slot: string;
+  @ApiProperty({ example: 'Back Side' }) label: string;
+  @ApiProperty() required: boolean;
+}
+
+/** A document on file, by its exact name and its pages. */
+@NoClientFields(LAYOUT_ONLY)
+export class KycReviewDocumentDto {
+  @ApiProperty({ type: String, nullable: true, example: 'national_id' }) type: string | null;
+  @ApiProperty({ example: 'National ID' }) label: string;
+  @ApiProperty({ type: [KycReviewPageDto] }) pages: KycReviewPageDto[];
+}
+
+@NoClientFields(LAYOUT_ONLY)
+export class KycReviewAddressDto extends KycReviewDocumentDto {
+  @ApiProperty({ description: 'Whether the form asks for a proof of address at all.' })
+  asked: boolean;
+}
+
+@NoClientFields(LAYOUT_ONLY)
+export class KycReviewSelfieDto {
+  @ApiProperty() asked: boolean;
+  @ApiProperty({ example: 'Selfie' }) label: string;
+}
+
+@NoClientFields(LAYOUT_ONLY)
+export class KycReviewIdentityFieldDto {
+  @ApiProperty({ enum: PROFILE_FIELD_KEYS }) key: (typeof PROFILE_FIELD_KEYS)[number];
+  @ApiProperty({ example: 'Date of Birth' }) label: string;
+  @ApiProperty() required: boolean;
+}
+
+/** One of the broker's own questions, and where its answer is filed. */
+@NoClientFields(LAYOUT_ONLY)
+export class KycReviewFieldDto {
+  @ApiProperty({ example: 'customField_1790281526943' }) name: string;
+  @ApiProperty({ example: 'Employer' }) label: string;
+  @ApiProperty({ example: 'text' }) type: string;
+  @ApiProperty({
+    example: 'source-of-funds',
+    description: '`personal` → read `personalInfo[name]`; any other → `stepData[step][name]`.',
+  })
+  step: string;
+}
+
+@NoClientFields(LAYOUT_ONLY)
+export class KycReviewSectionDto {
+  @ApiProperty({ example: 'source-of-funds', description: '`unlisted` for removed questions.' })
+  slug: string;
+  @ApiProperty({ example: 'Source of funds' }) title: string;
+  @ApiProperty({ type: [KycReviewFieldDto] }) fields: KycReviewFieldDto[];
+}
+
+@NoClientFields(LAYOUT_ONLY)
+export class KycReviewFlagDto {
+  @ApiProperty({ example: 'doc_back' }) id: string;
+  @ApiProperty({ example: 'National ID (Back Side)' }) label: string;
+}
+
+/**
+ * How to PRESENT a submission — `kyc-review-layout.ts`. The server's layout, so
+ * the review never depends on the builder (a `kyc.review`-only role cannot read
+ * it) or on today's form (a question relabelled after the client answered).
+ * Labels only: every value stays in `personalInfo`, `stepData` and the document
+ * fields, under their own masks.
+ */
+export class KycReviewLayoutDto {
+  /*
+   * Each field states itself rather than the class being exempted as a whole:
+   * `proofOfAddress` NAMES a person's attribute, and the census rightly asks a
+   * class carrying such a name to say, per field, why it holds no client data.
+   * These are the form's structure and labels; the values are elsewhere.
+   */
+  @NotClientField(LAYOUT_ONLY)
+  @ApiProperty({ type: [KycReviewIdentityFieldDto] })
+  identity: KycReviewIdentityFieldDto[];
+  @NotClientField(LAYOUT_ONLY)
+  @ApiProperty({ type: KycReviewDocumentDto })
+  identityDocument: KycReviewDocumentDto;
+  @NotClientField(LAYOUT_ONLY)
+  @ApiProperty({ type: KycReviewAddressDto })
+  proofOfAddress: KycReviewAddressDto;
+  @NotClientField(LAYOUT_ONLY)
+  @ApiProperty({ type: KycReviewSelfieDto })
+  selfie: KycReviewSelfieDto;
+  @NotClientField(LAYOUT_ONLY)
+  @ApiProperty({ type: [KycReviewSectionDto] })
+  additional: KycReviewSectionDto[];
+  @NotClientField(LAYOUT_ONLY)
+  @ApiProperty({ type: [KycReviewFlagDto] })
+  flags: KycReviewFlagDto[];
+}
+
 export class KycSubmissionDto {
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty()
@@ -373,6 +473,15 @@ export class KycSubmissionDto {
   @NotClientField('a timestamp the system recorded, describing the record rather than the client')
   @ApiPropertyOptional({ type: Date })
   updatedAt?: Date;
+
+  /** When a reviewer returned this APPROVED verification for the client to update. */
+  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
+  @ApiPropertyOptional({ type: Date })
+  reverificationRequestedAt?: Date;
+
+  @NotClientField('the structure and labels of the form, never a value of the client’s')
+  @ApiPropertyOptional({ type: KycReviewLayoutDto })
+  layout?: KycReviewLayoutDto;
 }
 
 /**
@@ -481,6 +590,11 @@ export class KycAttemptDto {
   @NotClientField('a timestamp the system recorded, describing the record rather than the client')
   @ApiProperty()
   archivedAt: Date;
+
+  /** How to present this attempt — structure and labels, as for the live submission. */
+  @NotClientField('the structure and labels of the form, never a value of the client’s')
+  @ApiPropertyOptional({ type: KycReviewLayoutDto })
+  layout?: KycReviewLayoutDto;
 }
 
 export class KycListResponseDto {

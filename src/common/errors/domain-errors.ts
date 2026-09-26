@@ -290,6 +290,20 @@ export class KycCorrectionRefusedError extends DomainError {
 }
 
 /**
+ * A save of the KYC form made from a version somebody else has since changed.
+ * → 409 `KYC_CONFIG_STALE`
+ *
+ * Its own code because the builder answers it differently from every other
+ * refusal: nothing the operator typed is wrong — they are editing a form that
+ * no longer exists, and the remedy is to reload and see the other change, not
+ * to fix a field. Before this, the later save silently replaced the earlier
+ * one, and whoever pressed Save first lost their work without being told.
+ */
+export class KycConfigStaleError extends DomainError {
+  readonly code = 'KYC_CONFIG_STALE';
+}
+
+/**
  * Repairing a client's referral attribution, refused. THREE CODES, NOT ONE. → 400
  *
  * They need three different sentences and one status makes the screen guess:

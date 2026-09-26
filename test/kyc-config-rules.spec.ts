@@ -1,246 +1,222 @@
 import { ALL_PERMISSIONS } from './support/all-permissions';
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AdminComplianceService } from '../src/modules/admin/admin-compliance.service';
-import { MANDATORY_KYC_SLUGS, type KycStepConfig } from '../src/store/kyc-config.store';
+import {
+  DEFAULT_KYC_STEPS,
+  kycConfigVersion,
+  type KycStepConfig,
+} from '../src/store/kyc-config.store';
+import { platformStep } from '../src/common/kyc/identity-core';
+import {
+  AuthorizationError,
+  FieldValidationError,
+  KycConfigStaleError,
+  NotFoundError,
+} from '../src/common/errors/domain-errors';
 
 /**
- * THE KYC FLOW IS FULLY CONFIGURABLE. Nothing is undeletable.
+ * THE ONE PATH EVERY CHANGE TO THE KYC FORM TAKES (26 Sep 2026).
  *
- * `personal`, `document`, `selfie` and `address` were mandatory here, citing
- * FR-CORE-15/FR-IND-03 — a config that disabled or omitted one was a 400, and
- * so was deleting or re-slugging it.
+ * This file used to pin the opposite — "THE KYC FLOW IS FULLY CONFIGURABLE.
+ * Nothing is undeletable." — after the owner retired the mandatory-step rule on
+ * 15 Aug 2026. Then a broker's edit removed a client's first name from the
+ * form, and the owner ruled again: the identity fields, the four built-in steps
+ * and the identity and address documents are the platform's. Personal
+ * Information and Identity Document are always on; Selfie and Proof of Address
+ * can be switched off, which keeps the half of the old argument that was right.
  *
- * The owner retired the rule on 15 Aug 2026, and the objection was sound: a KYC
- * flow sold as configurable that refuses to drop four of its steps is not
- * configurable, and which documents a jurisdiction demands is the broker's
- * decision, not this service's. Encoding one regulator's answer made every
- * other answer unreachable without a code change.
+ * The rules themselves are pinned one by one in `kyc-config-integrity.spec.ts`.
+ * This file pins what the SERVICE adds around them: every route goes through
+ * them (the delete route used to check nothing), the version check, the
+ * permission a change needs whichever route carries it, and the audit row
+ * written in the same transaction.
  *
- * WHAT REPLACES IT is the audit trail. `kyc_config.replace` records the full
- * slug list and the enabled subset on every save, so "onboarding stopped asking
- * for proof of address on the 12th" has a name and a date attached — a stronger
- * compliance artefact than a block that could only assert the step was never
- * removed.
- *
- * This file now pins the UNLOCK, so a future "safety" patch reinstating the
- * guard has to argue with these cases first.
- *
- * No database here: these assertions are about the service, so the store is a
- * fake. The §11 money specs are where Testcontainers earns its cost.
+ * No database: a fake store and a transaction that simply runs its callback.
  */
 
-/**
- * What each built-in step exists to collect — a document to choose on the two
- * document steps, the camera on the selfie step. Without them the flow is one
- * no client could finish, which the builder now refuses to save
- * (`assertFieldsFitTheirStep`); these cases are about which steps exist, so
- * each carries its core.
- */
-const CORE: Record<string, KycStepConfig['fields']> = {
-  personal: [
-    { id: 'f-first', name: 'firstName', label: 'First Name', type: 'text', required: true },
-  ],
-  document: [
-    { id: 'f-pp', name: 'passport', label: 'Passport', type: 'doc:passport', required: false },
-  ],
-  selfie: [{ id: 'f-selfie', name: 'selfie', label: 'Selfie', type: 'camera', required: true }],
-  address: [
-    {
-      id: 'f-bill',
-      name: 'utilityBill',
-      label: 'Utility Bill',
-      type: 'doc:utility_bill',
-      required: false,
-    },
-  ],
+const FORM: KycStepConfig[] = DEFAULT_KYC_STEPS.map((step) => platformStep(step));
+const FUNDS: KycStepConfig = {
+  id: 'step-funds',
+  stepNumber: 5,
+  slug: 'source-of-funds',
+  title: 'Source of funds',
+  description: '',
+  icon: 'FileText',
+  enabled: true,
+  fields: [{ id: 'f-e', name: 'customField_e', label: 'Employer', type: 'text', required: true }],
+  core: false,
+  alwaysOn: false,
 };
 
-function step(slug: string, over: Partial<KycStepConfig> = {}): KycStepConfig {
-  return {
-    id: `step-${slug}`,
-    stepNumber: 1,
-    slug,
-    title: slug.charAt(0).toUpperCase() + slug.slice(1),
-    description: '',
-    icon: 'User',
-    enabled: true,
-    fields: CORE[slug] ?? [],
-    ...over,
-  };
-}
-
-const DEFAULT_STEPS = [...MANDATORY_KYC_SLUGS.map((s) => step(s)), step('review')];
-
-const setSteps = vi.fn();
-const updateStep = vi.fn();
-const deleteStep = vi.fn();
 const getSteps = vi.fn();
+const setSteps = vi.fn();
+const lockForChange = vi.fn();
+const recordWithin = vi.fn();
 
-/** These config routes are now audited, so they take an acting admin. */
-const ACTOR = { id: 'admin-1', email: 'admin@oxshare.com', permissions: ALL_PERMISSIONS } as never;
+const ADMIN = { id: 'admin-1', email: 'admin@oxshare.com', permissions: ALL_PERMISSIONS } as never;
+const EDITOR = {
+  id: 'admin-2',
+  email: 'editor@oxshare.com',
+  permissions: ['kyc.view', 'kyc.edit'],
+} as never;
 
-function makeService(steps: KycStepConfig[] = DEFAULT_STEPS) {
-  getSteps.mockResolvedValue(steps);
-  const kycConfig = { setSteps, updateStep, deleteStep, getSteps };
+function makeService(current: KycStepConfig[] = FORM) {
+  getSteps.mockResolvedValue(current);
+  setSteps.mockImplementation((steps: KycStepConfig[]) => Promise.resolve(steps));
   return new AdminComplianceService(
     {} as never, // KycService — unused on these paths
-    kycConfig as never,
+    { getSteps, setSteps, lockForChange } as never,
     {} as never, // RejectionReasonsStore
-    { record: () => undefined } as never, // AdminAuditService
-    // ClientVisibilityService — unused on these paths: the KYC form
-    // CONFIGURATION is a schema, not anybody's submission, so there is no
-    // client row to scope.
-    {} as never,
-    // The admins store, for resolving a claim holder's name.
-    {} as never,
+    { recordWithin } as never, // AdminAuditService
+    {} as never, // ClientVisibilityService — the form is a schema, not a submission
+    {} as never, // AdminsStore
+    { transaction: (run: (tx: unknown) => Promise<unknown>) => run('tx') } as never,
   );
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
-  setSteps.mockResolvedValue(DEFAULT_STEPS);
-  updateStep.mockResolvedValue(undefined);
-  deleteStep.mockResolvedValue(true);
 });
 
-describe('replacing the whole KYC configuration', () => {
-  it('accepts a config with every step enabled', async () => {
+describe('saving the whole form', () => {
+  it('accepts its own read back, inside one locked transaction, and audits it there', async () => {
     const service = makeService();
-    await service.updateKycConfig(DEFAULT_STEPS, ACTOR);
-    expect(setSteps).toHaveBeenCalledWith(DEFAULT_STEPS);
-  });
+    await service.updateKycConfig(FORM, ADMIN, kycConfigVersion(FORM));
 
-  it('accepts a config that DISABLES a formerly-mandatory step', async () => {
-    const service = makeService();
-    const steps = DEFAULT_STEPS.map((s) => (s.slug === 'address' ? { ...s, enabled: false } : s));
-
-    await service.updateKycConfig(steps, ACTOR);
-    expect(setSteps).toHaveBeenCalledWith(steps);
-  });
-
-  it('accepts a config that OMITS a formerly-mandatory step entirely', async () => {
-    const service = makeService();
-    const steps = DEFAULT_STEPS.filter((s) => s.slug !== 'selfie');
-
-    await service.updateKycConfig(steps, ACTOR);
-    expect(setSteps).toHaveBeenCalledWith(steps);
-  });
-
-  it('accepts an EMPTY flow — the broker may ask for nothing at all', async () => {
-    // The extreme case, stated deliberately. If any step were still secretly
-    // required, this is the call that would reveal it.
-    const service = makeService();
-    await service.updateKycConfig([], ACTOR);
-    expect(setSteps).toHaveBeenCalledWith([]);
-  });
-
-  it('records the enabled slugs, which is now the compliance record', async () => {
-    const record = vi.fn();
-    getSteps.mockResolvedValue(DEFAULT_STEPS);
-    const service = new AdminComplianceService(
-      {} as never,
-      { setSteps, updateStep, deleteStep, getSteps } as never,
-      {} as never,
-      { record } as never,
-      {} as never,
-      // The admins store, for resolving a claim holder's name.
-      {} as never,
-    );
-    const steps = DEFAULT_STEPS.map((s) => (s.slug === 'address' ? { ...s, enabled: false } : s));
-
-    await service.updateKycConfig(steps, ACTOR);
-
-    /*
-     * The block is gone, so THIS is what answers "when did onboarding stop
-     * asking for proof of address, and who decided". Losing it would leave the
-     * unlock with no control behind it at all.
-     */
-    expect(record).toHaveBeenCalledWith(
+    expect(lockForChange).toHaveBeenCalledWith('tx');
+    expect(setSteps).toHaveBeenCalledWith(FORM, 'tx');
+    expect(recordWithin).toHaveBeenCalledWith(
+      'tx',
       'admin-1',
       'kyc_config.replace',
       'kyc_config',
       'steps',
-      expect.objectContaining({ enabled: expect.not.arrayContaining(['address']) }),
+      expect.objectContaining({ changes: [] }),
+    );
+  });
+
+  it('refuses a save made from a version somebody else has since changed', async () => {
+    const service = makeService();
+    await expect(service.updateKycConfig(FORM, ADMIN, 'an-older-version')).rejects.toBeInstanceOf(
+      KycConfigStaleError,
+    );
+    expect(setSteps).not.toHaveBeenCalled();
+  });
+
+  it('lets a builder that names no version through — deploying the API first breaks no screen', async () => {
+    const service = makeService();
+    await service.updateKycConfig(FORM, ADMIN, undefined);
+    expect(setSteps).toHaveBeenCalled();
+  });
+
+  it('refuses a form that drops a built-in step, before writing anything', async () => {
+    const service = makeService();
+    await expect(
+      service.updateKycConfig(
+        FORM.filter((step) => step.slug !== 'document'),
+        ADMIN,
+      ),
+    ).rejects.toBeInstanceOf(FieldValidationError);
+    expect(setSteps).not.toHaveBeenCalled();
+  });
+
+  it('records WHAT changed, in the builder’s words', async () => {
+    const service = makeService();
+    const off = FORM.map((step) => (step.slug === 'address' ? { ...step, enabled: false } : step));
+    await service.updateKycConfig(off, ADMIN);
+    expect(recordWithin).toHaveBeenCalledWith(
+      'tx',
+      'admin-1',
+      'kyc_config.replace',
+      'kyc_config',
+      'steps',
+      expect.objectContaining({
+        enabled: expect.not.arrayContaining(['address']),
+        changes: ['Switched off "Proof of Address"'],
+      }),
     );
   });
 });
 
-describe('deleting a single step', () => {
-  it('deletes a formerly-mandatory step', async () => {
+describe('a whole-form save needs the permission of what it does', () => {
+  it('refuses ADDING a step without kyc.create — the per-step route would refuse it too', async () => {
     const service = makeService();
-    await service.deleteKycStep('step-document', ACTOR);
-    expect(deleteStep).toHaveBeenCalledWith('step-document');
+    await expect(service.updateKycConfig([...FORM, FUNDS], EDITOR)).rejects.toBeInstanceOf(
+      AuthorizationError,
+    );
+    expect(setSteps).not.toHaveBeenCalled();
   });
 
-  it('deletes a custom step', async () => {
-    const service = makeService();
-    await service.deleteKycStep('step-review', ACTOR);
-    expect(deleteStep).toHaveBeenCalledWith('step-review');
+  it('refuses REMOVING a step without kyc.delete', async () => {
+    const service = makeService([...FORM, FUNDS]);
+    await expect(service.updateKycConfig(FORM, EDITOR)).rejects.toBeInstanceOf(AuthorizationError);
   });
 
-  it('passes the store not-found result through rather than throwing', async () => {
-    // The service does not invent a 404 — it returns what the store reports and
-    // the controller maps it. Asserted so a refactor that starts throwing here
-    // has to update the controller in the same change.
-    deleteStep.mockResolvedValue(false);
-    const service = makeService();
-    await expect(service.deleteKycStep('step-nope', ACTOR)).resolves.toBe(false);
+  it('lets kyc.edit alone change what is already there', async () => {
+    const service = makeService([...FORM, FUNDS]);
+    const renamed = [...FORM, { ...FUNDS, title: 'Where your money comes from' }];
+    await service.updateKycConfig(renamed, EDITOR);
+    expect(setSteps).toHaveBeenCalled();
   });
 });
 
-describe('patching a single step', () => {
-  it('disables a formerly-mandatory step', async () => {
+describe('the per-step routes take the same path', () => {
+  it('refuses DELETING a built-in step — that route used to check nothing', async () => {
     const service = makeService();
-    await service.updateKycStep('step-selfie', { enabled: false }, ACTOR);
-    expect(updateStep).toHaveBeenCalledWith('step-selfie', { enabled: false });
+    await expect(service.deleteKycStep('step-3', ADMIN)).rejects.toThrow(/cannot be removed/);
+    expect(setSteps).not.toHaveBeenCalled();
   });
 
-  it('re-slugs a formerly-mandatory step', async () => {
-    /*
-     * The portal branches on slug for its uploader, camera and passport paths,
-     * so renaming one changes which special handling that step gets. That is
-     * now the operator's call — the API states what it was asked to do and the
-     * audit row records it.
-     *
-     * The SELFIE step, since 0139: a camera may stand on any step, so renaming
-     * this one breaks nothing the builder guards. The personal step is the one
-     * that now cannot be renamed while it asks for the profile — below.
-     */
-    const service = makeService();
-    await service.updateKycStep('step-selfie', { slug: 'face-check' }, ACTOR);
-    expect(updateStep).toHaveBeenCalledWith('step-selfie', { slug: 'face-check' });
+  it('deletes a step of the broker’s own', async () => {
+    const service = makeService([...FORM, FUNDS]);
+    await expect(service.deleteKycStep('step-funds', ADMIN)).resolves.toBe(true);
+    expect(setSteps).toHaveBeenCalledWith(FORM, 'tx');
   });
 
-  it('refuses to re-slug the personal step while it still asks for the profile', async () => {
-    /*
-     * The personal step is where the KYC form reads and writes the client's
-     * profile (0139). Renamed, its name and date-of-birth fields would become a
-     * broker's own step holding a SECOND copy of the identity beside the
-     * profile — the defect the single profile removed, rebuilt by a rename.
-     */
+  it('answers not found for a step that does not exist', async () => {
+    const service = makeService();
+    await expect(service.deleteKycStep('step-nope', ADMIN)).rejects.toBeInstanceOf(NotFoundError);
+    await expect(
+      service.updateKycStep('step-nope', { enabled: false }, ADMIN),
+    ).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it('switches Selfie off, and refuses switching Identity Document off', async () => {
+    const service = makeService();
+    await service.updateKycStep('step-3', { enabled: false }, ADMIN);
+    expect(setSteps).toHaveBeenCalled();
+    await expect(service.updateKycStep('step-2', { enabled: false }, ADMIN)).rejects.toThrow(
+      /always on/,
+    );
+  });
+
+  it('refuses renaming a built-in step', async () => {
     const service = makeService();
     await expect(
-      service.updateKycStep('step-personal', { slug: 'profile' }, ACTOR),
-    ).rejects.toThrow(/Personal Information step only/);
-    expect(updateStep).not.toHaveBeenCalled();
+      service.updateKycStep('step-4', { title: 'Address check' }, ADMIN),
+    ).rejects.toThrow(/keeps its name/);
   });
 
-  it('refuses to re-slug a document step while it still holds documents', async () => {
-    /*
-     * Renaming Proof of Address makes it a step the broker ADDED, holding a
-     * utility bill — the configuration the builder no longer offers, because a
-     * document has no home there (reported from local testing, 25 Sep 2026).
-     */
+  it('gives a new step an address from its title', async () => {
     const service = makeService();
-    await expect(
-      service.updateKycStep('step-address', { slug: 'residence' }, ACTOR),
-    ).rejects.toThrow(/Utility Bill.*document type/);
-    expect(updateStep).not.toHaveBeenCalled();
+    const created = await service.addKycStep(
+      {
+        slug: '',
+        title: 'Source of Funds',
+        description: '',
+        icon: 'FileText',
+        enabled: true,
+        fields: [],
+      },
+      ADMIN,
+    );
+    expect(created).toMatchObject({ slug: 'source-of-funds', title: 'Source of Funds' });
   });
 
-  it('allows cosmetic edits, as it always did', async () => {
-    const service = makeService();
-    await service.updateKycStep('step-personal', { title: 'About you' }, ACTOR);
-    expect(updateStep).toHaveBeenCalledWith('step-personal', { title: 'About you' });
+  it('resets to the defaults, keeping the built-in steps’ own ids', async () => {
+    const current = FORM.map((step) => ({ ...step, id: `own-${step.slug}` }));
+    const service = makeService([...current, FUNDS]);
+    const after = await service.resetKycConfig(ADMIN);
+    expect(after.map((step) => step.id)).toEqual(current.map((step) => step.id));
   });
 });

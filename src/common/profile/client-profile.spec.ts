@@ -73,11 +73,9 @@ describe('the profile is described once, and consistently', () => {
     }
   });
 
-  it('lets a correction touch only profile fields, and never a name', () => {
-    expect(KYC_CORRECTABLE_KEYS.every(isProfileKey)).toBe(true);
-    expect(KYC_CORRECTABLE_KEYS).not.toContain('firstName');
-    expect(KYC_CORRECTABLE_KEYS).not.toContain('lastName');
-    expect(KYC_CORRECTABLE_KEYS).not.toContain('nationality');
+  it('lets a correction touch every identity field but the phone (the owner, 26 Sep 2026)', () => {
+    // A misspelt surname on an approved client had no remedy but a rejection.
+    expect(KYC_CORRECTABLE_KEYS).toEqual(PROFILE_FIELD_KEYS.filter((key) => key !== 'phone'));
   });
 });
 
@@ -330,13 +328,10 @@ describe('deskLocks — what the support desk may change, by where the verificat
     },
   );
 
-  it('once approved, sends the date of birth and address to the correction, the rest to a new verification', () => {
+  it('once approved, sends every field but the phone to the reviewer’s correction', () => {
     const locked = deskLocks(ALL, 'approved');
     expect(locked.phone).toBeUndefined();
-    for (const key of KYC_CORRECTABLE_KEYS) expect(locked[key], key).toMatch(/KYC review/);
-    for (const key of ['firstName', 'lastName', 'nationality', 'country'] as const) {
-      expect(locked[key], key).toMatch(/new verification/);
-    }
+    for (const key of KYC_CORRECTABLE_KEYS) expect(locked[key], key).toMatch(/Correct details/);
   });
 
   it('only ever judges the fields that are CHANGING', () => {

@@ -9,6 +9,7 @@ import {
   IsOptional,
   IsString,
   MaxLength,
+  MinLength,
   ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
@@ -80,6 +81,31 @@ export class RejectDto {
   rejectedFields?: string[];
 }
 
+/**
+ * Body of `POST /admin/kyc/:userId/reverify` — return an APPROVED verification
+ * to the client to update. The reason is emailed to the client; the items are
+ * what they must redo (identity fields by key, documents by page slot or by
+ * document), shown on their form and the reviewer's.
+ */
+export class ReverifyKycDto {
+  @ApiProperty({
+    example: 'Your passport on file has expired. Please upload your new one.',
+    minLength: 10,
+    maxLength: 500,
+  })
+  @IsString()
+  @MinLength(10)
+  @MaxLength(500)
+  reason: string;
+
+  @ApiProperty({ type: [String], example: ['doc_front', 'address'], minItems: 1 })
+  @IsArray()
+  @ArrayNotEmpty({ message: 'Name at least one thing for the client to update.' })
+  @IsString({ each: true })
+  @MaxLength(100, { each: true })
+  items: string[];
+}
+
 export class RejectionReasonDto {
   @ApiProperty({ enum: REJECTION_CONTEXTS })
   @IsIn(REJECTION_CONTEXTS)
@@ -145,6 +171,18 @@ export class KycFieldDto {
   })
   @IsOptional()
   document?: KycDocumentType;
+
+  /**
+   * ACCEPTED AND IGNORED, like `document`: the GET marks the platform's own
+   * fields (the identity fields, the selfie camera), and the builder sends back
+   * what it was given. Whether a field IS the platform's is decided by the
+   * server from its key and step, never by this flag — a client cannot promote
+   * its own field to `system`, nor demote the platform's.
+   */
+  @ApiPropertyOptional({ description: 'Served on read. Accepted on write and ignored.' })
+  @IsOptional()
+  @IsBoolean()
+  system?: boolean;
 }
 
 export class KycStepDto {
@@ -158,12 +196,21 @@ export class KycStepDto {
   @IsOptional()
   stepNumber?: number;
 
-  // FR-CORE-15 / FR-IND-03: the portal submits by slug, so 'personal',
-  // 'document', 'selfie' and 'address' are mandatory and may not be re-slugged
-  // (DECISIONS D-29).
-  @ApiProperty({ example: 'personal' })
+  /*
+   * Where the step's answers are filed, and the address the client's browser
+   * opens. The four built-in steps keep theirs (`personal`, `document`,
+   * `selfie`, `address`); a step the broker adds is given one from its title
+   * when this is left out, and an existing step keeps the one it has.
+   */
+  @ApiPropertyOptional({
+    example: 'source-of-funds',
+    description:
+      "Optional for a new step (generated from its title); an existing step's never changes.",
+  })
   @IsString()
   @IsNotEmpty()
+  @IsOptional()
+  @MaxLength(100)
   slug: string;
 
   @ApiProperty({ example: 'Personal Information' })
@@ -191,6 +238,20 @@ export class KycStepDto {
   @ValidateNested({ each: true })
   @Type(() => KycFieldDto)
   fields: KycFieldDto[];
+
+  /*
+   * ACCEPTED AND IGNORED: the GET marks the built-in steps, and the builder
+   * sends back what it was given. What makes a step built-in is its slug.
+   */
+  @ApiPropertyOptional({ description: 'Served on read. Accepted on write and ignored.' })
+  @IsOptional()
+  @IsBoolean()
+  core?: boolean;
+
+  @ApiPropertyOptional({ description: 'Served on read. Accepted on write and ignored.' })
+  @IsOptional()
+  @IsBoolean()
+  alwaysOn?: boolean;
 }
 
 /**
@@ -248,22 +309,43 @@ export class KycConfigDto {
 /**
  * Body of `PATCH /admin/kyc/:userId/personal-info` — CORE-18.
  *
- * DELIBERATELY TWO FIELDS. The gap this closes is specific: an APPROVED
- * submission is the one state where a client cannot correct their own details,
- * and a typo'd date of birth or address is what support is asked about. Every
- * other personalInfo field either lives on the users row and has its own edit
- * path (firstName, lastName, phone, country) or is not what CORE-18 is about.
+ * A reviewer's correction of an APPROVED client's verified identity: any field
+ * but the phone (the desk edits that directly — no document proves it), and a
+ * REASON, always. It was a date of birth or an address and nothing else, so a
+ * misspelt surname on an approved client had no remedy but a rejection, which
+ * shuts the money doors for a typo (the owner's ruling, 26 Sep 2026).
  *
- * Widening this to arbitrary personalInfo keys would turn a targeted correction
- * into a general rewrite of a compliance record. If a configured custom field
- * needs the same treatment, that is a decision to make on purpose rather than
- * one this DTO makes by accident.
- *
- * Both optional and AT LEAST ONE REQUIRED — an empty body would otherwise write
- * an audit row for a correction that changed nothing, which is worse than
- * useless on the log somebody reads to find out who changed what.
+ * Every value is re-checked by the profile's own rules; the reason goes on the
+ * audit row beside the value on both sides, and the client is emailed which
+ * details changed. At least one field besides the reason — an empty correction
+ * would write an audit row that changed nothing.
  */
 export class CorrectKycIdentityDto {
+  @ApiProperty({
+    example: 'Surname misspelt at registration; passport reads "Haddad".',
+    minLength: 10,
+    maxLength: 500,
+    description: 'Why the verified record is being changed. Recorded on the audit row.',
+  })
+  @IsString()
+  @MinLength(10)
+  @MaxLength(500)
+  reason: string;
+
+  @ApiPropertyOptional({ example: 'Layla', maxLength: 100 })
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(100)
+  firstName?: string;
+
+  @ApiPropertyOptional({ example: 'Haddad', maxLength: 100 })
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(100)
+  lastName?: string;
+
   @ApiPropertyOptional({
     example: '1985-04-12',
     description:
@@ -276,6 +358,20 @@ export class CorrectKycIdentityDto {
   @IsNotEmpty()
   dateOfBirth?: string;
 
+  @ApiPropertyOptional({ example: 'Lebanese', maxLength: 100 })
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(100)
+  nationality?: string;
+
+  @ApiPropertyOptional({ example: 'Lebanon', maxLength: 100 })
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(100)
+  country?: string;
+
   @ApiPropertyOptional({ example: '12 Rue Verdun', maxLength: 200 })
   @IsOptional()
   @IsString()
@@ -283,11 +379,6 @@ export class CorrectKycIdentityDto {
   @MaxLength(200)
   address?: string;
 
-  /*
-   * City and postal code complete the address (0139) — a client who moves
-   * street usually moves all three, and correcting one without the others
-   * leaves an approved record describing no real place.
-   */
   @ApiPropertyOptional({ example: 'Beirut', maxLength: 100 })
   @IsOptional()
   @IsString()

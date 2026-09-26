@@ -121,17 +121,23 @@ const LABEL: Readonly<Record<ProfileKey, string>> = {
 
 /**
  * What a reviewer's correction may change on an APPROVED verification
- * (`PATCH /admin/kyc/:userId/personal-info`): a date of birth, and the address.
- * Anything else a reviewer checked against a document — a name, a nationality,
- * a country of residence — needs a new verification (`KycService.resetKyc` says
- * so to the client, in words that must stay true to this list).
+ * (`PATCH /admin/kyc/:userId/personal-info`): EVERY identity field but the
+ * phone, which the desk edits directly because no document proves it.
+ *
+ * It was the date of birth and the address only, and a misspelt surname on an
+ * approved client had no remedy but a rejection — which takes the money gate
+ * away for a typo. The owner's ruling (26 Sep 2026): a reviewer holding
+ * `kyc.identity.correct` corrects any field, with a REASON, re-checked by the
+ * profile's rules, recorded on the verification, and the client told. A
+ * material change — a new passport, a move abroad — is a re-verification
+ * instead (`KycService.requestReverification`), which the reviewer chooses.
+ *
+ * `KycService.resetKyc` names this remedy to the client, in words that must
+ * stay true to this list.
  */
-export const KYC_CORRECTABLE_KEYS: readonly ProfileKey[] = [
-  'dateOfBirth',
-  'address',
-  'city',
-  'postalCode',
-];
+export const KYC_CORRECTABLE_KEYS: readonly ProfileKey[] = PROFILE_FIELD_KEYS.filter(
+  (key) => key !== 'phone',
+);
 
 /**
  * WHAT THE SUPPORT DESK'S GENERAL EDIT MAY CHANGE, by where the verification is.
@@ -143,9 +149,10 @@ export const KYC_CORRECTABLE_KEYS: readonly ProfileKey[] = [
  *
  *  - submitted / under review → locked until the reviewer decides; a value they
  *    find wrong goes back to the client with the field marked;
- *  - approved → the date of birth and address through the reviewer's
- *    correction, which re-checks the rules and files the change on the
- *    verification; the rest through a new verification.
+ *  - approved → any of them through the reviewer's correction ("Correct
+ *    details"), which re-checks the rules, files the change on the verification
+ *    with a reason and tells the client; or a re-verification, when the change
+ *    is material.
  *
  * The phone is contact, not identity — no document proves it — so the desk can
  * always change it. Returns a sentence per locked field, empty when none is.
@@ -162,10 +169,9 @@ export function deskLocks(
         `${LABEL[key]} is being checked against the client's documents right now. ` +
         'It can change once the reviewer decides.';
     } else if (verification === 'approved') {
-      locked[key] = KYC_CORRECTABLE_KEYS.includes(key)
-        ? `${LABEL[key]} was verified by KYC. Correct it from the client's KYC review, ` +
-          'where the change is checked again and recorded on the verification.'
-        : `${LABEL[key]} was verified by KYC. Changing it needs a new verification.`;
+      locked[key] =
+        `${LABEL[key]} was verified by KYC. Use "Correct details" on the client's KYC ` +
+        'review, where the change is checked again, recorded with a reason, and the client is told.';
     }
   }
   return locked;
@@ -246,8 +252,14 @@ export function toE164(value: string): string | undefined {
   return parsePhoneNumberFromString(text)?.number;
 }
 
-/** What is wrong with one field's value, or the value as it must be stored. */
-export type FieldOutcome = { ok: true; value: string } | { ok: false; message: string };
+/**
+ * What is wrong with one field's value, or the value as it must be stored.
+ * `code` names the rules a caller branches on — an underage date of birth is a
+ * compliance event, not a typo — and is absent for the ordinary "not valid".
+ */
+export type FieldOutcome =
+  | { ok: true; value: string }
+  | { ok: false; message: string; code?: 'underage' | 'invalid_date_of_birth' | 'invalid_phone' };
 
 /**
  * Check and normalise ONE non-empty value. Emptiness is the caller's question
@@ -279,20 +291,35 @@ export function normaliseProfileValue(key: ProfileKey, raw: string, asOf: Date):
 
     case 'dateOfBirth': {
       const date = parseCalendarDate(value);
-      if (!date)
-        return { ok: false, message: 'Enter your date of birth as a real date (YYYY-MM-DD).' };
+      if (!date) {
+        return {
+          ok: false,
+          message: 'Enter your date of birth as a real date (YYYY-MM-DD).',
+          code: 'invalid_date_of_birth',
+        };
+      }
       if (date.getTime() > asOf.getTime()) {
-        return { ok: false, message: 'Date of birth cannot be in the future.' };
+        return {
+          ok: false,
+          message: 'Date of birth cannot be in the future.',
+          code: 'invalid_date_of_birth',
+        };
       }
       const age = ageInYears(date, asOf);
       if (age < MINIMUM_AGE_YEARS) {
         return {
           ok: false,
           message: `You must be at least ${MINIMUM_AGE_YEARS} years old to open an account.`,
+          code: 'underage',
         };
       }
-      if (age > MAXIMUM_AGE_YEARS)
-        return { ok: false, message: 'Check the year of your date of birth.' };
+      if (age > MAXIMUM_AGE_YEARS) {
+        return {
+          ok: false,
+          message: 'Check the year of your date of birth.',
+          code: 'invalid_date_of_birth',
+        };
+      }
       return { ok: true, value };
     }
 
@@ -303,6 +330,7 @@ export function normaliseProfileValue(key: ProfileKey, raw: string, asOf: Date):
           ok: false,
           message:
             'Enter a complete phone number, including the country code (for example +961 70 123 456).',
+          code: 'invalid_phone',
         };
       }
       return { ok: true, value: e164 };

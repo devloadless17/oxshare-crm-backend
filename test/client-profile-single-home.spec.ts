@@ -188,15 +188,35 @@ describe('sign-up writes the profile — once, in its canonical shape', () => {
     expect(shape(taken)).toEqual(shape(fresh));
   });
 
-  it('still registers a client who gives only a name — completeness is judged at KYC submission', async () => {
-    const minimal = `single-home-minimal-${Date.now()}@oxshare-e2e.test`;
+  it('REQUIRES who the person is and how to reach them — each field named (26 Sep 2026)', async () => {
+    /*
+     * It registered a client who gave only a name. The owner's ruling: sign-up
+     * requires the names, date of birth, nationality, phone and country, and
+     * the API enforces it rather than trusting a form. Refused before the
+     * address is looked up, so the answer is the same for any address.
+     */
     const res = await register({
       firstName: 'Min',
       lastName: 'Imal',
-      email: minimal,
+      email: `single-home-minimal-${Date.now()}@oxshare-e2e.test`,
       password: PASSWORD,
     });
-    expect(res.status).toBe(201);
+    expect(res.status).toBe(400);
+    expect(Object.keys((res.body as { fields?: object }).fields ?? {}).sort()).toEqual([
+      'country',
+      'dateOfBirth',
+      'nationality',
+      'phone',
+    ]);
+  });
+
+  it('leaves the address, city and postal code to the verification', async () => {
+    const { address: _a, city: _c, postalCode: _p, ...required } = SIGN_UP;
+    const res = await register({
+      ...required,
+      email: `single-home-no-address-${Date.now()}@oxshare-e2e.test`,
+    });
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
   });
 });
 
@@ -305,23 +325,25 @@ describe('what a reviewer is checking cannot move under them', () => {
     }
   });
 
-  it('once APPROVED: the date of birth goes to the correction, a name to a new verification', async () => {
+  it('once APPROVED: every verified field goes to the reviewer’s correction, with a reason', async () => {
     await setKycStatus('approved');
     try {
       const desk = await actingAs(ctx, 'admin', MASTER);
-      const dob = await desk.patch(`/v1/admin/clients/${clientId}`, { dateOfBirth: '1991-03-19' });
-      expect(dob.status).toBe(409);
-      expect((dob.body as { fields?: Record<string, string> }).fields?.['dateOfBirth']).toMatch(
-        /KYC review/,
-      );
-      const name = await desk.patch(`/v1/admin/clients/${clientId}`, { nationality: 'Syrian' });
-      expect((name.body as { fields?: Record<string, string> }).fields?.['nationality']).toMatch(
-        /new verification/,
-      );
+      for (const patch of [{ dateOfBirth: '1991-03-19' }, { nationality: 'Syrian' }]) {
+        const refused = await desk.patch(`/v1/admin/clients/${clientId}`, patch);
+        expect(refused.status).toBe(409);
+        const [key] = Object.keys(patch);
+        expect((refused.body as { fields?: Record<string, string> }).fields?.[key]).toMatch(
+          /Correct details/,
+        );
+      }
 
       // The correction route is the door — re-checked and audited on the verification.
       await desk
-        .patch(`/v1/admin/kyc/${clientId}/personal-info`, { dateOfBirth: '1991-03-19' })
+        .patch(`/v1/admin/kyc/${clientId}/personal-info`, {
+          reason: 'Birth date typed wrongly; the passport says the 19th.',
+          dateOfBirth: '1991-03-19',
+        })
         .expect(200);
       expect((await profileRow()).dateOfBirth).toBe('1991-03-19');
     } finally {
@@ -417,5 +439,22 @@ describe('GET /profile/options — the one list, for a screen with no session', 
     expect(body.countries).toEqual(KYC_COUNTRY_OPTIONS);
     expect(body.nationalities).toEqual(KYC_NATIONALITY_OPTIONS);
     expect(body.countries).not.toContain('Israel');
+  });
+
+  it('says what each moment requires — one rule, served, never a form’s copy', async () => {
+    const res = await anonymous(ctx).get('/v1/profile/options').expect(200);
+    expect(res.body.required).toEqual({
+      registration: ['firstName', 'lastName', 'dateOfBirth', 'nationality', 'phone', 'country'],
+      verification: [
+        'firstName',
+        'lastName',
+        'dateOfBirth',
+        'nationality',
+        'phone',
+        'country',
+        'address',
+        'city',
+      ],
+    });
   });
 });

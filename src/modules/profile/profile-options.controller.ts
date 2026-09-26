@@ -1,6 +1,7 @@
 import { Controller, Get } from '@nestjs/common';
 import { ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { KYC_COUNTRY_OPTIONS, KYC_NATIONALITY_OPTIONS } from '../../common/kyc/country-options';
+import { REGISTRATION_REQUIRED, VERIFICATION_REQUIRED } from '../../common/kyc/identity-core';
 import { ProfileOptionsDto } from './dto/profile-options.dto';
 
 /**
@@ -21,9 +22,18 @@ import { ProfileOptionsDto } from './dto/profile-options.dto';
 @Controller('profile')
 export class ProfileOptionsController {
   @Get('options')
-  @ApiOperation({ summary: 'The countries and nationalities a client profile accepts' })
+  @ApiOperation({
+    summary: 'The countries and nationalities a client profile accepts, and what it requires',
+  })
   @ApiOkResponse({ type: ProfileOptionsDto })
   options(): ProfileOptionsDto {
-    return { countries: [...KYC_COUNTRY_OPTIONS], nationalities: [...KYC_NATIONALITY_OPTIONS] };
+    return {
+      countries: [...KYC_COUNTRY_OPTIONS],
+      nationalities: [...KYC_NATIONALITY_OPTIONS],
+      required: {
+        registration: [...REGISTRATION_REQUIRED],
+        verification: [...VERIFICATION_REQUIRED],
+      },
+    };
   }
 }

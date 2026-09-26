@@ -1,17 +1,23 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { storedFilesStub } from './storage-stub';
+import { storageStub } from './storage-stub';
 import { KycService } from '../src/modules/compliance/kyc.service';
 import type { KycStore, KycSubmission } from '../src/store/kyc.store';
 import type { User, UsersStore } from '../src/store/users.store';
 import type { AdminsStore } from '../src/store/admins.store';
 import type { EmailService } from '../src/modules/email/email.service';
-import type { KycConfigStore, KycStepConfig } from '../src/store/kyc-config.store';
+import {
+  DEFAULT_KYC_STEPS,
+  type KycConfigStore,
+  type KycStepConfig,
+} from '../src/store/kyc-config.store';
+import { platformStep } from '../src/common/kyc/identity-core';
 import type { Db } from '../src/database/db';
 import type { AuditLogStore } from '../src/store/audit-log.store';
 import { ClientProfileService } from '../src/modules/profile/client-profile.service';
 import { notificationsStub } from './notifications-stub';
 import {
   AuthorizationError,
+  ConflictError,
   NotFoundError,
   ValidationError,
 } from '../src/common/errors/domain-errors';
@@ -28,73 +34,16 @@ import {
  */
 
 /**
- * The seeded flow, as a function so every caller gets a FRESH array.
+ * The seeded flow AS IT IS SERVED — the platform's identity fields, the
+ * documents each document step accepts, the selfie camera — as a function so
+ * every caller gets a FRESH array.
  *
- * Shared by the default stub and by the custom-step cases, which spread it and
- * append. A shared mutable constant would let one test's `mockResolvedValue`
- * leak into the next.
+ * Built through `platformStep` over the stored defaults, which is what the real
+ * store returns: a hand-written stub of it is how this file once described a
+ * form that asked for no documents at all.
  */
 function defaultSteps(): KycStepConfig[] {
-  return [
-    {
-      id: 'step-1',
-      stepNumber: 1,
-      slug: 'personal',
-      title: 'Personal Information',
-      description: '',
-      icon: '',
-      enabled: true,
-      fields: [
-        { id: 'f-1', name: 'firstName', label: 'First Name', type: 'text', required: true },
-        { id: 'f-2', name: 'lastName', label: 'Last Name', type: 'text', required: true },
-        { id: 'f-3', name: 'dateOfBirth', label: 'Date of Birth', type: 'date', required: true },
-        // Optional, so the complete fixture below need not carry one; the
-        // phone rules are pinned by the cases that make it required.
-        { id: 'f-4', name: 'phone', label: 'Phone Number', type: 'phone', required: false },
-      ],
-    },
-    /*
-     * The other three steps, because `submit` now asks the CONFIGURATION which
-     * uploads to require rather than demanding all three unconditionally.
-     *
-     * They carry no fields — the upload requirement follows the STEP being
-     * enabled, not any field inside it — but they have to be present, because
-     * a stub with only `personal` describes a deployment that asks for no
-     * documents at all. That is a real configuration a broker can create, and
-     * `submit` is correct to accept it; it is just not the one the seed ships
-     * or the one FR-CORE-15 is about.
-     */
-    {
-      id: 'step-2',
-      stepNumber: 2,
-      slug: 'document',
-      title: 'ID',
-      description: '',
-      icon: '',
-      enabled: true,
-      fields: [],
-    },
-    {
-      id: 'step-3',
-      stepNumber: 3,
-      slug: 'selfie',
-      title: 'Selfie',
-      description: '',
-      icon: '',
-      enabled: true,
-      fields: [],
-    },
-    {
-      id: 'step-4',
-      stepNumber: 4,
-      slug: 'address',
-      title: 'Address',
-      description: '',
-      icon: '',
-      enabled: true,
-      fields: [],
-    },
-  ];
+  return structuredClone(DEFAULT_KYC_STEPS.map((step) => platformStep(step)));
 }
 
 function submission(over: Partial<KycSubmission> = {}): KycSubmission {
@@ -128,10 +77,15 @@ const USER = {
   email: 'client@oxshare.com',
   firstName: 'Jane',
   lastName: 'Doe',
-  // Not decoration: `submit()` judges the profile against the configured
-  // required fields and the minimum age (FR-IND-03), so a client without one is
-  // not a COMPLETE applicant.
+  // Not decoration: `submit()` and `approve()` judge the identity by the
+  // platform's rules (FR-IND-03, the identity core), so a client without every
+  // required field is not a COMPLETE applicant.
   dateOfBirth: '1990-01-01',
+  nationality: 'Lebanese',
+  phone: '+96170123456',
+  country: 'Lebanon',
+  address: 'Hamra Street 12',
+  city: 'Beirut',
   verificationLevel: 0,
   status: 'active',
 } as User;
@@ -235,11 +189,13 @@ function build(options: { stored?: KycSubmission; user?: User } = {}) {
   };
   const notifications = notificationsStub();
 
+  // In-memory storage: this suite asserts the KYC decision rules, not where the
+  // bytes live. `deleteDocuments` goes through it, and the upload cases read
+  // back what it was asked to delete.
+  const storage = storageStub();
   const service = new KycService(
     email as unknown as EmailService,
-    // In-memory storage: this suite asserts the KYC decision rules, not where the
-    // bytes live. `deleteDocuments` goes through it, so it has to be callable.
-    storedFilesStub(),
+    storage.files,
     kycStore as unknown as KycStore,
     users as unknown as UsersStore,
     kycConfig as unknown as KycConfigStore,
@@ -277,6 +233,7 @@ function build(options: { stored?: KycSubmission; user?: User } = {}) {
     notifications,
     profileRow,
     auditLog,
+    storage,
   };
 }
 
@@ -654,11 +611,7 @@ describe('submit', () => {
     const cases: Array<[Partial<KycSubmission>, RegExp, User]> = [
       // The personal step is judged on the PROFILE (0139): a client whose
       // profile lost its name owes the step, whatever the submission holds.
-      [
-        { personalInfo: undefined },
-        /required before submitting: firstName/i,
-        { ...USER, firstName: '' },
-      ],
+      [{ personalInfo: undefined }, /First Name is required/, { ...USER, firstName: '' }],
       [{ document: undefined }, /document front/i, USER],
       [{ selfie: undefined }, /selfie/i, USER],
       [{ addressProof: undefined }, /proof of address/i, USER],
@@ -695,7 +648,17 @@ describe('submit', () => {
       stored: completeSubmission({ personalInfo: {} }),
       user: { ...USER, firstName: '', lastName: '', dateOfBirth: undefined },
     });
-    await expect(h.service.submit('user-1')).rejects.toThrow(/required before submitting/i);
+    // Every missing field named as the client reads it, and each under its own box.
+    const refusal = h.service.submit('user-1');
+    await expect(refusal).rejects.toThrow(
+      /Personal Information is incomplete: First Name, Last Name, Date of Birth/,
+    );
+    await expect(refusal).rejects.toMatchObject({
+      fields: expect.objectContaining({
+        firstName: 'First Name is required.',
+        dateOfBirth: 'Date of Birth is required.',
+      }),
+    });
     expect(h.kycStore.transition).not.toHaveBeenCalledWith(
       'user-1',
       expect.anything(),
@@ -724,8 +687,10 @@ describe('submit', () => {
       user: { ...USER, lastName: '' },
     });
     // Naming them is the difference between a form the client can complete and
-    // one that just says no.
-    await expect(h.service.submit('user-1')).rejects.toThrow(/lastName/);
+    // one that just says no — by the label they see, under the field it is about.
+    const refusal = h.service.submit('user-1');
+    await expect(refusal).rejects.toThrow('Last Name is required.');
+    await expect(refusal).rejects.toMatchObject({ fields: { lastName: 'Last Name is required.' } });
   });
 
   it('refuses an APPROVED client re-submitting, which used to demote them', async () => {
@@ -834,17 +799,22 @@ describe('saveStep stores only what the step asks for', () => {
     expect(h.kycStore.update).not.toHaveBeenCalled();
   });
 
-  it('reads a bare country code as not answered — the reported "+961"', async () => {
-    // A client who clears the number down to its prefix has CLEARED it — the
-    // profile holds no phone, rather than a "+961" nobody can dial.
+  it('reads a bare country code as a CLEARED number — shown and saved agree', async () => {
+    // A client who clears the number down to its prefix has cleared it: the
+    // profile holds no phone, rather than a "+961" nobody can dial — and not the
+    // OLD number the screen no longer shows. The accidental case (a prefix
+    // emitted while picking a country) is the portal's to never autosave.
     const h = build({ user: { ...USER, phone: '+96170123456' } });
     await h.service.saveStep('user-1', 'personal', { phone: '+961' });
     expect(h.profileRow.phone).toBeNull();
-    expect(h.kycStore.update).toHaveBeenCalledWith(
-      'user-1',
-      expect.objectContaining({ personalInfo: {} }),
-      expect.anything(),
-    );
+  });
+
+  it('sends only what CHANGED to the profile — an untouched value is never re-judged', async () => {
+    // A value stored before today's rules must not block a client who did not touch it.
+    const h = build({ user: { ...USER, city: 'beirut 1!' } });
+    await h.service.saveStep('user-1', 'personal', { city: 'beirut 1!', lastName: 'Smith' });
+    expect(h.profileRow.lastName).toBe('Smith');
+    expect(h.profileRow.city).toBe('beirut 1!');
   });
 
   it('cannot forge a stored file into a custom step', async () => {
@@ -964,6 +934,67 @@ describe('an upload says which document its page belongs to', () => {
       frontFileName: 'front.jpg',
     });
     expect(document).not.toHaveProperty('docType');
+  });
+
+  it('deletes the pages of the document the client moved away from — nothing orphaned', async () => {
+    const h = build({
+      stored: submission({
+        document: {
+          docType: 'national_id',
+          frontFilePath: 'uploads/kyc/id-front.jpg',
+          backFilePath: 'uploads/kyc/id-back.jpg',
+        },
+      }),
+    });
+    await upload(h, 'doc_front', 'passport.jpg', 'passport');
+    expect(h.storage.registry.deleted.map((d) => d.storageKey).sort()).toEqual([
+      'kyc/id-back.jpg',
+      'kyc/id-front.jpg',
+    ]);
+  });
+
+  it('keeps a replaced page a decided attempt still holds — that is evidence', async () => {
+    const h = build({
+      stored: submission({
+        status: 'rejected',
+        document: {
+          docType: 'national_id',
+          frontFilePath: 'uploads/kyc/id-front.jpg',
+          backFilePath: 'uploads/kyc/id-back.jpg',
+        },
+      }),
+    });
+    h.kycStore.archivedDocumentPaths.mockResolvedValue(['uploads/kyc/id-front.jpg']);
+    await upload(h, 'doc_front', 'id-front-2.jpg', 'national_id');
+    expect(h.storage.registry.deleted).toEqual([]);
+    await upload(h, 'doc_back', 'id-back-2.jpg', 'national_id');
+    expect(h.storage.registry.deleted.map((d) => d.storageKey)).toEqual(['kyc/id-back.jpg']);
+  });
+
+  it('refuses a document the broker does not accept', async () => {
+    const h = build();
+    h.kycConfig.getSteps.mockResolvedValue(
+      defaultSteps().map((step) =>
+        step.slug === 'document'
+          ? { ...step, fields: step.fields.filter((f) => f.type !== 'doc:residence_permit') }
+          : step,
+      ),
+    );
+    await expect(upload(h, 'doc_front', 'permit.jpg', 'residence_permit')).rejects.toThrow(
+      /Residence Permit is not a document this verification accepts/,
+    );
+    expect(h.kycStore.update).not.toHaveBeenCalled();
+  });
+
+  it('refuses an upload to a step the broker has switched off', async () => {
+    const h = build();
+    h.kycConfig.getSteps.mockResolvedValue(
+      defaultSteps().map((step) => (step.slug === 'address' ? { ...step, enabled: false } : step)),
+    );
+    await expect(upload(h, 'address_proof', 'bill.jpg', 'utility_bill')).rejects.toThrow(
+      /Proof of Address is not part of this verification/,
+    );
+    expect(h.kycStore.update).not.toHaveBeenCalled();
   });
 
   it('refuses an address document in an identity slot', async () => {
@@ -1168,18 +1199,19 @@ describe('submit asks for every page and every returned document', () => {
   it('refuses a required phone the profile does not hold', async () => {
     // "+961" can no longer be stored at all (the profile keeps a dialable number
     // or none), so what reaches submission is the absence — still refused.
+    // Required by the platform, whatever the builder's flag says.
     const h = build({ stored: completeSubmission(), user: { ...USER, phone: undefined } });
     h.kycConfig.getSteps.mockResolvedValue(
       defaultSteps().map((step) =>
         step.slug === 'personal'
           ? {
               ...step,
-              fields: step.fields.map((f) => (f.name === 'phone' ? { ...f, required: true } : f)),
+              fields: step.fields.map((f) => (f.name === 'phone' ? { ...f, required: false } : f)),
             }
           : step,
       ),
     );
-    await expect(h.service.submit('user-1')).rejects.toThrow(/phone/);
+    await expect(h.service.submit('user-1')).rejects.toThrow(/Phone Number is required/);
   });
 
   it('announces a correction as a RESUBMISSION even after a step was saved', async () => {
@@ -1318,6 +1350,48 @@ describe('a submission another reviewer is holding', () => {
 });
 
 describe('approve', () => {
+  it('re-asks the one judge, and REFUSES a record it finds incomplete', async () => {
+    // Approval raises the money gate. A record that lost its city, or never had
+    // an identity document, is not approvable — whatever its status says.
+    const h = build({
+      stored: completeSubmission({ status: 'submitted', document: undefined }),
+      user: { ...USER, city: undefined },
+    });
+    const refusal = h.service.approve('user-1', 'admin-1');
+    await expect(refusal).rejects.toThrow(ConflictError);
+    await expect(refusal).rejects.toThrow(/City/);
+    expect(h.users.update).not.toHaveBeenCalled();
+    expect(h.kycStore.transition).not.toHaveBeenCalled();
+  });
+
+  it('does NOT refuse over a question of the broker’s added after the client submitted', async () => {
+    // The broker's own questions were judged at submission; approval re-asks
+    // only what the verification rests on, or one builder change would strand
+    // every review already waiting.
+    const h = build({ stored: completeSubmission({ status: 'submitted' }) });
+    h.kycConfig.getSteps.mockResolvedValue([
+      ...defaultSteps(),
+      {
+        id: 'step-sof',
+        slug: 'source-of-funds',
+        title: 'Source of funds',
+        description: '',
+        icon: 'FileText',
+        stepNumber: 5,
+        enabled: true,
+        fields: [
+          { id: 'q-1', name: 'customField_sof', label: 'Employer', type: 'text', required: true },
+        ],
+      },
+    ]);
+    await expect(h.service.approve('user-1', 'admin-1')).resolves.toBeDefined();
+    expect(h.users.update).toHaveBeenCalledWith(
+      'user-1',
+      { verificationLevel: 1 },
+      expect.anything(),
+    );
+  });
+
   it('raises the client to verification level 1', async () => {
     // This is the line that unlocks withdrawals.
     const h = build({ stored: completeSubmission({ status: 'submitted' }) });
@@ -1434,13 +1508,14 @@ describe('reject', () => {
 
   it('emails the client the reason so they can correct and resubmit', async () => {
     const h = build({ stored: completeSubmission({ status: 'under_review' }) });
-    await h.service.reject('user-1', 'admin-1', 'Blurry document', ['doc_front']);
+    await h.service.reject('user-1', 'admin-1', 'Blurry document', ['doc_front', 'lastName']);
+    // Named as every screen names them — never `doc_front`.
     expect(h.email.sendKycDecisionEmail).toHaveBeenCalledWith(
       USER.email,
       USER.firstName,
       'rejected',
       'Blurry document',
-      ['doc_front'],
+      ['Passport', 'Last Name'],
     );
   });
 

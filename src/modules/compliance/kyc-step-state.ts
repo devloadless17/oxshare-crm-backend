@@ -22,13 +22,17 @@
  *
  *   document · address  a CHOICE of document, then every required page of it
  *   selfie              the selfie, always — the step is there to take one
- *   personal            required answers, then answers that are unacceptable
- *                       (a phone cut short, a date of birth under 18)
- *   every step          its extra fields: a required answer must be given (a
- *                       required checkbox ticked), a required upload present
+ *   personal            the client's IDENTITY, by the platform's rules
+ *                       (`identityProblems` — the profile writer's own checks:
+ *                       every missing field, every unacceptable one), then the
+ *                       broker's own questions
+ *   every step          the broker's own fields: a required answer must be given
+ *                       (a required checkbox ticked, a drop-down answered from
+ *                       its list), a required upload present
  *
- * Extra fields on the four built-in steps live in `step_data[slug]`, as every
- * added step's do; the columns keep what the rest of the system reads by name.
+ * Nothing the builder configures decides the identity rules (26 Sep 2026): the
+ * required set and the minimum age used to be read from the personal step's
+ * fields, so deleting the date-of-birth field switched the age check off.
  *
  * ## Returned by the reviewer
  *
@@ -42,7 +46,8 @@ import {
   missingRequiredPages,
   outstandingDocumentFlags,
 } from './kyc-document-rules';
-import { isAnswered, profileValueProblem } from './kyc-profile';
+import { isPlatformField } from '../../common/kyc/identity-core';
+import { identityProblems, isAnswered } from './kyc-profile';
 import { isStoredFile } from './step-slugs';
 
 /** What is owed — each kind reads differently to the client. */
@@ -163,6 +168,34 @@ export function stepStates(
     });
 }
 
+/**
+ * What APPROVAL re-asks (the owner's plan, 26 Sep 2026): the evidence a
+ * verification rests on — a complete, adult identity, the identity document's
+ * required pages, and the proof of address and the selfie when they are asked
+ * for. Everything `stepStates` owes, less the broker's own questions and uploads.
+ *
+ * Those were judged when the client submitted. Re-asked at approval, a question
+ * a broker adds on a Tuesday would strand every submission already waiting —
+ * none of them could be approved until each client came back to answer
+ * something the verification does not rest on.
+ */
+export function approvalBlockers(
+  steps: readonly StateStep[],
+  submission: StateSubmission,
+  now: Date,
+): Owed[] {
+  const brokersOwn = new Set(
+    steps.flatMap((step) =>
+      step.fields
+        .filter((field) => !isDocument(field) && !isPlatformField(step.slug, field))
+        .map((field) => `${step.slug}:${field.name}`),
+    ),
+  );
+  return stepStates(steps, submission, now).flatMap((state) =>
+    state.missing.filter((item) => !brokersOwn.has(`${state.slug}:${item.id}`)),
+  );
+}
+
 /** The choice of document and its pages, on the two document steps. */
 function documentOwed(
   step: StateStep,
@@ -213,8 +246,31 @@ function fieldsOwed(step: StateStep, submission: StateSubmission, now: Date): Ow
     owed.push({ id: 'selfie', label: label || 'Selfie', kind: 'upload' });
   }
 
+  /*
+   * THE IDENTITY, by the platform's rules and nothing the builder configures:
+   * every required field that is missing, and every value the profile writer
+   * would refuse — all of them, in the order the form shows them.
+   */
+  if (step.slug === 'personal') {
+    for (const problem of identityProblems(typed ?? undefined, now)) {
+      owed.push(
+        problem.kind === 'missing'
+          ? { id: problem.key, label: problem.label, kind: 'answer' }
+          : {
+              id: problem.key,
+              label: problem.label,
+              kind: 'invalid',
+              message: problem.message,
+              code: problem.code,
+            },
+      );
+    }
+  }
+
   for (const field of step.fields) {
-    if (isDocument(field) || isCanonicalSelfie(step, field)) continue;
+    // The platform's own — the identity above, the documents and the selfie
+    // camera by their own rules — never by a flag the builder set.
+    if (isDocument(field) || isPlatformField(step.slug, field)) continue;
     if (!field.required) continue;
     if (isPlainUpload(field)) {
       if (!isStoredFile(files?.[field.name])) {
@@ -225,19 +281,6 @@ function fieldsOwed(step: StateStep, submission: StateSubmission, now: Date): Ow
     }
   }
 
-  if (step.slug === 'personal') {
-    const problem = profileValueProblem(typed ?? undefined, step.fields, now);
-    if (problem) {
-      const id = problem.fields?.[0] ?? 'dateOfBirth';
-      owed.push({
-        id,
-        label: step.fields.find((f) => f.name === id)?.label ?? id,
-        kind: 'invalid',
-        message: problem.message,
-        code: problem.kind,
-      });
-    }
-  }
   return owed;
 }
 

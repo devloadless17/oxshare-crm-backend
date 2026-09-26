@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq } from 'drizzle-orm';
 import { ALL_PERMISSIONS } from './support/all-permissions';
 import { actingAs, startHttpTestApp, stopHttpTestApp, type HttpTestContext } from './http-setup';
@@ -12,6 +12,7 @@ import {
   users,
 } from '../src/database/schema';
 import { DEFAULT_KYC_STEPS } from '../src/store/kyc-config.store';
+import { EmailService } from '../src/modules/email/email.service';
 
 /**
  * CORE-18 — THE ONE STATE WITH NO CORRECTION PATH.
@@ -61,6 +62,8 @@ const ADMIN = { email: 'kyc-correct-admin@oxshare.com', password: 'admin-passwor
 const REVIEWER = { email: 'kyc-correct-reviewer@oxshare.com', password: 'admin-password-123' };
 
 const ROUTE = (id: string) => `/v1/admin/kyc/${id}/personal-info`;
+/** Every correction of a verified record says why (the owner's ruling, 26 Sep 2026). */
+const REASON = 'Typed wrongly at registration; the passport reads otherwise.';
 
 let ctx: HttpTestContext;
 let userId: string;
@@ -206,7 +209,9 @@ const storedPersonalInfo = async () => {
 describe('correcting an approved submission', () => {
   it('writes the new value and KEEPS every other field', async () => {
     const session = await actingAs(ctx, 'admin', ADMIN);
-    const res = await session.patch(ROUTE(userId)).send({ dateOfBirth: '1985-04-21' });
+    const res = await session
+      .patch(ROUTE(userId))
+      .send({ reason: REASON, dateOfBirth: '1985-04-21' });
 
     expect(res.status, `correction answered ${res.status}`).toBe(200);
 
@@ -227,9 +232,12 @@ describe('correcting an approved submission', () => {
 
   it('corrects the whole address in one go, in its canonical shape', async () => {
     const session = await actingAs(ctx, 'admin', ADMIN);
-    const res = await session
-      .patch(ROUTE(userId))
-      .send({ address: '  4 Hamra   Street ', city: 'Jounieh', postalCode: 'lb 1200' });
+    const res = await session.patch(ROUTE(userId)).send({
+      reason: REASON,
+      address: '  4 Hamra   Street ',
+      city: 'Jounieh',
+      postalCode: 'lb 1200',
+    });
     expect(res.status, JSON.stringify(res.body)).toBe(200);
 
     expect(await profile()).toMatchObject({
@@ -242,7 +250,9 @@ describe('correcting an approved submission', () => {
 
   it('shows the corrected value on the review screen — one record, not a copy', async () => {
     const session = await actingAs(ctx, 'admin', ADMIN);
-    const res = await session.patch(ROUTE(userId)).send({ dateOfBirth: '1985-04-21' });
+    const res = await session
+      .patch(ROUTE(userId))
+      .send({ reason: REASON, dateOfBirth: '1985-04-21' });
     expect(res.status).toBe(200);
     // The route answers with the submission as the reviewer reads it.
     const personal = (res.body as { personalInfo?: Record<string, unknown> }).personalInfo;
@@ -260,9 +270,10 @@ describe('correcting an approved submission', () => {
 
   it('audits the SUBMISSION with the value on BOTH sides', async () => {
     const session = await actingAs(ctx, 'admin', ADMIN);
-    expect((await session.patch(ROUTE(userId)).send({ dateOfBirth: '1985-04-21' })).status).toBe(
-      200,
-    );
+    expect(
+      (await session.patch(ROUTE(userId)).send({ reason: REASON, dateOfBirth: '1985-04-21' }))
+        .status,
+    ).toBe(200);
 
     /*
      * The audit write is fire-and-forget once the decision has landed — see the
@@ -302,6 +313,7 @@ describe('correcting an approved submission', () => {
     ).toBe(ORIGINAL.dateOfBirth);
     expect(details?.after).toEqual({ dateOfBirth: '1985-04-21' });
     expect(details?.via).toBe('kyc_correction');
+    expect((details as { reason?: unknown }).reason, 'the reason was not recorded').toBe(REASON);
     // Written by the profile write, in its transaction — not a second row
     // under the generic action beside it.
     expect(rows.filter((r) => r.action === 'client.profile_update')).toEqual([]);
@@ -312,7 +324,9 @@ describe('the correction is RE-VALIDATED, or this route is a bypass', () => {
   it('REFUSES an under-18 date with 409, and changes NOTHING', async () => {
     const session = await actingAs(ctx, 'admin', ADMIN);
     const thisYear = new Date().getUTCFullYear();
-    const res = await session.patch(ROUTE(userId)).send({ dateOfBirth: `${thisYear - 10}-04-12` });
+    const res = await session
+      .patch(ROUTE(userId))
+      .send({ reason: REASON, dateOfBirth: `${thisYear - 10}-04-12` });
 
     expect(
       res.status,
@@ -340,7 +354,9 @@ describe('the correction is RE-VALIDATED, or this route is a bypass', () => {
 
   it('REFUSES a date in the future, for the same reason', async () => {
     const session = await actingAs(ctx, 'admin', ADMIN);
-    const res = await session.patch(ROUTE(userId)).send({ dateOfBirth: '3000-01-01' });
+    const res = await session
+      .patch(ROUTE(userId))
+      .send({ reason: REASON, dateOfBirth: '3000-01-01' });
 
     expect(res.status).toBe(409);
     expect((res.body as { code?: string }).code).toBe('KYC_CORRECTION_REFUSED');
@@ -363,7 +379,9 @@ describe('what the route refuses', () => {
       .where(eq(kycSubmissions.userId, userId));
 
     const session = await actingAs(ctx, 'admin', ADMIN);
-    const res = await session.patch(ROUTE(userId)).send({ dateOfBirth: '1985-04-21' });
+    const res = await session
+      .patch(ROUTE(userId))
+      .send({ reason: REASON, dateOfBirth: '1985-04-21' });
 
     expect(res.status, `a rejected submission answered ${res.status}`).toBe(400);
     expect((await profile())['dateOfBirth']).toBe(ORIGINAL.dateOfBirth);
@@ -377,7 +395,9 @@ describe('what the route refuses', () => {
      * `kyc.edit` is a third thing again — the step builder.
      */
     const session = await actingAs(ctx, 'admin', REVIEWER);
-    const res = await session.patch(ROUTE(userId)).send({ dateOfBirth: '1985-04-21' });
+    const res = await session
+      .patch(ROUTE(userId))
+      .send({ reason: REASON, dateOfBirth: '1985-04-21' });
 
     expect(
       res.status,
@@ -387,15 +407,53 @@ describe('what the route refuses', () => {
     expect((await profile())['dateOfBirth']).toBe(ORIGINAL.dateOfBirth);
   });
 
-  it('cannot change a NAME or a NATIONALITY — those need a new verification', async () => {
+  it('corrects a NAME, a NATIONALITY and a COUNTRY too — and tells the client (26 Sep 2026)', async () => {
     /*
-     * What a reviewer checked against the passport, and what the client's own
-     * sentence says needs a new verification (`resetKyc`). The DTO refuses the
-     * keys outright; were one to slip past it, the profile write's own guard
-     * refuses anything outside the correctable set under the locks.
+     * It could not: those "needed a new verification", so a misspelt surname on
+     * an approved client had no remedy but a rejection, which shuts the money
+     * doors for a typo. The owner's ruling: a reviewer corrects ANY identity
+     * field but the phone, with a reason, re-checked, recorded, and the client
+     * emailed which details changed.
      */
+    const email = ctx.app.get(EmailService);
+    const told = vi.spyOn(email, 'sendKycDetailsCorrectedEmail').mockResolvedValue(undefined);
     const session = await actingAs(ctx, 'admin', ADMIN);
-    for (const body of [{ firstName: 'Leila' }, { nationality: 'Syrian' }, { country: 'Syria' }]) {
+    const res = await session
+      .patch(ROUTE(userId))
+      .send({ reason: REASON, lastName: 'Haddâd', nationality: 'Syrian', country: 'Syria' });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(await profile()).toMatchObject({
+      lastName: 'Haddâd',
+      nationality: 'Syrian',
+      country: 'Syria',
+      firstName: ORIGINAL.firstName,
+    });
+    expect(told).toHaveBeenCalledWith(expect.any(String), ORIGINAL.firstName, [
+      'Last Name',
+      'Nationality',
+      'Country of Residence',
+    ]);
+    told.mockRestore();
+  });
+
+  it('still re-checks a corrected NAME by the profile’s rules — "t1" is not a legal name', async () => {
+    const session = await actingAs(ctx, 'admin', ADMIN);
+    const res = await session.patch(ROUTE(userId)).send({ reason: REASON, firstName: 't1' });
+    expect(res.status).toBe(400);
+    expect((res.body as { fields?: Record<string, string> }).fields?.firstName).toMatch(/letters/);
+    expect(await profile()).toEqual(ORIGINAL);
+  });
+
+  it('does NOT take the phone — the desk edits that directly, no document proves it', async () => {
+    const session = await actingAs(ctx, 'admin', ADMIN);
+    const res = await session.patch(ROUTE(userId)).send({ reason: REASON, phone: '+96170000000' });
+    expect(res.status).toBe(400);
+    expect(await profile()).toEqual(ORIGINAL);
+  });
+
+  it('refuses a correction with no reason — a verified record never changes silently', async () => {
+    const session = await actingAs(ctx, 'admin', ADMIN);
+    for (const body of [{ lastName: 'Smith' }, { reason: 'typo', lastName: 'Smith' }]) {
       const res = await session.patch(ROUTE(userId)).send(body);
       expect(res.status, `${JSON.stringify(body)} answered ${res.status}`).toBe(400);
     }
@@ -404,7 +462,7 @@ describe('what the route refuses', () => {
 
   it('refuses an empty body rather than logging a correction that changed nothing', async () => {
     const session = await actingAs(ctx, 'admin', ADMIN);
-    const res = await session.patch(ROUTE(userId)).send({});
+    const res = await session.patch(ROUTE(userId)).send({ reason: REASON });
     expect(res.status).toBe(400);
   });
 });

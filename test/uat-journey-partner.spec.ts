@@ -20,6 +20,7 @@ import { CommissionService } from '../src/modules/ib/commission.service';
 import { PasswordService } from '../src/common/security/password.service';
 import { DEFAULT_KYC_STEPS } from '../src/store/kyc-config.store';
 import { admins, kycConfigSteps, roles, users } from '../src/database/schema';
+import { SIGN_UP_DETAILS } from './support/registration';
 
 /**
  * FSD §14, JOURNEYS 2 AND 3 — walked as one platform, because they are one.
@@ -94,6 +95,7 @@ async function onboard(
       lastName: 'Person',
       email: credentials.email,
       password: credentials.password,
+      ...SIGN_UP_DETAILS,
       country: 'Lebanon',
       ...extra,
     });
@@ -133,6 +135,9 @@ async function verifyKyc(
       phone,
       nationality: 'Lebanese',
       country: 'Lebanon',
+      // Required to verify, by the platform (the identity core, 26 Sep 2026).
+      address: 'Hamra Street 12',
+      city: 'Beirut',
     },
   });
   // Uploaded, as a client's are — see test/support/kyc-upload.ts.
@@ -414,14 +419,18 @@ describe('§14 J2 — step 2: a client signs up through the link and is attribut
      * attribution is permanent. So the registration is refused, loudly, with
      * the code named so the client can check the link — and no account exists.
      */
-    const res = await anonymous(ctx).post('/v1/auth/register').set('Origin', PORTAL_ORIGIN).send({
-      firstName: 'Journey',
-      lastName: 'Stranger',
-      email: 'uat-j2-stranger@oxshare-e2e.test',
-      password: 'StrangerPass123!',
-      country: 'Lebanon',
-      referralCode: 'NOSUCHCODE',
-    });
+    const res = await anonymous(ctx)
+      .post('/v1/auth/register')
+      .set('Origin', PORTAL_ORIGIN)
+      .send({
+        firstName: 'Journey',
+        lastName: 'Stranger',
+        email: 'uat-j2-stranger@oxshare-e2e.test',
+        password: 'StrangerPass123!',
+        ...SIGN_UP_DETAILS,
+        country: 'Lebanon',
+        referralCode: 'NOSUCHCODE',
+      });
     expect(res.status).toBe(400);
     expect(JSON.stringify(res.body)).toMatch(/NOSUCHCODE/);
 

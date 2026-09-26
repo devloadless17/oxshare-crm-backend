@@ -18,6 +18,7 @@ import { RivalWithdrawalsService } from '../src/modules/payments/rival/rival-wit
 import { PasswordService } from '../src/common/security/password.service';
 import { admins, kycConfigSteps, roles, users } from '../src/database/schema';
 import { DEFAULT_KYC_STEPS } from '../src/store/kyc-config.store';
+import { SIGN_UP_DETAILS } from './support/registration';
 
 /**
  * FSD §14, JOURNEY 1 — walked, not assembled from the parts.
@@ -177,14 +178,18 @@ const PORTAL_ORIGIN = process.env['PORTAL_URL'] ?? 'http://localhost:3000';
 
 describe('§14 J1 — step 1: an individual registers directly', () => {
   it('accepts the registration and does not sign them in', async () => {
-    const res = await anonymous(ctx).post('/v1/auth/register').set('Origin', PORTAL_ORIGIN).send({
-      firstName: 'Individual',
-      lastName: 'Applicant',
-      email: CLIENT.email,
-      password: CLIENT.password,
-      country: 'Lebanon',
-      phone: '+96170111222',
-    });
+    const res = await anonymous(ctx)
+      .post('/v1/auth/register')
+      .set('Origin', PORTAL_ORIGIN)
+      .send({
+        firstName: 'Individual',
+        lastName: 'Applicant',
+        email: CLIENT.email,
+        password: CLIENT.password,
+        ...SIGN_UP_DETAILS,
+        country: 'Lebanon',
+        phone: '+96170111222',
+      });
 
     expect(res.status, JSON.stringify(res.body)).toBeLessThan(400);
 
@@ -251,6 +256,9 @@ describe('§14 J1 — step 2: manual KYC to verification level 1', () => {
         phone: '+96170111222',
         nationality: 'Lebanese',
         country: 'Lebanon',
+        // Required to verify, by the platform (the identity core, 26 Sep 2026).
+        address: 'Hamra Street 12',
+        city: 'Beirut',
       },
     });
     expect(personal.status, JSON.stringify(personal.body)).toBeLessThan(400);

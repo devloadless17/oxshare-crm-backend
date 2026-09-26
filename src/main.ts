@@ -123,7 +123,15 @@ async function bootstrap() {
     // surfaces and nothing reads a bearer token any more (R-3.1/R-3.2). Leaving
     // it listed advertised a second credential channel that no longer exists.
     // Idempotency-Key: R-5.2, required by the money-moving endpoints.
-    allowedHeaders: ['Content-Type', 'X-Request-Id', 'X-OxShare-CSRF', 'Idempotency-Key'],
+    // If-Match: the KYC builder names the version of the form it edited, so a
+    // save over somebody else's newer change is refused (KYC_CONFIG_STALE).
+    allowedHeaders: [
+      'Content-Type',
+      'X-Request-Id',
+      'X-OxShare-CSRF',
+      'Idempotency-Key',
+      'If-Match',
+    ],
     // So a caller can read the id back off a response it did not set one on.
     //
     // X-OxShare-CSRF is exposed for a load-bearing reason, not for symmetry with
@@ -133,7 +141,10 @@ async function bootstrap() {
     // from this list is withheld from JS by the browser with no error anywhere —
     // the read simply returns undefined and every write fails a CSRF check for a
     // reason nothing logs. See common/security/session-cookies.ts.
-    exposedHeaders: ['X-Request-Id', 'X-OxShare-CSRF'],
+    //
+    // ETag: the KYC form's version, read by the builder and sent back as
+    // If-Match. Withheld, the builder would silently save without the check.
+    exposedHeaders: ['X-Request-Id', 'X-OxShare-CSRF', 'ETag'],
   });
 
   /*

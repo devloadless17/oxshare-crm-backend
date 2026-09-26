@@ -17,7 +17,7 @@
             }
           }
         },
-        "summary": "The countries and nationalities a client profile accepts",
+        "summary": "The countries and nationalities a client profile accepts, and what it requires",
         "tags": [
           "profile"
         ]
@@ -8187,6 +8187,53 @@
         ]
       }
     },
+    "/v1/admin/kyc/{userId}/reverify": {
+      "post": {
+        "description": "For a verified detail that changed materially — a new passport, a move abroad. The verification returns to the client with the items to redo, the level goes back to 0 (deposits and withdrawals pause until re-approval), and the client is emailed the reason — as a request to update, not as a rejection. `reverificationRequestedAt` is set until the next approval. A typo is a correction instead (`PATCH .../personal-info`).",
+        "operationId": "AdminComplianceController_requestReverification",
+        "parameters": [
+          {
+            "name": "userId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReverifyKycDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KycSubmissionDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Return an APPROVED verification to the client to update (re-verification)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/rejection-reasons": {
       "get": {
         "operationId": "AdminComplianceController_listRejectionReasons",
@@ -8333,6 +8380,7 @@
     },
     "/v1/admin/kyc-config": {
       "get": {
+        "description": "The form as every reader sees it: the platform's identity fields, built-in steps and documents included (`system` / `core`), the broker's own parts as stored. The `ETag` header is the version a save must name in `If-Match`.",
         "operationId": "AdminComplianceController_getKycConfig",
         "parameters": [],
         "responses": {
@@ -8351,8 +8399,18 @@
         ]
       },
       "put": {
+        "description": "Send `If-Match` with the `ETag` the form was read with: a form somebody else has changed since answers **409 `KYC_CONFIG_STALE`** instead of silently replacing their work. Adding a step also needs `kyc.create`, removing one `kyc.delete`. A refusal names where it is in the posted form — `fields` is keyed `steps.<i>` or `steps.<i>.fields.<j>`.",
         "operationId": "AdminComplianceController_updateKycConfig",
-        "parameters": [],
+        "parameters": [
+          {
+            "name": "if-match",
+            "required": true,
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "required": true,
           "content": {
@@ -11545,6 +11603,59 @@
       }
     },
     "schemas": {
+      "ProfileRequiredDto": {
+        "type": "object",
+        "properties": {
+          "registration": {
+            "type": "array",
+            "description": "Required to register: who the person is and how to reach them.",
+            "example": [
+              "firstName",
+              "lastName",
+              "dateOfBirth",
+              "nationality",
+              "phone",
+              "country"
+            ],
+            "items": {
+              "type": "string",
+              "enum": [
+                "firstName",
+                "lastName",
+                "dateOfBirth",
+                "nationality",
+                "phone",
+                "country",
+                "address",
+                "city",
+                "postalCode"
+              ]
+            }
+          },
+          "verification": {
+            "type": "array",
+            "description": "Required to submit a verification: everything but the postal code.",
+            "items": {
+              "type": "string",
+              "enum": [
+                "firstName",
+                "lastName",
+                "dateOfBirth",
+                "nationality",
+                "phone",
+                "country",
+                "address",
+                "city",
+                "postalCode"
+              ]
+            }
+          }
+        },
+        "required": [
+          "registration",
+          "verification"
+        ]
+      },
       "ProfileOptionsDto": {
         "type": "object",
         "properties": {
@@ -11569,11 +11680,20 @@
             "items": {
               "type": "string"
             }
+          },
+          "required": {
+            "description": "Which fields are required, and when. Served so no form keeps its own copy of the rule (the owner’s ruling, 26 Sep 2026).",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ProfileRequiredDto"
+              }
+            ]
           }
         },
         "required": [
           "countries",
-          "nationalities"
+          "nationalities",
+          "required"
         ]
       },
       "NotificationDto": {
@@ -16257,6 +16377,10 @@
                 "$ref": "#/components/schemas/KycDocumentTypeDto"
               }
             ]
+          },
+          "system": {
+            "type": "boolean",
+            "description": "The platform's own field — fixed, never editable."
           }
         },
         "required": [
@@ -16303,6 +16427,14 @@
             "items": {
               "$ref": "#/components/schemas/KycFieldConfigDto"
             }
+          },
+          "core": {
+            "type": "boolean",
+            "description": "One of the four built-in steps."
+          },
+          "alwaysOn": {
+            "type": "boolean",
+            "description": "A built-in step that cannot be switched off."
           }
         },
         "required": [
@@ -16480,6 +16612,11 @@
             "items": {
               "type": "string"
             }
+          },
+          "reverificationRequestedAt": {
+            "format": "date-time",
+            "type": "string",
+            "description": "A returned APPROVED verification."
           },
           "steps": {
             "description": "Every enabled step, in order: complete or not, what it still owes and what was returned. The same judgement `POST /kyc/submit` applies — render it, do not re-derive it.",
@@ -18435,6 +18572,240 @@
           "lastName"
         ]
       },
+      "KycReviewIdentityFieldDto": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "enum": [
+              "firstName",
+              "lastName",
+              "dateOfBirth",
+              "nationality",
+              "phone",
+              "country",
+              "address",
+              "city",
+              "postalCode"
+            ]
+          },
+          "label": {
+            "type": "string",
+            "example": "Date of Birth"
+          },
+          "required": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "key",
+          "label",
+          "required"
+        ]
+      },
+      "KycReviewPageDto": {
+        "type": "object",
+        "properties": {
+          "slot": {
+            "type": "string",
+            "example": "doc_back",
+            "description": "Where the file is stored on the submission."
+          },
+          "label": {
+            "type": "string",
+            "example": "Back Side"
+          },
+          "required": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "slot",
+          "label",
+          "required"
+        ]
+      },
+      "KycReviewDocumentDto": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "nullable": true,
+            "example": "national_id"
+          },
+          "label": {
+            "type": "string",
+            "example": "National ID"
+          },
+          "pages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KycReviewPageDto"
+            }
+          }
+        },
+        "required": [
+          "type",
+          "label",
+          "pages"
+        ]
+      },
+      "KycReviewAddressDto": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "nullable": true,
+            "example": "national_id"
+          },
+          "label": {
+            "type": "string",
+            "example": "National ID"
+          },
+          "pages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KycReviewPageDto"
+            }
+          },
+          "asked": {
+            "type": "boolean",
+            "description": "Whether the form asks for a proof of address at all."
+          }
+        },
+        "required": [
+          "type",
+          "label",
+          "pages",
+          "asked"
+        ]
+      },
+      "KycReviewSelfieDto": {
+        "type": "object",
+        "properties": {
+          "asked": {
+            "type": "boolean"
+          },
+          "label": {
+            "type": "string",
+            "example": "Selfie"
+          }
+        },
+        "required": [
+          "asked",
+          "label"
+        ]
+      },
+      "KycReviewFieldDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "customField_1790281526943"
+          },
+          "label": {
+            "type": "string",
+            "example": "Employer"
+          },
+          "type": {
+            "type": "string",
+            "example": "text"
+          },
+          "step": {
+            "type": "string",
+            "example": "source-of-funds",
+            "description": "`personal` → read `personalInfo[name]`; any other → `stepData[step][name]`."
+          }
+        },
+        "required": [
+          "name",
+          "label",
+          "type",
+          "step"
+        ]
+      },
+      "KycReviewSectionDto": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string",
+            "example": "source-of-funds",
+            "description": "`unlisted` for removed questions."
+          },
+          "title": {
+            "type": "string",
+            "example": "Source of funds"
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KycReviewFieldDto"
+            }
+          }
+        },
+        "required": [
+          "slug",
+          "title",
+          "fields"
+        ]
+      },
+      "KycReviewFlagDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "example": "doc_back"
+          },
+          "label": {
+            "type": "string",
+            "example": "National ID (Back Side)"
+          }
+        },
+        "required": [
+          "id",
+          "label"
+        ]
+      },
+      "KycReviewLayoutDto": {
+        "type": "object",
+        "properties": {
+          "identity": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KycReviewIdentityFieldDto"
+            }
+          },
+          "identityDocument": {
+            "$ref": "#/components/schemas/KycReviewDocumentDto"
+          },
+          "proofOfAddress": {
+            "$ref": "#/components/schemas/KycReviewAddressDto"
+          },
+          "selfie": {
+            "$ref": "#/components/schemas/KycReviewSelfieDto"
+          },
+          "additional": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KycReviewSectionDto"
+            }
+          },
+          "flags": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KycReviewFlagDto"
+            }
+          }
+        },
+        "required": [
+          "identity",
+          "identityDocument",
+          "proofOfAddress",
+          "selfie",
+          "additional",
+          "flags"
+        ]
+      },
       "KycSubmissionDto": {
         "type": "object",
         "properties": {
@@ -18523,6 +18894,13 @@
           "updatedAt": {
             "format": "date-time",
             "type": "string"
+          },
+          "reverificationRequestedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "layout": {
+            "$ref": "#/components/schemas/KycReviewLayoutDto"
           }
         },
         "required": [
@@ -18635,6 +19013,9 @@
           "archivedAt": {
             "format": "date-time",
             "type": "string"
+          },
+          "layout": {
+            "$ref": "#/components/schemas/KycReviewLayoutDto"
           }
         },
         "required": [
@@ -18646,10 +19027,37 @@
       "CorrectKycIdentityDto": {
         "type": "object",
         "properties": {
+          "reason": {
+            "type": "string",
+            "example": "Surname misspelt at registration; passport reads \"Haddad\".",
+            "minLength": 10,
+            "maxLength": 500,
+            "description": "Why the verified record is being changed. Recorded on the audit row."
+          },
+          "firstName": {
+            "type": "string",
+            "example": "Layla",
+            "maxLength": 100
+          },
+          "lastName": {
+            "type": "string",
+            "example": "Haddad",
+            "maxLength": 100
+          },
           "dateOfBirth": {
             "type": "string",
             "example": "1985-04-12",
             "description": "ISO date. RE-VALIDATED through the same rules as submission: an impossible, future or under-18 date is REFUSED with 409, not 400 — that is a fact about the record rather than about what was typed."
+          },
+          "nationality": {
+            "type": "string",
+            "example": "Lebanese",
+            "maxLength": 100
+          },
+          "country": {
+            "type": "string",
+            "example": "Lebanon",
+            "maxLength": 100
           },
           "address": {
             "type": "string",
@@ -18667,7 +19075,10 @@
             "maxLength": 12,
             "description": "Send an empty string to clear it — many addresses have none."
           }
-        }
+        },
+        "required": [
+          "reason"
+        ]
       },
       "RejectDto": {
         "type": "object",
@@ -18688,6 +19099,32 @@
             }
           }
         }
+      },
+      "ReverifyKycDto": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string",
+            "example": "Your passport on file has expired. Please upload your new one.",
+            "minLength": 10,
+            "maxLength": 500
+          },
+          "items": {
+            "example": [
+              "doc_front",
+              "address"
+            ],
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "reason",
+          "items"
+        ]
       },
       "RejectionReasonResponseDto": {
         "type": "object",
@@ -18791,6 +19228,10 @@
           "document": {
             "type": "object",
             "description": "Hydrated from `type` on read. Accepted on write and ignored."
+          },
+          "system": {
+            "type": "boolean",
+            "description": "Served on read. Accepted on write and ignored."
           }
         },
         "required": [
@@ -18813,7 +19254,8 @@
           },
           "slug": {
             "type": "string",
-            "example": "personal"
+            "example": "source-of-funds",
+            "description": "Optional for a new step (generated from its title); an existing step's never changes."
           },
           "title": {
             "type": "string",
@@ -18835,10 +19277,17 @@
             "items": {
               "$ref": "#/components/schemas/KycFieldDto"
             }
+          },
+          "core": {
+            "type": "boolean",
+            "description": "Served on read. Accepted on write and ignored."
+          },
+          "alwaysOn": {
+            "type": "boolean",
+            "description": "Served on read. Accepted on write and ignored."
           }
         },
         "required": [
-          "slug",
           "title",
           "fields"
         ]

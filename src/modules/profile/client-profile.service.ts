@@ -33,6 +33,8 @@ export interface ProfileAuditOptions {
   subjectId?: string;
   /** Where the change came from — `kyc`, `admin_edit`, `kyc_correction`. */
   via?: string;
+  /** Why — a reviewer's correction of a verified record must say. */
+  reason?: string;
 }
 
 /** A user's profile as the API speaks it — blank fields absent, never "". */
@@ -115,7 +117,8 @@ export class ClientProfileService {
     }
 
     const run = async (tx: Executor) => {
-      const verification = (await this.kyc.lockForUpdate(userId, tx))?.status;
+      const submission = await this.kyc.lockForUpdate(userId, tx);
+      const verification = submission?.status;
       const current = await this.users.findByIdForUpdate(userId, tx);
       if (!current) throw new NotFoundError('Client not found.');
 
@@ -143,6 +146,18 @@ export class ClientProfileService {
       options.guard?.(changed, verification);
 
       await tx.update(users).set(changes).where(eq(users.id, userId));
+
+      /*
+       * A reviewer's flag on a field is ANSWERED by changing that field —
+       * whoever changes it. The KYC step settled its own; a desk correction of
+       * the same surname left the flag standing, so the client was still shown
+       * a field to fix that somebody had already fixed.
+       */
+      const flagged = submission?.rejectedFields ?? [];
+      const unanswered = flagged.filter((id) => !(changed as string[]).includes(id));
+      if (unanswered.length !== flagged.length) {
+        await this.kyc.update(userId, { rejectedFields: unanswered }, tx);
+      }
       const audit = options.audit ?? {};
       await this.auditLog.record(
         {
@@ -152,7 +167,12 @@ export class ClientProfileService {
           action: audit.action ?? 'client.profile_update',
           subjectType: audit.subjectType ?? 'user',
           subjectId: audit.subjectId ?? userId,
-          details: { before, after, ...(audit.via ? { via: audit.via } : {}) },
+          details: {
+            before,
+            after,
+            ...(audit.via ? { via: audit.via } : {}),
+            ...(audit.reason ? { reason: audit.reason } : {}),
+          },
         },
         tx,
       );

@@ -400,7 +400,18 @@ describe('by-id routes answer 404 for an out-of-scope client, never 403', () => 
     {
       signature: 'PATCH /admin/kyc/:userId/personal-info',
       run: (s: Session, id: string) =>
-        s.patch(`/v1/admin/kyc/${id}/personal-info`, { dateOfBirth: '1985-04-12' }),
+        s.patch(`/v1/admin/kyc/${id}/personal-info`, {
+          reason: 'scope enforcement probe — a correction',
+          dateOfBirth: '1985-04-12',
+        }),
+    },
+    {
+      signature: 'POST /admin/kyc/:userId/reverify',
+      run: (s: Session, id: string) =>
+        s.post(`/v1/admin/kyc/${id}/reverify`, {
+          reason: 'scope enforcement probe — a re-verification',
+          items: ['passport'],
+        }),
     },
     {
       signature: 'PATCH /admin/ib/partners/:userId/active',
