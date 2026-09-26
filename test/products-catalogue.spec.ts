@@ -584,18 +584,46 @@ describe('attaching and detaching MT5 groups', () => {
     expect(await rows(standard)).toEqual(['real\\Standard-USD USD']);
   });
 
-  /* The 409 the operator hit, now a reason they can act on. */
-  it('refuses a second group in the same currency, naming the one already there', async () => {
-    const standard = await makeProduct('Slot Standard');
+  /* No rule about currencies (0146, the owner's call). */
+  it('takes a second, third … group in a currency the product already has', async () => {
+    const standard = await makeProduct('Many USD');
     await service.attachGroup(standard, live('real\\Standard-USD'), TEST_ACTOR);
 
-    const attempt = service.attachGroup(standard, live('real\\Pro-USD'), TEST_ACTOR);
+    await service.attachGroup(standard, live('real\\Pro-USD'), TEST_ACTOR);
 
-    await expect(attempt).rejects.toBeInstanceOf(ValidationError);
-    await expect(service.attachGroup(standard, live('real\\Pro-USD'), TEST_ACTOR)).rejects.toThrow(
-      /already has a live USD group, "real\\Standard-USD"/,
-    );
-    expect(await rows(standard)).toEqual(['real\\Standard-USD USD']);
+    expect(await rows(standard)).toEqual(['real\\Pro-USD USD', 'real\\Standard-USD USD']);
+  });
+
+  /*
+   * What a client opening an account from the portal gets when a product holds
+   * two groups in one currency: both are offered, the FIRST ATTACHED first —
+   * and the portal opens the account in the first one for that product and
+   * currency. A stable answer, whatever order the rows come back in.
+   */
+  it('offers every group, the first attached first, when a product holds two in a currency', async () => {
+    const standard = await makeProduct('Offer Order');
+    await service.attachGroup(standard, live('real\\Standard-USD'), TEST_ACTOR);
+    await service.attachGroup(standard, live('real\\Pro-USD'), TEST_ACTOR);
+    // Make the attachment order unambiguous, whatever the clock did.
+    await ctx.db.execute(sql`
+      UPDATE trading_product_groups
+         SET created_at = now() - interval '1 hour'
+       WHERE product_id = ${standard} AND mt5_group = ${'real\\Standard-USD'}
+    `);
+    const client = await makeUser('offer-order@oxshare-e2e.test');
+
+    const offered = await store.offeredTo(client, 'live');
+
+    expect(offered.map((option) => option.mt5Group)).toEqual([
+      'real\\Standard-USD',
+      'real\\Pro-USD',
+    ]);
+    // The product's own list, which the console form reads, agrees.
+    const listed = (await service.listProducts()).find((candidate) => candidate.id === standard);
+    expect(listed?.groups.map((group) => group.mt5Group)).toEqual([
+      'real\\Standard-USD',
+      'real\\Pro-USD',
+    ]);
   });
 
   it('takes a group in another currency beside it', async () => {

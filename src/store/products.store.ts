@@ -112,7 +112,14 @@ export class ProductsStore {
           rows.map((row) => row.id),
         ),
       )
-      .orderBy(asc(tradingProductGroups.environment), asc(tradingProductGroups.currency));
+      .orderBy(
+        asc(tradingProductGroups.environment),
+        asc(tradingProductGroups.currency),
+        // Attachment order within a currency: the first is the group a client
+        // opening from the portal is put in (0146; see `offeredTo`).
+        asc(tradingProductGroups.createdAt),
+        asc(tradingProductGroups.id),
+      );
 
     return rows.map((row) => ({
       id: row.id,
@@ -251,7 +258,14 @@ export class ProductsStore {
       .select()
       .from(tradingProductGroups)
       .where(eq(tradingProductGroups.productId, productId))
-      .orderBy(asc(tradingProductGroups.environment), asc(tradingProductGroups.currency));
+      .orderBy(
+        asc(tradingProductGroups.environment),
+        asc(tradingProductGroups.currency),
+        // Attachment order within a currency: the first is the group a client
+        // opening from the portal is put in (0146; see `offeredTo`).
+        asc(tradingProductGroups.createdAt),
+        asc(tradingProductGroups.id),
+      );
 
     return rows.map((row) => ({
       id: row.id,
@@ -483,6 +497,14 @@ export class ProductsStore {
         asc(tradingProducts.sortOrder),
         asc(tradingProducts.name),
         asc(tradingProductGroups.currency),
+        /*
+         * A product may hold several groups in one currency (0146). The portal
+         * offers the product and the currency once and opens the account in
+         * the FIRST of them, so that has to be a stable answer: the group
+         * attached first, and the id as the last word on a tie.
+         */
+        asc(tradingProductGroups.createdAt),
+        asc(tradingProductGroups.id),
       );
 
     return rows.map((row) => ({

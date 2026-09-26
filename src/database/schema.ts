@@ -16,7 +16,6 @@ import {
   primaryKey,
   text,
   timestamp,
-  unique,
   uuid,
   varchar,
 } from 'drizzle-orm/pg-core';
@@ -2029,9 +2028,11 @@ export const tradingProductGroups = pgTable(
       sql`lower(${t.mt5Group})`,
     ),
     index('trading_product_groups_group_idx').on(sql`lower(${t.mt5Group})`),
-    /* One group per product per environment per currency: offering a client two
-       rows that both say "Standard · USD · demo" is a choice with no meaning. */
-    unique('trading_product_groups_slot_unique').on(t.productId, t.environment, t.currency),
+    /*
+     * NO rule about currencies (0146, the owner's call): a product may hold
+     * several groups in one currency. The portal lands a client in the one
+     * attached first — see `ProductsStore.offeredTo`.
+     */
     index('trading_product_groups_product_idx').on(t.productId),
   ],
 );
