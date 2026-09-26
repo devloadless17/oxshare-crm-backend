@@ -631,3 +631,36 @@ describe('two operators at the same withdrawal, at the same moment', () => {
     expect(results.filter((r) => r.status === 'rejected')).toHaveLength(1);
   });
 });
+
+describe('many withdrawal REQUESTS on one wallet at the same moment', () => {
+  it('each is accepted or refused for its balance — none dies in a deadlock', async () => {
+    /*
+     * Found by load test (26 Sep 2026): 30 simultaneous requests against a
+     * balance of 100 answered 2 × 201 and 28 × 500 — "deadlock detected", one a
+     * second. Each request inserts its `transactions` row first, and that row's
+     * foreign key takes a KEY SHARE lock on the wallet; the ledger post then
+     * asked for the wallet FOR UPDATE, which conflicts with every other
+     * request's KEY SHARE lock. Each waited for the other; Postgres killed one.
+     * The money stayed right — each transaction rolled back whole — but a client
+     * who clicked Withdraw twice got an error instead of an answer.
+     */
+    const userId = await makeFundedClient('race-requests@oxshare.test', '100');
+
+    const results = await Promise.allSettled(
+      Array.from({ length: 12 }, () => request(userId, '10')),
+    );
+    const refusals = results
+      .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
+      .map((r) => (r.reason as Error).message);
+
+    expect(
+      refusals.filter((message) => !/insufficient balance/i.test(message)),
+      'a request failed for a reason other than its balance',
+    ).toEqual([]);
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(10);
+    expect(refusals).toHaveLength(2);
+    expect(await balanceOf(userId)).toBe('0.00000000');
+    // The seed credit and ten debits — nothing half-written by a killed request.
+    expect(await ledgerCount(userId)).toBe(11);
+  });
+});

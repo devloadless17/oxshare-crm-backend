@@ -12,6 +12,7 @@ import {
   wallets,
 } from '../../database/schema';
 import { available, money, MoneyInput, toDecimal } from './money';
+import { displayMoney } from '../../common/money-display';
 import { clientIdentitySearch } from '../../store/users.store';
 import {
   ConflictError,
@@ -221,7 +222,11 @@ export class WalletService {
      */
     if (newBalance.lessThan(0)) {
       throw new MoneyRuleError(
-        `Insufficient balance: ${money(wallet.balance)} ${currency} cannot absorb ${money(amount)}.`,
+        // Said as a person reads money — "$0.00", not "0.00000000 … -10.00000000".
+        // The portal leaves the balance check to the server, so a client who
+        // asks for more than they hold reads this sentence as it is.
+        `Insufficient balance: the wallet holds ${displayMoney(wallet.balance, currency)}, ` +
+          `and this needs ${displayMoney(amount.abs().toString(), currency)}.`,
       );
     }
 
@@ -283,13 +288,29 @@ export class WalletService {
       .values({ userId, currency, kind })
       .onConflictDoNothing({ target: [wallets.userId, wallets.currency, wallets.kind] });
 
+    /*
+     * `FOR NO KEY UPDATE`, not `FOR UPDATE` (found by load test, 26 Sep 2026).
+     *
+     * Every money path inserts a row that REFERENCES the wallet before it posts
+     * — a withdrawal its `transactions` row, a transfer its `transfers` row —
+     * and a foreign-key check takes a KEY SHARE lock on the wallet row. FOR
+     * UPDATE conflicts with KEY SHARE, so two requests on one wallet each held
+     * a KEY SHARE the other's FOR UPDATE waited on: "deadlock detected", one
+     * killed a second — 28 of 30 simultaneous withdrawals answered 500.
+     *
+     * NO KEY UPDATE is the lock for changing a row's non-key columns — which is
+     * all a balance update is (the UPDATE below takes it anyway). It still
+     * conflicts with itself, so balance writers stay strictly one at a time
+     * (§6.2's read-modify-write is still serialised); it just does not conflict
+     * with a foreign-key check. Pinned by `withdrawal-flow.spec.ts`.
+     */
     const [wallet] = await tx
       .select()
       .from(wallets)
       .where(
         and(eq(wallets.userId, userId), eq(wallets.currency, currency), eq(wallets.kind, kind)),
       )
-      .for('update')
+      .for('no key update')
       .limit(1);
 
     if (!wallet) {
