@@ -2160,6 +2160,44 @@
         ]
       }
     },
+    "/v1/ib/wallet/commission": {
+      "post": {
+        "description": "For an active partner. Refused for a currency that does not exist or is disabled. Opening one already held returns it unchanged. Commission is credited into a wallet opened on the first confirmed payout anyway; this shows the card before then.",
+        "operationId": "IbController_openCommissionWallet",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpenWalletDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WalletDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Open a commission wallet in an offered currency",
+        "tags": [
+          "ib"
+        ]
+      }
+    },
     "/v1/ib/wallet/transfers": {
       "get": {
         "description": "Every transfer, newest first, with the wallet numbers at both ends. It was capped at TEN while it rendered as a short panel beside the balance it explains; it is now a paged tab of its own, and a cap that silently hid a partner’s older transfers was the reason it could not answer “where did my money go”. These rows also appear in `GET /payments/transactions` alongside every other movement — a partner's own money should not be split across two histories that have to be reconciled against each other.",
@@ -4311,6 +4349,42 @@
           }
         ],
         "summary": "The signed-in client's wallets — balance, on_hold and available, all as strings",
+        "tags": [
+          "wallet"
+        ]
+      },
+      "post": {
+        "description": "Refused for a currency that does not exist or is disabled. Opening one the client already holds returns it unchanged.",
+        "operationId": "WalletController_openWallet",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpenWalletDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WalletDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Open a wallet in an offered currency for the signed-in client",
         "tags": [
           "wallet"
         ]
@@ -13424,6 +13498,24 @@
           "products"
         ]
       },
+      "OpenWalletDto": {
+        "type": "object",
+        "properties": {
+          "userId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "currency": {
+            "type": "string",
+            "example": "USD",
+            "description": "Must be a currency the platform holds and has enabled."
+          }
+        },
+        "required": [
+          "userId",
+          "currency"
+        ]
+      },
       "IbWalletTransferResultDto": {
         "type": "object",
         "properties": {
@@ -20126,24 +20218,6 @@
           "amount",
           "reason",
           "direction"
-        ]
-      },
-      "OpenWalletDto": {
-        "type": "object",
-        "properties": {
-          "userId": {
-            "type": "string",
-            "format": "uuid"
-          },
-          "currency": {
-            "type": "string",
-            "example": "USD",
-            "description": "Must be a currency the platform holds and has enabled."
-          }
-        },
-        "required": [
-          "userId",
-          "currency"
         ]
       },
       "WithdrawalRejectDto": {

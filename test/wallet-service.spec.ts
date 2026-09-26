@@ -120,7 +120,8 @@ describe('posting to the ledger', () => {
         referenceType: 'transaction',
         referenceId: 'out',
       }),
-    ).rejects.toThrow(/insufficient balance/i);
+      // Said as a person reads money — the portal shows this sentence as it is.
+    ).rejects.toThrow('Insufficient balance: the wallet holds $50.00, and this needs $60.00.');
 
     // And left the balance alone.
     expect(await balanceOf(userId)).toBe('50.00000000');

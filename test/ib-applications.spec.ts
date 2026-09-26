@@ -929,7 +929,7 @@ describe('approval', () => {
     expect(account.agencyId).toBe(AGENCY.id);
   });
 
-  it('opens the new partner a COMMISSION wallet in every enabled currency, each empty', async () => {
+  it('opens the new partner a COMMISSION wallet, and no balance in it', async () => {
     /*
      * The lazy path in `WalletService.post` would open this on the first
      * confirmed accrual anyway, so what this pins is the SCREEN: a partner
@@ -944,31 +944,23 @@ describe('approval', () => {
     const application = await service.apply(userId, { agencyId: AGENCY.id });
     await service.approve(application.id, REVIEWER, UNRESTRICTED);
 
-    /*
-     * One per ENABLED currency (owner, 26 Sep 2026): a partner is paid in the
-     * currency of the trade that earned it, and their clients may trade in any
-     * currency the platform offers.
-     */
-    const { rows: enabled } = await ctx.db.execute<{ code: string }>(
-      sql`SELECT code FROM currencies WHERE enabled ORDER BY code`,
-    );
     let rows: { kind: string; balance: string; currency: string }[] = [];
-    for (let attempt = 0; attempt < 50 && rows.length < enabled.length; attempt += 1) {
+    for (let attempt = 0; attempt < 50 && rows.length === 0; attempt += 1) {
       const result = await ctx.db.execute<{ kind: string; balance: string; currency: string }>(
         sql`SELECT kind, balance, currency FROM wallets
-             WHERE user_id = ${userId} AND kind = 'commission' ORDER BY currency`,
+             WHERE user_id = ${userId} AND kind = 'commission'`,
       );
       rows = result.rows;
-      if (rows.length < enabled.length) await new Promise((resolve) => setTimeout(resolve, 20));
+      if (rows.length === 0) await new Promise((resolve) => setTimeout(resolve, 20));
     }
 
-    expect(rows.map((row) => row.currency)).toEqual(enabled.map((row) => row.code));
+    expect(rows).toHaveLength(1);
     /*
      * EMPTY, and that matters more than its existence. A wallet opened with a
      * balance would be money nobody earned -- the one outcome the whole
      * commission separation exists to make impossible.
      */
-    expect(rows.every((row) => row.balance === '0.00000000')).toBe(true);
+    expect(rows[0].balance).toBe('0.00000000');
 
     // ...and it did NOT open a second MAIN wallet in the same currency, which is
     // what a conflict target still naming (user_id, currency) would have done.

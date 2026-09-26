@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { and, asc, count, eq, ne, or, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { getDb } from '../../database/db';
@@ -8,7 +8,6 @@ import { AdminAuditService } from '../admin/admin-audit.service';
 import type { Actor } from '../../common/security/actor';
 import { placeInOrder } from '../../common/ordering';
 import type { CreateCurrencyDto, UpdateCurrencyDto } from './dto/currency.dto';
-import { WalletsStore } from '../../store/wallets.store';
 
 type Db = ReturnType<typeof getDb>;
 type Executor = Db | Parameters<Parameters<Db['transaction']>[0]>[0];
@@ -34,42 +33,30 @@ type Executor = Db | Parameters<Parameters<Db['transaction']>[0]>[0];
  */
 @Injectable()
 export class CurrenciesService {
-  private readonly logger = new Logger(CurrenciesService.name);
-
   constructor(
     @Inject(DRIZZLE_DB) private readonly db: Db,
     private readonly audit: AdminAuditService,
-    /*
-     * Opens the wallets when a currency goes live — see `openWalletsFor`.
-     * From the @Global() StoreModule, which adds no module edge (the note in
-     * `wallets.store.ts` records why the provisioning SERVICE cannot be
-     * injected here). OPTIONAL and appended last: the many specs that build
-     * this service positionally for other reasons keep working, and without it
-     * nothing is opened.
-     */
-    private readonly walletsStore?: WalletsStore,
   ) {}
 
   /*
-   * ── A CURRENCY THAT GOES LIVE OPENS ITS WALLETS (owner, 26 Sep 2026) ────────
+   * ── ADDING A CURRENCY OPENS NO WALLETS — CLIENTS OPEN THEIR OWN ─────────────
    *
-   * Adding an ENABLED currency, or enabling one, opens a wallet in it for every
-   * client and a commission wallet for every partner — the same set a client
-   * who registers afterwards gets, so every wallet screen lists every currency
-   * the platform offers. See `openWalletsFor`.
+   * A write per client for every currency an operator adds does not scale: a
+   * million clients is a million rows written because a form was saved, most of
+   * them never used. The owner's call (26 Sep 2026) is the opposite model:
    *
-   * This was tried once before and removed, for two costs that are now handled
-   * rather than accepted:
+   *   - Adding or enabling a currency only makes it AVAILABLE.
+   *   - The portal shows every enabled currency a client does not hold as a card
+   *     they can open with one click (`POST /wallet`), and every one a partner
+   *     does not hold as a commission wallet they can open
+   *     (`POST /ib/wallet/commission`). Each writes ONE row, for the person who
+   *     asked.
+   *   - Registration still opens every enabled currency for a new client, and
+   *     every money path opens the wallet it needs on first use
+   *     (`getOrCreateWallet`).
    *
-   *   - A write per client INSIDE the request that saved the form. It now runs
-   *     AFTER the save commits and the response is not held for it: one
-   *     set-based INSERT per wallet kind, which adds only the missing rows.
-   *   - A currency added to try out became permanent the moment it had wallets.
-   *     `remove` now deletes the wallets that were opened and never used, so an
-   *     unused currency can still be deleted; one that has seen money cannot.
-   *
-   * Disabling a currency keeps its wallets — a balance is the client's — and
-   * `WalletService.listWallets` stops showing the EMPTY ones.
+   * `scripts/backfill-wallets.mjs` remains for an operator who wants to open one
+   * currency for everybody on purpose.
    */
 
   /**
@@ -273,9 +260,6 @@ export class CurrenciesService {
       isDefault: row.isDefault,
     });
 
-    // After the commit, and not awaited — see `openWalletsFor`.
-    if (row.enabled) void this.openWalletsFor(row.code);
-
     return row;
   }
 
@@ -353,60 +337,18 @@ export class CurrenciesService {
         changed[field] = { before: current[field], after: row[field] };
     }
     this.audit.record(actor.id, 'currency.update', 'currency', normalised, { changed });
-
-    // Switched ON: open its wallets, after the commit and not awaited.
-    if (!current.enabled && row.enabled) void this.openWalletsFor(row.code);
-
     return row;
-  }
-
-  /**
-   * Open a wallet in this currency for every client, and a commission wallet
-   * for every partner. Returns how many of each were added.
-   *
-   * ## After the save, never inside it
-   *
-   * Called without `await` once the currency row has committed, so the operator
-   * is not kept waiting on a write per client. Two set-based statements, each
-   * adding only the rows that are missing (`ON CONFLICT DO NOTHING`), so running
-   * it again — a re-enable, two instances, a retry — changes nothing and never
-   * touches a balance.
-   *
-   * ## Never throws
-   *
-   * The currency is already saved. A failure here is LOGGED with the currency's
-   * code, and nothing is lost by it: every money path opens the wallet it needs
-   * on first use (`getOrCreateWallet`), and `scripts/backfill-wallets.mjs`
-   * repairs the list by hand.
-   */
-  async openWalletsFor(code: string): Promise<{ clients: number; partners: number }> {
-    if (!this.walletsStore) return { clients: 0, partners: 0 };
-    try {
-      const clients = await this.walletsStore.openForAllClients(code);
-      const partners = await this.walletsStore.openCommissionForAllPartners(code);
-      this.logger.log(
-        `Opened ${code} wallets: ${clients} for clients, ${partners} commission wallet(s) for partners.`,
-      );
-      return { clients, partners };
-    } catch (error) {
-      this.logger.error(
-        `Could not open ${code} wallets for existing clients and partners: ${String(error)}. ` +
-          'They open on first use, or run scripts/backfill-wallets.mjs.',
-        error instanceof Error ? error.stack : undefined,
-      );
-      return { clients: 0, partners: 0 };
-    }
   }
 
   /**
    * Delete a currency — possible only while it has never held money.
    *
-   * ## The wallets opened for it go with it, if they were never used
+   * ## Empty, unused wallets go with it
    *
-   * Adding an enabled currency opens a wallet in it for every client and
-   * partner (see `openWalletsFor`). Those EMPTY, UNUSED wallets are deleted with
-   * the currency, in one transaction, so a currency added by mistake or to try
-   * out can still be removed.
+   * Clients and partners open wallets in a currency with a click, so a
+   * currency added by mistake or to try out can have a few empty wallets by the
+   * time somebody deletes it. Those are deleted with the currency, in one
+   * transaction, so it can still be removed.
    *
    * ## Refused, with a reason, once money has touched it
    *

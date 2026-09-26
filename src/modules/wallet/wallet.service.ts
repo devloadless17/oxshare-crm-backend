@@ -12,6 +12,7 @@ import {
   wallets,
 } from '../../database/schema';
 import { available, money, MoneyInput, toDecimal } from './money';
+import { displayMoney } from '../../common/money-display';
 import { clientIdentitySearch } from '../../store/users.store';
 import {
   ConflictError,
@@ -221,7 +222,11 @@ export class WalletService {
      */
     if (newBalance.lessThan(0)) {
       throw new MoneyRuleError(
-        `Insufficient balance: ${money(wallet.balance)} ${currency} cannot absorb ${money(amount)}.`,
+        // Said as a person reads money — "$0.00", not "0.00000000 … -10.00000000".
+        // The portal leaves the balance check to the server, so a client who
+        // asks for more than they hold reads this sentence as it is.
+        `Insufficient balance: the wallet holds ${displayMoney(wallet.balance, currency)}, ` +
+          `and this needs ${displayMoney(amount.abs().toString(), currency)}.`,
       );
     }
 
@@ -283,13 +288,29 @@ export class WalletService {
       .values({ userId, currency, kind })
       .onConflictDoNothing({ target: [wallets.userId, wallets.currency, wallets.kind] });
 
+    /*
+     * `FOR NO KEY UPDATE`, not `FOR UPDATE` (found by load test, 26 Sep 2026).
+     *
+     * Every money path inserts a row that REFERENCES the wallet before it posts
+     * — a withdrawal its `transactions` row, a transfer its `transfers` row —
+     * and a foreign-key check takes a KEY SHARE lock on the wallet row. FOR
+     * UPDATE conflicts with KEY SHARE, so two requests on one wallet each held
+     * a KEY SHARE the other's FOR UPDATE waited on: "deadlock detected", one
+     * killed a second — 28 of 30 simultaneous withdrawals answered 500.
+     *
+     * NO KEY UPDATE is the lock for changing a row's non-key columns — which is
+     * all a balance update is (the UPDATE below takes it anyway). It still
+     * conflicts with itself, so balance writers stay strictly one at a time
+     * (§6.2's read-modify-write is still serialised); it just does not conflict
+     * with a foreign-key check. Pinned by `withdrawal-flow.spec.ts`.
+     */
     const [wallet] = await tx
       .select()
       .from(wallets)
       .where(
         and(eq(wallets.userId, userId), eq(wallets.currency, currency), eq(wallets.kind, kind)),
       )
-      .for('update')
+      .for('no key update')
       .limit(1);
 
     if (!wallet) {
@@ -418,12 +439,12 @@ export class WalletService {
           /*
            * A DISABLED currency's wallet is shown only while it holds money.
            *
-           * A currency that goes live opens a wallet in it for everybody
-           * (`CurrenciesService.openWalletsFor`), so disabling one would
-           * otherwise leave an empty card for a currency the platform no
-           * longer offers on every client's screen — and on the deposit and
-           * transfer pickers that read this list. A wallet with a balance or
-           * funds on hold stays visible: that money is the client's.
+           * Clients open wallets with a click (`openOwnWallet`) and registration
+           * opens every enabled currency, so disabling one would otherwise leave
+           * an empty card for a currency the platform no longer offers — on the
+           * wallet screen and on the deposit and transfer pickers that read this
+           * list. A wallet with a balance or funds on hold stays visible: that
+           * money is the client's.
            */
           or(
             eq(currencies.enabled, true),
@@ -438,6 +459,43 @@ export class WalletService {
       onHold: money(w.onHold),
       available: available(w.balance, w.onHold),
     }));
+  }
+
+  /**
+   * Open a wallet in an OFFERED currency for this user, on their own request —
+   * the portal's "Open wallet" card (owner, 26 Sep 2026).
+   *
+   * Adding a currency opens nothing for anybody: a write per client for every
+   * currency an operator adds does not scale. Instead every enabled currency a
+   * client does not hold is shown as a card they can open, and this writes the
+   * one row for the one person who asked. `kind` is `commission` when a partner
+   * opens a commission wallet the same way (`IbWalletService`).
+   *
+   * Refused for a currency that does not exist or is disabled — the card is only
+   * offered for enabled ones, so reaching this means a hand-made request or a
+   * currency disabled while the page was open.
+   *
+   * IDEMPOTENT: a second click, or a wallet the client already holds, returns
+   * that wallet unchanged. `getOrCreateWallet` never touches an existing
+   * balance.
+   */
+  async openOwnWallet(userId: string, code: string, kind: WalletKind = DEFAULT_KIND) {
+    const currency = code.trim().toUpperCase();
+    const [offered] = await this.db
+      .select({ enabled: currencies.enabled })
+      .from(currencies)
+      .where(eq(currencies.code, currency))
+      .limit(1);
+    if (!offered?.enabled) {
+      throw new ValidationError(`${currency} is not a currency this platform offers.`);
+    }
+
+    await this.getOrCreateWallet(userId, currency, kind);
+    const opened = (await this.listWallets(userId, kind)).find(
+      (wallet) => wallet.currency === currency,
+    );
+    if (!opened) throw new NotFoundError('Wallet not found.');
+    return opened;
   }
 
   /** One wallet by id, or undefined. For the admin lifecycle methods below. */

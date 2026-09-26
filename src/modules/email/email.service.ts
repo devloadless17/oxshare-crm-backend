@@ -17,6 +17,7 @@ import {
   tradingAccountPasswordReset,
   withdrawalDecision,
   passwordReset,
+  setEmailLogoOrigin,
   smtpTest,
   verifyEmail,
   type RenderedEmail,
@@ -66,7 +67,10 @@ export class EmailService {
   constructor(
     private readonly configService: ConfigService,
     private readonly smtpConfig: SmtpConfigService,
-  ) {}
+  ) {
+    // Every mail's logo comes from THIS environment's portal — see `layout.ts`.
+    setEmailLogoOrigin(this.portalUrl());
+  }
 
   private transporterFor(config: EffectiveSmtpConfig): nodemailer.Transporter {
     if (this.cached?.fingerprint === config.fingerprint) return this.cached.transporter;

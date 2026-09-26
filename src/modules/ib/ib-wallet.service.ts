@@ -101,6 +101,24 @@ export class IbWalletService {
   }
 
   /**
+   * Open a COMMISSION wallet in an offered currency, on the partner's own
+   * request — the partner screen's "Open commission wallet" card (owner,
+   * 26 Sep 2026).
+   *
+   * Adding a currency opens no wallets for anybody; a partner opens the ones
+   * they want, one row each. Commission is still credited into a wallet opened
+   * lazily on the first confirmed accrual, so this is about seeing the balance
+   * card before then, never about being able to earn.
+   *
+   * ACTIVE partners only, for the reason `assertActivePartner` gives. Opened
+   * EMPTY and idempotent — see `WalletService.openOwnWallet`.
+   */
+  async openCommissionWallet(userId: string, currency: string) {
+    await this.assertActivePartner(userId);
+    return this.wallets.openOwnWallet(userId, currency, 'commission');
+  }
+
+  /**
    * Move earnings from the commission wallet into the main one.
    *
    * ## One transaction, two ledger posts, and no pending state
