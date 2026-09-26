@@ -35,6 +35,7 @@ export {
   pRich,
   fine,
   panel,
+  setEmailLogoOrigin,
   type RenderedEmail,
 } from './layout';
 

@@ -13,6 +13,7 @@ import {
   verifyEmail,
   walletCredit,
   withdrawalDecision,
+  setEmailLogoOrigin,
 } from '../src/modules/email/templates';
 
 const ALL = [
@@ -57,7 +58,10 @@ const ALL = [
 describe('every email shares one design', () => {
   for (const [name, m] of ALL) {
     it(`${name}: logo, card, footer, subject`, () => {
-      expect(m.html, 'logo').toContain('main-logo1920.png');
+      // Our own opaque, light-surface logo, served by the portal — never the
+      // broker's marketing-site file (a white wordmark that vanished on white).
+      expect(m.html, 'logo').toContain('/brand/oxshare-email-logo.png');
+      expect(m.html, 'logo host').not.toContain('wp-content');
       expect(m.html, 'alt text').toContain('alt="OxShare"');
       expect(m.html, 'card').toContain('max-width: 600px');
       expect(m.html, 'footer').toContain('automated message from OxShare');
@@ -152,5 +156,18 @@ describe('every email shares one design', () => {
     const html = walletCredit('<b>Ann</b>', '10.00', 'USD', 'Bonus', 'https://p.test').html;
     expect(html).toContain('&lt;b&gt;Ann&lt;/b&gt;');
     expect(html).not.toContain('&amp;lt;');
+  });
+});
+
+describe('the logo follows the environment that sends the mail', () => {
+  it('is served by the portal EmailService is configured with', () => {
+    setEmailLogoOrigin('https://oxshareportal.loadless.site');
+    try {
+      expect(adminInvite('Ann', 'https://a.test/i?t=T').html).toContain(
+        'src="https://oxshareportal.loadless.site/brand/oxshare-email-logo.png"',
+      );
+    } finally {
+      setEmailLogoOrigin('http://localhost:3000');
+    }
   });
 });

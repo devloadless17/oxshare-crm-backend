@@ -80,24 +80,44 @@ export interface RenderedEmail {
 }
 
 /**
- * The masthead logo.
+ * The masthead logo — OUR file, opaque, and made for a light surface.
  *
- * An absolute https URL, not an attachment and not a data: URI. All three work;
- * this one is chosen because a `cid:` attachment makes every message heavier and
- * a data: URI is stripped outright by Outlook and Gmail. The cost is that a
- * client blocking remote images shows the ALT TEXT instead — which is why the
- * alt is the brand name rather than "logo", and why no email in this product
- * puts information in the image alone.
+ * It was the broker's marketing-site asset (`oxshare.com/wp-content/…`), and it
+ * was wrong three ways at once (reported as "the logo looks corrupted"):
  *
- * `max-width` plus `height: auto` because the source is 1920px wide: without
- * them a mail client renders it at full width and blows the 600px card apart.
+ *  - it was the DARK-BACKGROUND variant: an orange mark and a WHITE wordmark,
+ *    so on a white card "Share" vanished and the logo read as "Ox" and a gap;
+ *  - it was TRANSPARENT, and a transparent PNG is what mail clients' dark-mode
+ *    filters tint — one rendered it as a blue tile with a navy mark;
+ *  - it lived on somebody else's WordPress site, where a media-library edit
+ *    changes every email already in every inbox.
+ *
+ * Now: `public/brand/oxshare-email-logo.png` in the client portal — built from
+ * `LOGOS/Logo High Res Oxshare-02.png` (the dark wordmark, the one the apps'
+ * light header shows), on an OPAQUE white tile with no alpha at all, 400×177
+ * so it is sharp at 2×. A dark-mode client shows it as a white badge, which
+ * reads as intended; nothing in it can be tinted into another colour.
+ *
+ * Served from the PORTAL of whatever environment sent the mail (`PORTAL_URL`,
+ * set once by `EmailService`), so a development mail loads the development
+ * portal's copy and production's loads production's — no email ever points at
+ * a file that environment has not deployed. An absolute URL rather than a
+ * `cid:` attachment (heavier) or a data: URI (stripped by Outlook and Gmail);
+ * a client blocking remote images shows the ALT TEXT, which is why the alt is
+ * the brand name and why no email puts information in the image alone.
  * `display: block` kills the descender gap under the image in Gmail.
  */
-const LOGO_URL = 'https://oxshare.com/wp-content/uploads/2026/03/main-logo1920.png';
+const LOGO_PATH = '/brand/oxshare-email-logo.png';
+let logoUrl = new URL(LOGO_PATH, 'http://localhost:3000').toString();
+
+/** Serve the masthead logo from this environment's portal. `EmailService` calls it once. */
+export function setEmailLogoOrigin(portalUrl: string): void {
+  logoUrl = new URL(LOGO_PATH, portalUrl).toString();
+}
 
 function masthead(): string {
   return `        <div style="text-align: center; padding: 8px 0 24px;">
-          <img src="${LOGO_URL}" alt="OxShare" width="180" style="max-width: 180px; height: auto; display: block; margin: 0 auto; border: 0;" />
+          <img src="${logoUrl}" alt="OxShare" width="200" height="89" style="width: 200px; max-width: 200px; height: auto; display: block; margin: 0 auto; border: 0; border-radius: 10px;" />
         </div>`;
 }
 
