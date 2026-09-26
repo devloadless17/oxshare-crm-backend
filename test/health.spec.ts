@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import { ConfigService } from '@nestjs/config';
 import type { StoredFilesService } from '../src/common/uploads/stored-files.service';
 import { HealthService } from '../src/modules/health/health.service';
 import type { DependencyHealthDto, ReadinessDto } from '../src/modules/health/dto/health.dto';
@@ -31,9 +30,6 @@ function dbThat(behaviour: 'succeeds' | 'fails' | 'hangs'): Db {
   } as unknown as Db;
 }
 
-const configWith = (values: Record<string, string>) =>
-  ({ get: (key: string) => values[key] }) as unknown as ConfigService;
-
 /**
  * A storage stand-in whose reachability the test chooses.
  *
@@ -47,6 +43,21 @@ const storageThat = (reachable: boolean, provider: 'r2' | 'disk' = 'r2') =>
     providerName: provider,
   }) as unknown as StoredFilesService;
 
+/**
+ * A Redis stand-in whose PING the test chooses, or `null` for REDIS_URL unset.
+ *
+ * Only `ping` exists, which is the point of `PingableRedis`: a probe that could
+ * reach for `set` would eventually be asked to write, and a health check with
+ * side effects is one nobody trusts. A fake that cannot offer more cannot drift.
+ */
+const redisThat = (behaviour: 'answers' | 'fails' | 'hangs') => ({
+  ping: () => {
+    if (behaviour === 'fails') return Promise.reject(new Error('ECONNREFUSED'));
+    if (behaviour === 'hangs') return new Promise<string>(() => {});
+    return Promise.resolve('PONG');
+  },
+});
+
 const dependency = (report: ReadinessDto, name: string): DependencyHealthDto | undefined =>
   report.dependencies.find((d) => d.name === name);
 
@@ -54,8 +65,8 @@ describe('R-6.4 readiness', () => {
   it('is ready, and times the probe, when Postgres answers', async () => {
     const report = await new HealthService(
       dbThat('succeeds'),
-      configWith({}),
       storageThat(true),
+      redisThat('answers'),
     ).readiness();
 
     expect(report.status).toBe('ready');
@@ -66,8 +77,8 @@ describe('R-6.4 readiness', () => {
   it('is NOT ready, with a required dependency down, when Postgres fails', async () => {
     const report = await new HealthService(
       dbThat('fails'),
-      configWith({}),
       storageThat(true),
+      redisThat('answers'),
     ).readiness();
 
     expect(report.status).toBe('not_ready');
@@ -79,8 +90,8 @@ describe('R-6.4 readiness', () => {
     // back to whoever asked; the reason belongs in the logs, not the response.
     const report = await new HealthService(
       dbThat('fails'),
-      configWith({}),
       storageThat(true),
+      redisThat('answers'),
     ).readiness();
 
     expect(dependency(report, 'postgres')?.detail).not.toMatch(/connection terminated/);
@@ -92,8 +103,8 @@ describe('R-6.4 readiness', () => {
     // what an unreachable host does to a readiness endpoint that has none.
     const report = await new HealthService(
       dbThat('hangs'),
-      configWith({}),
       storageThat(true),
+      redisThat('answers'),
     ).readiness();
 
     expect(report.status).toBe('not_ready');
@@ -106,30 +117,71 @@ describe('R-6.4 readiness', () => {
     // "ready apart from the parts nobody checked".
     const report = await new HealthService(
       dbThat('succeeds'),
-      configWith({}),
       storageThat(true),
+      redisThat('answers'),
     ).readiness();
 
     expect(report.status).toBe('ready');
-    expect(dependency(report, 'redis')).toMatchObject({
-      status: 'not_configured',
-      required: false,
-    });
+    expect(dependency(report, 'redis')).toMatchObject({ status: 'up', required: false });
     // The mt5-bridge entry is deliberately absent, not merely unconfigured:
     // reporting a removed integration as `not_configured` forever would read as
     // "someone still needs to set this up".
     expect(dependency(report, 'mt5-bridge')).toBeUndefined();
   });
 
-  it('shows a configured-but-unprobed dependency as up rather than missing', async () => {
+  /*
+   * REDIS IS PROBED, NOT ASSUMED.
+   *
+   * This case used to assert the opposite — that a configured-but-unprobed
+   * dependency reads `up` — and that was the defect: the status was decided by
+   * whether REDIS_URL was a non-empty string, so a dead Redis reported healthy
+   * on the endpoint an operator checks after a deploy. Redis backs the throttler
+   * and the single-use replay markers, so down means signed webhooks are refused
+   * and deal ingestion stops. That must be visible.
+   */
+  it('reports redis UP only when it actually answers PING', async () => {
     const report = await new HealthService(
       dbThat('succeeds'),
-      configWith({ REDIS_URL: 'redis://localhost:6379' }),
       storageThat(true),
+      redisThat('answers'),
     ).readiness();
 
-    expect(dependency(report, 'redis')?.status).toBe('up');
-    expect(dependency(report, 'redis')?.detail).toMatch(/not probed yet/);
+    expect(dependency(report, 'redis')).toMatchObject({ status: 'up', required: false });
+    expect(dependency(report, 'redis')?.latencyMs).toBeTypeOf('number');
+  });
+
+  it('reports redis DOWN when PING fails, and stays ready', async () => {
+    const report = await new HealthService(
+      dbThat('succeeds'),
+      storageThat(true),
+      redisThat('fails'),
+    ).readiness();
+
+    expect(dependency(report, 'redis')?.status).toBe('down');
+    expect(dependency(report, 'redis')?.detail).toMatch(/refused/i);
+    // Not required: requests are still served, so a dead Redis must not take the
+    // instance out of service. It has to be VISIBLE, not fatal.
+    expect(report.status).toBe('ready');
+  });
+
+  it('reports redis DOWN rather than hanging when PING never settles', async () => {
+    const report = await new HealthService(
+      dbThat('succeeds'),
+      storageThat(true),
+      redisThat('hangs'),
+    ).readiness();
+
+    expect(dependency(report, 'redis')?.status).toBe('down');
+  }, 10_000);
+
+  it('reports redis not_configured when REDIS_URL is unset', async () => {
+    const report = await new HealthService(dbThat('succeeds'), storageThat(true), null).readiness();
+
+    expect(dependency(report, 'redis')).toMatchObject({
+      status: 'not_configured',
+      required: false,
+    });
+    expect(dependency(report, 'redis')?.detail).toMatch(/refused/i);
   });
 
   /*
@@ -142,8 +194,8 @@ describe('R-6.4 readiness', () => {
   it('is NOT ready when object storage is unreachable', async () => {
     const report = await new HealthService(
       dbThat('succeeds'),
-      configWith({}),
       storageThat(false),
+      redisThat('answers'),
     ).readiness();
 
     expect(report.status).toBe('not_ready');
@@ -156,8 +208,8 @@ describe('R-6.4 readiness', () => {
   it('names the active provider, so a disk deployment is visible in the payload', async () => {
     const report = await new HealthService(
       dbThat('succeeds'),
-      configWith({}),
       storageThat(true, 'disk'),
+      redisThat('answers'),
     ).readiness();
 
     expect(dependency(report, 'storage (disk)')?.status).toBe('up');
@@ -179,7 +231,7 @@ describe('R-6.4 readiness', () => {
       providerName: 'r2',
     } as unknown as StoredFilesService;
 
-    const service = new HealthService(dbThat('succeeds'), configWith({}), counting);
+    const service = new HealthService(dbThat('succeeds'), counting, redisThat('answers'));
     await service.readiness();
     await service.readiness();
     await service.readiness();
@@ -192,7 +244,7 @@ describe('R-6.4 liveness', () => {
   it('answers without touching any dependency', async () => {
     // The point of the split: a database outage must not cause an orchestrator
     // to kill healthy processes. This returns ok with the database on fire.
-    const service = new HealthService(dbThat('fails'), configWith({}), storageThat(true));
+    const service = new HealthService(dbThat('fails'), storageThat(true), redisThat('answers'));
 
     expect(service.liveness().status).toBe('ok');
     expect(service.liveness().uptimeSeconds).toBeGreaterThanOrEqual(0);
@@ -224,8 +276,8 @@ describe('the migrations this build needs', () => {
   it('is up when every shipped migration has run', async () => {
     const report = await new HealthService(
       dbAppliedUpTo(newest?.when ?? 0),
-      configWith({}),
       storageThat(true),
+      redisThat('answers'),
     ).readiness();
 
     expect(dependency(report, 'database migrations')).toMatchObject({
@@ -238,8 +290,8 @@ describe('the migrations this build needs', () => {
     const fourBack = shipped[shipped.length - 5];
     const report = await new HealthService(
       dbAppliedUpTo(fourBack?.when ?? 0),
-      configWith({}),
       storageThat(true),
+      redisThat('answers'),
     ).readiness();
 
     expect(report.status).toBe('ready');
@@ -258,8 +310,8 @@ describe('the migrations this build needs', () => {
   it('reports a failed read as down rather than throwing', async () => {
     const report = await new HealthService(
       dbThat('fails'),
-      configWith({}),
       storageThat(true),
+      redisThat('answers'),
     ).readiness();
 
     expect(dependency(report, 'database migrations')).toMatchObject({

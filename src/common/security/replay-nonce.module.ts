@@ -2,11 +2,13 @@ import { Global, Module, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 import {
+  HEALTH_REDIS,
   NONCE_REDIS,
   OTP_REDIS,
   ReplayNonceStore,
   type NonceRedis,
   type OtpRedis,
+  type PingableRedis,
 } from './replay-nonce.store';
 import { RedisThrottlerStorage } from './redis-throttler.storage';
 
@@ -67,9 +69,18 @@ import { RedisThrottlerStorage } from './redis-throttler.storage';
       inject: [NONCE_REDIS],
       useFactory: (client: NonceRedis | null): OtpRedis | null => client as OtpRedis | null,
     },
+    {
+      // The SAME connection again, for the readiness probe. Deliberately not a
+      // second client: a health check that opens its own socket proves that
+      // socket works and tells you nothing about the one serving traffic.
+      provide: HEALTH_REDIS,
+      inject: [NONCE_REDIS],
+      useFactory: (client: NonceRedis | null): PingableRedis | null =>
+        client as PingableRedis | null,
+    },
     ReplayNonceStore,
     RedisThrottlerStorage,
   ],
-  exports: [ReplayNonceStore, OTP_REDIS, RedisThrottlerStorage],
+  exports: [ReplayNonceStore, OTP_REDIS, HEALTH_REDIS, RedisThrottlerStorage],
 })
 export class ReplayNonceModule {}

@@ -3,6 +3,9 @@
   "sourceRoot": "src",
   "compilerOptions": {
     "plugins": [],
-    "assets": [{ "include": "config/*.json", "outDir": "dist" }]
+    "assets": [
+      { "include": "config/*.json", "outDir": "dist" },
+      { "include": "database/migrations/meta/_journal.json", "outDir": "dist" }
+    ]
   }
 }
