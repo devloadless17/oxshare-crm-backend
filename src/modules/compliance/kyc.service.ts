@@ -1482,6 +1482,21 @@ export class KycService {
       await this.kycStore.archiveAttempt(this.withPersonalView(updated, user), tx);
       // The money gate closes with the return, in the same commit.
       await this.users.update(userId, { verificationLevel: 0 }, tx);
+      /*
+       * The client's bell, in the same commit — approve() and reject() stance: a
+       * rolled-back return must not leave a "please update" the client can read.
+       * Its own kind, not `kyc.rejected`: a verified client asked to update is
+       * not being turned down, and the portal says so (the email's distinction,
+       * carried to the bell). The reason rides in params so the row can say why.
+       */
+      await this.notifications.notify(
+        {
+          recipient: { kind: 'client', id: userId },
+          kind: 'kyc.reverification_requested',
+          params: { reason },
+        },
+        tx,
+      );
     });
 
     if (user) {

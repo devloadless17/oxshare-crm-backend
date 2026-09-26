@@ -224,6 +224,22 @@ describe('returning an APPROVED verification to the client', () => {
     expect(document?.returned.map((item) => item.label)).toEqual(['Passport']);
   });
 
+  it('rings the client’s bell with a request to update — never a rejection', async () => {
+    // The email said "please update"; the bell must not contradict it with
+    // "declined", so the return has a kind of its own (D-78's client bell).
+    const client = await actingAs(ctx, 'portal', CLIENT);
+    const feed = await client.get('/v1/notifications');
+    expect(feed.status).toBe(200);
+    const items = feed.body.items as { kind: string; params: { reason?: string } }[];
+    const asked = items.filter((item) => item.kind === 'kyc.reverification_requested');
+    expect(asked, 'no bell row for the return').toHaveLength(1);
+    expect(asked[0]?.params.reason).toBe(REASON);
+    expect(
+      items.some((item) => item.kind === 'kyc.rejected'),
+      'the return rang as a REJECTION',
+    ).toBe(false);
+  });
+
   it('refuses a second return — only an approved verification can be returned', async () => {
     const admin = await actingAs(ctx, 'admin', ADMIN);
     const res = await admin
