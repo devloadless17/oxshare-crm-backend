@@ -63,6 +63,28 @@ export interface OtpRedis {
 
 export const OTP_REDIS = Symbol('OTP_REDIS');
 
+/**
+ * The one command a readiness probe issues — a THIRD narrow view of the same
+ * connection, for the reason `OtpRedis` is the second.
+ *
+ * `/health/ready` reported Redis as `up` whenever REDIS_URL was a non-empty
+ * string, having contacted nothing, and said so in its own detail text: "no
+ * client exists for it". That stopped being true the moment this module started
+ * building one. So the endpoint asserted a dependency was healthy on the
+ * evidence that somebody had typed its address — and Redis is not decorative
+ * here: it backs the throttler and the single-use replay markers, so a dead one
+ * REFUSES signed webhooks. Deal ingestion stopping while readiness still reads
+ * "up" is the failure this closes.
+ *
+ * `ping` only. A probe that could reach for `set` would eventually be asked to
+ * write something, and a health check with side effects is one nobody trusts.
+ */
+export interface PingableRedis {
+  ping(): Promise<string>;
+}
+
+export const HEALTH_REDIS = Symbol('HEALTH_REDIS');
+
 @Injectable()
 export class ReplayNonceStore {
   private readonly logger = new Logger(ReplayNonceStore.name);

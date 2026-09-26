@@ -1,10 +1,10 @@
 import { Inject, Injectable, Logger, type OnApplicationBootstrap } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { sql } from 'drizzle-orm';
 import { StoredFilesService } from '../../common/uploads/stored-files.service';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
 import { pendingMigrations, shippedMigrations } from '../../database/migration-status';
+import { HEALTH_REDIS, type PingableRedis } from '../../common/security/replay-nonce.store';
 import { DependencyHealthDto, ReadinessDto } from './dto/health.dto';
 
 /**
@@ -46,8 +46,13 @@ export class HealthService implements OnApplicationBootstrap {
 
   constructor(
     @Inject(DRIZZLE_DB) private readonly db: Db,
-    private readonly config: ConfigService,
     private readonly files: StoredFilesService,
+    /*
+     * The SAME connection the throttler and the replay markers use, under a
+     * ping-only view. Null exactly when REDIS_URL is unset, which
+     * env.validation permits only while no signed webhook endpoint is live.
+     */
+    @Inject(HEALTH_REDIS) private readonly redis: PingableRedis | null,
   ) {}
 
   liveness() {
@@ -68,9 +73,9 @@ export class HealthService implements OnApplicationBootstrap {
       this.checkPostgres(),
       this.checkStorage(),
       this.checkMigrations(),
+      this.checkRedis(),
     ]);
-    const declared = [this.checkOptional('redis', 'REDIS_URL')];
-    const dependencies = [...probed, ...declared];
+    const dependencies = [...probed];
 
     // 'not_configured' is not a failure — the queues are a later milestone
     // (ARCHITECTURE §9). Only a REQUIRED dependency that is actually down makes
@@ -213,6 +218,55 @@ export class HealthService implements OnApplicationBootstrap {
     }
   }
 
+  /**
+   * Is Redis actually answering?
+   *
+   * This used to be a config read dressed as a result: `up` whenever REDIS_URL
+   * was a non-empty string, with nothing contacted, and a detail line reading
+   * "no client exists for it" — which had been false since ReplayNonceModule
+   * started building one. So the endpoint an operator checks after a deploy
+   * asserted a healthy dependency on the evidence that its address was typed.
+   *
+   * NOT required, and that is a judgement rather than an oversight. Redis backs
+   * the throttler and the single-use replay markers: with it down, requests are
+   * still served and signed webhooks are REFUSED rather than accepted unchecked
+   * (see ReplayNonceStore). That is a real loss — deal ingestion stops — but it
+   * is narrower than the whole API, and taking every request out of service over
+   * it would turn stalled ingestion into an outage. It reports `down` so the
+   * gap is visible, which is the thing that was missing.
+   */
+  private async checkRedis(): Promise<DependencyHealthDto> {
+    const name = 'redis';
+    if (!this.redis) {
+      return {
+        name,
+        status: 'not_configured',
+        detail: 'Not configured (REDIS_URL unset). Signed webhooks are refused while it is.',
+        required: false,
+      };
+    }
+    const startedAt = process.hrtime.bigint();
+    try {
+      await this.withTimeout(this.redis.ping(), 'redis');
+      return { name, status: 'up', latencyMs: this.elapsedMs(startedAt), required: false };
+    } catch (error) {
+      // Summarised here, logged in full: a connection error echoes host and port
+      // back to an unauthenticated caller, same reasoning as the Postgres probe.
+      this.logger.error(
+        `Readiness probe failed for redis: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return {
+        name,
+        status: 'down',
+        latencyMs: this.elapsedMs(startedAt),
+        detail:
+          'PING failed or timed out. The throttler falls back per-process and signed ' +
+          'webhooks are being refused. See server logs for the reason.',
+        required: false,
+      };
+    }
+  }
+
   private async checkPostgres(): Promise<DependencyHealthDto> {
     const startedAt = process.hrtime.bigint();
     try {
@@ -238,25 +292,6 @@ export class HealthService implements OnApplicationBootstrap {
         required: true,
       };
     }
-  }
-
-  /**
-   * A dependency that is not wired yet reports `not_configured` rather than being
-   * omitted. Omitting it would let this endpoint imply a coverage it does not
-   * have — "ready" would silently mean "ready, apart from the parts nobody
-   * checked". When Redis and the bridge land, each gets a real probe here and
-   * `required: true`.
-   */
-  private checkOptional(name: string, configKey: string): DependencyHealthDto {
-    const configured = Boolean(this.config.get<string>(configKey));
-    return {
-      name,
-      status: configured ? 'up' : 'not_configured',
-      detail: configured
-        ? 'Configured but not probed yet — no client exists for it.'
-        : `Not configured (${configKey} unset). Expected until that milestone lands.`,
-      required: false,
-    };
   }
 
   private async withTimeout<T>(work: Promise<T>, label: string): Promise<T> {
