@@ -2170,7 +2170,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/OpenWalletDto"
+                "$ref": "#/components/schemas/OpenOwnWalletDto"
               }
             }
           }
@@ -4362,7 +4362,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/OpenWalletDto"
+                "$ref": "#/components/schemas/OpenOwnWalletDto"
               }
             }
           }
@@ -13498,21 +13498,16 @@
           "products"
         ]
       },
-      "OpenWalletDto": {
+      "OpenOwnWalletDto": {
         "type": "object",
         "properties": {
-          "userId": {
-            "type": "string",
-            "format": "uuid"
-          },
           "currency": {
             "type": "string",
-            "example": "USD",
-            "description": "Must be a currency the platform holds and has enabled."
+            "example": "EUR",
+            "description": "An enabled currency code, e.g. EUR or USDT."
           }
         },
         "required": [
-          "userId",
           "currency"
         ]
       },
@@ -20218,6 +20213,24 @@
           "amount",
           "reason",
           "direction"
+        ]
+      },
+      "OpenWalletDto": {
+        "type": "object",
+        "properties": {
+          "userId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "currency": {
+            "type": "string",
+            "example": "USD",
+            "description": "Must be a currency the platform holds and has enabled."
+          }
+        },
+        "required": [
+          "userId",
+          "currency"
         ]
       },
       "WithdrawalRejectDto": {
