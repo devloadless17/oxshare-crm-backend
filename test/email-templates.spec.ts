@@ -60,9 +60,12 @@ describe('every email shares one design', () => {
     it(`${name}: logo, card, footer, subject`, () => {
       // Our own opaque, light-surface logo, served by the portal — never the
       // broker's marketing-site file (a white wordmark that vanished on white).
-      expect(m.html, 'logo').toContain('/brand/oxshare-email-logo.png');
+      // A VERSIONED file: mail already delivered keeps loading it (layout.ts).
+      expect(m.html, 'logo').toContain('/email/oxshare-logo-v1.png');
       expect(m.html, 'logo host').not.toContain('wp-content');
       expect(m.html, 'alt text').toContain('alt="OxShare"');
+      // With images blocked (Outlook's default) the alt text IS the masthead.
+      expect(m.html, 'alt styled as a wordmark').toMatch(/alt="OxShare"[^>]*font-weight: bold/);
       expect(m.html, 'card').toContain('max-width: 600px');
       expect(m.html, 'footer').toContain('automated message from OxShare');
       expect(m.subject.length, 'subject').toBeGreaterThan(0);
@@ -164,7 +167,7 @@ describe('the logo follows the environment that sends the mail', () => {
     setEmailLogoOrigin('https://oxshareportal.loadless.site');
     try {
       expect(adminInvite('Ann', 'https://a.test/i?t=T').html).toContain(
-        'src="https://oxshareportal.loadless.site/brand/oxshare-email-logo.png"',
+        'src="https://oxshareportal.loadless.site/email/oxshare-logo-v1.png"',
       );
     } finally {
       setEmailLogoOrigin('http://localhost:3000');

@@ -92,22 +92,35 @@ export interface RenderedEmail {
  *  - it lived on somebody else's WordPress site, where a media-library edit
  *    changes every email already in every inbox.
  *
- * Now: `public/brand/oxshare-email-logo.png` in the client portal — built from
+ * Now: `public/email/oxshare-logo-v1.png` in the client portal — built from
  * `LOGOS/Logo High Res Oxshare-02.png` (the dark wordmark, the one the apps'
  * light header shows), on an OPAQUE white tile with no alpha at all, 400×177
  * so it is sharp at 2×. A dark-mode client shows it as a white badge, which
  * reads as intended; nothing in it can be tinted into another colour.
  *
  * Served from the PORTAL of whatever environment sent the mail (`PORTAL_URL`,
- * set once by `EmailService`), so a development mail loads the development
- * portal's copy and production's loads production's — no email ever points at
- * a file that environment has not deployed. An absolute URL rather than a
- * `cid:` attachment (heavier) or a data: URI (stripped by Outlook and Gmail);
- * a client blocking remote images shows the ALT TEXT, which is why the alt is
- * the brand name and why no email puts information in the image alone.
- * `display: block` kills the descender gap under the image in Gmail.
+ * set once by `EmailService`; production refuses to boot on a non-https one),
+ * so a development mail loads the development portal's copy and production's
+ * loads production's. A hosted https image is what serious senders use: a
+ * `cid:` attachment makes every message heavier and shows as an attachment in
+ * some clients, and a data: URI is stripped outright by Outlook and Gmail.
+ *
+ * ⚠️ THE URL IS A CONTRACT WITH MAIL ALREADY DELIVERED. A message loads it for
+ * as long as it sits in an inbox, so the file is VERSIONED and never edited or
+ * deleted: a new logo is `oxshare-logo-v2.png` beside this one, and this
+ * constant moves to it. That is what makes it safe for the portal to serve
+ * `public/email/` with a year's `immutable` cache and an explicit
+ * `Cross-Origin-Resource-Policy: cross-origin` (its `next.config.ts`); its
+ * `src/test/email-assets.test.ts` pins the file and both headers. Deploy the
+ * PORTAL first whenever this moves to a new file — a mail sent before the
+ * file exists shows a broken image for as long as it is kept.
+ *
+ * A client blocking remote images (Outlook's default) shows the ALT TEXT, which
+ * is why the alt is the brand name, styled as a wordmark, and why no email puts
+ * information in the image alone. `display: block` kills the descender gap
+ * under the image in Gmail.
  */
-const LOGO_PATH = '/brand/oxshare-email-logo.png';
+const LOGO_PATH = '/email/oxshare-logo-v1.png';
 let logoUrl = new URL(LOGO_PATH, 'http://localhost:3000').toString();
 
 /** Serve the masthead logo from this environment's portal. `EmailService` calls it once. */
@@ -117,7 +130,7 @@ export function setEmailLogoOrigin(portalUrl: string): void {
 
 function masthead(): string {
   return `        <div style="text-align: center; padding: 8px 0 24px;">
-          <img src="${logoUrl}" alt="OxShare" width="200" height="89" style="width: 200px; max-width: 200px; height: auto; display: block; margin: 0 auto; border: 0; border-radius: 10px;" />
+          <img src="${logoUrl}" alt="OxShare" width="200" height="89" style="width: 200px; max-width: 200px; height: auto; display: block; margin: 0 auto; border: 0; border-radius: 10px; font-family: Arial, sans-serif; font-size: 26px; font-weight: bold; line-height: 32px; color: ${HEADING};" />
         </div>`;
 }
 
