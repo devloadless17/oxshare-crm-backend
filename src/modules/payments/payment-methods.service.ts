@@ -1,5 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { asc, eq } from 'drizzle-orm';
+import { asc, eq, sql } from 'drizzle-orm';
 import Decimal from 'decimal.js';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
@@ -299,7 +299,7 @@ export class PaymentMethodsService {
         currency,
         logoUrl: dto.logoUrl ?? null,
         enabled: dto.enabled ?? true,
-        sortOrder: dto.sortOrder ?? 0,
+        sortOrder: dto.sortOrder ?? (await this.nextSortOrder()),
         requiresProof: dto.requiresProof ?? false,
         updatedBy: adminId,
       })
@@ -381,5 +381,19 @@ export class PaymentMethodsService {
   /** Keys are lower-case and trimmed, so 'Whish' and 'whish' are one method. */
   private normalise(key: string): string {
     return key.trim().toLowerCase();
+  }
+
+  /**
+   * Where a new deposit method goes when no position is given: after the last one.
+   *
+   * The console no longer asks for an order (owner, 26 Sep 2026), so every new
+   * row would otherwise land at 0 and jump to the top of the list, ahead of
+   * rows an operator placed years ago.
+   */
+  private async nextSortOrder(): Promise<number> {
+    const [row] = await this.db
+      .select({ next: sql<number>`coalesce(max(${paymentMethods.sortOrder}), -1)::int + 1` })
+      .from(paymentMethods);
+    return Number(row?.next ?? 0);
   }
 }

@@ -100,7 +100,7 @@ export class IbCommissionTypesService {
         commissionPerLot: dto.commissionPerLot,
         rebatePerLot: dto.rebatePerLot,
         enabled: dto.enabled ?? true,
-        sortOrder: dto.sortOrder ?? 0,
+        sortOrder: dto.sortOrder ?? (await this.nextSortOrder()),
       })
       .returning()
       .catch((error: unknown) => {
@@ -231,6 +231,20 @@ export class IbCommissionTypesService {
     });
 
     return { deleted: true };
+  }
+
+  /**
+   * Where a new commission type goes when no position is given: after the last one.
+   *
+   * The console no longer asks for an order (owner, 26 Sep 2026), so every new
+   * row would otherwise land at 0 and jump to the top of the list, ahead of
+   * rows an operator placed years ago.
+   */
+  private async nextSortOrder(): Promise<number> {
+    const [row] = await this.db
+      .select({ next: sql<number>`coalesce(max(${ibCommissionTypes.sortOrder}), -1)::int + 1` })
+      .from(ibCommissionTypes);
+    return Number(row?.next ?? 0);
   }
 }
 
