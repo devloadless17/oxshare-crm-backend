@@ -1037,6 +1037,20 @@
       "when": 1789139538750,
       "tag": "0147_kyc_identity_core",
       "breakpoints": true
+    },
+    {
+      "idx": 149,
+      "version": "7",
+      "when": 1789139598750,
+      "tag": "0148_kyc_field_labels",
+      "breakpoints": true
+    },
+    {
+      "idx": 150,
+      "version": "7",
+      "when": 1789139658750,
+      "tag": "0149_one_group_per_currency_again",
+      "breakpoints": true
     }
   ]
 }

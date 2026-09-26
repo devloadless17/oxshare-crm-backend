@@ -182,6 +182,8 @@ function build(options: { stored?: KycSubmission; user?: User } = {}) {
    */
   const kycConfig = {
     getSteps: vi.fn().mockResolvedValue(defaultSteps()),
+    // The names of questions since removed from the form (0148) — none by default.
+    recordedLabels: vi.fn().mockResolvedValue(new Map()),
   };
 
   const admins = {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { platformStep } from '../../common/kyc/identity-core';
 import { DEFAULT_KYC_STEPS, type KycStepConfig } from '../../store/kyc-config.store';
-import { flagLabel, reviewLayout } from './kyc-review-layout';
+import { answerKeysOf, flagLabel, reviewLayout } from './kyc-review-layout';
 
 /**
  * The reviewer's layout of a submission — structure and labels, never a value.
@@ -101,25 +101,46 @@ describe('the broker’s own questions', () => {
     expect(layout.additional[0].fields.map((f) => f.label)).toEqual(['Employer']);
   });
 
-  it('list an answer to a question no longer on the form, rather than losing it', () => {
-    const layout = reviewLayout(FORM, {
-      // The dev database's shape: "firstname" was removed from the form (0147).
-      personalInfo: { customField_1790402959161: 'Layla', firstName: 'Layla' },
-      stepData: { 'old-step': { oldQuestion: 'yes' } },
-    });
+  it('names an answer to a question no longer on the form by the name it was last given', () => {
+    // Reported on production (26 Sep 2026): "Custom Field 1790263641710" under
+    // this heading. The question was deleted, and the answer kept only its key.
+    // The name is recorded now (0148), and its type with it — a checkbox still
+    // reads as one.
+    const layout = reviewLayout(
+      FORM,
+      {
+        personalInfo: { customField_1790402959161: 'Layla', firstName: 'Layla' },
+        stepData: { 'old-step': { oldQuestion: 'true', neverNamed: 'b' } },
+      },
+      new Map([
+        ['customField_1790402959161', { label: 'firstname', type: 'text' }],
+        ['oldQuestion', { label: 'I live here', type: 'checkbox' }],
+      ]),
+    );
     expect(layout.additional.at(-1)).toEqual({
       slug: 'unlisted',
       title: 'Answers to questions no longer on the form',
       fields: [
+        { name: 'customField_1790402959161', label: 'firstname', type: 'text', step: 'personal' },
+        { name: 'oldQuestion', label: 'I live here', type: 'checkbox', step: 'old-step' },
+        // Deleted before any record kept its name: said so, never its key.
         {
-          name: 'customField_1790402959161',
-          label: 'Custom Field 1790402959161',
+          name: 'neverNamed',
+          label: 'Question name not on record',
           type: 'text',
-          step: 'personal',
+          step: 'old-step',
         },
-        { name: 'oldQuestion', label: 'Old Question', type: 'text', step: 'old-step' },
       ],
     });
+  });
+
+  it('looks names up for every answer of the broker’s — never for the identity', () => {
+    expect(
+      answerKeysOf({
+        personalInfo: { firstName: 'Layla', customField_a: 'x' },
+        stepData: { 'source-of-funds': { customField_b: 'y' }, extra: { customField_a: 'z' } },
+      }),
+    ).toEqual(['customField_a', 'customField_b']);
   });
 });
 

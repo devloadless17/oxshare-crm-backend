@@ -16,6 +16,7 @@ import {
   primaryKey,
   text,
   timestamp,
+  unique,
   uuid,
   varchar,
 } from 'drizzle-orm/pg-core';
@@ -946,6 +947,23 @@ export const kycConfigSteps = pgTable('kyc_config_steps', {
   icon: varchar('icon', { length: 50 }),
   enabled: boolean('enabled').notNull().default(true),
   fields: jsonb('fields').$type<Record<string, unknown>[]>().notNull().default([]),
+});
+
+/*
+ * THE NAME OF EVERY QUESTION A BROKER HAS EVER ASKED (0148, reported 26 Sep 2026).
+ *
+ * An answer is stored under its field's KEY (`customField_1790263641710`); the
+ * question's name lived only in the form. Delete the question — or its step,
+ * or reset the form — and every answer already given lost its name: the review
+ * could only print the key. This keeps the name, written by the one path every
+ * form change takes (`KycConfigStore.setSteps`), and never deleted. Keys are
+ * generated and unique, so a name here belongs to exactly one question.
+ */
+export const kycFieldLabels = pgTable('kyc_field_labels', {
+  name: text('name').primaryKey(),
+  label: text('label').notNull(),
+  type: text('type').notNull().default('text'),
+  recordedAt: timestamp('recorded_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const rejectionReasons = pgTable(
@@ -2046,11 +2064,9 @@ export const tradingProductGroups = pgTable(
       sql`lower(${t.mt5Group})`,
     ),
     index('trading_product_groups_group_idx').on(sql`lower(${t.mt5Group})`),
-    /*
-     * NO rule about currencies (0146, the owner's call): a product may hold
-     * several groups in one currency. The portal lands a client in the one
-     * attached first — see `ProductsStore.offeredTo`.
-     */
+    /* One group per product per environment per currency: offering a client two
+       rows that both say "Standard · USD · demo" is a choice with no meaning. */
+    unique('trading_product_groups_slot_unique').on(t.productId, t.environment, t.currency),
     index('trading_product_groups_product_idx').on(t.productId),
   ],
 );

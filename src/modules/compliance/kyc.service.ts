@@ -13,7 +13,7 @@ import {
   flagsSettledByUpload,
   outstandingDocumentFlags,
 } from './kyc-document-rules';
-import { flagLabel, reviewLayout } from './kyc-review-layout';
+import { answerKeysOf, flagLabel, reviewLayout } from './kyc-review-layout';
 import {
   approvalBlockers,
   isPlainUpload,
@@ -996,8 +996,13 @@ export class KycService {
     return {
       ...view,
       user: user ? reviewerView(user) : undefined,
-      // How to present it — structure and labels only (`kyc-review-layout.ts`).
-      layout: reviewLayout(steps, submission),
+      // How to present it — structure and labels only (`kyc-review-layout.ts`),
+      // with the recorded name of any question since removed from the form.
+      layout: reviewLayout(
+        steps,
+        submission,
+        await this.kycConfig.recordedLabels(answerKeysOf(submission)),
+      ),
     };
   }
 
@@ -1771,7 +1776,11 @@ export class KycService {
      * named by the type it held, its flags by label — so history never guesses
      * "passport" or prints `doc_back`, and needs no builder read.
      */
-    return attempts.map((attempt) => ({ ...attempt, layout: reviewLayout(steps, attempt) }));
+    const recorded = await this.kycConfig.recordedLabels(attempts.flatMap(answerKeysOf));
+    return attempts.map((attempt) => ({
+      ...attempt,
+      layout: reviewLayout(steps, attempt, recorded),
+    }));
   }
 
   /**

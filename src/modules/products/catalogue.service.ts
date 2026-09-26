@@ -334,10 +334,30 @@ export class CatalogueService {
     }
 
     /*
-     * No rule about currencies (0146, the owner's call): a product may hold
-     * several groups in the same currency. The portal lands a client in the
-     * one attached first; see `ProductsStore.offeredTo`.
+     * ONE GROUP PER CURRENCY on a product, per environment — the
+     * `trading_product_groups_slot_unique` rule, checked here so it is refused
+     * with a reason instead of a bare 409 "That record already exists." from
+     * the database (the answer an operator got on 26 Sep 2026).
+     *
+     * The rule is real, not a leftover: a client opening an account chooses a
+     * product and a currency, and that pair has to land in exactly one group.
+     * Two USD groups on one product would leave nothing to tell them apart —
+     * and the portal never shows a group name to choose by.
      */
+    const sameSlot = product.groups.find(
+      (group) =>
+        group.environment === input.environment &&
+        group.currency.toUpperCase() === match.currency.toUpperCase(),
+    );
+    if (sameSlot) {
+      throw new ValidationError(
+        `'${product.name}' already has a ${input.environment} ${match.currency} group, ` +
+          `"${sameSlot.mt5Group}". A product holds one group per currency, because a client ` +
+          'opening an account picks a product and a currency and must land in exactly one ' +
+          `group. Remove "${sameSlot.mt5Group}" from '${product.name}' first, or attach ` +
+          `"${match.name}" to another product.`,
+      );
+    }
 
     // The server's spelling, never the caller's: a casing difference must not
     // reach MT5, and this is the last place both are in hand.

@@ -6,14 +6,15 @@ import {
   DOCUMENT_CATALOGUE_BY_CATEGORY,
   documentField,
   inFormOrder,
+  isPlatformField,
   platformStep,
   storedStep,
 } from '../common/kyc/identity-core';
-import { asc, sql } from 'drizzle-orm';
+import { asc, inArray, sql } from 'drizzle-orm';
 import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db, Executor } from '../database/db';
-import { kycConfigSteps } from '../database/schema';
+import { kycConfigSteps, kycFieldLabels } from '../database/schema';
 
 /** One upload slot a document type asks for. See `KycDocumentType`. */
 export interface KycDocumentPart {
@@ -307,8 +308,56 @@ export class KycConfigStore {
     const write = async (tx: Executor) => {
       await tx.delete(kycConfigSteps);
       if (ordered.length > 0) await tx.insert(kycConfigSteps).values(ordered.map(toRow));
+      await recordLabels(tx, ordered);
       return this.getSteps(tx);
     };
     return executor ? write(executor) : this.db.transaction(write);
   }
+
+  /**
+   * The recorded name of each key asked for (`kyc_field_labels`, 0148) — for an
+   * answer whose question is no longer on the form. A key never recorded is absent.
+   */
+  async recordedLabels(
+    names: readonly string[],
+    executor: Executor = this.db,
+  ): Promise<Map<string, { label: string; type: string }>> {
+    const unique = [...new Set(names)].filter(Boolean);
+    if (unique.length === 0) return new Map();
+    const rows = await executor
+      .select({ name: kycFieldLabels.name, label: kycFieldLabels.label, type: kycFieldLabels.type })
+      .from(kycFieldLabels)
+      .where(inArray(kycFieldLabels.name, unique));
+    return new Map(rows.map((row) => [row.name, { label: row.label, type: row.type }]));
+  }
+}
+
+/**
+ * KEEP THE NAME OF EVERY QUESTION THE FORM HOLDS (0148, reported 26 Sep 2026).
+ *
+ * In the same transaction as the form: a question cannot be saved without its
+ * name outliving it, so deleting it later — or its step, or resetting the form —
+ * never leaves the answers already given with nothing but a key to show. The
+ * latest name wins; nothing is ever deleted. Only the broker's own fields: the
+ * platform's identity, documents and selfie are named by the platform.
+ */
+async function recordLabels(tx: Executor, steps: readonly KycStepConfig[]): Promise<void> {
+  const rows = new Map<string, { name: string; label: string; type: string }>();
+  for (const step of steps) {
+    for (const field of step.fields) {
+      if (isPlatformField(step.slug, field) || field.type?.startsWith('doc:')) continue;
+      const label = field.label?.trim();
+      if (!field.name || !label) continue;
+      rows.set(field.name, { name: field.name, label, type: field.type || 'text' });
+    }
+  }
+  if (rows.size === 0) return;
+  await tx
+    .insert(kycFieldLabels)
+    .values([...rows.values()])
+    .onConflictDoUpdate({
+      target: kycFieldLabels.name,
+      set: { label: sql`excluded.label`, type: sql`excluded.type`, recordedAt: sql`now()` },
+      setWhere: sql`${kycFieldLabels.label} IS DISTINCT FROM excluded.label OR ${kycFieldLabels.type} IS DISTINCT FROM excluded.type`,
+    });
 }
