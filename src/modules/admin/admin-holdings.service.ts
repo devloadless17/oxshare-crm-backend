@@ -6,11 +6,13 @@ import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
 import {
   mt5Deals,
+  paymentMethods,
   tradingAccounts,
   tradingProductGroups,
   transactions,
   users,
   wallets,
+  withdrawalPaymentMethods,
 } from '../../database/schema';
 /*
  * Shared with `TradingService` on purpose. The client and the operator must read
@@ -670,6 +672,7 @@ export class AdminHoldingsService {
   async listTradingAccounts(
     query: {
       userId?: string;
+      referredBy?: string;
       environment?: string;
       status?: string;
       q?: string;
@@ -721,6 +724,7 @@ export class AdminHoldingsService {
      */
     const page = await this.tradingAccountPage({
       userId: query.userId,
+      referredBy: query.referredBy,
       q: query.q,
       // Checked against the schema's own enum, never cast. `?environment=nonsense`
       // compared against a Postgres enum column surfaces as a 500 carrying a
@@ -744,6 +748,7 @@ export class AdminHoldingsService {
 
   private tradingAccountConditions(filter: {
     userId?: string;
+    referredBy?: string;
     environment?: string;
     status?: string;
     q?: string;
@@ -751,6 +756,24 @@ export class AdminHoldingsService {
   }): SQL[] {
     const conditions: SQL[] = [];
     if (filter.userId) conditions.push(eq(tradingAccounts.userId, filter.userId));
+    /*
+     * The accounts of every client ONE PARTNER introduced — the partner
+     * profile's Accounts tab (owner, 26 Sep 2026). The same relation the client
+     * list's `referredBy` reads (`users.referred_by_ib_user_id`), and scoped by
+     * the predicate below like every other filter: a reader sees the introduced
+     * clients' accounts that are in their territory, never the rest.
+     */
+    if (filter.referredBy) {
+      conditions.push(
+        inArray(
+          tradingAccounts.userId,
+          this.db
+            .select({ id: users.id })
+            .from(users)
+            .where(eq(users.referredByIbUserId, filter.referredBy)),
+        ),
+      );
+    }
     /*
      * The owner or the account, by what the screen shows — see
      * `tradingAccountSearch`.
@@ -775,6 +798,7 @@ export class AdminHoldingsService {
 
   private async tradingAccountPage(filter: {
     userId?: string;
+    referredBy?: string;
     q?: string;
     environment?: string;
     status?: string;
@@ -1171,12 +1195,28 @@ export class AdminHoldingsService {
         amount: transactions.amount,
         currency: transactions.currency,
         methodKey: transactions.methodKey,
+        /*
+         * The method's NAME — "Whish Money", not `whish` (owner, 26 Sep 2026).
+         * A deposit names its payment method and a withdrawal its payout method;
+         * they live in different tables and one row can match only one of them,
+         * the same coalesce the transactions desk uses. Null for money that went
+         * through no method (a manual credit), which the screen names from
+         * `provider`.
+         */
+        methodName: sql<
+          string | null
+        >`coalesce(${paymentMethods.name}, ${withdrawalPaymentMethods.name})`,
         provider: transactions.provider,
         providerRef: transactions.providerRef,
         createdAt: transactions.createdAt,
         settledAt: transactions.settledAt,
       })
       .from(transactions)
+      .leftJoin(paymentMethods, eq(paymentMethods.key, transactions.methodKey))
+      .leftJoin(
+        withdrawalPaymentMethods,
+        eq(withdrawalPaymentMethods.key, transactions.withdrawalMethodKey),
+      )
       .where(where)
       .orderBy(desc(transactions.createdAt), desc(transactions.id))
       .limit(limit)
