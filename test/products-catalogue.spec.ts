@@ -38,6 +38,8 @@ const MT5_GROUPS = [
   { name: 'real\\Standard-EUR', currency: 'EUR' },
   { name: 'demo\\Standard-USD', currency: 'USD' },
   { name: 'demo\\Standard-EUR', currency: 'EUR' },
+  // A second USD live group, for the one-group-per-currency rule.
+  { name: 'real\\Pro-USD', currency: 'USD' },
 ];
 const mt5Stub = {
   listGroupsForClients: () => Promise.resolve(MT5_GROUPS),
@@ -530,5 +532,140 @@ describe('a product is sold on a commission type', () => {
         ),
       ),
     ).toBe('ib_commission_types_commission_range');
+  });
+});
+
+/*
+ * ATTACHING AND DETACHING GROUPS — every answer the Products form can get.
+ *
+ * On 26 Sep 2026 an operator attaching a group got a bare 409 "That record
+ * already exists." from the database. Each case here goes through the service
+ * against the real constraints, and every refusal must be a ValidationError
+ * with a reason — never a database error — and must leave the rows untouched.
+ */
+describe('attaching and detaching MT5 groups', () => {
+  async function rows(productId: string) {
+    const { rows: found } = await ctx.db.execute<{ mt5_group: string; currency: string }>(sql`
+      SELECT mt5_group, currency FROM trading_product_groups
+       WHERE product_id = ${productId} ORDER BY mt5_group
+    `);
+    return found.map((row) => `${row.mt5_group} ${row.currency}`);
+  }
+
+  const live = (mt5Group: string) => ({ environment: 'live' as const, mt5Group });
+
+  it('attaches a group, with the currency MT5 reports and the server’s spelling', async () => {
+    const standard = await makeProduct('Attach Standard');
+
+    const product = await service.attachGroup(standard, live('REAL\\standard-usd'), TEST_ACTOR);
+
+    expect(product.groups.map((group) => group.mt5Group)).toEqual(['real\\Standard-USD']);
+    expect(await rows(standard)).toEqual(['real\\Standard-USD USD']);
+  });
+
+  it('lets the same group back a second product (0142)', async () => {
+    const standard = await makeProduct('Shared Standard');
+    const premium = await makeProduct('Shared Premium');
+
+    await service.attachGroup(standard, live('real\\Standard-USD'), TEST_ACTOR);
+    await service.attachGroup(premium, live('real\\Standard-USD'), TEST_ACTOR);
+
+    expect(await rows(standard)).toEqual(['real\\Standard-USD USD']);
+    expect(await rows(premium)).toEqual(['real\\Standard-USD USD']);
+  });
+
+  it('refuses the same group twice on one product, whatever its casing', async () => {
+    const standard = await makeProduct('Twice Standard');
+    await service.attachGroup(standard, live('real\\Standard-USD'), TEST_ACTOR);
+
+    await expect(
+      service.attachGroup(standard, live('Real\\STANDARD-usd'), TEST_ACTOR),
+    ).rejects.toThrow(/already attached to 'Twice Standard'/);
+    expect(await rows(standard)).toEqual(['real\\Standard-USD USD']);
+  });
+
+  /* The 409 the operator hit, now a reason they can act on. */
+  it('refuses a second group in the same currency, naming the one already there', async () => {
+    const standard = await makeProduct('Slot Standard');
+    await service.attachGroup(standard, live('real\\Standard-USD'), TEST_ACTOR);
+
+    const attempt = service.attachGroup(standard, live('real\\Pro-USD'), TEST_ACTOR);
+
+    await expect(attempt).rejects.toBeInstanceOf(ValidationError);
+    await expect(service.attachGroup(standard, live('real\\Pro-USD'), TEST_ACTOR)).rejects.toThrow(
+      /already has a live USD group, "real\\Standard-USD"/,
+    );
+    expect(await rows(standard)).toEqual(['real\\Standard-USD USD']);
+  });
+
+  it('takes a group in another currency beside it', async () => {
+    const standard = await makeProduct('Two Currencies');
+    await service.attachGroup(standard, live('real\\Standard-USD'), TEST_ACTOR);
+    await service.attachGroup(standard, live('real\\Standard-EUR'), TEST_ACTOR);
+
+    expect(await rows(standard)).toEqual(['real\\Standard-EUR EUR', 'real\\Standard-USD USD']);
+  });
+
+  /* The Products form's own order on save: detach first, then attach. */
+  it('swaps one USD group for another when the old one is detached first', async () => {
+    const standard = await makeProduct('Swap Standard');
+    const withOld = await service.attachGroup(standard, live('real\\Standard-USD'), TEST_ACTOR);
+    const oldId = withOld.groups[0]?.id ?? '';
+
+    await service.detachGroup(standard, oldId, TEST_ACTOR);
+    await service.attachGroup(standard, live('real\\Pro-USD'), TEST_ACTOR);
+
+    expect(await rows(standard)).toEqual(['real\\Pro-USD USD']);
+  });
+
+  it('refuses a group MT5 does not report, and an unknown product', async () => {
+    const standard = await makeProduct('Unknown Group');
+
+    await expect(service.attachGroup(standard, live('real\\Nowhere'), TEST_ACTOR)).rejects.toThrow(
+      /MT5 does not report a group called "real\\Nowhere"/,
+    );
+    await expect(
+      service.attachGroup(
+        '00000000-0000-4000-8000-000000000000',
+        live('real\\Standard-USD'),
+        TEST_ACTOR,
+      ),
+    ).rejects.toBeInstanceOf(NotFoundError);
+    expect(await rows(standard)).toEqual([]);
+  });
+
+  it('detaches a group from one product and leaves it on the other', async () => {
+    const standard = await makeProduct('Detach Standard');
+    const premium = await makeProduct('Detach Premium');
+    const onStandard = await service.attachGroup(standard, live('real\\Standard-USD'), TEST_ACTOR);
+    await service.attachGroup(premium, live('real\\Standard-USD'), TEST_ACTOR);
+
+    await service.detachGroup(standard, onStandard.groups[0]?.id ?? '', TEST_ACTOR);
+
+    expect(await rows(standard)).toEqual([]);
+    expect(await rows(premium)).toEqual(['real\\Standard-USD USD']);
+  });
+
+  it('refuses to detach a group that is not on the product', async () => {
+    const standard = await makeProduct('Detach Missing');
+    const premium = await makeProduct('Detach Other');
+    const onPremium = await service.attachGroup(premium, live('real\\Standard-USD'), TEST_ACTOR);
+
+    await expect(
+      service.detachGroup(standard, onPremium.groups[0]?.id ?? '', TEST_ACTOR),
+    ).rejects.toBeInstanceOf(NotFoundError);
+    expect(await rows(premium)).toEqual(['real\\Standard-USD USD']);
+  });
+
+  it('records who attached and detached what', async () => {
+    const audit = auditStub();
+    const audited = new CatalogueService(store, audit as never, mt5Stub, groupSyncStub);
+    const standard = await makeProduct('Audited Standard');
+
+    const attached = await audited.attachGroup(standard, live('real\\Standard-USD'), TEST_ACTOR);
+    await audited.detachGroup(standard, attached.groups[0]?.id ?? '', TEST_ACTOR);
+
+    const actions = audit.record.mock.calls.map((call) => String(call[1]));
+    expect(actions).toEqual(['product.group_attach', 'product.group_detach']);
   });
 });

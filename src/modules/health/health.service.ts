@@ -1,9 +1,10 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, type OnApplicationBootstrap } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { sql } from 'drizzle-orm';
 import { StoredFilesService } from '../../common/uploads/stored-files.service';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
+import { pendingMigrations, shippedMigrations } from '../../database/migration-status';
 import { DependencyHealthDto, ReadinessDto } from './dto/health.dto';
 
 /**
@@ -21,7 +22,7 @@ import { DependencyHealthDto, ReadinessDto } from './dto/health.dto';
  * Readiness — can it actually serve? Touches every dependency it needs.
  */
 @Injectable()
-export class HealthService {
+export class HealthService implements OnApplicationBootstrap {
   private readonly logger = new Logger(HealthService.name);
 
   /** A readiness probe must never hang; an unreachable host would otherwise
@@ -63,7 +64,11 @@ export class HealthService {
     // reads, not probes, and are kept separate rather than dressed up as
     // promises — `await-thenable` catches that, and it is right to: a synchronous
     // check inside Promise.all reads as if something is being contacted.
-    const probed = await Promise.all([this.checkPostgres(), this.checkStorage()]);
+    const probed = await Promise.all([
+      this.checkPostgres(),
+      this.checkStorage(),
+      this.checkMigrations(),
+    ]);
     const declared = [this.checkOptional('redis', 'REDIS_URL')];
     const dependencies = [...probed, ...declared];
 
@@ -128,6 +133,84 @@ export class HealthService {
 
     this.storageProbe = { at: now, result };
     return result;
+  }
+
+  /**
+   * Say, once and loudly at startup, when this build is running on a database
+   * that has not had its migrations. Not awaited: a slow database must not hold
+   * the process back from answering, and the readiness check repeats it.
+   */
+  onApplicationBootstrap(): void {
+    void this.pending().then(
+      (pending) => {
+        if (pending && pending.length > 0) {
+          this.logger.error(
+            `The database is missing ${pending.length} migration(s) this build needs: ` +
+              `${pending.map((entry) => entry.tag).join(', ')}. Features that use them will fail ` +
+              'until they run. Run `npm run db:migrate` in the backend folder on this server.',
+          );
+        }
+      },
+      () => undefined,
+    );
+  }
+
+  /** The shipped migrations this database has not run; null when that cannot be told. */
+  private async pending() {
+    const shipped = shippedMigrations();
+    if (!shipped) return null;
+    const result = await this.withTimeout(
+      this.db.execute(sql`SELECT max(created_at)::text AS last FROM drizzle.__drizzle_migrations`),
+      'migrations',
+    );
+    const rows = (result as unknown as { rows?: { last: string | null }[] }).rows ?? [];
+    const last = rows[0]?.last ? Number(rows[0].last) : null;
+    return pendingMigrations(shipped, last);
+  }
+
+  /**
+   * Has this database run every migration this build ships?
+   *
+   * NOT required: an unmigrated schema breaks the features that need the new
+   * migrations, not the whole API, and taking every request out of service
+   * over it would turn one broken screen into an outage. It is reported as
+   * down, with how many are missing, so the gap is visible on the endpoint an
+   * operator checks after every deploy. The tags themselves go to the server
+   * log, not to this unauthenticated payload.
+   */
+  private async checkMigrations(): Promise<DependencyHealthDto> {
+    const name = 'database migrations';
+    try {
+      const pending = await this.pending();
+      if (pending === null) {
+        return {
+          name,
+          status: 'not_configured',
+          detail:
+            'The migration journal is not on disk beside this build, so this cannot be checked.',
+          required: false,
+        };
+      }
+      if (pending.length === 0) return { name, status: 'up', required: false };
+      return {
+        name,
+        status: 'down',
+        detail:
+          `${pending.length} migration(s) this build needs have not been applied. Run ` +
+          '`npm run db:migrate` on this server; the server log names them.',
+        required: false,
+      };
+    } catch (error) {
+      this.logger.error(
+        `Could not read the applied migrations: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return {
+        name,
+        status: 'down',
+        detail: 'Could not read the applied migrations. See server logs for the reason.',
+        required: false,
+      };
+    }
   }
 
   private async checkPostgres(): Promise<DependencyHealthDto> {

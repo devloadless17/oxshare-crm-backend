@@ -12,13 +12,22 @@
 > ```
 > git pull origin production
 > npm run build
+> npm run db:migrate
 > <restart the Node process>
 > ```
 >
-> Then confirm it actually restarted — uptime must RESET, it does not go up:
+> **`npm run db:migrate` is not optional.** New code on an old schema fails only
+> when somebody uses the feature: on 26 Sep 2026 attaching an MT5 group to a
+> second product answered a bare 409 in production because migration 0142 had
+> not been applied. It reads `DATABASE_URL` from the `.env` beside it, applies
+> only what is missing, and says "Already up to date" when there is nothing to do.
+>
+> Then confirm it actually restarted — uptime must RESET, it does not go up — and
+> that the database has every migration this build needs:
 >
 > ```bash
 > curl -s https://oxshareapi.loadless.site/health
+> curl -s https://oxshareapi.loadless.site/health/ready   # "database migrations" must be "up"
 > ```
 >
 > The `build` and `deploy` jobs in `.github/workflows/ci.yml` are **commented out,
