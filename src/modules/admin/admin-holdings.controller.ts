@@ -340,6 +340,13 @@ export class AdminHoldingsController {
   @ApiOkResponse({ type: TradingAccountListResponseDto })
   @ApiQuery({ name: 'userId', required: false, description: 'Accounts of one client.' })
   @ApiQuery({
+    name: 'referredBy',
+    required: false,
+    description:
+      'Accounts of every client this partner introduced, by the partner’s Portal ID ' +
+      '(users.referred_by_ib_user_id). Scoped like every other filter.',
+  })
+  @ApiQuery({
     name: 'q',
     required: false,
     description:
@@ -366,6 +373,7 @@ export class AdminHoldingsController {
   listTradingAccounts(
     @Req() req: Request & { admin: AuthenticatedAdmin },
     @Query('userId', ClientRefPipe) userId?: string,
+    @Query('referredBy', ClientRefPipe) referredBy?: string,
     @Query('q') q?: string,
     @Query('environment') environment?: string,
     @Query('status') status?: string,
@@ -387,6 +395,7 @@ export class AdminHoldingsController {
          * matters, and the database paid for a round trip to produce it.
          */
         userId: uuidQuery(userId, 'userId'),
+        referredBy: uuidQuery(referredBy, 'referredBy'),
         q,
         // Both are Postgres enum columns compared behind a cast in the service,
         // so an unrecognised value surfaced as a 500 carrying a database error

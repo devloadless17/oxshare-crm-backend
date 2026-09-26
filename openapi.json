@@ -5162,6 +5162,15 @@
             }
           },
           {
+            "name": "referredBy",
+            "required": false,
+            "in": "query",
+            "description": "Accounts of every client this partner introduced, by the partner’s Portal ID (users.referred_by_ib_user_id). Scoped like every other filter.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "q",
             "required": false,
             "in": "query",
@@ -21537,6 +21546,11 @@
             "type": "string",
             "nullable": true
           },
+          "methodName": {
+            "type": "string",
+            "nullable": true,
+            "description": "The payment or payout method’s display name. Null for money that went through no method — a manual credit (`provider` = manual_admin) — which a screen names from `provider`."
+          },
           "provider": {
             "type": "string",
             "nullable": true
@@ -21562,6 +21576,7 @@
           "amount",
           "currency",
           "methodKey",
+          "methodName",
           "provider",
           "providerRef",
           "createdAt",

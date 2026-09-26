@@ -2696,6 +2696,14 @@ export class ClientTransactionRowDto {
   amount: string;
   @ApiProperty() currency: string;
   @ApiProperty({ type: 'string', nullable: true }) methodKey: string | null;
+  @ApiProperty({
+    type: 'string',
+    nullable: true,
+    description:
+      'The payment or payout method’s display name. Null for money that went through no method ' +
+      '— a manual credit (`provider` = manual_admin) — which a screen names from `provider`.',
+  })
+  methodName: string | null;
   @ApiProperty({ type: 'string', nullable: true }) provider: string | null;
   @ApiProperty({ type: 'string', nullable: true }) providerRef: string | null;
   @ApiProperty() createdAt: Date;
