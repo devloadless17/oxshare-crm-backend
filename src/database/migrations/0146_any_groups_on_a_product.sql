@@ -1,0 +1,22 @@
+-- ============================================================================
+-- A product may hold any groups — several in one currency included (owner, 26 Sep 2026)
+-- ============================================================================
+--
+-- `trading_product_groups_slot_unique` (0053) allowed ONE group per product,
+-- environment and currency. The owner's call: operators attach whichever
+-- groups they want to a product, with no rule about currencies.
+--
+-- What still holds:
+--   * the same group cannot be attached to the same product twice
+--     (`trading_product_groups_product_group_uq`, 0142) — a second row for the
+--     same pair would be the same fact recorded twice;
+--   * the environment follows the product's type (real → live, demo → demo),
+--     which the service enforces and the form sets by itself.
+--
+-- Where two groups share a product and a currency, a client opening an account
+-- from the portal picks the product and the currency and lands in the group
+-- attached FIRST (`ProductsStore.offeredTo` orders by attachment time within a
+-- product and currency). An operator opening one from the console chooses the
+-- group itself.
+
+ALTER TABLE trading_product_groups DROP CONSTRAINT IF EXISTS trading_product_groups_slot_unique;
