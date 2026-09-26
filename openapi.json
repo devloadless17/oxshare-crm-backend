@@ -12690,7 +12690,7 @@
           },
           "sortOrder": {
             "type": "number",
-            "default": 0
+            "description": "Omitted puts it after the last one."
           },
           "isDefault": {
             "type": "boolean",
@@ -14723,7 +14723,7 @@
           },
           "sortOrder": {
             "type": "number",
-            "default": 0
+            "description": "Omitted puts it after the last one."
           },
           "requiresProof": {
             "type": "boolean",
@@ -14843,7 +14843,7 @@
           },
           "sortOrder": {
             "type": "number",
-            "default": 0
+            "description": "Omitted puts it after the last one."
           }
         },
         "required": [

@@ -70,7 +70,7 @@ export class CreateCurrencyDto {
   @IsBoolean()
   enabled?: boolean;
 
-  @ApiPropertyOptional({ default: 0 })
+  @ApiPropertyOptional({ description: 'Omitted puts it after the last one.' })
   @IsOptional()
   @IsInt()
   @Min(0)

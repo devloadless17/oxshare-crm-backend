@@ -165,3 +165,17 @@ describe('migration 0143 — withdrawal logos from the deposit twin', () => {
     expect((await methods.findOne('whish'))?.logoUrl).toBe('https://cdn.example.com/whish-out.svg');
   });
 });
+
+/*
+ * The console no longer asks for an order (owner, 26 Sep 2026): a new method
+ * goes after the last one, and an edit leaves it where it is.
+ */
+describe('positions without an order field', () => {
+  it('puts a new withdrawal method after the last one, and keeps an edited one in place', async () => {
+    await methods.create({ key: 'order_a', name: 'Order A' }, TEST_ACTOR);
+    await methods.create({ key: 'order_b', name: 'Order B' }, TEST_ACTOR);
+    await methods.update('order_a', { name: 'Order A renamed' }, TEST_ACTOR);
+
+    expect(await offeredToClients()).toEqual(['whish', 'order_a', 'order_b']);
+  });
+});

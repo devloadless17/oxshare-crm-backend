@@ -697,3 +697,62 @@ describe('attaching and detaching MT5 groups', () => {
     expect(actions).toEqual(['product.group_attach', 'product.group_detach']);
   });
 });
+
+/*
+ * THE ORDER IS NOT ASKED FOR ANY MORE (owner, 26 Sep 2026). The console sends
+ * no position: a new row goes after the last one, and an edited row stays
+ * exactly where it was.
+ */
+describe('positions without an order field', () => {
+  async function productOrder(): Promise<string[]> {
+    return (await service.listProducts()).map((product) => product.name);
+  }
+
+  // As the console creates them now: no position at all.
+  const newProduct = async (name: string) =>
+    (await service.createProduct({ name, description: null, enabled: true }, TEST_ACTOR)).id;
+  const newAgency = async (name: string) =>
+    (await service.createAgency({ name, description: null, enabled: true }, TEST_ACTOR)).id;
+
+  it('appends a new product, and keeps an edited one in its place', async () => {
+    const first = await newProduct('Order First');
+    await newProduct('Order Second');
+    await newProduct('Order Third');
+
+    await service.updateProduct(
+      first,
+      { name: 'Order First', description: 'edited', enabled: false },
+      TEST_ACTOR,
+    );
+
+    expect(await productOrder()).toEqual(['Order First', 'Order Second', 'Order Third']);
+  });
+
+  it('appends a new agency, and keeps an edited one in its place', async () => {
+    const first = await newAgency('Agency First');
+    await newAgency('Agency Second');
+
+    await service.updateAgency(
+      first,
+      { name: 'Agency First', description: 'edited', enabled: true },
+      TEST_ACTOR,
+    );
+
+    const names = (await service.listAgencies()).map((agency) => agency.name);
+    expect(names.indexOf('Agency First')).toBeLessThan(names.indexOf('Agency Second'));
+  });
+
+  it('puts a new commission type after the last one', async () => {
+    const types = new IbCommissionTypesService(ctx.db, auditStubAs());
+    const first = await types.create(
+      { name: 'Order type A', description: null, commissionPerLot: '10', rebatePerLot: '3' },
+      TEST_ACTOR,
+    );
+    const second = await types.create(
+      { name: 'Order type B', description: null, commissionPerLot: '10', rebatePerLot: '3' },
+      TEST_ACTOR,
+    );
+
+    expect(second.sortOrder).toBeGreaterThan(first.sortOrder);
+  });
+});

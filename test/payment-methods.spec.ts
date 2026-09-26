@@ -692,3 +692,23 @@ describe('managing methods', () => {
     expect(method.maxAmount).toMatch(/^\d+\.\d{8}$/);
   });
 });
+
+/*
+ * The console no longer asks for an order (owner, 26 Sep 2026): a new method
+ * goes after the last one, and an edit leaves it where it is.
+ */
+describe('positions without an order field', () => {
+  it('puts a new deposit method after the last one, and keeps an edited one in place', async () => {
+    const before = await methods.listAll();
+    const last = Math.max(...before.map((method) => method.sortOrder));
+
+    const added = await methods.create(
+      { key: 'order_new', name: 'Order new', currency: 'USD' },
+      ADMIN,
+    );
+    const edited = await methods.update('order_new', { name: 'Order renamed' }, ADMIN);
+
+    expect(added.sortOrder).toBe(last + 1);
+    expect(edited.sortOrder).toBe(last + 1);
+  });
+});

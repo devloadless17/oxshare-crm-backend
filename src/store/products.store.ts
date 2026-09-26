@@ -217,7 +217,14 @@ export class ProductsStore {
         .update(tradingProducts)
         .set({
           ...values,
-          sortOrder: await this.placeOrder(tx, tradingProducts, id, values.sortOrder),
+          /*
+           * NO position given means the product STAYS where it is. The console
+           * no longer asks for one (owner, 26 Sep 2026), and appending here
+           * would send every edited product to the bottom of the list.
+           */
+          ...(values.sortOrder !== undefined
+            ? { sortOrder: await this.placeOrder(tx, tradingProducts, id, values.sortOrder) }
+            : {}),
           updatedAt: new Date(),
         })
         .where(eq(tradingProducts.id, id))
@@ -373,7 +380,10 @@ export class ProductsStore {
         .update(agencies)
         .set({
           ...values,
-          sortOrder: await this.placeOrder(tx, agencies, id, values.sortOrder),
+          // No position given: the agency stays where it is (see updateProduct).
+          ...(values.sortOrder !== undefined
+            ? { sortOrder: await this.placeOrder(tx, agencies, id, values.sortOrder) }
+            : {}),
           updatedAt: new Date(),
         })
         .where(eq(agencies.id, id))

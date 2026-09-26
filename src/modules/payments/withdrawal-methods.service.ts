@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { asc, eq } from 'drizzle-orm';
+import { asc, eq, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
 import { withdrawalPaymentMethods } from '../../database/schema';
@@ -71,7 +71,7 @@ export class WithdrawalMethodsService {
         name: dto.name.trim(),
         logoUrl: dto.logoUrl ?? null,
         enabled: dto.enabled ?? true,
-        sortOrder: dto.sortOrder ?? 0,
+        sortOrder: dto.sortOrder ?? (await this.nextSortOrder()),
       })
       .returning();
 
@@ -122,5 +122,21 @@ export class WithdrawalMethodsService {
   /** Keys are stored lower-case, so `Whish` and `whish` are one method. */
   private normalise(key: string): string {
     return key.trim().toLowerCase();
+  }
+
+  /**
+   * Where a new withdrawal method goes when no position is given: after the last one.
+   *
+   * The console no longer asks for an order (owner, 26 Sep 2026), so every new
+   * row would otherwise land at 0 and jump to the top of the list, ahead of
+   * rows an operator placed years ago.
+   */
+  private async nextSortOrder(): Promise<number> {
+    const [row] = await this.db
+      .select({
+        next: sql<number>`coalesce(max(${withdrawalPaymentMethods.sortOrder}), -1)::int + 1`,
+      })
+      .from(withdrawalPaymentMethods);
+    return Number(row?.next ?? 0);
   }
 }
