@@ -1,8 +1,9 @@
 import { Inject, Injectable } from '@nestjs/common';
 import Decimal from 'decimal.js';
-import { and, count, desc, eq, isNotNull, sql } from 'drizzle-orm';
+import { and, count, desc, eq, isNotNull, or, sql } from 'drizzle-orm';
 import { getDb } from '../../database/db';
 import {
+  currencies,
   ledgerEntries,
   transactions,
   transfers,
@@ -407,10 +408,31 @@ export class WalletService {
    */
   async listWallets(userId: string, kind: WalletKind = DEFAULT_KIND) {
     const rows = await this.db
-      .select()
+      .select({ wallet: wallets })
       .from(wallets)
-      .where(and(eq(wallets.userId, userId), eq(wallets.kind, kind)));
-    return rows.map((w) => ({
+      .innerJoin(currencies, eq(currencies.code, wallets.currency))
+      .where(
+        and(
+          eq(wallets.userId, userId),
+          eq(wallets.kind, kind),
+          /*
+           * A DISABLED currency's wallet is shown only while it holds money.
+           *
+           * A currency that goes live opens a wallet in it for everybody
+           * (`CurrenciesService.openWalletsFor`), so disabling one would
+           * otherwise leave an empty card for a currency the platform no
+           * longer offers on every client's screen — and on the deposit and
+           * transfer pickers that read this list. A wallet with a balance or
+           * funds on hold stays visible: that money is the client's.
+           */
+          or(
+            eq(currencies.enabled, true),
+            sql`${wallets.balance} <> 0`,
+            sql`${wallets.onHold} <> 0`,
+          ),
+        ),
+      );
+    return rows.map(({ wallet: w }) => ({
       ...w,
       balance: money(w.balance),
       onHold: money(w.onHold),
