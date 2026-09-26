@@ -4,6 +4,7 @@ import type { StoredFilesService } from '../src/common/uploads/stored-files.serv
 import { HealthService } from '../src/modules/health/health.service';
 import type { DependencyHealthDto, ReadinessDto } from '../src/modules/health/dto/health.dto';
 import type { Db } from '../src/database/db';
+import { pendingMigrations, shippedMigrations } from '../src/database/migration-status';
 
 /**
  * PLATFORM-CONVENTIONS R-6.4 — readiness has to be able to say "no".
@@ -196,5 +197,74 @@ describe('R-6.4 liveness', () => {
     expect(service.liveness().status).toBe('ok');
     expect(service.liveness().uptimeSeconds).toBeGreaterThanOrEqual(0);
     await expect(service.readiness()).resolves.toMatchObject({ status: 'not_ready' });
+  });
+});
+
+/*
+ * Has the database run every migration this build ships? Production deploys
+ * are manual and nothing in them migrates, so on 26 Sep 2026 new code ran on
+ * an old schema: attaching a group to a second product answered a bare 409.
+ * Readiness now reports the gap — without taking the API out of service.
+ */
+describe('the migrations this build needs', () => {
+  const shipped = shippedMigrations() ?? [];
+  const newest = shipped[shipped.length - 1];
+
+  /** A database whose newest applied migration is `last` (null: none applied). */
+  const dbAppliedUpTo = (last: number | null): Db =>
+    ({
+      execute: () => Promise.resolve({ rows: [{ last: last === null ? null : String(last) }] }),
+    }) as unknown as Db;
+
+  it('reads the journal this build ships', () => {
+    expect(shipped.length).toBeGreaterThan(100);
+    expect(newest?.tag).toMatch(/^\d{4}_/);
+  });
+
+  it('is up when every shipped migration has run', async () => {
+    const report = await new HealthService(
+      dbAppliedUpTo(newest?.when ?? 0),
+      configWith({}),
+      storageThat(true),
+    ).readiness();
+
+    expect(dependency(report, 'database migrations')).toMatchObject({
+      status: 'up',
+      required: false,
+    });
+  });
+
+  it('says how many are missing, and keeps serving', async () => {
+    const fourBack = shipped[shipped.length - 5];
+    const report = await new HealthService(
+      dbAppliedUpTo(fourBack?.when ?? 0),
+      configWith({}),
+      storageThat(true),
+    ).readiness();
+
+    expect(report.status).toBe('ready');
+    const check = dependency(report, 'database migrations');
+    expect(check).toMatchObject({ status: 'down', required: false });
+    expect(check?.detail).toContain('4 migration(s)');
+    expect(check?.detail).toContain('npm run db:migrate');
+    // The tags go to the server log, not to this unauthenticated payload.
+    expect(check?.detail).not.toContain(newest?.tag ?? '');
+  });
+
+  it('counts every migration as missing on a database that has run none', () => {
+    expect(pendingMigrations(shipped, null)).toHaveLength(shipped.length);
+  });
+
+  it('reports a failed read as down rather than throwing', async () => {
+    const report = await new HealthService(
+      dbThat('fails'),
+      configWith({}),
+      storageThat(true),
+    ).readiness();
+
+    expect(dependency(report, 'database migrations')).toMatchObject({
+      status: 'down',
+      required: false,
+    });
   });
 });
