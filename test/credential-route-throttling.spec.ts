@@ -46,6 +46,16 @@ const CREDENTIAL_ROUTES: { controller: object; name: string; method: string }[] 
   { controller: AuthController.prototype, name: 'POST /auth/login', method: 'login' },
   { controller: AuthController.prototype, name: 'POST /auth/refresh', method: 'refresh' },
   { controller: AuthController.prototype, name: 'POST /auth/register', method: 'register' },
+  /*
+   * Presents no credential, but answers whether an address has an account, the
+   * owner's ruling of 28 Sep 2026. Listed here so its own limit can never lapse
+   * into the global one unnoticed.
+   */
+  {
+    controller: AuthController.prototype,
+    name: 'POST /auth/register/email-available',
+    method: 'emailAvailable',
+  },
   {
     controller: AdminAuthController.prototype,
     name: 'POST /admin/auth/login',

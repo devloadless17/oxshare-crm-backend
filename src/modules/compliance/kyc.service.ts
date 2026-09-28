@@ -187,11 +187,13 @@ function placePage(
   page: number,
   file: { filePath: string; fileName: string },
   type: string | undefined,
-): { docType?: string; pages: StoredPage[] } {
+): { docType?: string; pages: StoredPage[]; replaced: boolean } {
   const switching = type !== undefined && storedType !== undefined && storedType !== type;
   const next = switching ? [] : [...pages];
   next[page] = file;
-  return { docType: type ?? storedType, pages: next };
+  // `replaced`: the document on file is gone whole, so every flag on its pages
+  // is answered with it (`flagsSettledByUpload`).
+  return { docType: type ?? storedType, pages: next, replaced: switching };
 }
 
 /**
@@ -683,6 +685,7 @@ export class KycService {
       assertOpenForUploads(current);
 
       const patch: Partial<KycSubmission> = {};
+      let replacesDocument = false;
       if (canonical === 'document') {
         const page = field === 'doc_back' ? 1 : 0;
         const doc = placePage(
@@ -695,6 +698,7 @@ export class KycService {
           file,
           type,
         );
+        replacesDocument = doc.replaced;
         patch.document = {
           ...(doc.docType ? { docType: doc.docType } : {}),
           frontFilePath: doc.pages[0]?.filePath,
@@ -714,6 +718,7 @@ export class KycService {
           file,
           type,
         );
+        replacesDocument = doc.replaced;
         patch.addressProof = {
           ...(doc.docType ? { docType: doc.docType } : {}),
           filePath: doc.pages[0]?.filePath,
@@ -733,9 +738,11 @@ export class KycService {
       /*
        * A new file is the answer to a returned one. Settling the flag here is
        * what lets the portal stop drawing it red on the client's next visit, and
-       * what lets `submit` accept the submission back.
+       * what lets `submit` accept the submission back. A page of ANOTHER document
+       * answers every page flag of the one it replaced — the passport the client
+       * switched to answers the returned back of their national ID.
        */
-      const settled = flagsSettledByUpload(field, steps);
+      const settled = flagsSettledByUpload(field, steps, replacesDocument);
       const flagged = current.rejectedFields ?? [];
       const remaining = flagged.filter((id) => !settled.includes(id));
       if (remaining.length !== flagged.length) patch.rejectedFields = remaining;
@@ -856,7 +863,7 @@ export class KycService {
        * Typed fields are highlighted but not enforced — `kyc-document-rules.ts`
        * says why.
        */
-      const owed = outstandingDocumentFlags(finalSub.rejectedFields, steps);
+      const owed = outstandingDocumentFlags(finalSub.rejectedFields, steps, finalSub);
       if (owed.length > 0) {
         const names = [...new Set(owed.map((id) => documentFlagLabel(id, steps, finalSub)))];
         throw new ValidationError(

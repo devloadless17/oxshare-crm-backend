@@ -172,28 +172,31 @@ describe('sign-up writes the profile — once, in its canonical shape', () => {
     expect(created, 'a refused sign-up still created an account').toEqual([]);
   });
 
-  it('answers a refused value identically whether or not the address holds an account', async () => {
-    // Validated BEFORE the address is looked up, so a refusal says nothing
-    // about who is registered — the enumeration the generic answer protects.
-    const shape = (res: { status: number; body: unknown }) => {
-      const { requestId: _r, timestamp: _t, ...rest } = res.body as Record<string, unknown>;
-      return { status: res.status, ...rest };
-    };
+  it('answers a TAKEN address first and plainly, whatever else the form holds', async () => {
+    // This case used to pin the OPPOSITE: a refusal identical for any address,
+    // so the form told nobody who is registered. The owner reversed that on
+    // 28 Sep 2026. The address is judged first, so a client who already has an
+    // account is told so, not asked to fix a date of birth.
     const bad = { ...SIGN_UP, dateOfBirth: '2015-01-01' };
     const taken = await register({ ...bad, email });
+    expect(taken.status).toBe(409);
+    expect((taken.body as { code?: string }).code).toBe('EMAIL_ALREADY_REGISTERED');
+
+    // A free address still meets the profile's own refusal, per field.
     const fresh = await register({
       ...bad,
       email: `single-home-fresh-${Date.now()}@oxshare-e2e.test`,
     });
-    expect(shape(taken)).toEqual(shape(fresh));
+    expect(fresh.status).toBe(400);
+    expect(Object.keys((fresh.body as { fields?: object }).fields ?? {})).toContain('dateOfBirth');
   });
 
   it('REQUIRES who the person is and how to reach them — each field named (26 Sep 2026)', async () => {
     /*
      * It registered a client who gave only a name. The owner's ruling: sign-up
      * requires the names, date of birth, nationality, phone and country, and
-     * the API enforces it rather than trusting a form. Refused before the
-     * address is looked up, so the answer is the same for any address.
+     * the API enforces it rather than trusting a form. Refused per field, in
+     * the profile's own words.
      */
     const res = await register({
       firstName: 'Min',

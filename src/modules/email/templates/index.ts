@@ -41,7 +41,6 @@ export {
 
 export { verifyEmail } from './verify-email';
 export { passwordReset } from './password-reset';
-export { accountExists } from './account-exists';
 export { emailChangedNotice } from './email-changed-notice';
 export { kycDecision } from './kyc-decision';
 export { kycDetailsCorrected } from './kyc-details-corrected';

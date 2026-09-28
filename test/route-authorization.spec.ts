@@ -141,6 +141,10 @@ const PUBLIC_ROUTES: Record<string, string> = {
     'Alias of POST /auth/login — the same handler, registered under both prefixes.',
   'POST /auth/register': 'Self-signup (IND-01). Rate limited; creates an unverified account.',
   'POST /identity/register': 'Alias of POST /auth/register — the same handler under both prefixes.',
+  'POST /auth/register/email-available':
+    'Sign-up step one: whether an address already has an account (owner ruling, 28 Sep 2026). Rate limited.',
+  'POST /identity/register/email-available':
+    'Alias of POST /auth/register/email-available — the same handler under both prefixes.',
 
   // Session renewal presents the refresh cookie, which IS the credential.
   'POST /admin/auth/refresh': 'Presents the admin refresh cookie; that is the credential.',

@@ -24,6 +24,7 @@ import { Request, Response } from 'express';
 import {
   AuthenticationError,
   AuthorizationError,
+  EmailAlreadyRegisteredError,
   EmailCodeInvalidError,
   FieldValidationError,
   EmailNotVerifiedError,
@@ -103,13 +104,28 @@ export interface VerifyEmailResult {
   message: string;
 }
 
+/** What the sign-up form shows under the email field for a taken address. */
+const EMAIL_TAKEN =
+  'This email already has an OxShare account. Reset your password or sign in instead.';
+
+function emailAlreadyRegistered(): EmailAlreadyRegisteredError {
+  return new EmailAlreadyRegisteredError(EMAIL_TAKEN, { email: EMAIL_TAKEN });
+}
+
+/**
+ * A Postgres unique violation (23505), wherever Drizzle wrapped it — the same
+ * walk down `cause` that `AllExceptionsFilter`'s `pgErrorCode` makes.
+ */
+function isUniqueViolation(error: unknown): boolean {
+  for (let e: unknown = error, depth = 0; e && depth < 5; depth++) {
+    if ((e as { code?: unknown }).code === '23505') return true;
+    e = (e as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
 @Injectable()
 export class AuthService {
-  /** Address → when its "account exists" notice was last sent. See `shouldSendAccountExists`. */
-  private readonly accountExistsSentAt = new Map<string, number>();
-
-  private static readonly ACCOUNT_EXISTS_WINDOW_MS = 60 * 60_000;
-
   /** Address → when each verification email in the last hour went. See `verificationBudgetAllows`. */
   private readonly verificationSentAt = new Map<string, number[]>();
 
@@ -179,117 +195,36 @@ export class AuthService {
 
   // ─── Register ────────────────────────────────────────────────────────────────
   /**
-   * Create an account. ALWAYS answers the same, whether or not one exists.
+   * Create an account — or say PLAINLY that the address already has one.
    *
-   * This used to throw `409 An account with this email already exists.`, which
-   * made registration a membership oracle: anyone could test an address list
-   * against it and learn who banks here. `requestPasswordReset` below goes to
-   * real lengths to avoid exactly that ("the honest-looking error is the
-   * vulnerability"), and registration quietly gave it back — throttled at 10 per
-   * hour per IP, which bounds the rate and not the leak.
+   * ⚠️ The owner's ruling (28 Sep 2026) REVERSES the enumeration-safe design.
+   * This used to answer a taken address exactly as a new one and email the
+   * holder "you already have an account" instead, so the form told nobody who
+   * holds an account here. The client who already had one was then shown a
+   * code screen for a code that never came, while their inbox said the
+   * opposite — reported as confusing, and it was. Now a taken address is
+   * refused with `EMAIL_ALREADY_REGISTERED` under the email field, and the
+   * portal offers a password reset and sign-in on the spot. Nothing is emailed:
+   * the person is told on the screen in front of them.
    *
-   * WHAT MAKES THIS SAFE TO CHANGE. Simply removing the 409 would be worse than
-   * the leak: the person who forgot they already had an account would get a
-   * cheerful success message, no email, and no way to discover why they cannot
-   * sign in. So the information still goes out — to the ONE mailbox entitled to
-   * it. The existing account holder is told somebody tried, and pointed at sign
-   * in and password reset; the caller is told nothing they did not already know.
-   *
-   * The cost is real and worth stating: a legitimate user who mistypes an
-   * address they already own no longer gets an immediate "you already have an
-   * account" on screen. They get it by email, one round trip later.
+   * The accepted cost: anyone can test whether an address has an account here.
+   * The route's rate limit bounds how fast; `emailAvailable` answers the same
+   * question for the form's first step, under its own limit.
    */
-  /**
-   * At most one "you already have an account" email per address per hour.
-   *
-   * ## What this bounds that the route throttle does not
-   *
-   * `@Throttle` on the register route caps ten attempts per hour per IP. That
-   * bounds the CALLER and says nothing about the VICTIM: ten addresses behind
-   * ten proxies is ten times the mail to the same mailbox, and there is no
-   * shortage of either. So the per-IP limit protects the endpoint while leaving
-   * a named person mailable by anyone who knows they bank here.
-   *
-   * Keyed on the address, so the ceiling follows the person being written to
-   * rather than whoever is doing the writing. It is also the answer to the
-   * ordinary case, which is not an attack at all: somebody who has forgotten
-   * their account and submits the form four times gets one email, not four.
-   *
-   * ## Why in memory, and why that is honest rather than lazy
-   *
-   * This is a single-instance deployment and a missed dedupe sends one extra
-   * email — the failure is a duplicate message, not a lost one. Redis is
-   * available and deliberately not used: it would put a network call that can
-   * fail in front of the ONE signal the legitimate account holder receives, to
-   * economise on a message they are entitled to. If this ever runs multi-
-   * instance, move it to Redis and accept that cost; until then the Map is the
-   * smaller risk.
-   *
-   * Lowercased because addresses are matched case-insensitively everywhere else,
-   * and a dedupe that treats Ann@x.test and ann@x.test as different people is
-   * not a dedupe.
-   */
-  private shouldSendAccountExists(email: string): boolean {
-    const key = email.trim().toLowerCase();
-    const now = Date.now();
-    const last = this.accountExistsSentAt.get(key);
-    if (last !== undefined && now - last < AuthService.ACCOUNT_EXISTS_WINDOW_MS) return false;
-
-    /*
-     * Swept on write rather than on a timer: the map only grows when somebody
-     * registers against an address that already exists, which is rare, and a
-     * sweep here costs nothing while an interval would keep a handle alive for
-     * the life of the process.
-     */
-    if (this.accountExistsSentAt.size > 1_000) {
-      for (const [k, at] of this.accountExistsSentAt) {
-        if (now - at >= AuthService.ACCOUNT_EXISTS_WINDOW_MS) this.accountExistsSentAt.delete(k);
-      }
-    }
-
-    this.accountExistsSentAt.set(key, now);
-    return true;
-  }
-
   async register(dto: RegisterDto) {
     /*
-     * ── THE MESSAGE IS TRUE IN BOTH BRANCHES, AND THAT IS THE POINT ──────────
-     *
-     * It used to read "Registration successful. Please check your email to
-     * verify your account." — which is a promise the OTHER branch cannot keep.
-     * Someone who already had an account was told registration had succeeded and
-     * to go and verify, then received an email saying they already had one and
-     * nothing had been created. The screen and the mailbox contradicted each
-     * other, and the person in the middle reasonably reads that as a broken
-     * product rather than a privacy feature.
-     *
-     * Naming BOTH outcomes fixes that without giving anything away. An attacker
-     * reading this sentence learns exactly what they knew before — that one of
-     * two things happened — because the text enumerates both and commits to
-     * neither. The legitimate owner, meanwhile, is no longer ambushed: whichever
-     * email arrives, they were told to expect it.
-     *
-     * This is the cheap half of the trade this method makes. The expensive half
-     * — that a user who forgot their account waits one round trip to find out —
-     * is unavoidable while the response stays identical, and is documented above.
+     * The ADDRESS first: when it is taken that is the whole answer — its holder
+     * signs in or resets their password, and the details below are not theirs
+     * to type again.
      */
-    const generic = {
-      message:
-        'Check your email. If this address is new, we have sent a 6-digit code to confirm it — ' +
-        'and if you already have an account, we have sent you a sign-in link instead.',
-    };
+    await this.assertEmailAvailable(dto.email);
 
     /*
-     * ── THE PROFILE IS CHECKED BEFORE WE LOOK THE ADDRESS UP ────────────────
+     * ── THE PROFILE, BY THE RULES EVERY LATER WRITER OBEYS ──────────────────
      *
-     * Registration now seeds the whole client profile (25 Sep 2026) — name,
-     * date of birth, nationality, phone, residence — by the same rules every
-     * later writer obeys (`common/profile/client-profile.ts`).
-     *
-     * FIRST, deliberately: a profile refused for a new address and accepted for
-     * a taken one would be a membership oracle — send an underage date of birth
-     * with somebody's email and read which answer comes back. Checked here, the
-     * refusal is the same whoever the address belongs to.
+     * Registration seeds the whole client profile (25 Sep 2026) — name, date of
+     * birth, nationality, phone, residence — by the same rules every later
+     * writer obeys (`common/profile/client-profile.ts`).
      *
      * REQUIRED since 26 Sep 2026, the owner's ruling: who the person is and how
      * to reach them — names, date of birth, nationality, phone, residence
@@ -322,53 +257,36 @@ export class AuthService {
       Object.entries(profile.values).filter(([, value]) => value !== null),
     ) as Partial<Record<ProfileKey, string>>;
 
-    const existing = await this.users.findByEmail(dto.email);
-    if (existing) {
-      // Awaited, not fire-and-forget: this is the ONLY signal the legitimate
-      // owner gets, and losing it silently would turn a privacy improvement into
-      // a support ticket nobody can diagnose.
-      //
-      // ...but at most once an hour per address. See `shouldSendAccountExists`.
-      if (this.shouldSendAccountExists(existing.email)) {
-        await this.email.sendAccountExistsEmail(existing.email);
-      }
-      this.logger.log(`Registration attempted for an existing address: ${existing.email}`);
-      /*
-       * IDENTICAL to the success return below — same object, no extra key.
-       *
-       * This used to return `generic` while the success path returned
-       * `{ ...generic, userId }`, and that difference WAS the membership oracle
-       * every other line here exists to prevent: same status, same message, and
-       * one field present or absent depending on whether the address is taken.
-       * `userId` is gone from the response entirely; see
-       * `RegistrationResponseDto` for why it was dropped rather than faked.
-       */
-      return generic;
-    }
-
     const passwordHash = await this.passwords.hash(dto.password);
     const verificationToken = uuidv4();
     const verificationExpiry = new Date(Date.now() + EMAIL_VERIFICATION_TTL_MS);
 
     const referredByIbUserId = await this.resolveReferral(dto.referralCode);
 
-    const user = await this.users.create({
-      email: dto.email.toLowerCase(),
-      passwordHash,
-      ...seeded,
-      firstName: seeded.firstName!,
-      lastName: seeded.lastName!,
-      type: 'individual',
-      status: 'active',
-      verificationLevel: 0,
-      emailVerified: false,
-      // Hashed, never the token — schema.ts. `emailVerificationConsumedAt` is
-      // absent rather than explicit: an INSERT gets NULL for free, which is
-      // exactly "outstanding".
-      emailVerificationTokenHash: hashEmailedToken(verificationToken),
-      emailVerificationExpiry: verificationExpiry,
-      referredByIbUserId,
-    });
+    const user = await this.users
+      .create({
+        email: dto.email.toLowerCase(),
+        passwordHash,
+        ...seeded,
+        firstName: seeded.firstName!,
+        lastName: seeded.lastName!,
+        type: 'individual',
+        status: 'active',
+        verificationLevel: 0,
+        emailVerified: false,
+        // Hashed, never the token — schema.ts. `emailVerificationConsumedAt` is
+        // absent rather than explicit: an INSERT gets NULL for free, which is
+        // exactly "outstanding".
+        emailVerificationTokenHash: hashEmailedToken(verificationToken),
+        emailVerificationExpiry: verificationExpiry,
+        referredByIbUserId,
+      })
+      .catch((error: unknown) => {
+        // Two sign-ups for one NEW address at the same moment: the unique index
+        // decides, and the loser gets the same plain answer as any taken address.
+        if (isUniqueViolation(error)) throw emailAlreadyRegistered();
+        throw error;
+      });
 
     /*
      * A wallet in every enabled currency, before the email goes out.
@@ -416,12 +334,22 @@ export class AuthService {
     await this.email.sendVerificationEmail(user.email, verificationToken, code);
     this.logger.log(`Verification email dispatched to ${user.email}`);
 
-    /*
-     * `generic`, unchanged and unextended. Anything added here — an id, a
-     * timestamp, a flag — re-creates the oracle by being present on one path
-     * and not the other. The two returns must stay the SAME OBJECT SHAPE.
-     */
-    return generic;
+    return { message: 'We have sent a 6-digit code to your email to confirm it.' };
+  }
+
+  /**
+   * Whether an address is free to sign up with. The portal asks at the form's
+   * FIRST step, so a client who already has an account is told at once — not
+   * after typing their details again. Matched case-insensitively, as every
+   * address is here. See `register` for the ruling this serves.
+   */
+  async emailAvailable(email: string): Promise<boolean> {
+    return !(await this.users.findByEmail(email));
+  }
+
+  /** Refused, in the sign-up form's own words, when the address is taken. */
+  private async assertEmailAvailable(email: string): Promise<void> {
+    if (!(await this.emailAvailable(email))) throw emailAlreadyRegistered();
   }
 
   /**
@@ -695,7 +623,7 @@ export class AuthService {
    *
    * The 30-second cooldown bounds how FAST one address is mailed; this bounds
    * how MUCH, against a caller spreading requests across many IPs to fill
-   * someone's inbox — the same in-memory reasoning as `shouldSendAccountExists`.
+   * someone's inbox. Held in memory: a missed dedupe sends one extra email, never loses one.
    */
   private verificationBudgetAllows(email: string): boolean {
     const recent = this.recentVerificationSends(email.trim().toLowerCase());
@@ -705,7 +633,7 @@ export class AuthService {
   private recordVerificationSend(email: string): void {
     const key = email.trim().toLowerCase();
     this.verificationSentAt.set(key, [...this.recentVerificationSends(key), Date.now()]);
-    // Swept on write, as the account-exists map is: bounded by activity, no timer.
+    // Swept on write: bounded by activity, no timer.
     if (this.verificationSentAt.size > 1_000) {
       for (const k of this.verificationSentAt.keys()) {
         if (this.recentVerificationSends(k).length === 0) this.verificationSentAt.delete(k);

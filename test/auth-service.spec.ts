@@ -13,6 +13,7 @@ import { storedFilesStub } from './storage-stub';
 import {
   AuthenticationError,
   AuthorizationError,
+  EmailAlreadyRegisteredError,
   EmailNotVerifiedError,
   ValidationError,
   VerificationTokenExpiredError,
@@ -107,7 +108,6 @@ interface Harness {
   };
   email: {
     sendVerificationEmail: ReturnType<typeof vi.fn>;
-    sendAccountExistsEmail: ReturnType<typeof vi.fn>;
   };
   refreshTokens: {
     record: ReturnType<typeof vi.fn>;
@@ -134,7 +134,6 @@ function build(overrides: { user?: User | undefined } = {}): Harness {
   };
   const email = {
     sendVerificationEmail: vi.fn().mockResolvedValue(undefined),
-    sendAccountExistsEmail: vi.fn().mockResolvedValue(undefined),
   };
   const refreshTokens = {
     record: vi.fn().mockResolvedValue(undefined),
@@ -172,84 +171,57 @@ describe('register', () => {
     ...SIGN_UP_DETAILS,
   };
 
-  it('does not create a second account for an address that already has one', async () => {
+  /*
+   * The owner's ruling (28 Sep 2026): a taken address is refused PLAINLY, under
+   * the email field. It used to answer exactly as a new one and email the holder
+   * instead, which left the client who already had an account on a code screen
+   * waiting for a code that never came.
+   */
+  it('refuses an address that already has an account, under the email field', async () => {
     const h = build({ user: makeUser() });
-    await h.service.register(dto);
+    const refused = await h.service.register(dto).catch((error: unknown) => error);
+    expect(refused).toBeInstanceOf(EmailAlreadyRegisteredError);
+    expect((refused as EmailAlreadyRegisteredError).fields.email).toMatch(
+      /already has an OxShare account/,
+    );
+  });
+
+  it('creates nothing and sends nothing for a taken address — the screen says it', async () => {
+    const h = build({ user: makeUser() });
+    await h.service.register(dto).catch(() => undefined);
     expect(h.users.create).not.toHaveBeenCalled();
+    expect(h.email.sendVerificationEmail).not.toHaveBeenCalled();
   });
 
-  it('does NOT disclose that the address already has an account', async () => {
-    /*
-     * Registration used to answer 409 "An account with this email already
-     * exists.", which made it a membership oracle: anyone could test an address
-     * list and learn who banks here. `requestPasswordReset` avoids exactly that
-     * leak, and registration quietly gave it back.
-     *
-     * The response must be indistinguishable from a real signup — same message,
-     * and no `userId`, because returning the EXISTING user's id would hand back
-     * the fact being hidden.
-     */
-    const existing = build({ user: makeUser() });
-    const fresh = build();
-
-    const whenTaken = await existing.service.register(dto);
-    const whenNew = await fresh.service.register(dto);
-
-    expect(whenTaken.message).toBe(whenNew.message);
-    expect(whenTaken).not.toHaveProperty('userId');
-  });
-
-  it('tells the EXISTING account holder by email instead', async () => {
-    // Removing the 409 alone would be worse than the leak: the person who forgot
-    // they had an account gets a success message, no email, and no way to find
-    // out why they cannot sign in. The information still goes out — to the one
-    // mailbox entitled to it.
+  it('judges the ADDRESS before the details — a taken one is the whole answer', async () => {
+    // Details that would be refused on their own (under 18): the address decides.
     const h = build({ user: makeUser() });
-    await h.service.register(dto);
-    expect(h.email.sendAccountExistsEmail).toHaveBeenCalledWith('client@oxshare.com');
+    const refused = await h.service
+      .register({ ...dto, dateOfBirth: '2020-01-01' })
+      .catch((error: unknown) => error);
+    expect(refused).toBeInstanceOf(EmailAlreadyRegisteredError);
   });
 
-  it('sends that email at most once an hour per ADDRESS, however many attempts', async () => {
-    /*
-     * The route throttle caps ten attempts per hour per IP, which bounds the
-     * CALLER and not the VICTIM: ten proxies is ten times the mail to the same
-     * mailbox. Keyed on the address instead, so the ceiling follows the person
-     * being written to.
-     *
-     * The ordinary case is not an attack at all — somebody who has forgotten
-     * their account and submits the form four times should get one email.
-     */
-    const h = build({ user: makeUser() });
-
-    for (let i = 0; i < 4; i += 1) await h.service.register(dto);
-
-    expect(h.email.sendAccountExistsEmail).toHaveBeenCalledTimes(1);
+  it('answers a new address with the code it sent, and nothing more', async () => {
+    const res = await build().service.register(dto);
+    expect(res).toEqual({ message: expect.stringMatching(/6-digit code/) as unknown });
   });
 
-  it('still answers identically on every one of those attempts', async () => {
-    // The dedupe must not become an oracle of its own: a caller who noticed the
-    // second attempt behaving differently would have learned the address exists.
-    const h = build({ user: makeUser() });
-
-    const first = await h.service.register(dto);
-    const second = await h.service.register(dto);
-
-    expect(second).toEqual(first);
+  it('gives the loser of two simultaneous sign-ups the same plain answer', async () => {
+    // The unique index decides between them; Drizzle wraps the driver's error.
+    const h = build();
+    h.users.create.mockRejectedValueOnce(
+      Object.assign(new Error('duplicate key value'), { cause: { code: '23505' } }),
+    );
+    const refused = await h.service.register(dto).catch((error: unknown) => error);
+    expect(refused).toBeInstanceOf(EmailAlreadyRegisteredError);
   });
 
-  it('does not let one address suppress another', async () => {
-    // The stub answers every lookup with the same user, so the second address has
-    // to be given its own — otherwise this asserts that one address suppresses
-    // ITSELF, which is the previous test.
-    const h = build({ user: makeUser() });
-    h.users.findByEmail
-      .mockResolvedValueOnce(makeUser())
-      .mockResolvedValueOnce(makeUser({ email: 'someone.else@oxshare.com' }));
-
-    await h.service.register(dto);
-    await h.service.register({ ...dto, email: 'someone.else@oxshare.com' });
-
-    expect(h.email.sendAccountExistsEmail).toHaveBeenCalledTimes(2);
+  it('says whether an address is free, for the form’s first step', async () => {
+    expect(await build().service.emailAvailable('new.person@oxshare.com')).toBe(true);
+    expect(await build({ user: makeUser() }).service.emailAvailable('client@oxshare.com')).toBe(
+      false,
+    );
   });
 
   it('lowercases the email, so one address cannot become two accounts', async () => {

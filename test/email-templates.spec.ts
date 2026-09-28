@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  accountExists,
   adminInvite,
   adminPasswordReset,
   depositOutcome,
@@ -19,7 +18,6 @@ import {
 const ALL = [
   ['verifyEmail', verifyEmail('https://p.test/v?token=T')],
   ['passwordReset', passwordReset('https://p.test/r?token=T')],
-  ['accountExists', accountExists('https://p.test/auth/login')],
   ['kycDecision approved', kycDecision('Ann', 'approved', 'https://p.test')],
   ['kycDecision rejected', kycDecision('Ann', 'rejected', 'https://p.test', 'Blurry')],
   [

@@ -17,6 +17,20 @@
  * with one still standing is refused, naming the documents
  * (`outstandingDocumentFlags` + `documentFlagLabel`).
  *
+ * ## Replacing the whole document is an answer too (28 Sep 2026)
+ *
+ * A page flag names a SLOT, and another document may not have that slot: a
+ * passport has no back, a utility bill no second page. Reported: return a
+ * national ID's back, or a tenancy agreement's additional page, and let the
+ * client switch to a passport or a utility bill. The upload replaced the
+ * document, deleting every old page, yet only its own slot's flag was settled.
+ * The other flag stood on a page the new document does not have, nothing could
+ * settle it, and it was named after the NEW document ("Please upload a new
+ * Passport — the reviewer returned the one on file"). The only way on was to
+ * re-send the very document the client had moved away from. So a page of
+ * another document settles every page flag of the one it replaces, and a flag
+ * on a page the document on file does not have is owed by nobody.
+ *
  * A TYPED field's flag is highlighted and settled when its value changes, but it
  * does not block: a reviewer who flagged a date of birth because the passport
  * was unreadable may be satisfied by a clearer passport and the SAME date, and
@@ -69,14 +83,25 @@ function canonicalStepOf(id: string): 'document' | 'selfie' | 'address' | undefi
  * document of that step (`nationalId`, `utilityBill`), because a new page of the
  * document is the reply to "this document is not acceptable". A custom step's
  * file field IS its own flag.
+ *
+ * `replacesDocument`: the page is of a DIFFERENT document than the one on file,
+ * so the upload replaces that document whole (`placePage` starts it afresh and
+ * its old pages are deleted). Every page flag on the step goes with it — the
+ * returned file no longer exists, and the new document is judged on its own
+ * pages. See "Replacing the whole document" above.
  */
-export function flagsSettledByUpload(field: string, steps: readonly RuleStep[]): string[] {
+export function flagsSettledByUpload(
+  field: string,
+  steps: readonly RuleStep[],
+  replacesDocument = false,
+): string[] {
   const slug = canonicalStepOf(field);
   if (!slug) return [field];
   const wholeDocuments = steps
     .filter((step) => step.slug === slug)
     .flatMap((step) => step.fields.filter(isFileField).map((f) => f.name));
-  return [field, ...wholeDocuments];
+  if (!replacesDocument) return [field, ...wholeDocuments];
+  return [...new Set([field, ...pageSlotsOf(slug), ...wholeDocuments])];
 }
 
 /**
@@ -85,10 +110,16 @@ export function flagsSettledByUpload(field: string, steps: readonly RuleStep[]):
  * Only for a step that is still ENABLED: a flag on a document the broker has
  * since stopped asking for could never be settled, and would leave the client
  * unable to resubmit at all.
+ *
+ * And only for a PAGE the document on file has (`isPageOfStored`), for the same
+ * reason: the back of a national ID the client has replaced with a passport can
+ * never be uploaded again. An upload of another document settles those flags
+ * now; this is also what frees a submission flagged before that.
  */
 export function outstandingDocumentFlags(
   rejectedFields: readonly string[] | undefined,
   steps: readonly RuleStep[],
+  stored: StoredDocumentTypes = {},
 ): string[] {
   const enabled = steps.filter((step) => step.enabled);
   const enabledSlugs = new Set(enabled.map((step) => step.slug));
@@ -97,8 +128,27 @@ export function outstandingDocumentFlags(
   );
   return (rejectedFields ?? []).filter((id) => {
     const slug = canonicalStepOf(id);
-    return slug ? enabledSlugs.has(slug) : fileFields.has(id);
+    if (!slug) return fileFields.has(id);
+    return enabledSlugs.has(slug) && isPageOfStored(id, stored);
   });
+}
+
+/**
+ * Whether a canonical page slot is a page of the document ON FILE — `doc_back`
+ * is not a page of a passport, `address_proof_2` not a page of a utility bill.
+ *
+ * A type the catalogue does not know, or none recorded, keeps every slot: only a
+ * catalogue document says how many pages it has, and forgiving a flag on a
+ * guess would let a returned file go back unanswered.
+ */
+export function isPageOfStored(id: string, stored: StoredDocumentTypes): boolean {
+  const slug = canonicalStepOf(id);
+  if (slug !== 'document' && slug !== 'address') return true;
+  const type = slug === 'document' ? stored.document?.docType : stored.addressProof?.docType;
+  const entry = type ? catalogueDocument(type) : undefined;
+  if (!entry) return true;
+  const index = id === 'doc_back' || id === 'address_proof_2' ? 1 : 0;
+  return index < entry.parts.length;
 }
 
 /**
@@ -133,6 +183,11 @@ export function asPageFlags(flags: readonly string[], steps: readonly RuleStep[]
 
 const DOCUMENT_SLOTS = ['doc_front', 'doc_back'] as const;
 const ADDRESS_SLOTS = ['address_proof', 'address_proof_2'] as const;
+
+/** Every page slot of a document step's document; none for the selfie. */
+function pageSlotsOf(slug: 'document' | 'selfie' | 'address'): readonly string[] {
+  return slug === 'document' ? DOCUMENT_SLOTS : slug === 'address' ? ADDRESS_SLOTS : [];
+}
 
 /** The half of a submission `documentFlagLabel` reads. */
 export interface StoredDocumentTypes {

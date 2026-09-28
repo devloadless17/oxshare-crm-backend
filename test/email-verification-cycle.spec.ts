@@ -70,7 +70,6 @@ beforeAll(async () => {
       mailed.push({ to, token });
       return Promise.resolve();
     },
-    sendAccountExistsEmail: () => Promise.resolve(),
   };
   const loginAttempts = {
     lockedFor: () => Promise.resolve(null),

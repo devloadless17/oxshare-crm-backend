@@ -24,6 +24,7 @@ import {
   DomainError,
   FieldValidationError,
   ProfileLockedError,
+  EmailAlreadyRegisteredError,
   MailNotConfiguredError,
   MoneyRuleError,
   QuotaExceededError,
@@ -74,6 +75,9 @@ const DOMAIN_STATUS = new Map<new (...args: never[]) => DomainError, HttpStatus>
   // A field the verification has locked — nothing wrong with the value, the
   // record's state refuses it. Carries `fields`, like a validation error.
   [ProfileLockedError, HttpStatus.CONFLICT],
+  // Sign-up with a taken address — the portal puts it under the email FIELD and
+  // offers sign-in and a password reset. See the class.
+  [EmailAlreadyRegisteredError, HttpStatus.CONFLICT],
   [ReferralCodeUnknownError, HttpStatus.BAD_REQUEST],
   [ReferralSelfError, HttpStatus.BAD_REQUEST],
   [ReferralPartnerInactiveError, HttpStatus.BAD_REQUEST],
@@ -261,7 +265,9 @@ export class AllExceptionsFilter implements ExceptionFilter {
     if (exception instanceof DomainError) {
       // Per-field messages from a service rule, in the request validator's shape.
       const fields =
-        exception instanceof FieldValidationError || exception instanceof ProfileLockedError
+        exception instanceof FieldValidationError ||
+        exception instanceof ProfileLockedError ||
+        exception instanceof EmailAlreadyRegisteredError
           ? exception.fields
           : undefined;
       for (const [type, status] of DOMAIN_STATUS) {
