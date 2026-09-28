@@ -357,6 +357,9 @@ export class AdminAuthService {
       grantedPermissions = role.permissions;
     }
     await this.rbac.assertGrantable(actor, grantedPermissions ?? ['kyc.review', 'admins.view']);
+    // The mask the invitee will really have — the override, else the role's —
+    // never reads what the inviter may not (you cannot create sight you lack).
+    await this.rbac.assertResultingMaskWithin(actor, { roleId, override: maskedFields });
 
     /*
      * Visibility at INVITE time runs the same three guards as `updateAdmin` —
@@ -369,14 +372,13 @@ export class AdminAuthService {
      * - the territory obeys the subset rule via `assertScopable`;
      * - the intake grant cannot be handed out by a scoped actor who does not
      *   hold it themselves.
-     * An EMPTY scope list from an UNRESTRICTED actor is normalised to absent —
-     * from them it can only mean "unrestricted", and storing `[]` would read
-     * as a choice that was never made. From a SCOPED actor it is NOT
-     * normalised: `[]` means unrestricted too, which is sight they cannot
-     * grant — so it falls through to `assertScopable`, whose empty-list
-     * refusal exists for exactly this. Normalising first (as this used to)
-     * silently skipped both that refusal and the `admins.scope` gate: a
-     * scoped inviter sending `[]` minted an admin who saw EVERY client.
+     * Since 0154 an EMPTY scope list means NO territory tags (new clients
+     * only, or none) — it only ever narrows, from any actor. Every client is the
+     * explicit `seesAllClients` grant, given only by an actor who has it. The
+     * old reading ("[] means unrestricted", normalised to absent for an
+     * unrestricted actor and refused by name for a scoped one) is gone with it.
+     * And the MASK is held on the RESULT, not only a typed override: the role
+     * an invite picks brings its own mask (`assertResultingMaskWithin`).
      */
     /*
      * 0154: an EMPTY list is no longer "unrestricted" — it is "no territory

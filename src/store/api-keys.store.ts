@@ -3,6 +3,7 @@ import { and, desc, eq, isNull, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db } from '../database/db';
 import { admins, apiKeys } from '../database/schema';
+import { scopeOf, type ClientScope } from '../common/security/client-scope';
 
 /**
  * The `api_keys` table — machine credentials for the admin API.
@@ -28,6 +29,8 @@ export interface ApiKeyRow {
   seesUntriaged: boolean;
   /** The creator's all-clients grant, snapshot with the territory (0154). */
   seesAllClients: boolean;
+  /** The creator's effective field mask, snapshot at creation (0155). */
+  maskedFields: string[];
   expiresAt: Date | null;
   revokedAt: Date | null;
   lastUsedAt: Date | null;
@@ -49,12 +52,55 @@ export interface ApiKeyCreate {
   scopedTagIds: string[] | null;
   seesUntriaged: boolean;
   seesAllClients: boolean;
+  maskedFields: string[];
   expiresAt: Date | null;
 }
 
 @Injectable()
 export class ApiKeysStore {
   constructor(@Inject(DRIZZLE_DB) private readonly db: Db) {}
+
+  /**
+   * Narrow every live key an administrator created to what they may see NOW.
+   *
+   * A key is a snapshot of its creator's sight, taken when it was minted. When
+   * the creator is later narrowed — fewer tags, no longer every client, a
+   * stricter mask — each key is clamped to the intersection of what it had and
+   * the creator's new ceiling. Never widened: an administrator gaining sight
+   * does not quietly hand it to keys minted before.
+   *
+   * @returns how many keys were rewritten.
+   */
+  async clampToCreator(
+    adminId: string,
+    ceiling: ClientScope,
+    mask: readonly string[],
+  ): Promise<number> {
+    const keys = await this.db
+      .select()
+      .from(apiKeys)
+      .where(and(eq(apiKeys.createdBy, adminId), isNull(apiKeys.revokedAt)));
+    for (const key of keys) {
+      const own = scopeOf(key.scopedTagIds ?? [], key.seesUntriaged, key.seesAllClients);
+      const seesAll = own.unrestricted && ceiling.unrestricted;
+      const ownTags = own.unrestricted ? [...ceiling.tagIds] : [...own.tagIds];
+      const allowedTags = ceiling.unrestricted ? ownTags : ceiling.tagIds;
+      const tags = seesAll ? null : ownTags.filter((tagId) => allowedTags.includes(tagId));
+      const intake =
+        (own.unrestricted || own.includesUntriaged === true) &&
+        (ceiling.unrestricted || ceiling.includesUntriaged === true);
+      await this.db
+        .update(apiKeys)
+        .set({
+          seesAllClients: seesAll,
+          scopedTagIds: tags,
+          seesUntriaged: intake,
+          maskedFields: [...new Set([...(key.maskedFields ?? []), ...mask])],
+        })
+        .where(eq(apiKeys.id, key.id));
+    }
+    return keys.length;
+  }
 
   /**
    * The authentication path: a hash to the row it belongs to.
@@ -124,6 +170,7 @@ export class ApiKeysStore {
         scopedTagIds: apiKeys.scopedTagIds,
         seesUntriaged: apiKeys.seesUntriaged,
         seesAllClients: apiKeys.seesAllClients,
+        maskedFields: apiKeys.maskedFields,
         expiresAt: apiKeys.expiresAt,
         revokedAt: apiKeys.revokedAt,
         lastUsedAt: apiKeys.lastUsedAt,

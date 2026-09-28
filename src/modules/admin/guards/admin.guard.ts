@@ -29,7 +29,7 @@ import { AdminClientScopesStore } from '../../../store/admin-client-scopes.store
 import { RefreshTokensService } from '../../../common/security/refresh-tokens.service';
 import { ClientFieldsService } from '../client-fields.service';
 import { scopeOf, type ClientScope } from '../../../common/security/client-scope';
-import { EMPTY_MASK, type FieldMask } from '../../../common/security/field-mask';
+import type { FieldMask } from '../../../common/security/field-mask';
 
 /*
  * `isMaster()` is gone. Nothing is exempt from scoping and masking by identity
@@ -395,16 +395,18 @@ export class AdminAuthenticator {
      * on the key, never a live join to the creator, so it neither drifts with
      * the creator's scope nor breaks when they are deleted.
      *
-     * The field MASK stays empty: masking is a per-admin display concern and a
-     * key is a machine reader, not a screen. Territory is access (which rows
-     * exist to it at all); a mask is presentation (which columns a person is
-     * shown). The escalation was in the first, so that is what this closes.
+     * The field MASK travels too (0155). It used to stay empty ("a key is a
+     * machine reader, not a screen"), which was the same laundering the
+     * territory snapshot closed: an administrator whose role hides client
+     * emails could mint a key and read every email through it. Masking is
+     * what a PERSON may read, and a key reads on its creator's behalf.
      */
     return {
       ...identity,
       permissions,
       clientScope: scopeOf(row.scopedTagIds ?? [], row.seesUntriaged, row.seesAllClients),
-      fieldMask: EMPTY_MASK,
+      // The creator's mask, snapshot on the key (0155) — never empty by kind.
+      fieldMask: this.clientFields.expand(row.maskedFields ?? []),
     };
   }
 }

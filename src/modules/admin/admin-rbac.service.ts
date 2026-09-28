@@ -450,6 +450,29 @@ export class AdminRbacService {
   }
 
   /**
+   * "You cannot create sight you do not have" for the MASK — on the RESULT.
+   *
+   * `assertMaskAllowed` checks a mask somebody TYPED. The mask an administrator
+   * actually ends up with can also come from a ROLE (an invite or an edit that
+   * picks one) or vanish with one (a direct permission list detaches the role,
+   * and with no role and no override the mask is empty). Each of those let a
+   * masked actor mint or make a colleague who reads what the actor may not.
+   * This resolves the mask the target will really have and holds it to the
+   * actor's.
+   */
+  async assertResultingMaskWithin(
+    actor: AuthenticatedAdmin,
+    target: { roleId?: string; override?: string[] | null },
+  ): Promise<void> {
+    if (actor.fieldMask.length === 0) return;
+    const effective = await this.roles.resolveMaskedFields(
+      target.roleId,
+      target.override ?? undefined,
+    );
+    this.assertMaskAllowed(actor, effective);
+  }
+
+  /**
    * The anti-escalation rule for TERRITORY.
    *
    * A subset check, like permissions and unlike masks: a scope is a grant of
@@ -781,6 +804,12 @@ export class AdminRbacService {
     if (patch.scopedTagIds !== undefined) {
       await this.assertScopable(actor, patch.scopedTagIds);
     }
+    if (patch.roleId || patch.permissions || patch.maskedFields !== undefined) {
+      await this.assertResultingMaskWithin(actor, {
+        roleId: patch.roleId ?? (patch.permissions ? undefined : admin.roleId),
+        override: patch.maskedFields !== undefined ? patch.maskedFields : admin.maskedFields,
+      });
+    }
 
     /*
      * EVERY CLIENT is the explicit grant (0154) — never what an empty territory
@@ -835,6 +864,19 @@ export class AdminRbacService {
       return written;
     });
 
+    /*
+     * The admin's API keys may never see more than the admin now does: a key
+     * is a snapshot, so an administrator narrowed after minting one would
+     * otherwise keep their old sight through it. Clamped, never widened.
+     */
+    const keysClamped = touchesAccess
+      ? await this.apiKeys.clampToCreator(
+          id,
+          await this.scopes.scopeFor(updated),
+          await this.roles.resolveMaskedFields(updated.roleId, updated.maskedFields),
+        )
+      : 0;
+
     this.audit.record(actor.id, 'admin.update', 'admin', id, {
       before: { permissions: admin.permissions, roleId: admin.roleId, mask: admin.maskedFields },
       after: {
@@ -848,6 +890,7 @@ export class AdminRbacService {
       ...(patch.scopedTagIds === undefined ? {} : { scopedTagIds: patch.scopedTagIds }),
       ...(patch.seesUntriaged === undefined ? {} : { seesUntriaged: patch.seesUntriaged }),
       ...(update.seesAllClients === undefined ? {} : { seesAllClients: update.seesAllClients }),
+      ...(keysClamped > 0 ? { apiKeysClamped: keysClamped } : {}),
     });
     return await this.sanitize(updated);
   }

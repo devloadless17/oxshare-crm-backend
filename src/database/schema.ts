@@ -637,6 +637,12 @@ export const apiKeys = pgTable(
     /** The creator's all-clients grant, snapshot with the territory (0154). */
     seesAllClients: boolean('sees_all_clients').notNull().default(true),
     /**
+     * The creator's effective FIELD MASK, snapshot like the territory (0155).
+     * A key used to read with an empty mask, so a masked admin could mint one
+     * and read what their role hides.
+     */
+    maskedFields: jsonb('masked_fields').$type<string[]>().notNull().default([]),
+    /**
      * NULL means no expiry. Stated rather than defaulted to a date, because a
      * key that silently stops working at 3am is worse than one an operator
      * chose to make permanent.

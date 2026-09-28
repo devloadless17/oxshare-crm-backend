@@ -123,6 +123,9 @@ export class ApiKeysService {
       scopedTagIds,
       seesUntriaged,
       seesAllClients,
+      // The creator's mask travels with the key (0155): a key is never a way
+      // to read what its creator's role hides.
+      maskedFields: [...actor.fieldMask],
       expiresAt: input.expiresAt,
     });
 
