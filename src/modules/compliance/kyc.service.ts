@@ -391,8 +391,7 @@ export class KycService {
     steps: readonly KycStepConfig[],
     chosen?: ChosenDocument,
   ): Promise<
-    Omit<KycSubmission, 'formSnapshot' | 'reviewedBy'> & {
-      verificationLevel: number;
+    Omit<KycSubmission, 'formSnapshot' | 'reviewedBy' | 'updatedAt'> & {
       steps: StepState[];
     }
   > {
@@ -402,15 +401,19 @@ export class KycService {
      * reviewer's record of what was asked) and `reviewedBy` — an ADMIN's
      * internal id, which also names whoever currently holds a claim. It went
      * to every client until 28 Sep 2026; the portal never read it.
+     *
+     * Nor does this carry `updatedAt` or the verification level, which
+     * `KycStatusDto` never declared: the portal reads the level from
+     * `/auth/me` (lib/kyc-access.ts) and neither from here.
      */
     const {
       formSnapshot: _internal,
       reviewedBy: _desk,
+      updatedAt: _written,
       ...view
     } = this.withPersonalView(submission, user);
     return {
       ...view,
-      verificationLevel: user?.verificationLevel ?? 0,
       steps: stepStates(steps, view, new Date(), chosen),
     };
   }
