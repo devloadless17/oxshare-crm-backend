@@ -3,15 +3,26 @@ import { eq } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db, Executor } from '../../database/db';
 import { users } from '../../database/schema';
-import { FieldValidationError, NotFoundError } from '../../common/errors/domain-errors';
 import {
+  FieldValidationError,
+  KycCorrectionRefusedError,
+  NotFoundError,
+  ProfileLockedError,
+  ValidationError,
+} from '../../common/errors/domain-errors';
+import {
+  adminEditRule,
   checkProfile,
   firstProfileError,
+  isProfileKey,
+  normaliseProfileValue,
   PROFILE_FIELD_KEYS,
   type ClientProfile,
   type ProfileKey,
 } from '../../common/profile/client-profile';
+import { identityField, VERIFICATION_REQUIRED } from '../../common/kyc/identity-core';
 import { AuditLogStore } from '../../store/audit-log.store';
+import { EmailService } from '../email/email.service';
 import { KycStore, type KycStatus } from '../../store/kyc.store';
 import { UsersStore, type User } from '../../store/users.store';
 
@@ -85,6 +96,9 @@ export class ClientProfileService {
     private readonly users: UsersStore,
     private readonly auditLog: AuditLogStore,
     private readonly kyc: KycStore,
+    // Last, and optional: two specs construct this by hand, and only a
+    // correction sends mail.
+    private readonly email?: EmailService,
   ) {}
 
   /**
@@ -98,7 +112,17 @@ export class ClientProfileService {
     actor: ProfileActor,
     options: {
       required?: readonly ProfileKey[];
-      audit?: ProfileAuditOptions;
+      /**
+       * The audit row — or how to choose it from what ACTUALLY changed, under
+       * the locks: a desk edit that touches a verified detail is a correction,
+       * one that only moves the phone is not.
+       */
+      audit?:
+        | ProfileAuditOptions
+        | ((
+            changed: readonly ProfileKey[],
+            verification: KycStatus | undefined,
+          ) => ProfileAuditOptions);
       executor?: Executor;
       asOf?: Date;
       /**
@@ -109,7 +133,13 @@ export class ClientProfileService {
        */
       guard?: (changed: readonly ProfileKey[], verification: KycStatus | undefined) => void;
     } = {},
-  ): Promise<{ user: User; before: ClientProfile; after: ClientProfile; changed: ProfileKey[] }> {
+  ): Promise<{
+    user: User;
+    before: ClientProfile;
+    after: ClientProfile;
+    changed: ProfileKey[];
+    verification: KycStatus | undefined;
+  }> {
     const check = checkProfile(input, { required: options.required, asOf: options.asOf });
     const message = firstProfileError(check.errors);
     if (message) {
@@ -142,7 +172,7 @@ export class ClientProfileService {
         after[key] = next ?? '';
       }
 
-      if (changed.length === 0) return { user: current, before, after, changed };
+      if (changed.length === 0) return { user: current, before, after, changed, verification };
       options.guard?.(changed, verification);
 
       await tx.update(users).set(changes).where(eq(users.id, userId));
@@ -158,7 +188,10 @@ export class ClientProfileService {
       if (unanswered.length !== flagged.length) {
         await this.kyc.update(userId, { rejectedFields: unanswered }, tx);
       }
-      const audit = options.audit ?? {};
+      const audit =
+        typeof options.audit === 'function'
+          ? options.audit(changed, verification)
+          : (options.audit ?? {});
       await this.auditLog.record(
         {
           actorId: actor.id,
@@ -177,9 +210,141 @@ export class ClientProfileService {
         tx,
       );
       const user = (await this.users.findById(userId, tx))!;
-      return { user, before, after, changed };
+      return { user, before, after, changed, verification };
     };
 
     return options.executor ? run(options.executor) : this.db.transaction(run);
+  }
+
+  /**
+   * AN ADMIN CHANGES A CLIENT'S DETAILS — from the client page or from the KYC
+   * review, by ONE rule (`adminEditRule`) and one write.
+   *
+   * Every detail is `free`, `held` or a `correction`, decided under the locks
+   * from where the verification is and whether this admin may correct verified
+   * details. A correction needs a reason; it is re-checked, audited as
+   * `kyc.identity_correct` on the verification with the reason and both
+   * values, the client is emailed which details changed, and they STAY
+   * verified. A held detail is refused with its sentence (409 `PROFILE_LOCKED`).
+   *
+   * It replaced two paths: the desk edit refused every verified detail with
+   * "Use Correct details on the client's KYC review", and the review's
+   * correction carried its own copy of the rules. The owner's report
+   * (28 Sep 2026): being sent to another screen to edit a client is a bad
+   * experience. The KYC review now calls this too (`KycService.correctIdentity`).
+   */
+  async editAsAdmin(
+    userId: string,
+    input: Partial<Record<ProfileKey, unknown>>,
+    actor: ProfileActor,
+    options: {
+      /** The admin holds `kyc.identity.correct`. */
+      mayCorrect: boolean;
+      /** Why a verified detail changes — required when one does. */
+      reason?: string;
+      /** Where the change came from, on the audit row. */
+      via: 'admin_edit' | 'kyc_correction';
+      /**
+       * Refuse unless this IS a correction of a verified record — the review's
+       * "Correct details", which exists for nothing else. Without it, a
+       * verification that moved on between the screen and the save would turn
+       * the reviewer's correction into a plain edit nobody meant to make.
+       */
+      correctionOnly?: boolean;
+    },
+  ) {
+    const reason = options.reason?.trim() || undefined;
+    const asOf = new Date();
+
+    /*
+     * A value that would DISQUALIFY a verified record — underage, an impossible
+     * date — is a fact about the record, not a typo: 409 with its `kind`, so the
+     * screen can say "this needs a rejection" rather than "fix the field". Asked
+     * before the field rules, which would call it a plain 400. The status is
+     * read here only to choose the refusal; the decision is re-made under the
+     * locks below.
+     */
+    const status = (await this.kyc.findByUserId(userId))?.status;
+    if (status === 'approved') {
+      for (const [key, value] of Object.entries(input)) {
+        if (!isProfileKey(key) || typeof value !== 'string' || value.trim() === '') continue;
+        if (adminEditRule(key, status, options.mayCorrect).kind !== 'correction') continue;
+        const outcome = normaliseProfileValue(key, value, asOf);
+        if (
+          !outcome.ok &&
+          (outcome.code === 'underage' || outcome.code === 'invalid_date_of_birth')
+        ) {
+          throw new KycCorrectionRefusedError(
+            `The corrected details do not pass verification: ${outcome.message} ` +
+              'This is a fact about the RECORD, not about what you typed — a verified ' +
+              'record cannot hold these values, so this is a rejection rather than an edit.',
+            { kind: outcome.code, fields: [key] },
+          );
+        }
+      }
+    }
+
+    const isCorrection = (changed: readonly ProfileKey[], verification: KycStatus | undefined) =>
+      changed.some(
+        (key) => adminEditRule(key, verification, options.mayCorrect).kind === 'correction',
+      );
+
+    const written = await this.update(userId, input, actor, {
+      asOf,
+      // A correction never CLEARS a detail the verification required.
+      required:
+        status === 'approved'
+          ? Object.keys(input).filter((key): key is ProfileKey =>
+              VERIFICATION_REQUIRED.includes(key as ProfileKey),
+            )
+          : undefined,
+      guard: (changed, verification) => {
+        const held: Record<string, string> = {};
+        for (const key of changed) {
+          const rule = adminEditRule(key, verification, options.mayCorrect);
+          if (rule.kind === 'held') held[key] = rule.sentence;
+        }
+        const first = Object.values(held)[0];
+        if (first) throw new ProfileLockedError(first, held);
+
+        const correcting = isCorrection(changed, verification);
+        if (options.correctionOnly && !correcting) {
+          throw new ValidationError(
+            'This correction applies to a VERIFIED record, and this one no longer is.',
+          );
+        }
+        if (correcting && !reason) {
+          throw new FieldValidationError(
+            'A verified detail changes only with a reason — it is recorded on the verification.',
+            { reason: 'Give a reason for changing a verified detail.' },
+          );
+        }
+      },
+      audit: (changed, verification) =>
+        isCorrection(changed, verification)
+          ? {
+              action: 'kyc.identity_correct',
+              subjectType: 'kyc_submission',
+              subjectId: userId,
+              via: options.via,
+              reason,
+            }
+          : { via: options.via },
+    });
+
+    const corrected = isCorrection(written.changed, written.verification);
+    /*
+     * The client is TOLD, always: a verified identity changed by somebody other
+     * than its owner must never be silent. Which details — not their values,
+     * which belong behind the client's own sign-in.
+     */
+    if (corrected && written.changed.length > 0) {
+      void this.email?.sendKycDetailsCorrectedEmail(
+        written.user.email,
+        written.user.firstName,
+        written.changed.map((key) => identityField(key)?.label ?? key),
+      );
+    }
+    return { ...written, corrected };
   }
 }

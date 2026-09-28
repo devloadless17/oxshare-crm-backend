@@ -4,7 +4,6 @@ import { IbStore } from '../../store/ib.store';
 import { ClientTagsStore } from '../../store/client-tags.store';
 import {
   ClientNotFoundError,
-  ProfileLockedError,
   ReferralCodeUnknownError,
   ReferralPartnerInactiveError,
   ReferralSelfError,
@@ -94,7 +93,8 @@ import { AdminHoldingsService } from './admin-holdings.service';
 import type { AuthenticatedAdmin } from './guards/admin.guard';
 import { ClientProfileService } from '../profile/client-profile.service';
 import {
-  deskLocks,
+  correctionFields,
+  heldFields,
   PROFILE_FIELD_KEYS,
   type ProfileKey,
 } from '../../common/profile/client-profile';
@@ -446,14 +446,27 @@ export class AdminClientsService {
       createdAt: client.createdAt,
       tags,
       /*
-       * Which fields the desk may NOT change right now, each with where it can
-       * be changed instead — the server's rule (`deskLocks`), stated once, so
-       * the dialog disables them rather than keeping a copy of the rule that
-       * could drift from the one that refuses. Only for an editor: nobody else
-       * has a form to render it on.
+       * How THIS admin may change each detail right now — the server's rule
+       * (`adminEditRule`), stated once, so the dialog renders it rather than
+       * keeping a copy that could drift from the one that refuses:
+       *  - `lockedFields`: held, each with the sentence saying why, in place;
+       *  - `correctableFields`: verified details this admin may correct, which
+       *    change only with a reason.
+       * Only for an editor: nobody else has a form to render it on.
        */
       ...(may('clients.edit')
-        ? { lockedFields: deskLocks(PROFILE_FIELD_KEYS, submission?.status) }
+        ? {
+            lockedFields: heldFields(
+              PROFILE_FIELD_KEYS,
+              submission?.status,
+              may('kyc.identity.correct'),
+            ),
+            correctableFields: correctionFields(
+              PROFILE_FIELD_KEYS,
+              submission?.status,
+              may('kyc.identity.correct'),
+            ),
+          }
         : {}),
       ...(kyc === undefined
         ? {}
@@ -604,16 +617,17 @@ export class AdminClientsService {
    *
    * What is left is the CLERICAL set — the profile a client gave at
    * registration, which a support desk fixes when it was typed wrong. That is
-   * the whole intended job, and it ends where verification begins: once a KYC
-   * submission leaves the client's hands, only the phone stays the desk's to
-   * change. The rest is evidence a reviewer is checking or has checked, and it
-   * has its own narrower routes — `deskLocks` says which, per field, and the
-   * refusal (409 `PROFILE_LOCKED`) names them. Decided under the same locks the
-   * write takes, so a submission cannot slip in between the check and the edit.
+   * the whole intended job, and verification changes HOW, not WHERE: while a
+   * reviewer is checking the record only the phone moves, and once verified a
+   * detail is a CORRECTION — made right here by an admin holding
+   * `kyc.identity.correct`, with a reason, recorded on the verification, the
+   * client told. `adminEditRule` says which, per field; a held detail answers
+   * 409 `PROFILE_LOCKED` naming each. Decided under the same locks the write
+   * takes, so a submission cannot slip in between the check and the edit.
    */
   async updateClientProfile(
     userId: string,
-    patch: Partial<Record<ProfileKey, string>>,
+    patch: Partial<Record<ProfileKey, string>> & { reason?: string },
     actor: AuthenticatedAdmin,
   ) {
     assertActorCan(actor, 'clients.edit', "edit a client's profile");
@@ -621,8 +635,9 @@ export class AdminClientsService {
     const user = await this.users.findForAdmin(userId, actor.clientScope);
     if (!user) throw new ClientNotFoundError();
 
+    const { reason, ...fields } = patch;
     const named = Object.fromEntries(
-      Object.entries(patch).filter(([, value]) => value !== undefined),
+      Object.entries(fields).filter(([, value]) => value !== undefined),
     ) as Partial<Record<ProfileKey, string>>;
     if (Object.keys(named).length === 0) {
       throw new ValidationError('Name a field to change.');
@@ -639,17 +654,22 @@ export class AdminClientsService {
      * only what actually changed, and records `client.profile_update` — before
      * and after — in the write's own transaction.
      */
-    const { user: updated } = await this.profile.update(
+    /*
+     * A VERIFIED detail is corrected HERE, on the client, by an admin who may
+     * correct verified details — with a reason, re-checked, audited on the
+     * verification, and the client told. It used to be refused with "Use
+     * Correct details on the client's KYC review", sending the admin to another
+     * screen (reported 28 Sep 2026). One rule and one write for both screens:
+     * `ClientProfileService.editAsAdmin`.
+     */
+    const { user: updated } = await this.profile.editAsAdmin(
       userId,
       named,
       { kind: 'admin', id: actor.id, email: actor.email },
       {
-        audit: { via: 'admin_edit' },
-        guard: (changed, verification) => {
-          const locked = deskLocks(changed, verification);
-          const first = Object.values(locked)[0];
-          if (first) throw new ProfileLockedError(first, locked);
-        },
+        mayCorrect: actorHasPermission(actor, 'kyc.identity.correct'),
+        reason,
+        via: 'admin_edit',
       },
     );
     return this.profileView(updated, actor);

@@ -18252,7 +18252,14 @@
             "additionalProperties": {
               "type": "string"
             },
-            "description": "The profile fields the desk may not change right now, each with where it can be changed instead — the verification's lock (`deskLocks`). Present only for a reader holding clients.edit; empty when nothing is locked."
+            "description": "The details THIS admin may not change right now, each with the sentence saying why — a review is checking it, or it was verified and they may not correct verified details (`adminEditRule`). Present only for a reader holding clients.edit; empty when nothing is held."
+          },
+          "correctableFields": {
+            "description": "Verified details THIS admin may correct: they change only with a `reason`, are recorded on the verification, and the client is told. Present only for a reader holding clients.edit.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           },
           "kyc": {
             "description": "Absent without kyc.view.",
@@ -18366,6 +18373,12 @@
             "type": "string",
             "example": "1103 2080",
             "maxLength": 12
+          },
+          "reason": {
+            "type": "string",
+            "example": "Surname misspelt at registration; the passport reads \"Haddad\".",
+            "maxLength": 500,
+            "description": "Required when a verified detail changes. Recorded on the audit row."
           }
         }
       },

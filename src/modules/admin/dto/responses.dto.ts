@@ -1059,12 +1059,20 @@ export class ClientProfileDto {
     type: 'object',
     additionalProperties: { type: 'string' },
     description:
-      "The profile fields the desk may not change right now, each with where it can be changed instead — the verification's lock (`deskLocks`). Present only for a reader holding clients.edit; empty when nothing is locked.",
+      'The details THIS admin may not change right now, each with the sentence saying why — a review is checking it, or it was verified and they may not correct verified details (`adminEditRule`). Present only for a reader holding clients.edit; empty when nothing is held.',
   })
   @NotClientField(
     "the verification's rule about the record, in the system's words — which fields are locked, never their values",
   )
   lockedFields?: Record<string, string>;
+
+  @ApiPropertyOptional({
+    type: [String],
+    description:
+      'Verified details THIS admin may correct: they change only with a `reason`, are recorded on the verification, and the client is told. Present only for a reader holding clients.edit.',
+  })
+  @NotClientField("the verification's rule about the record — which fields, never their values")
+  correctableFields?: string[];
   @ApiPropertyOptional({ type: ProfileKycDto, description: 'Absent without kyc.view.' })
   @NotClientField(
     'not a client-owned attribute \u2014 kyc describes the record rather than the person',

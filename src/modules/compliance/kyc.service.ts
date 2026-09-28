@@ -38,17 +38,10 @@ import {
   AuthorizationError,
   ConflictError,
   FieldValidationError,
-  KycCorrectionRefusedError,
   NotFoundError,
   ValidationError,
 } from '../../common/errors/domain-errors';
-import {
-  acceptedDocuments,
-  coreStepOf,
-  identityField,
-  isPlatformField,
-  VERIFICATION_REQUIRED,
-} from '../../common/kyc/identity-core';
+import { acceptedDocuments, coreStepOf, isPlatformField } from '../../common/kyc/identity-core';
 import { DRIZZLE_DB } from '../../database/database.module';
 import {
   NOTIFICATION_DISPATCH,
@@ -56,12 +49,7 @@ import {
 } from '../../common/provisioning/notification-dispatch.port';
 import type { Db } from '../../database/db';
 import type { ClientScope } from '../../common/security/client-scope';
-import {
-  isProfileKey,
-  KYC_CORRECTABLE_KEYS,
-  normaliseProfileValue,
-  type ProfileKey,
-} from '../../common/profile/client-profile';
+import { isProfileKey, type ProfileKey } from '../../common/profile/client-profile';
 import {
   ClientProfileService,
   profileOf,
@@ -1371,76 +1359,26 @@ export class KycService {
     }
 
     /*
-     * ⚠️ VALIDATES WHAT CHANGED, NOT THE WHOLE RECORD — completeness was
-     * established at submission and is not what a correction re-opens; a record
-     * approved before a field became required must still be correctable. So the
-     * rules are narrowed to the corrected fields, and the date-of-birth rules
-     * fire exactly when a date of birth is what changed.
-     *
-     * A value that would DISQUALIFY an approved record — underage, impossible —
-     * is refused as a conflict (409), not an input error: it is a fact about the
-     * record, and the product's answer to it is a rejection, made on purpose.
+     * ONE implementation for every admin who changes a client's details
+     * (28 Sep 2026): the client page's edit and this review's "Correct details"
+     * both go through `ClientProfileService.editAsAdmin`. It validates only
+     * what changed (a record approved before a field became required must stay
+     * correctable), refuses a value that would disqualify the record as a 409,
+     * audits `kyc.identity_correct` with the reason and both values, and tells
+     * the client. `correctionOnly`: this route exists for nothing else.
      */
-    const asOf = new Date();
-    for (const [key, value] of Object.entries(patch)) {
-      if (!isProfileKey(key) || typeof value !== 'string' || value.trim() === '') continue;
-      const outcome = normaliseProfileValue(key, value, asOf);
-      if (
-        !outcome.ok &&
-        (outcome.code === 'underage' || outcome.code === 'invalid_date_of_birth')
-      ) {
-        throw new KycCorrectionRefusedError(
-          `The corrected details do not pass verification: ${outcome.message} ` +
-            'This is a fact about the RECORD, not about what you typed — an approved ' +
-            'submission cannot hold these values, so this is a rejection rather than an edit.',
-          { kind: outcome.code, fields: [key] },
-        );
-      }
-    }
-
-    const written = await this.profile.update(userId, patch, actor, {
-      audit: {
-        action: 'kyc.identity_correct',
-        subjectType: 'kyc_submission',
-        subjectId: userId,
-        via: 'kyc_correction',
-        reason,
-      },
-      // A correction never CLEARS a verified field — every one it names is required.
-      required: Object.keys(patch).filter((key): key is ProfileKey =>
-        VERIFICATION_REQUIRED.includes(key as ProfileKey),
-      ),
-      /*
-       * Re-asked under the locks: the status check above is a read, and this is
-       * the decision. And only what a correction may touch — every identity
-       * field but the phone, which the desk edits directly.
-       */
-      guard: (changed, verification) => {
-        if (verification !== 'approved') {
-          throw new ValidationError(
-            'This correction applies to an APPROVED submission, and this one no longer is.',
-          );
-        }
-        const outside = changed.filter((key) => !KYC_CORRECTABLE_KEYS.includes(key));
-        if (outside.length > 0) {
-          throw new ValidationError(
-            'A correction does not change the phone number — edit it on the client’s profile.',
-          );
-        }
-      },
-    });
-    /*
-     * The client is TOLD, always: a verified identity changed by somebody other
-     * than its owner must never be silent. Which details — not their values,
-     * which belong behind the client's own sign-in.
-     */
-    if (written.changed.length > 0) {
-      void this.email.sendKycDetailsCorrectedEmail(
-        written.user.email,
-        written.user.firstName,
-        written.changed.map((key) => identityField(key)?.label ?? key),
+    const phone = Object.prototype.hasOwnProperty.call(patch, 'phone');
+    if (phone) {
+      throw new ValidationError(
+        'A correction does not change the phone number — edit it on the client’s profile.',
       );
     }
+    const written = await this.profile.editAsAdmin(userId, patch, actor, {
+      mayCorrect: true,
+      reason,
+      via: 'kyc_correction',
+      correctionOnly: true,
+    });
     return {
       submission: await this.getByUserId(userId),
       before: written.before,

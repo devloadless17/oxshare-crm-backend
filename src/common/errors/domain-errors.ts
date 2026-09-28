@@ -93,7 +93,7 @@ export class FieldValidationError extends ValidationError {
  * A 409 rather than a 400: nothing about the values is wrong — the record's
  * state refuses them. Once a KYC submission leaves the client's hands the
  * identity it carries is what a reviewer is checking, or has checked, against
- * documents; `deskLocks` (`common/profile/client-profile.ts`) holds the rule.
+ * documents; `adminEditRule` (`common/profile/client-profile.ts`) holds the rule.
  */
 export class ProfileLockedError extends DomainError {
   readonly code = 'PROFILE_LOCKED';
