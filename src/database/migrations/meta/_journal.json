@@ -1065,6 +1065,13 @@
       "when": 1789139778750,
       "tag": "0151_client_identity_record",
       "breakpoints": true
+    },
+    {
+      "idx": 153,
+      "version": "7",
+      "when": 1789139838750,
+      "tag": "0152_adopt_identity_record",
+      "breakpoints": true
     }
   ]
 }
