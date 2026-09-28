@@ -695,6 +695,44 @@ export class ClientTagWithCountDto extends ClientTagDto {
   clientCount: number;
 }
 
+/** The introducer on a client-list row — `ProfileReferrerDto`, cut to what a row shows. */
+export class ClientRowReferrerDto {
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty()
+  ibUserId: string;
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiPropertyOptional({
+    type: 'integer',
+    description:
+      'The introducer’s Portal ID. Absent, with their name, when they are outside your territory.',
+  })
+  portalId?: number;
+  @ClientField('client.firstName')
+  @ApiPropertyOptional({ description: 'Absent when the introducer is outside your territory.' })
+  firstName?: string;
+  @ClientField('client.lastName')
+  @ApiPropertyOptional({ description: 'Absent when the introducer is outside your territory.' })
+  lastName?: string;
+  /*
+   * DECLARED, NEVER SENT. A list row names the introducer and does not need
+   * their address — but the catalogue masks `client.referrer.email` wherever a
+   * `referrer` appears (the profile's carries one), and masking by shape can
+   * only strip what the shape declares. Declared, the two mechanisms agree on
+   * this row too (`mask-equivalence.spec.ts`), and a later change that did put
+   * the address here would be masked from its first response.
+   */
+  @ClientField('client.email')
+  @ApiPropertyOptional({ description: 'Not carried on a list row.' })
+  email?: string;
+  @NotClientField('a visibility state about the reader, not an attribute of the person')
+  @ApiProperty({
+    description:
+      'True when a partner the reader may not see introduced this client — distinct from ' +
+      '“not introduced”, which is an absent `referrer`.',
+  })
+  outsideTerritory: boolean;
+}
+
 /**
  * Every field below the id is OPTIONAL, and that is the RBAC-03 wire contract
  * rather than laxity: a field the caller may not see is OMITTED, and the
@@ -781,6 +819,23 @@ export class ClientRowDto {
   @ClientField('client.tags')
   @ApiPropertyOptional({ type: [ClientTagDto] })
   tags?: ClientTagDto[];
+
+  /*
+   * Who introduced them — the Referrals page's "Introduced by" column. Built
+   * for a whole page in one scoped query (`withReferrers`), with the profile's
+   * three-way rule: absent for nobody, identity for an introducer the reader
+   * may see, `outsideTerritory` alone for one they may not.
+   */
+  @ApiPropertyOptional({
+    type: ClientRowReferrerDto,
+    description:
+      'The partner who introduced this client. Absent when nobody did, and absent for a ' +
+      'reader without ib.view — the screen tells the two apart by its own permission check.',
+  })
+  @NotClientField(
+    'not a client-owned attribute — referrer describes the record rather than the person',
+  )
+  referrer?: ClientRowReferrerDto;
 }
 
 @NoClientFields(

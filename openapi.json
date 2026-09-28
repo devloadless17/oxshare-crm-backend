@@ -7147,6 +7147,19 @@
             }
           },
           {
+            "name": "referred",
+            "required": false,
+            "in": "query",
+            "description": "`true`: only clients a partner introduced (the Referrals page); `false`: only clients nobody introduced. On users.referred_by_ib_user_id, so a referred client who later became a partner still counts. Any other value is a 400.",
+            "schema": {
+              "enum": [
+                "true",
+                "false"
+              ],
+              "type": "string"
+            }
+          },
+          {
             "name": "sort",
             "required": false,
             "in": "query",
@@ -7315,6 +7328,19 @@
             "in": "query",
             "description": "Clients introduced by this partner, by Portal ID — the same filter as the list, so the file matches the screen it was exported from.",
             "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "referred",
+            "required": false,
+            "in": "query",
+            "description": "`true`: only clients a partner introduced (the Referrals page); `false`: only clients nobody introduced. On users.referred_by_ib_user_id, so a referred client who later became a partner still counts. Any other value is a 400.",
+            "schema": {
+              "enum": [
+                "true",
+                "false"
+              ],
               "type": "string"
             }
           },
@@ -17900,6 +17926,38 @@
           "createdAt"
         ]
       },
+      "ClientRowReferrerDto": {
+        "type": "object",
+        "properties": {
+          "ibUserId": {
+            "type": "string"
+          },
+          "portalId": {
+            "type": "integer",
+            "description": "The introducer’s Portal ID. Absent, with their name, when they are outside your territory."
+          },
+          "firstName": {
+            "type": "string",
+            "description": "Absent when the introducer is outside your territory."
+          },
+          "lastName": {
+            "type": "string",
+            "description": "Absent when the introducer is outside your territory."
+          },
+          "email": {
+            "type": "string",
+            "description": "Not carried on a list row."
+          },
+          "outsideTerritory": {
+            "type": "boolean",
+            "description": "True when a partner the reader may not see introduced this client — distinct from “not introduced”, which is an absent `referrer`."
+          }
+        },
+        "required": [
+          "ibUserId",
+          "outsideTerritory"
+        ]
+      },
       "ClientRowDto": {
         "type": "object",
         "properties": {
@@ -17976,6 +18034,14 @@
             "items": {
               "$ref": "#/components/schemas/ClientTagDto"
             }
+          },
+          "referrer": {
+            "description": "The partner who introduced this client. Absent when nobody did, and absent for a reader without ib.view — the screen tells the two apart by its own permission check.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ClientRowReferrerDto"
+              }
+            ]
           }
         },
         "required": [

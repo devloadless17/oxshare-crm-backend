@@ -238,6 +238,13 @@
         "label": "Client tags",
         "maskable": true,
         "$why": "Segmentation labels ('high risk', 'complaint pending') say more about how the business sees a client than most single fields do, and under tag scoping they also reveal which desks handle them."
+      },
+      {
+        "key": "client.referrer",
+        "label": "Introduced by",
+        "maskable": false,
+        "reason": "Records which partner the client came through — a fact about the account, not the person. The partner's name inside it follows the First name and Last name masks, and it needs ib.view to be read at all.",
+        "$why": "The Referrals page's column (28 Sep 2026). Hiding the whole attribution would make a referred client read as one nobody introduced, which is the false sentence the profile's referrer card was built to stop saying."
       }
     ]
   },
