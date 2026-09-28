@@ -310,4 +310,37 @@ describe('what the reviewer returned', () => {
       { id: 'prooof3', label: 'Lease', kind: 'returned', blocking: true },
     ]);
   });
+
+  /*
+   * Reported 28 Sep 2026. The reviewer returned the BACK of a national ID; the
+   * client switched to a passport. The flag outlived the card it was about and
+   * read "Please upload a new Passport — the reviewer returned the one on
+   * file", and Continue stayed shut until the national ID was sent again.
+   */
+  it('a returned national-ID back is answered by the passport the client switched to', () => {
+    // On file: the passport (COMPLETE). Left over: the national ID's back.
+    const switched = stateOf('document', { ...COMPLETE, rejectedFields: ['doc_back'] });
+    expect(switched).toMatchObject({ complete: true, missing: [], returned: [] });
+
+    // While the national ID is still on file, its returned back still blocks.
+    const kept = stateOf('document', {
+      ...COMPLETE,
+      document: {
+        docType: 'national_id',
+        frontFilePath: 'uploads/kyc/id-front.png',
+        backFilePath: 'uploads/kyc/id-back.png',
+      },
+      rejectedFields: ['doc_back'],
+    });
+    expect(kept.complete).toBe(false);
+    expect(kept.returned).toEqual([
+      { id: 'doc_back', label: 'National ID (Back Side)', kind: 'returned', blocking: true },
+    ]);
+  });
+
+  it('a returned tenancy-agreement page is answered by the utility bill the client switched to', () => {
+    // On file: the utility bill (COMPLETE). Left over: the agreement's additional page.
+    const switched = stateOf('address', { ...COMPLETE, rejectedFields: ['address_proof_2'] });
+    expect(switched).toMatchObject({ complete: true, missing: [], returned: [] });
+  });
 });

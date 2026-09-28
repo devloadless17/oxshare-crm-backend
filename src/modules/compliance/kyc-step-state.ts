@@ -43,6 +43,7 @@
 import { catalogueDocument } from '../../common/kyc/document-catalogue';
 import {
   documentFlagLabel,
+  isPageOfStored,
   missingRequiredPages,
   outstandingDocumentFlags,
 } from './kyc-document-rules';
@@ -150,7 +151,9 @@ export function stepStates(
   now: Date,
   chosen?: ChosenDocument,
 ): StepState[] {
-  const blocking = new Set(outstandingDocumentFlags(submission.rejectedFields ?? undefined, steps));
+  const blocking = new Set(
+    outstandingDocumentFlags(submission.rejectedFields ?? undefined, steps, storedOf(submission)),
+  );
   return steps
     .filter((step) => step.enabled && step.slug !== 'review')
     .map((step) => {
@@ -284,6 +287,14 @@ function fieldsOwed(step: StateStep, submission: StateSubmission, now: Date): Ow
   return owed;
 }
 
+/** The documents on file, as the flag rules read them. */
+function storedOf(submission: StateSubmission) {
+  return {
+    document: submission.document ?? undefined,
+    addressProof: submission.addressProof ?? undefined,
+  };
+}
+
 /** The reviewer's unanswered flags that belong to this step. */
 function returnedOn(
   step: StateStep,
@@ -295,16 +306,17 @@ function returnedOn(
   for (const slot of documentSlotsOf(step.slug) ?? []) ids.add(slot);
   if (step.slug === 'selfie') ids.add('selfie');
 
-  const stored = {
-    document: submission.document ?? undefined,
-    addressProof: submission.addressProof ?? undefined,
-  };
-  return (submission.rejectedFields ?? [])
-    .filter((id) => ids.has(id))
-    .map((id) => ({
-      id,
-      label: documentFlagLabel(id, steps, stored),
-      kind: 'returned' as const,
-      blocking: blocking.has(id),
-    }));
+  const stored = storedOf(submission);
+  return (
+    (submission.rejectedFields ?? [])
+      // A page the document on file does not have belonged to one the client
+      // replaced — not "returned" to them any more, in any sense.
+      .filter((id) => ids.has(id) && isPageOfStored(id, stored))
+      .map((id) => ({
+        id,
+        label: documentFlagLabel(id, steps, stored),
+        kind: 'returned' as const,
+        blocking: blocking.has(id),
+      }))
+  );
 }

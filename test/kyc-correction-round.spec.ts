@@ -250,6 +250,116 @@ describe('a returned document must be replaced before the submission goes back',
     expect(after.status).toBe('submitted');
     expect(after.rejectedFields).toBeNull();
   });
+
+  /*
+   * Reported 28 Sep 2026, twice over. The reviewer returns ONE page — a national
+   * ID's back, a tenancy agreement's additional page — and the client, correcting
+   * it, switches to a document without that page: a passport, a utility bill.
+   * The upload replaced the old document, yet its returned page stayed flagged,
+   * named after the new one ("Please upload a new Passport — the reviewer
+   * returned the one on file"), and nothing but re-sending the old document
+   * would let the client go on.
+   */
+  async function submittedAndReturned(
+    tag: string,
+    identity: string[],
+    address: string[],
+    flag: string,
+  ) {
+    const client = await newClient(tag);
+    await client.session
+      .post('/v1/kyc/step', { step: 'personal', data: COMPLETE_PROFILE })
+      .expect(201);
+    // Two identity pages mean a national ID, one a passport; two address pages
+    // a tenancy agreement, one a utility bill.
+    const identityType = identity.length === 2 ? 'national_id' : 'passport';
+    const addressType = address.length === 2 ? 'tenancy_agreement' : 'utility_bill';
+    for (const field of identity) await upload(client.session, field, identityType).expect(201);
+    for (const field of address) await upload(client.session, field, addressType).expect(201);
+    await upload(client.session, 'selfie').expect(201);
+    await client.session.post('/v1/kyc/submit').expect(201);
+
+    const admin = await actingAs(ctx, 'admin', ADMIN);
+    await admin
+      .patch(`/v1/admin/kyc/${client.id}/reject`, {
+        reason: 'One page is unreadable',
+        rejectedFields: [flag],
+      })
+      .expect(200);
+    expect((await stored(client.id)).rejectedFields).toEqual([flag]);
+    return client;
+  }
+
+  async function stepState(session: Session, slug: string) {
+    const res = await session.get('/v1/kyc/status').expect(200);
+    return (res.body.steps as { slug: string }[]).find((state) => state.slug === slug);
+  }
+
+  it('a returned national-ID back is answered by switching to a passport', async () => {
+    const { id, session } = await submittedAndReturned(
+      'switch-passport',
+      ['doc_front', 'doc_back'],
+      ['address_proof'],
+      'doc_back',
+    );
+    // While the national ID is on file, its returned back blocks the step.
+    expect(await stepState(session, 'document')).toMatchObject({
+      complete: false,
+      returned: [{ id: 'doc_back', label: 'National ID (Back Side)', blocking: true }],
+    });
+
+    await upload(session, 'doc_front', 'passport').expect(201);
+    const row = await stored(id);
+    expect(row.document).toMatchObject({ docType: 'passport' });
+    expect((row.document as Record<string, unknown>).backFilePath).toBeUndefined();
+    // The national ID went whole, and its returned back went with it.
+    expect(row.rejectedFields).toEqual([]);
+    expect(await stepState(session, 'document')).toMatchObject({
+      complete: true,
+      missing: [],
+      returned: [],
+    });
+
+    await session.post('/v1/kyc/submit').expect(201);
+    expect((await stored(id)).status).toBe('submitted');
+  });
+
+  it('a returned tenancy-agreement page is answered by switching to a utility bill', async () => {
+    const { id, session } = await submittedAndReturned(
+      'switch-bill',
+      ['doc_front'],
+      ['address_proof', 'address_proof_2'],
+      'address_proof_2',
+    );
+
+    await upload(session, 'address_proof', 'utility_bill').expect(201);
+    const row = await stored(id);
+    expect(row.addressProof).toMatchObject({ docType: 'utility_bill' });
+    expect((row.addressProof as Record<string, unknown>).page2FilePath).toBeUndefined();
+    expect(row.rejectedFields).toEqual([]);
+    expect(await stepState(session, 'address')).toMatchObject({ complete: true, returned: [] });
+
+    await session.post('/v1/kyc/submit').expect(201);
+    expect((await stored(id)).status).toBe('submitted');
+  });
+
+  it('keeps the rule: the same national ID with only a new FRONT still owes its returned back', async () => {
+    const { id, session } = await submittedAndReturned(
+      'same-card',
+      ['doc_front', 'doc_back'],
+      ['address_proof'],
+      'doc_back',
+    );
+
+    await upload(session, 'doc_front', 'national_id').expect(201);
+    expect((await stored(id)).rejectedFields).toEqual(['doc_back']);
+
+    const refused = await session.post('/v1/kyc/submit');
+    expect(refused.status).toBe(400);
+    expect(refused.body.message).toMatch(
+      /replace the documents the reviewer returned: National ID \(Back Side\)/,
+    );
+  });
 });
 
 describe('0136 takes the form debris out of personal_info', () => {

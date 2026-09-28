@@ -90,6 +90,39 @@ describe('an upload settles the flags it answers', () => {
   it('does not treat an inherited property as a canonical slot', () => {
     expect(flagsSettledByUpload('constructor', STEPS)).toEqual(['constructor']);
   });
+
+  /*
+   * Reported 28 Sep 2026: the reviewer returned a national ID's back, the client
+   * switched to a passport, and the back's flag stood for ever — a passport has
+   * no back to upload. Likewise a tenancy agreement's additional page and a
+   * utility bill.
+   */
+  it('a page of ANOTHER document settles every page flag of the one it replaces', () => {
+    expect(flagsSettledByUpload('doc_front', STEPS, true)).toEqual([
+      'doc_front',
+      'doc_back',
+      'passport',
+      'nationalId',
+    ]);
+    expect(flagsSettledByUpload('address_proof', STEPS, true)).toEqual([
+      'address_proof',
+      'address_proof_2',
+      'utilityBill',
+    ]);
+  });
+
+  it('a page of the SAME document still settles only itself — the returned back stays owed', () => {
+    expect(flagsSettledByUpload('doc_front', STEPS)).not.toContain('doc_back');
+    expect(flagsSettledByUpload('address_proof', STEPS)).not.toContain('address_proof_2');
+  });
+
+  it('replacing never reaches past its own step', () => {
+    expect(flagsSettledByUpload('doc_front', STEPS, true)).not.toContain('address_proof_2');
+    expect(flagsSettledByUpload('selfie', STEPS, true)).toEqual(['selfie']);
+    expect(flagsSettledByUpload('customField_1790263652846', STEPS, true)).toEqual([
+      'customField_1790263652846',
+    ]);
+  });
 });
 
 describe('which returned documents are still owed', () => {
@@ -120,6 +153,32 @@ describe('which returned documents are still owed', () => {
   it('owes nothing when nothing was returned', () => {
     expect(outstandingDocumentFlags(undefined, STEPS)).toEqual([]);
     expect(outstandingDocumentFlags([], STEPS)).toEqual([]);
+  });
+
+  it('forgives a flag on a page the document on file does not have — nothing could settle it', () => {
+    const passport = { document: { docType: 'passport' } };
+    const utilityBill = { addressProof: { docType: 'utility_bill' } };
+    expect(outstandingDocumentFlags(['doc_back'], STEPS, passport)).toEqual([]);
+    expect(outstandingDocumentFlags(['address_proof_2'], STEPS, utilityBill)).toEqual([]);
+    // Its first page is still a page of it: a returned passport stays owed.
+    expect(outstandingDocumentFlags(['doc_front'], STEPS, passport)).toEqual(['doc_front']);
+  });
+
+  it('keeps a flag on every page the document on file does have', () => {
+    const nationalId = { document: { docType: 'national_id' } };
+    const tenancy = { addressProof: { docType: 'tenancy_agreement' } };
+    expect(outstandingDocumentFlags(['doc_back'], STEPS, nationalId)).toEqual(['doc_back']);
+    // An OPTIONAL page the reviewer returned is still a returned page.
+    expect(outstandingDocumentFlags(['address_proof_2'], STEPS, tenancy)).toEqual([
+      'address_proof_2',
+    ]);
+  });
+
+  it('keeps a page flag when the document on file is unknown — pages are not guessed', () => {
+    expect(outstandingDocumentFlags(['doc_back'], STEPS)).toEqual(['doc_back']);
+    expect(
+      outstandingDocumentFlags(['doc_back'], STEPS, { document: { docType: 'library_card' } }),
+    ).toEqual(['doc_back']);
   });
 });
 
