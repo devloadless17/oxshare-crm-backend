@@ -89,13 +89,30 @@ try {
     process.exit(0);
   }
 
-  await client.query(
+  /*
+   * A client is verified only by a DECISION (backend 0153): the level may rise
+   * only when the client's latest verification says so. So this records one —
+   * a `fixture` decision, which is what a hand-verified dev account is — and
+   * raises the level in the same transaction.
+   */
+  await client.query('BEGIN');
+  try {
+    await client.query(
+      `INSERT INTO client_verifications (user_id, seq, outcome, level_after, method, reason)
+       SELECT $1, coalesce(max(seq), 0) + 1, 'verified', 1, 'fixture',
+              'Verified by hand with scripts/verify-client.mjs (development only).'
+         FROM client_verifications WHERE user_id = $1`,
+      [user.id],
+    );
     // No `updated_at` on this table — unlike most others here, `users` does not
     // carry one, and naming it fails the whole statement.
-    `UPDATE users SET verification_level = 1 WHERE id = $1`,
-    [user.id],
-  );
-  console.log('\nverification_level set to 1. No audit row was written — see the note above.');
+    await client.query(`UPDATE users SET verification_level = 1 WHERE id = $1`, [user.id]);
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  }
+  console.log('\nverification_level set to 1, with a `fixture` decision on the client’s log.');
 } finally {
   await client.end();
 }

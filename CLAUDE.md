@@ -1147,6 +1147,11 @@ slices; this is the state after the dual write (slice 5).
   (0152's `identity_page_key`, enforced by `client_document_pages_key_ck`), whatever the KYC
   columns held — `./uploads/…`, `/uploads/…`, backslashes and bare names all reached production at
   some point. Pinned by `test/kyc-file-owner.spec.ts`.
+- **A client is VERIFIED only by a decision** (0153, `users_verified_by_a_decision`): raising
+  `verification_level` — the money gate — is refused at COMMIT unless the client's latest decision
+  verifies them. Lowering it is not refused (a closed gate; adoption records it), nor is an INSERT
+  (registration inserts 0; seeds and imports are recorded as `fixture`/`legacy`). To stage a
+  verified client by hand, record a decision (`scripts/verify-client.mjs` does) or use the escape.
 - **The 50MB upload allowance never counts evidence**: a page of a FROZEN version is kept for ever
   and nobody can delete it, so counting it made each KYC round shrink the room for the next
   (`StoredObjectsStore.liveBytesForOwner`; `test/upload-quota-evidence.spec.ts`).

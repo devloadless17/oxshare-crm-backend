@@ -125,6 +125,15 @@ describe('projectByShape', () => {
     expect(undeclared).toEqual([]);
   });
 
+  it('flags a wrapper answered under the wrong shape, and never a leak', () => {
+    // No declared key at all: a mis-declared wrapper, which production must not empty.
+    expect(projectByShape(AccountDto, { transaction: {}, replayed: false }).shapeMismatch).toBe(
+      true,
+    );
+    // A row with extra columns overlaps its shape: a leak, stripped as usual.
+    expect(projectByShape(AccountDto, { id: 'u', passwordHash: 'x' }).shapeMismatch).toBe(false);
+  });
+
   it('passes primitives, null and undefined through', () => {
     expect(projectByShape(AccountDto, null).value).toBeNull();
     expect(projectByShape(AccountDto, undefined).value).toBeUndefined();

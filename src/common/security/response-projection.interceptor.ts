@@ -76,9 +76,24 @@ export class ResponseProjectionInterceptor implements NestInterceptor {
           return body;
         }
 
-        const { value, undeclared } = projectByShape(shape, body);
+        const { value, undeclared, shapeMismatch } = projectByShape(shape, body);
         if (undeclared.length === 0) return body;
         const paths = [...new Set(undeclared)];
+
+        // A wrapper under the wrong declared type: never empty a working
+        // response in production — say so loudly instead (see Projection).
+        if (shapeMismatch && this.mode === 'strip') {
+          const key = `${route} shape-mismatch`;
+          if (!this.reported.has(key)) {
+            this.reported.add(key);
+            this.logger.error(
+              `[response-projection] ${route} answers a shape unlike its declared ${shapeName} ` +
+                `(no declared key present: ${paths.join(', ')}). Passed through unprojected; ` +
+                'fix the route’s @ApiOkResponse type.',
+            );
+          }
+          return body;
+        }
 
         if (this.mode === 'enforce') {
           throw new Error(

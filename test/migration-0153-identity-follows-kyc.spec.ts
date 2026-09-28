@@ -185,6 +185,23 @@ describe('0153 — the record follows every writer of the KYC rows', () => {
     expect(await versions(user)).toEqual([]);
   });
 
+  it('refuses VERIFYING a client with no decision that says so — the money gate', async () => {
+    const user = await client('raised-by-hand');
+    await expect(
+      inOneTransaction([[`UPDATE users SET verification_level = 1 WHERE id = $1`, [user]]]),
+    ).rejects.toThrow(/verified with no decision/);
+    const [row] = await q<{ level: number }>(
+      `SELECT verification_level AS level FROM users WHERE id = $1`,
+      [user],
+    );
+    expect(row.level).toBe(0);
+    // The record's own escape still lets maintenance through.
+    await inOneTransaction([
+      [`SELECT set_config('oxshare.identity_maintenance', 'on', true)`, []],
+      [`UPDATE users SET verification_level = 1 WHERE id = $1`, [user]],
+    ]);
+  });
+
   it('runs a second time without error, and leaves one trigger of each', async () => {
     await q(SQL);
     const triggers = await q<{ tgname: string }>(

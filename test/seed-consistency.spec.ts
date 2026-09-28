@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { and, eq, gte, inArray } from 'drizzle-orm';
+import { and, eq, gte, inArray, sql } from 'drizzle-orm';
 import { startHttpTestApp, stopHttpTestApp, type HttpTestContext } from './http-setup';
 import { reassertReviewPool, runSeeds } from '../src/database/seed';
 import { kycSubmissions, users } from '../src/database/schema';
@@ -144,8 +144,13 @@ describe('the review pool is re-asserted to PENDING, level included', () => {
       .where(eq(users.email, 'e2e-pool-decided@oxshare-e2e.test'));
     expect(pooled, 'the review pool was not seeded — this case proves nothing').toBeDefined();
 
-    // What a spec that approves this client leaves behind.
-    await db.update(users).set({ verificationLevel: 1 }).where(eq(users.id, pooled.id));
+    // What a spec that approves this client leaves behind — staged by hand, which
+    // since 0153 only the record's escape allows (a client is verified only by a
+    // decision).
+    await db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT set_config('oxshare.identity_maintenance', 'on', true)`);
+      await tx.update(users).set({ verificationLevel: 1 }).where(eq(users.id, pooled.id));
+    });
     await db
       .update(kycSubmissions)
       .set({ status: 'approved' })

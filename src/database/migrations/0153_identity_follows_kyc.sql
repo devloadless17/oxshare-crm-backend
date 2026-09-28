@@ -81,3 +81,41 @@ CREATE CONSTRAINT TRIGGER kyc_attempts_identity_follow_update
      OR OLD.address_proof IS DISTINCT FROM NEW.address_proof
      OR OLD.step_data IS DISTINCT FROM NEW.step_data)
   EXECUTE FUNCTION identity_follow_kyc();
+
+-- ── A client is VERIFIED only by a decision (identity-core plan, slice 7) ───
+--
+-- `users.verification_level` opens the money gates — a withdrawal or a
+-- transfer is refused below 1 — and until now anything could raise it: a dev
+-- script, a support query, a code path that forgot the log. Raising it now
+-- needs the client's latest decision to be one that verifies them, in place by
+-- COMMIT (deferred, because a decision is recorded after the level moves in
+-- the same transaction — approve() writes the attempt, then the level, and
+-- adoption records the decision).
+--
+-- LOWERING it is not refused: that closes a gate, and adoption records it
+-- (`identity_drift` names it until then). Nor is an INSERT checked:
+-- registration inserts 0, and seeds or an import that insert verified clients
+-- are recorded by adoption as `fixture` or `legacy`. The one escape is the
+-- record's own, `oxshare.identity_maintenance`, local to its transaction.
+CREATE OR REPLACE FUNCTION identity_level_needs_decision() RETURNS trigger AS $$
+BEGIN
+  IF coalesce(current_setting('oxshare.identity_maintenance', true), '') = 'on' THEN
+    RETURN NULL;
+  END IF;
+  IF (SELECT verification_level FROM users WHERE id = NEW.id) >= 1
+     AND coalesce((SELECT level_after FROM client_verifications
+                    WHERE user_id = NEW.id ORDER BY seq DESC LIMIT 1), 0) < 1 THEN
+    RAISE EXCEPTION 'Client % was verified with no decision that verifies them. A client is verified only by approving their KYC (or a verification recorded in client_verifications).', NEW.id
+      USING ERRCODE = 'check_violation';
+  END IF;
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS users_verified_by_a_decision ON users;
+CREATE CONSTRAINT TRIGGER users_verified_by_a_decision
+  AFTER UPDATE OF verification_level ON users
+  DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW
+  WHEN (NEW.verification_level >= 1 AND OLD.verification_level IS DISTINCT FROM NEW.verification_level)
+  EXECUTE FUNCTION identity_level_needs_decision();

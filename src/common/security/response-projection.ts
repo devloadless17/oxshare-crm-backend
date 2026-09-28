@@ -54,6 +54,14 @@ export interface Projection<T> {
   value: T;
   /** Where each undeclared key was found — `items[].passwordHash`, `referrer.active`. */
   undeclared: string[];
+  /**
+   * The body shares NO top-level key with its declared shape: a mis-declared
+   * wrapper (`{ transaction, replayed }` under `TransactionDto`), not a leak. A
+   * leak — a row with extra columns — always overlaps its DTO. Stripping this
+   * would empty the response, so production passes it through and logs an
+   * error instead; tests refuse it like any other undeclared key.
+   */
+  shapeMismatch: boolean;
 }
 
 /** The property names `type` declares, its ancestors' included, or undefined for no shape. */
@@ -91,7 +99,19 @@ function isWalkable(value: object): boolean {
 export function projectByShape<T>(shape: unknown, value: T): Projection<T> {
   const undeclared: string[] = [];
   const projected = walk(shape, value, '', undeclared, new WeakSet());
-  return { value: projected as T, undeclared };
+  return { value: projected as T, undeclared, shapeMismatch: sharesNoKey(shape, value) };
+}
+
+/** True when a non-empty object (or every non-empty element) names no declared key. */
+function sharesNoKey(shape: unknown, value: unknown): boolean {
+  const declared = declaredPropertiesOf(shape);
+  if (!declared || value === null || typeof value !== 'object') return false;
+  const candidates: unknown[] = Array.isArray(value) ? (value as unknown[]) : [value];
+  const rows = candidates.filter(
+    (row): row is Record<string, unknown> =>
+      row !== null && typeof row === 'object' && Object.keys(row).length > 0,
+  );
+  return rows.length > 0 && rows.every((row) => !Object.keys(row).some((key) => declared.has(key)));
 }
 
 function walk(

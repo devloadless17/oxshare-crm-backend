@@ -457,7 +457,12 @@ describe('a rejection AFTER a mistaken approval', () => {
     await ctx.db.execute(
       sql`UPDATE kyc_submissions SET status = 'approved' WHERE user_id = ${userId}`,
     );
-    await ctx.db.execute(sql`UPDATE users SET verification_level = 1 WHERE id = ${userId}`);
+    // Staged by hand: since 0153 a client is verified only by a decision, so
+    // this needs the record's escape.
+    await ctx.db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT set_config('oxshare.identity_maintenance', 'on', true)`);
+      await tx.execute(sql`UPDATE users SET verification_level = 1 WHERE id = ${userId}`);
+    });
     await ctx.db.execute(
       sql`UPDATE kyc_submissions SET status = 'not_started' WHERE user_id = ${userId}`,
     );

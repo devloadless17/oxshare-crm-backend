@@ -115,7 +115,7 @@ describe('the boot repair', () => {
     await withoutTriggers(`UPDATE kyc_submissions SET status = 'submitted' WHERE user_id = $1`, [
       submitted,
     ]);
-    await q(`UPDATE users SET verification_level = 1 WHERE id = $1`, [levelled]);
+    await withoutTriggers(`UPDATE users SET verification_level = 1 WHERE id = $1`, [levelled]);
 
     const result = await service.repairDrift();
 
@@ -142,7 +142,9 @@ describe('the boot repair', () => {
   it('leaves a client it cannot repair as it was, names them, and repairs the rest', async () => {
     const stuck = await client('stuck');
     const fine = await client('fine');
-    await q(`UPDATE users SET verification_level = 1 WHERE id = ANY($1)`, [[stuck, fine]]);
+    await withoutTriggers(`UPDATE users SET verification_level = 1 WHERE id = ANY($1)`, [
+      [stuck, fine],
+    ]);
 
     // Adopting `stuck` fails: its decision cannot be written.
     await q(`
