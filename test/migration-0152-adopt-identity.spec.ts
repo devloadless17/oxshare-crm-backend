@@ -361,12 +361,205 @@ describe('0152 — the invariants', () => {
       `UPDATE kyc_submissions SET document = jsonb_set(document, '{backFilePath}', $2) WHERE user_id = $1`,
       [ids['returned'], JSON.stringify(key('r-back-3'))],
     );
-    expect(await q(`SELECT user_id, slot FROM identity_drift`)).toEqual([
-      { user_id: ids['returned'], slot: 'identity' },
+    expect(await q(`SELECT user_id, slot, problem FROM identity_drift`)).toEqual([
+      { user_id: ids['returned'], slot: 'identity', problem: 'pages' },
     ]);
     await q(`SELECT identity_adopt($1)`, [ids['returned']]);
     expect(await q(`SELECT * FROM identity_drift`)).toEqual([]);
     const draft = (await versions(ids['returned'])).find((v) => !v.frozen);
     expect(draft?.keys).toEqual([key('r-front'), key('r-back-3')]);
+  });
+});
+
+describe('0152 — every kind of drift is listed, and ONE adoption clears it', () => {
+  /*
+   * Each case starts a client IN STEP, then makes one write to the OLD columns
+   * only — what an older build does after a rollback, or raw SQL. The view must
+   * name exactly that, and `identity_adopt` must clear it: the boot repair
+   * adopts every client the view lists, so a kind adoption could not clear
+   * would be "repaired" — and alerted — on every boot for ever.
+   */
+  const drift = (user: string) =>
+    q<{ problem: string; slot: string | null }>(
+      `SELECT DISTINCT problem, slot FROM identity_drift WHERE user_id = $1 ORDER BY problem, slot`,
+      [user],
+    );
+  const set =
+    (text: string, ...values: unknown[]) =>
+    async (user: string) => {
+      await q(text, [user, ...values]);
+    };
+
+  const cases: {
+    name: string;
+    start: (user: string) => Promise<void>;
+    write: (user: string) => Promise<void>;
+    listed: { problem: string; slot: string | null }[];
+    after?: (user: string) => Promise<void>;
+  }[] = [
+    {
+      name: 'the document type switched',
+      start: (u) => live(u, 'in_progress', { document: nationalId('t-front', 't-back') }),
+      write: set(
+        `UPDATE kyc_submissions SET document = jsonb_set(document, '{docType}', '"residence_permit"')
+          WHERE user_id = $1`,
+      ),
+      listed: [{ problem: 'type', slot: 'identity' }],
+    },
+    {
+      name: 'submitted by an older build',
+      start: (u) => live(u, 'in_progress', { document: passport('n-front') }),
+      write: set(`UPDATE kyc_submissions SET status = 'submitted' WHERE user_id = $1`),
+      listed: [
+        { problem: 'not_frozen', slot: 'identity' },
+        { problem: 'stale_draft', slot: 'identity' },
+      ],
+      after: async (u) => {
+        expect(await versions(u)).toEqual([
+          { slot: 'identity', doc_type: 'passport', frozen: true, keys: [key('n-front')] },
+        ]);
+      },
+    },
+    {
+      name: 'a broker’s upload replaced',
+      start: (u) =>
+        live(u, 'in_progress', {
+          stepData: { extra: { customField_payslip: { filePath: key('u-1'), fileName: 'p.pdf' } } },
+        }),
+      write: set(
+        `UPDATE kyc_submissions
+            SET step_data = jsonb_set(step_data, '{extra,customField_payslip,filePath}', $2)
+          WHERE user_id = $1`,
+        JSON.stringify(key('u-2')),
+      ),
+      listed: [{ problem: 'upload', slot: 'other:customField_payslip' }],
+    },
+    {
+      name: 'a broker’s upload removed',
+      start: (u) =>
+        live(u, 'in_progress', {
+          stepData: {
+            extra: { customField_payslip: { filePath: key('ur-1'), fileName: 'p.pdf' } },
+          },
+        }),
+      write: set(`UPDATE kyc_submissions SET step_data = '{}' WHERE user_id = $1`),
+      listed: [{ problem: 'stale_draft', slot: 'other:customField_payslip' }],
+    },
+    {
+      name: 'submitted by an older build, with a broker’s upload',
+      start: (u) =>
+        live(u, 'in_progress', {
+          stepData: {
+            extra: { customField_payslip: { filePath: key('us-1'), fileName: 'p.pdf' } },
+          },
+        }),
+      write: set(`UPDATE kyc_submissions SET status = 'submitted' WHERE user_id = $1`),
+      // Presented, so only a FROZEN version holds it — the draft does not count.
+      listed: [
+        { problem: 'stale_draft', slot: 'other:customField_payslip' },
+        { problem: 'upload', slot: 'other:customField_payslip' },
+      ],
+    },
+    {
+      name: 'a page rewritten on an archived attempt',
+      start: (u) => attempt(u, 1, 'rejected', { selfie: selfie('p-1') }, at(3), ['selfie']),
+      write: set(
+        `UPDATE kyc_submission_attempts SET selfie = jsonb_set(selfie, '{filePath}', $2)
+          WHERE user_id = $1`,
+        JSON.stringify(key('p-2')),
+      ),
+      listed: [{ problem: 'unrecorded_page', slot: 'selfie' }],
+    },
+    {
+      name: 'reset by an older build',
+      start: (u) => live(u, 'in_progress', { document: passport('d-front') }),
+      write: set(`DELETE FROM kyc_submissions WHERE user_id = $1`),
+      listed: [{ problem: 'stale_draft', slot: 'identity' }],
+    },
+    {
+      name: 'returned by an older build',
+      start: (u) => live(u, 'submitted', { document: passport('o-front') }),
+      write: async (u) => {
+        await attempt(u, 1, 'rejected', { document: passport('o-front') }, at(0), ['doc_front']);
+        await q(`UPDATE kyc_submissions SET status = 'rejected' WHERE user_id = $1`, [u]);
+      },
+      listed: [{ problem: 'undecided_attempt', slot: null }],
+    },
+    {
+      name: 'approved by an older build',
+      start: (u) => live(u, 'under_review', { document: passport('ap-front') }),
+      write: async (u) => {
+        await attempt(u, 1, 'approved', { document: passport('ap-front') }, at(0));
+        await q(`UPDATE kyc_submissions SET status = 'approved' WHERE user_id = $1`, [u]);
+        await q(`UPDATE users SET verification_level = 1 WHERE id = $1`, [u]);
+      },
+      listed: [
+        { problem: 'level', slot: null },
+        { problem: 'undecided_attempt', slot: null },
+      ],
+      // The decision it made, as a review — not a `legacy` row explaining the level.
+      after: async (u) => {
+        expect(await decisions(u)).toEqual([
+          { seq: 1, outcome: 'verified', level_after: 1, method: 'manual_review', covered: 1 },
+        ]);
+      },
+    },
+    {
+      name: 'a level set directly',
+      start: async () => {},
+      write: set(`UPDATE users SET verification_level = 1 WHERE id = $1`),
+      listed: [{ problem: 'level', slot: null }],
+      after: async (u) => {
+        expect((await decisions(u)).map((d) => [d.outcome, d.method])).toEqual([
+          ['verified', 'legacy'],
+        ]);
+      },
+    },
+  ];
+
+  it.each(cases)('$name', async ({ name, start, write, listed, after }) => {
+    const user = await client(`drift-${name.replace(/\W+/g, '-')}`);
+    await start(user);
+    await q(`SELECT identity_adopt($1)`, [user]);
+    expect(await drift(user), 'the client did not start in step').toEqual([]);
+
+    await write(user);
+    expect(await drift(user)).toEqual(listed);
+
+    await q(`SELECT identity_adopt($1)`, [user]);
+    expect(await drift(user), 'one adoption did not clear it').toEqual([]);
+    await after?.(user);
+  });
+});
+
+describe('0152 — adoption waits for a KYC change in flight', () => {
+  it('takes the client’s KYC row before it touches the record', async () => {
+    // In step, then an attempt archived without the record: adopting it writes
+    // only record rows and the attempt — nothing that would itself have to
+    // wait for the KYC row. Only the lock taken first makes it wait.
+    const user = await client('in-flight');
+    await live(user, 'submitted', { document: passport('w-front') });
+    await q(`SELECT identity_adopt($1)`, [user]);
+    await attempt(user, 1, 'rejected', { document: passport('w-front') }, at(0), ['doc_front']);
+
+    const holder = await ctx.pool.connect();
+    const repair = await ctx.pool.connect();
+    try {
+      await holder.query('BEGIN');
+      await holder.query(`SELECT 1 FROM kyc_submissions WHERE user_id = $1 FOR UPDATE`, [user]);
+      await repair.query('BEGIN');
+      await repair.query(`SET LOCAL lock_timeout = '300ms'`);
+      await expect(repair.query(`SELECT identity_adopt($1)`, [user])).rejects.toThrow(
+        /lock timeout/,
+      );
+      await repair.query('ROLLBACK');
+      await holder.query('COMMIT');
+    } finally {
+      holder.release();
+      repair.release();
+    }
+    // The KYC change done, the adoption goes through.
+    await q(`SELECT identity_adopt($1)`, [user]);
+    expect((await decisions(user)).map((d) => d.outcome)).toEqual(['returned']);
   });
 });

@@ -190,6 +190,13 @@ DECLARE
 BEGIN
   PERFORM set_config('oxshare.identity_maintenance', 'on', true);
 
+  -- One client is adopted by one transaction at a time. Every KYC path already
+  -- holds this row when it calls here, so for them this is a no-op; a repair
+  -- running beside live traffic (the boot check) waits for the KYC change in
+  -- flight instead of racing it to the same versions. Taken FIRST, before any
+  -- version is touched, which is the order the KYC paths take them in.
+  PERFORM 1 FROM kyc_submissions WHERE user_id = p_user FOR NO KEY UPDATE;
+
   -- 1. Every archived attempt: its evidence frozen, its decision logged.
   FOR att IN
     SELECT * FROM kyc_submission_attempts WHERE user_id = p_user ORDER BY attempt_no
@@ -332,32 +339,130 @@ $$ LANGUAGE plpgsql;
 -- ── What is out of step: the old columns against the record ────────────────
 --
 -- A row here means something wrote the KYC columns without the record — an
--- older build after a rollback, a fixture reset, raw SQL. `identity_adopt` on
--- that client repairs it. Empty is the healthy state.
-CREATE OR REPLACE VIEW identity_drift AS
-SELECT k.user_id, s.slot
-  FROM kyc_submissions k
- CROSS JOIN (VALUES ('identity'), ('address'), ('selfie')) AS s(slot)
- WHERE identity_page_keys(identity_pages(
-         s.slot,
-         CASE s.slot WHEN 'identity' THEN k.document WHEN 'address' THEN k.address_proof ELSE k.selfie END))
-       IS DISTINCT FROM
-       coalesce(identity_page_keys(identity_version_pages(
-         CASE s.slot WHEN 'identity' THEN k.identity_document_id
-                     WHEN 'address' THEN k.address_document_id
-                     ELSE k.selfie_document_id END)), '[]'::jsonb)
-    -- The chosen document TYPE, where the record can hold it: with pages, or on
-    -- a draft while the client is working. A presented row with a type and no
-    -- pages (seed fixtures) has no version — nothing presented is no evidence.
-    OR (s.slot <> 'selfie'
-        AND (k.status NOT IN ('submitted', 'under_review', 'approved')
-             OR jsonb_array_length(identity_pages(
-                  s.slot, CASE s.slot WHEN 'identity' THEN k.document ELSE k.address_proof END)) > 0)
-        AND nullif(CASE s.slot WHEN 'identity' THEN k.document ELSE k.address_proof END->>'docType', '')
-            IS DISTINCT FROM
-            (SELECT d.doc_type FROM client_documents d
-              WHERE d.id = CASE s.slot WHEN 'identity' THEN k.identity_document_id
-                                        ELSE k.address_document_id END));
+-- older build after a rollback, a fixture reset, raw SQL. Empty is the
+-- healthy state. One row per disagreement, named by `problem`:
+--
+--   pages              a live document's pages are not the version it points at
+--   type               nor is its chosen document type
+--   not_frozen         with a reviewer or approved, yet it points at a draft
+--   upload             a broker's upload that no version holds exactly
+--   unrecorded_page    a page an archived attempt names and no version holds
+--   stale_draft        a draft the client is no longer working on
+--   undecided_attempt  an archived attempt with no decision on the log
+--   level              the verification level is not the latest decision
+--
+-- ⚠️ `identity_adopt` must clear EVERY kind listed here. The boot check adopts
+-- each client this names, so a kind adoption cannot clear would be reported —
+-- and "repaired" — on every boot for ever. `migration-0152-adopt-identity.spec.ts`
+-- creates each kind and proves one adoption clears it.
+--
+-- Dropped and created rather than replaced: a view's columns cannot be renamed
+-- or reordered in place, and this file must run twice.
+DROP VIEW IF EXISTS identity_drift;
+CREATE VIEW identity_drift AS
+WITH live AS (
+  SELECT k.user_id, k.document, k.address_proof, k.selfie, k.step_data,
+         k.identity_document_id, k.address_document_id, k.selfie_document_id,
+         k.status IN ('submitted', 'under_review', 'approved') AS presented
+    FROM kyc_submissions k
+), live_documents AS (
+  SELECT l.user_id, l.presented, s.slot,
+         CASE s.slot WHEN 'identity' THEN l.document
+                     WHEN 'address' THEN l.address_proof
+                     ELSE l.selfie END AS value,
+         CASE s.slot WHEN 'identity' THEN l.identity_document_id
+                     WHEN 'address' THEN l.address_document_id
+                     ELSE l.selfie_document_id END AS document_id
+    FROM live l
+   CROSS JOIN (VALUES ('identity'), ('address'), ('selfie')) AS s(slot)
+), live_uploads AS (
+  SELECT l.user_id, l.presented, identity_other_slot(x.key) AS slot,
+         identity_pages('other:x', x.v) AS pages
+    FROM live l,
+         jsonb_each(coalesce(l.step_data, '{}'::jsonb)) s(slug, a),
+         jsonb_each(CASE WHEN jsonb_typeof(s.a) = 'object' THEN s.a ELSE '{}'::jsonb END) x(key, v)
+   WHERE jsonb_typeof(x.v) = 'object' AND x.v ? 'filePath'
+), archived_pages AS (
+  SELECT a.user_id, p.slot, e->>'key' AS storage_key
+    FROM kyc_submission_attempts a
+   CROSS JOIN LATERAL (
+          SELECT 'identity' AS slot, identity_pages('identity', a.document) AS pages
+          UNION ALL SELECT 'address', identity_pages('address', a.address_proof)
+          UNION ALL SELECT 'selfie', identity_pages('selfie', a.selfie)
+          UNION ALL
+          SELECT identity_other_slot(x.key), identity_pages('other:x', x.v)
+            FROM jsonb_each(coalesce(a.step_data, '{}'::jsonb)) s(slug, answers),
+                 jsonb_each(CASE WHEN jsonb_typeof(s.answers) = 'object'
+                                 THEN s.answers ELSE '{}'::jsonb END) x(key, v)
+           WHERE jsonb_typeof(x.v) = 'object' AND x.v ? 'filePath'
+         ) p
+   CROSS JOIN LATERAL jsonb_array_elements(p.pages) e
+)
+SELECT user_id, slot, 'pages'::text AS problem
+  FROM live_documents
+ WHERE identity_page_keys(identity_pages(slot, value))
+       IS DISTINCT FROM coalesce(identity_page_keys(identity_version_pages(document_id)), '[]'::jsonb)
+UNION ALL
+-- The chosen document TYPE, where the record can hold it: with pages, or on a
+-- draft while the client is working. A presented row with a type and no pages
+-- (seed fixtures) has no version — nothing presented is no evidence.
+SELECT user_id, slot, 'type'
+  FROM live_documents
+ WHERE slot <> 'selfie'
+   AND (NOT presented OR jsonb_array_length(identity_pages(slot, value)) > 0)
+   AND nullif(value->>'docType', '')
+       IS DISTINCT FROM (SELECT d.doc_type FROM client_documents d WHERE d.id = document_id)
+UNION ALL
+SELECT l.user_id, l.slot, 'not_frozen'
+  FROM live_documents l
+  JOIN client_documents d ON d.id = l.document_id
+ WHERE l.presented AND d.frozen_at IS NULL
+UNION ALL
+-- A working client's upload may sit on its draft or on a frozen version with
+-- the same pages (an upload returned unchanged); a presented one only frozen.
+SELECT u.user_id, u.slot, 'upload'
+  FROM live_uploads u
+ WHERE jsonb_array_length(u.pages) > 0
+   AND NOT EXISTS (
+         SELECT 1 FROM client_documents d
+          WHERE d.user_id = u.user_id AND d.slot = u.slot
+            AND (d.frozen_at IS NOT NULL OR NOT u.presented)
+            AND identity_page_keys(identity_version_pages(d.id)) = identity_page_keys(u.pages))
+UNION ALL
+SELECT DISTINCT a.user_id, a.slot, 'unrecorded_page'
+  FROM archived_pages a
+ WHERE NOT EXISTS (
+         SELECT 1 FROM client_document_pages p
+           JOIN client_documents d ON d.id = p.document_id
+          WHERE d.user_id = a.user_id AND d.slot = a.slot AND p.storage_key = a.storage_key)
+UNION ALL
+-- A draft is kept only while the client works on it: pointed at by the live
+-- row for the platform's three, answering a live upload for a broker's.
+SELECT d.user_id, d.slot, 'stale_draft'
+  FROM client_documents d
+  LEFT JOIN live l ON l.user_id = d.user_id
+ WHERE d.frozen_at IS NULL
+   AND (l.user_id IS NULL
+        OR l.presented
+        OR CASE WHEN d.slot LIKE 'other:%' THEN
+                  NOT EXISTS (SELECT 1 FROM live_uploads u
+                               WHERE u.user_id = d.user_id AND u.slot = d.slot
+                                 AND jsonb_array_length(u.pages) > 0)
+                ELSE
+                  d.id IS DISTINCT FROM CASE d.slot WHEN 'identity' THEN l.identity_document_id
+                                                    WHEN 'address' THEN l.address_document_id
+                                                    ELSE l.selfie_document_id END
+           END)
+UNION ALL
+SELECT user_id, NULL, 'undecided_attempt'
+  FROM kyc_submission_attempts
+ WHERE verification_id IS NULL
+UNION ALL
+SELECT u.id, NULL, 'level'
+  FROM users u
+ WHERE least(greatest(u.verification_level, 0), 1) IS DISTINCT FROM coalesce(
+         (SELECT v.level_after FROM client_verifications v
+           WHERE v.user_id = u.id ORDER BY v.seq DESC LIMIT 1), 0);
 
 -- ── The backfill ────────────────────────────────────────────────────────────
 

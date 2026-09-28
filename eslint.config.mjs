@@ -28,6 +28,25 @@ const NO_HTTP = {
     'Throw a DomainError from common/errors/domain-errors.ts instead. AllExceptionsFilter maps it to a status code — that mapping lives in exactly one place on purpose.',
 };
 
+/** Layering: the shared layers are depended UPON by modules, never the reverse. */
+const NO_FEATURE_MODULES = {
+  regex: '(^|/)modules/',
+  message:
+    'Layering inversion: store/, common/, config/ and database/ are depended UPON by modules, never the reverse. Move the shared piece down, or invert with an interface.',
+};
+
+/**
+ * The identity core (the client's profile and identity record) never depends on
+ * the KYC layer — the process that fills it, which may one day be an external
+ * tool. `(^|/)compliance/` catches both `../compliance/…` from a sibling module
+ * and `…/modules/compliance/…`.
+ */
+const NO_KYC_LAYER = {
+  regex: '(^|/)compliance/|(^|/)store/kyc[.-]',
+  message:
+    'The identity core never imports the KYC layer (modules/compliance, the KYC stores): KYC is a replaceable process that writes INTO the core. Ask through a port instead — see common/provisioning/identity-review.port.ts.',
+};
+
 const NO_GETDB = {
   name: '../../database/db',
   importNames: ['getDb'],
@@ -242,19 +261,23 @@ export default tseslint.config(
       'src/config/**/*.ts',
       'src/database/**/*.ts',
     ],
+    rules: { 'no-restricted-imports': ['error', { patterns: [NO_FEATURE_MODULES] }] },
+  },
+  {
+    // ── The identity core never imports the KYC layer (28 Sep 2026) ─────────
+    // The owner's direction: the client's identity is the core, and KYC is a
+    // process that may be replaced. The core's MODULES take this ban alone…
+    files: ['src/modules/profile/**/*.ts', 'src/modules/client-identity/**/*.ts'],
+    ignores: ['**/*.spec.ts'],
+    rules: { 'no-restricted-imports': ['error', { patterns: [NO_KYC_LAYER] }] },
+  },
+  {
+    // …and its shared-layer files take it WITH the layering ban, in one block —
+    // on their own, this block would erase the layering ban above for them.
+    files: ['src/store/client-identity.store.ts', 'src/common/profile/**/*.ts'],
+    ignores: ['**/*.spec.ts'],
     rules: {
-      'no-restricted-imports': [
-        'error',
-        {
-          patterns: [
-            {
-              regex: '(^|/)modules/',
-              message:
-                'Layering inversion: store/, common/, config/ and database/ are depended UPON by modules, never the reverse. Move the shared piece down, or invert with an interface.',
-            },
-          ],
-        },
-      ],
+      'no-restricted-imports': ['error', { patterns: [NO_FEATURE_MODULES, NO_KYC_LAYER] }],
     },
   },
   {

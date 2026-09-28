@@ -1093,6 +1093,43 @@ they live here:
 - Pinned by `common/kyc/identity-core.spec.ts`, `kyc-config-integrity.spec.ts`,
   `test/migration-0147-kyc-identity-core.spec.ts` and `test/kyc-reverification.spec.ts`.
 
+## The client's identity RECORD (0151–0152, 28 Sep 2026)
+
+The owner's direction: a client's documents, selfie and verification belong to the CLIENT; KYC is
+only the process that collects and checks them, and may one day be an external tool. Built in
+slices; this is the state after the dual write (slice 5).
+
+| table | holds |
+|---|---|
+| `client_documents` + `client_document_pages` | every version of each document, the selfie and each broker upload (`slot`: `identity`, `address`, `selfie`, `other:<field>`) — a DRAFT while the client works, FROZEN (`frozen_at`) once presented, never changed again |
+| `client_verifications` | every decision, append-only: `outcome`, `level_after`, `method`, who, why |
+| `client_verification_documents` | exactly which versions each decision covered |
+
+- **Today the KYC columns are still what gets READ.** Every KYC transaction that changes evidence or
+  decides also calls `ClientIdentityService.recordFromKyc` → `identity_adopt(user)` (0152), in the
+  same transaction. ONE routine derives the record from the KYC rows — for the backfill, the dual
+  write, the seed fixtures and the boot repair — so there is no second implementation to drift.
+  Reads move to the record in slice 6.
+- **History is protected by triggers, even from a superuser** (the ledger lesson, 0120): a frozen
+  version, its pages and every decision refuse UPDATE and DELETE. The one escape is
+  `SELECT set_config('oxshare.identity_maintenance', 'on', true)`, local to its transaction.
+- ⚠️ **So deleting a client is no longer a plain `DELETE FROM users`.** Delete the KYC attempts and
+  submission, then UNDER THE ESCAPE `client_verification_documents` → `client_verifications` →
+  `client_documents` (pages cascade), then `stored_objects` (pages reference them), then the user.
+  `docs/scripts/purge-account.sh` and `scripts/seed-load-test.mjs --purge` do exactly this.
+- **`identity_drift` names what is out of step** — eight kinds, listed in 0152 above the view. Empty
+  is healthy. `identity_adopt` must clear EVERY kind: `migration-0152-adopt-identity.spec.ts`
+  creates each one and proves a single adoption clears it (mutation-checked).
+- **Every boot repairs drift, in every environment** (`main.ts` → `repairDrift`, outside the seed
+  guard like `reportPermissionDrift`): a rollback runs an older build that writes the KYC rows only.
+  One transaction per client, never blocks the boot, and any drift raises `identity.record_drift`
+  (`notify`). `identity_adopt` locks the client's KYC row first, so the repair waits for a KYC
+  change in flight instead of racing it.
+- **The core never imports the KYC layer** — lint bans `compliance/` and `store/kyc*` in
+  `modules/profile/**`, `modules/client-identity/**`, `store/client-identity.store.ts` and
+  `common/profile/**`. The profile writer reaches the KYC row through the `IDENTITY_REVIEW` port,
+  the same recipe as `COMMISSION_ACCRUAL`.
+
 ## Validation
 
 The global `ValidationPipe` (`whitelist`, `transform`) only validates where a **DTO class**

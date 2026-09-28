@@ -22,8 +22,11 @@ import {
 } from '../../common/profile/client-profile';
 import { identityField, VERIFICATION_REQUIRED } from '../../common/kyc/identity-core';
 import { AuditLogStore } from '../../store/audit-log.store';
+import {
+  IDENTITY_REVIEW,
+  type IdentityReviewPort,
+} from '../../common/provisioning/identity-review.port';
 import { EmailService } from '../email/email.service';
-import { KycStore, type KycStatus } from '../../store/kyc.store';
 import { UsersStore, type User } from '../../store/users.store';
 
 /** Who is changing a profile — every change is recorded against somebody. */
@@ -95,7 +98,12 @@ export class ClientProfileService {
     @Inject(DRIZZLE_DB) private readonly db: Db,
     private readonly users: UsersStore,
     private readonly auditLog: AuditLogStore,
-    private readonly kyc: KycStore,
+    /*
+     * Where the client's review stands, asked through a PORT the verification
+     * process provides — the core never reads the KYC tables itself, so KYC
+     * can be replaced without touching it.
+     */
+    @Inject(IDENTITY_REVIEW) private readonly review: IdentityReviewPort,
     // Last, and optional: two specs construct this by hand, and only a
     // correction sends mail.
     private readonly email?: EmailService,
@@ -121,7 +129,7 @@ export class ClientProfileService {
         | ProfileAuditOptions
         | ((
             changed: readonly ProfileKey[],
-            verification: KycStatus | undefined,
+            verification: string | undefined,
           ) => ProfileAuditOptions);
       executor?: Executor;
       asOf?: Date;
@@ -131,14 +139,14 @@ export class ClientProfileService {
        * refuse; nothing is written. Unchanged values never reach it, so a form
        * that sends back a locked field untouched is not refused for it.
        */
-      guard?: (changed: readonly ProfileKey[], verification: KycStatus | undefined) => void;
+      guard?: (changed: readonly ProfileKey[], verification: string | undefined) => void;
     } = {},
   ): Promise<{
     user: User;
     before: ClientProfile;
     after: ClientProfile;
     changed: ProfileKey[];
-    verification: KycStatus | undefined;
+    verification: string | undefined;
   }> {
     const check = checkProfile(input, { required: options.required, asOf: options.asOf });
     const message = firstProfileError(check.errors);
@@ -147,7 +155,7 @@ export class ClientProfileService {
     }
 
     const run = async (tx: Executor) => {
-      const submission = await this.kyc.lockForUpdate(userId, tx);
+      const submission = await this.review.lockForChange(userId, tx);
       const verification = submission?.status;
       const current = await this.users.findByIdForUpdate(userId, tx);
       if (!current) throw new NotFoundError('Client not found.');
@@ -183,10 +191,10 @@ export class ClientProfileService {
        * the same surname left the flag standing, so the client was still shown
        * a field to fix that somebody had already fixed.
        */
-      const flagged = submission?.rejectedFields ?? [];
+      const flagged = submission?.returnedItems ?? [];
       const unanswered = flagged.filter((id) => !(changed as string[]).includes(id));
       if (unanswered.length !== flagged.length) {
-        await this.kyc.update(userId, { rejectedFields: unanswered }, tx);
+        await this.review.keepReturned(userId, unanswered, tx);
       }
       const audit =
         typeof options.audit === 'function'
@@ -264,7 +272,7 @@ export class ClientProfileService {
      * read here only to choose the refusal; the decision is re-made under the
      * locks below.
      */
-    const status = (await this.kyc.findByUserId(userId))?.status;
+    const status = await this.review.statusOf(userId);
     if (status === 'approved') {
       for (const [key, value] of Object.entries(input)) {
         if (!isProfileKey(key) || typeof value !== 'string' || value.trim() === '') continue;
@@ -284,7 +292,7 @@ export class ClientProfileService {
       }
     }
 
-    const isCorrection = (changed: readonly ProfileKey[], verification: KycStatus | undefined) =>
+    const isCorrection = (changed: readonly ProfileKey[], verification: string | undefined) =>
       changed.some(
         (key) => adminEditRule(key, verification, options.mayCorrect).kind === 'correction',
       );

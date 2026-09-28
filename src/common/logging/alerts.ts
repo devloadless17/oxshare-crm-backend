@@ -121,6 +121,19 @@ export const ALERT_KINDS = {
    */
   UPLOAD_ACTIVE_CONTENT: 'uploads.active_content',
   /**
+   * Clients' identity records (documents, selfie, verification decisions) were
+   * out of step with their KYC rows at boot.
+   *
+   * Until the identity-core contract slice, everything current writes both in
+   * one transaction. Code from BEFORE the record writes the KYC rows only, so
+   * this means an older build ran on this database since the last boot — a
+   * rollback — or somebody edited it by hand. The boot repairs what it can;
+   * a client it could NOT repair is named in the log, and from the slice that
+   * reads the record their documents read as they were before. `notify`,
+   * because nothing is lost: the KYC rows still hold everything.
+   */
+  IDENTITY_RECORD_DRIFT: 'identity.record_drift',
+  /**
    * A promise rejected with nobody listening. The process KEEPS RUNNING.
    *
    * Always a defect rather than an attack in itself, but it is raised at `page`
@@ -324,6 +337,10 @@ export const ALERT_THRESHOLDS: Record<AlertKind, { severity: AlertSeverity; rule
   [ALERT_KINDS.UPLOAD_ACTIVE_CONTENT]: {
     severity: 'notify',
     rule: 'Any occurrence. NOTIFY rather than page, and the distinction is the whole point of the two levels: the upload was refused at the door, so nothing is stored, nothing is running and nobody is losing money — there is no 3am action. What there IS is a person, either a client stuck on onboarding with a document they think is fine, or somebody probing the endpoint; both are answered in working hours. If it repeats from one account, read it as probing rather than as a bad exporter.',
+  },
+  [ALERT_KINDS.IDENTITY_RECORD_DRIFT]: {
+    severity: 'notify',
+    rule: 'Any occurrence at boot. After a deliberate rollback it is expected once — the context counts what was repaired, by kind — and needs only a note that the rollback happened. Without one, somebody wrote the KYC rows directly: find out who. `failed` above zero is the part to act on: those clients are named in the log, their KYC rows still hold everything, and each boot retries them; fix the cause the log gives and the next boot repairs them.',
   },
   [ALERT_KINDS.UNHANDLED_REJECTION]: {
     severity: 'page',

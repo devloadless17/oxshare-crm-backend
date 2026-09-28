@@ -72,6 +72,40 @@ describe('the import bans, each attempted', () => {
     expect(await firedAt('src/modules/payments/transactions.service.ts', code)).toEqual([]);
   });
 
+  it('keeps the identity CORE from importing the KYC layer — the process that fills it', async () => {
+    const service =
+      "import { KycService } from '../compliance/kyc.service';\nexport const x = KycService;\n";
+    const store = "import { KycStore } from '../../store/kyc.store';\nexport const x = KycStore;\n";
+    expect(await firedAt('src/modules/profile/client-profile.service.ts', service)).toContain(
+      'no-restricted-imports',
+    );
+    expect(await firedAt('src/modules/profile/client-profile.service.ts', store)).toContain(
+      'no-restricted-imports',
+    );
+    expect(
+      await firedAt('src/modules/client-identity/client-identity.service.ts', store),
+    ).toContain('no-restricted-imports');
+  });
+
+  it('keeps the layering ban on the core’s store file — the core ban must not erase it', async () => {
+    const code =
+      "import { KycService } from '../modules/compliance/kyc.service';\nexport const x = KycService;\n";
+    const other =
+      "import { IbService } from '../modules/ib/ib.service';\nexport const x = IbService;\n";
+    expect(await firedAt('src/store/client-identity.store.ts', code)).toContain(
+      'no-restricted-imports',
+    );
+    expect(await firedAt('src/store/client-identity.store.ts', other)).toContain(
+      'no-restricted-imports',
+    );
+  });
+
+  it('lets the core use what is its own — the users store', async () => {
+    const code =
+      "import { UsersStore } from '../../store/users.store';\nexport const x = UsersStore;\n";
+    expect(await firedAt('src/modules/profile/client-profile.service.ts', code)).toEqual([]);
+  });
+
   it('still lets a CONTROLLER throw HTTP — the transport edge is where it belongs', async () => {
     expect(await firedAt('src/modules/compliance/kyc.controller.ts', HTTP)).toEqual([]);
   });

@@ -647,7 +647,12 @@ export class KycStore {
    * same attempt twice is a no-op, not an error, because losing a decision to a
    * duplicate-key failure would be far worse than a missing duplicate.
    */
-  async archiveAttempt(submission: KycSubmission, executor?: Executor): Promise<void> {
+  async archiveAttempt(
+    submission: KycSubmission,
+    executor?: Executor,
+    /** A re-verification request, archived as what it is rather than a plain rejection. */
+    options: { reverification?: boolean } = {},
+  ): Promise<void> {
     await (executor ?? this.db)
       .insert(kycSubmissionAttempts)
       .values({
@@ -670,6 +675,9 @@ export class KycStore {
         submittedAt: submission.submittedAt ?? null,
         reviewedAt: submission.reviewedAt ?? null,
         reviewedBy: submission.reviewedBy ?? null,
+        reverification: options.reverification ?? false,
+        // What the broker's own steps asked, kept with the attempt it labels.
+        formSnapshot: submission.formSnapshot ?? null,
       })
       .onConflictDoNothing();
   }
@@ -796,7 +804,7 @@ export class KycStore {
   // REMOVED: `clearAll()` — an unguarded `DELETE FROM kyc_submissions` with no
   // caller once `KycService.resetAllKyc()` was deleted. See the note there.
 
-  async resetUser(userId: string): Promise<void> {
-    await this.db.delete(kycSubmissions).where(eq(kycSubmissions.userId, userId));
+  async resetUser(userId: string, executor: Executor = this.db): Promise<void> {
+    await executor.delete(kycSubmissions).where(eq(kycSubmissions.userId, userId));
   }
 }
