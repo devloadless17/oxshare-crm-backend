@@ -14,6 +14,7 @@ import {
   pgEnum,
   pgTable,
   primaryKey,
+  smallint,
   text,
   timestamp,
   unique,
@@ -854,6 +855,20 @@ export const kycSubmissions = pgTable(
      * row would not be.
      */
     reviewedBy: uuid('reviewed_by').references(() => admins.id, { onDelete: 'set null' }),
+    /*
+     * The client's document VERSIONS this submission presents (0151): the KYC
+     * layer points at the client's record rather than holding the evidence.
+     * Filled from slice 4 of the identity-core plan; NULL until then.
+     */
+    identityDocumentId: uuid('identity_document_id').references(() => clientDocuments.id, {
+      onDelete: 'restrict',
+    }),
+    addressDocumentId: uuid('address_document_id').references(() => clientDocuments.id, {
+      onDelete: 'restrict',
+    }),
+    selfieDocumentId: uuid('selfie_document_id').references(() => clientDocuments.id, {
+      onDelete: 'restrict',
+    }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -938,12 +953,123 @@ export const kycSubmissionAttempts = pgTable(
     reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
     reviewedBy: uuid('reviewed_by').references(() => admins.id, { onDelete: 'set null' }),
     archivedAt: timestamp('archived_at', { withTimezone: true }).notNull().defaultNow(),
+    /** The document versions this attempt presented, and its decision in the log (0151). */
+    identityDocumentId: uuid('identity_document_id').references(() => clientDocuments.id, {
+      onDelete: 'restrict',
+    }),
+    addressDocumentId: uuid('address_document_id').references(() => clientDocuments.id, {
+      onDelete: 'restrict',
+    }),
+    selfieDocumentId: uuid('selfie_document_id').references(() => clientDocuments.id, {
+      onDelete: 'restrict',
+    }),
+    verificationId: uuid('verification_id').references(() => clientVerifications.id, {
+      onDelete: 'restrict',
+    }),
+    reasonId: uuid('reason_id').references(() => rejectionReasons.id, { onDelete: 'set null' }),
+    /** A re-verification request, which used to be archived as a plain `rejected`. */
+    reverification: boolean('reverification').notNull().default(false),
+    formSnapshot:
+      jsonb('form_snapshot').$type<
+        { slug: string; title: string; fields: { name: string; label: string; type: string }[] }[]
+      >(),
   },
   (t) => [
     // Read as "this client's history, oldest first" — the only query shape.
     index('kyc_attempts_user_idx').on(t.userId, t.attemptNo),
     uniqueIndex('kyc_attempts_user_attempt_uq').on(t.userId, t.attemptNo),
   ],
+);
+
+/*
+ * THE CLIENT'S IDENTITY RECORD (0151, 28 Sep 2026) — the documents, the selfie
+ * and every verification decision, owned by the CLIENT, not by a KYC
+ * submission. Guarded by triggers in the migration: a frozen version and its
+ * pages never change, only a draft can be deleted, and the verification log is
+ * append-only — even for a superuser, except inside the explicit
+ * `oxshare.identity_maintenance` escape. See the migration's header.
+ */
+export const clientDocuments = pgTable(
+  'client_documents',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    /** `identity` | `address` | `selfie` | `other:<field key>`. */
+    slot: text('slot').notNull(),
+    docType: text('doc_type'),
+    source: text('source').notNull().default('client'),
+    providerRef: text('provider_ref'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    /** NULL = a draft being assembled; set = presented, and never changed again. */
+    frozenAt: timestamp('frozen_at', { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex('client_documents_one_draft_uq')
+      .on(t.userId, t.slot)
+      .where(sql`frozen_at IS NULL`),
+    index('client_documents_user_slot_idx').on(t.userId, t.slot, t.createdAt),
+  ],
+);
+
+export const clientDocumentPages = pgTable(
+  'client_document_pages',
+  {
+    documentId: uuid('document_id')
+      .notNull()
+      .references(() => clientDocuments.id, { onDelete: 'cascade' }),
+    part: smallint('part').notNull(),
+    storageKey: text('storage_key').notNull(),
+    storedObjectId: uuid('stored_object_id').references(() => storedObjects.id, {
+      onDelete: 'restrict',
+    }),
+    fileName: text('file_name'),
+    addedAt: timestamp('added_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.documentId, t.part] }),
+    index('client_document_pages_storage_key_idx').on(t.storageKey),
+  ],
+);
+
+export const clientVerifications = pgTable(
+  'client_verifications',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    seq: integer('seq').notNull(),
+    /** `verified` | `returned` | `reverification_requested`. */
+    outcome: text('outcome').notNull(),
+    levelAfter: smallint('level_after').notNull(),
+    /** `manual_review` | `legacy` | `fixture` | `import` | `provider`. */
+    method: text('method').notNull(),
+    // Plain references, not foreign keys — see the migration.
+    adminId: uuid('admin_id'),
+    adminEmail: text('admin_email'),
+    reasonId: uuid('reason_id'),
+    reason: text('reason'),
+    returnedItems: jsonb('returned_items').$type<string[]>().notNull().default([]),
+    provider: text('provider'),
+    providerRef: text('provider_ref'),
+    decidedAt: timestamp('decided_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [unique('client_verifications_seq_uq').on(t.userId, t.seq)],
+);
+
+export const clientVerificationDocuments = pgTable(
+  'client_verification_documents',
+  {
+    verificationId: uuid('verification_id')
+      .notNull()
+      .references(() => clientVerifications.id, { onDelete: 'restrict' }),
+    documentId: uuid('document_id')
+      .notNull()
+      .references(() => clientDocuments.id, { onDelete: 'restrict' }),
+  },
+  (t) => [primaryKey({ columns: [t.verificationId, t.documentId] })],
 );
 
 export const kycConfigSteps = pgTable('kyc_config_steps', {

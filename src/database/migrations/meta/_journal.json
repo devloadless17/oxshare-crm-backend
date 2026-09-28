@@ -1058,6 +1058,13 @@
       "when": 1789139718750,
       "tag": "0150_state_province",
       "breakpoints": true
+    },
+    {
+      "idx": 152,
+      "version": "7",
+      "when": 1789139778750,
+      "tag": "0151_client_identity_record",
+      "breakpoints": true
     }
   ]
 }
