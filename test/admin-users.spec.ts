@@ -105,6 +105,8 @@ async function build(overrides: { admin?: Partial<Admin>; role?: Role | undefine
   const target = { ...TARGET, ...overrides.admin };
 
   const adminsFake = {
+    // 0154's invariant: at least one active admin still sees every client.
+    countActiveFullSight: vi.fn(() => Promise.resolve(1)),
     findById: vi.fn((id: string) =>
       Promise.resolve(
         id === MASTER.id

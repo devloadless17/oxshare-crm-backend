@@ -119,6 +119,14 @@ export class AdminProfileDto {
   seesUntriaged: boolean;
 
   /**
+   * Sees EVERY client — the effective explicit grant (0154): the flag set and
+   * no territory tags. An empty territory no longer means every client.
+   */
+  @NotClientField('an ADMINISTRATOR attribute \u2014 this describes the operator, never a client')
+  @ApiProperty()
+  seesAllClients: boolean;
+
+  /**
    * The profile photo, on `me` rather than behind a profile endpoint of its
    * own — the sidebar renders it on every page, so a second call would be a
    * round trip per navigation to draw one 32px circle.

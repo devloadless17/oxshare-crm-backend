@@ -198,7 +198,7 @@ describe('the search cannot be turned into a probe for a client', () => {
     // escape wearing a search box — so the scoped desk must see Alice's rows
     // about their own client and NOT Bob's row about the client they may not
     // read, even when searching for Bob by name.
-    const desk = scopeOf([tagId], false);
+    const desk = scopeOf([tagId], false, false);
 
     const mine = await find({ scope: desk, q: 'alice' });
     expect(mine.items.length).toBe(3);
@@ -330,7 +330,7 @@ describe('a client is found — and named — by Portal ID', () => {
   });
 
   it('finds nothing for a Portal ID outside the reader’s territory — the same as an unused one', async () => {
-    const desk = scopeOf([tagId], false);
+    const desk = scopeOf([tagId], false, false);
     const outside = await find({ scope: desk, q: String(outScopePortalId) });
     const unused = await find({ scope: desk, q: '999999999' });
     expect(outside.total).toBe(0);

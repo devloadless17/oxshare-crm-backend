@@ -26,6 +26,8 @@ export interface ApiKeyRow {
   scopedTagIds: string[] | null;
   /** The creator's intake grant, snapshot with the territory (D-60). */
   seesUntriaged: boolean;
+  /** The creator's all-clients grant, snapshot with the territory (0154). */
+  seesAllClients: boolean;
   expiresAt: Date | null;
   revokedAt: Date | null;
   lastUsedAt: Date | null;
@@ -46,6 +48,7 @@ export interface ApiKeyCreate {
   /** The creator's territory, snapshot at creation — see the row comment. */
   scopedTagIds: string[] | null;
   seesUntriaged: boolean;
+  seesAllClients: boolean;
   expiresAt: Date | null;
 }
 
@@ -120,6 +123,7 @@ export class ApiKeysStore {
         createdBy: apiKeys.createdBy,
         scopedTagIds: apiKeys.scopedTagIds,
         seesUntriaged: apiKeys.seesUntriaged,
+        seesAllClients: apiKeys.seesAllClients,
         expiresAt: apiKeys.expiresAt,
         revokedAt: apiKeys.revokedAt,
         lastUsedAt: apiKeys.lastUsedAt,

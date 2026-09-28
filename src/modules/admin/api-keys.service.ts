@@ -107,6 +107,9 @@ export class ApiKeysService {
      * deleted (`createdBy` is `set null`), mirroring `admin_invites`.
      */
     const scopedTagIds = actor.clientScope.unrestricted ? null : [...actor.clientScope.tagIds];
+    // All-clients is the explicit grant (0154): a key sees everyone only when
+    // its creator does, never because it carries no tags.
+    const seesAllClients = actor.clientScope.unrestricted;
     const seesUntriaged = actor.clientScope.unrestricted
       ? true
       : (actor.clientScope.includesUntriaged ?? false);
@@ -119,6 +122,7 @@ export class ApiKeysService {
       createdBy: actor.id,
       scopedTagIds,
       seesUntriaged,
+      seesAllClients,
       expiresAt: input.expiresAt,
     });
 

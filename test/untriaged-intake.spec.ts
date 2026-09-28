@@ -28,7 +28,7 @@ let emptyTagId: string;
 let taggedClientId: string;
 let untaggedClientId: string;
 
-const intakeLens = () => scopeOf([emptyTagId], true);
+const intakeLens = () => scopeOf([emptyTagId], true, false);
 
 async function visibleTo(scope: ReturnType<typeof scopeOf>): Promise<string[]> {
   const predicate = clientScopePredicate(scope, users.id);
@@ -79,20 +79,26 @@ afterAll(async () => {
 });
 
 describe('the intake pool is a derived state (D-60)', () => {
-  it('the grant is ADDITIVE — with no territories it changes nothing (pure D-10)', () => {
-    // The default-true world's load-bearing rule: every unrestricted admin
-    // carries the grant, so it must never be the thing that restricts.
-    expect(scopeOf([], true)).toBe(UNRESTRICTED);
-    expect(scopeOf([], false)).toBe(UNRESTRICTED);
+  it('only the explicit all-clients grant means everyone — never an empty territory (0154)', async () => {
+    // The grant is still ADDITIVE for an all-clients admin: carrying it changes nothing.
+    expect(scopeOf([], true, true)).toBe(UNRESTRICTED);
+    expect(scopeOf([], false, true)).toBe(UNRESTRICTED);
     expect(clientScopePredicate(UNRESTRICTED, users.id)).toBeUndefined();
+
+    // No tags WITHOUT the all-clients grant: new clients only, or none. This
+    // used to resolve to every client — the widest sight, from an absence.
+    const intakeOnly = await visibleTo(scopeOf([], true, false));
+    expect(intakeOnly).toContain(untaggedClientId);
+    expect(intakeOnly).not.toContain(taggedClientId);
+    expect(await visibleTo(scopeOf([], false, false))).toEqual([]);
   });
 
   it('a scoped admin with the grant sees their territory PLUS the untriaged pool', async () => {
-    const withGrant = await visibleTo(scopeOf([territoryTagId], true));
+    const withGrant = await visibleTo(scopeOf([territoryTagId], true, false));
     expect(withGrant).toContain(taggedClientId);
     expect(withGrant).toContain(untaggedClientId);
 
-    const withoutGrant = await visibleTo(scopeOf([territoryTagId], false));
+    const withoutGrant = await visibleTo(scopeOf([territoryTagId], false, false));
     expect(withoutGrant).toContain(taggedClientId);
     expect(withoutGrant).not.toContain(untaggedClientId);
   });
@@ -115,7 +121,7 @@ describe('the intake pool is a derived state (D-60)', () => {
       .where(eq(clientTagAssignments.userId, taggedClientId));
 
     expect(await visibleTo(intakeLens())).toContain(taggedClientId);
-    expect(await visibleTo(scopeOf([territoryTagId], false))).not.toContain(taggedClientId);
+    expect(await visibleTo(scopeOf([territoryTagId], false, false))).not.toContain(taggedClientId);
   });
 
   it('assigning any tag ends the intake state by definition', async () => {
@@ -124,7 +130,7 @@ describe('the intake pool is a derived state (D-60)', () => {
       .values({ userId: untaggedClientId, tagId: territoryTagId });
 
     expect(await visibleTo(intakeLens())).not.toContain(untaggedClientId);
-    expect(await visibleTo(scopeOf([territoryTagId], false))).toContain(untaggedClientId);
+    expect(await visibleTo(scopeOf([territoryTagId], false, false))).toContain(untaggedClientId);
   });
 
   it('fails CLOSED if a restricted scope ever arrives empty-handed', async () => {

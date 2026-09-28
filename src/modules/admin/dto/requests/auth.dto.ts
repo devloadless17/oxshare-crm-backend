@@ -104,7 +104,7 @@ export class InviteDto {
   @ApiPropertyOptional({
     type: [String],
     description:
-      'Client tags this admin is scoped to. Omit or [] means UNRESTRICTED — every client.',
+      'Client tags this admin is limited to. [] means no territory tags (new clients only, or none) — every client is only ever `seesAllClients` (0154).',
   })
   @IsArray()
   @IsOptional()
@@ -117,6 +117,14 @@ export class InviteDto {
   @IsBoolean()
   @IsOptional()
   seesUntriaged?: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      'Sees EVERY client — the explicit grant (0154). Only an administrator who sees every client may give it, and never together with territory tags. An empty territory no longer means every client.',
+  })
+  @IsBoolean()
+  @IsOptional()
+  seesAllClients?: boolean;
 }
 
 /**

@@ -285,6 +285,8 @@ export class AdminAuthService {
     scopedTagIds?: string[],
     /** D-60 — the intake grant, chosen at invite time for the window reason above. */
     seesUntriaged?: boolean,
+    /** Sees every client — the explicit grant (0154). Only from an actor who does. */
+    seesAllClients?: boolean,
   ) {
     /*
      * One canonical spelling from here down.
@@ -376,11 +378,28 @@ export class AdminAuthService {
      * silently skipped both that refusal and the `admins.scope` gate: a
      * scoped inviter sending `[]` minted an admin who saw EVERY client.
      */
-    if (scopedTagIds !== undefined && scopedTagIds.length === 0 && actor.clientScope.unrestricted) {
-      scopedTagIds = undefined;
-    }
-    if (maskedFields !== undefined || scopedTagIds !== undefined || seesUntriaged !== undefined) {
+    /*
+     * 0154: an EMPTY list is no longer "unrestricted" — it is "no territory
+     * tags" (new clients only, or none). Every client is only ever the explicit
+     * `seesAllClients` grant, which only an actor who sees every client may give.
+     */
+    if (
+      maskedFields !== undefined ||
+      scopedTagIds !== undefined ||
+      seesUntriaged !== undefined ||
+      seesAllClients !== undefined
+    ) {
       assertActorCan(actor, 'admins.scope', "choose an invitee's client visibility");
+    }
+    if (seesAllClients === true) {
+      if (!actor.clientScope.unrestricted) {
+        throw new AuthorizationError(
+          'You cannot grant sight of every client: you do not see every client yourself.',
+        );
+      }
+      if (scopedTagIds !== undefined && scopedTagIds.length > 0) {
+        throw new ValidationError('Choose either every client or a territory of tags — not both.');
+      }
     }
     if (maskedFields !== undefined) this.rbac.assertMaskAllowed(actor, maskedFields);
     if (scopedTagIds !== undefined) await this.rbac.assertScopable(actor, scopedTagIds);
@@ -432,6 +451,13 @@ export class AdminAuthService {
       );
     }
     const resolvedSeesUntriaged = seesUntriaged ?? actorCanGrantIntake;
+    /*
+     * Every client only by the explicit grant, or by an UNRESTRICTED inviter's
+     * silence (today's behaviour for a silent invite). A scoped inviter's
+     * silence inherited their territory above, so it never lands here.
+     */
+    const resolvedSeesAllClients =
+      seesAllClients ?? (scopedTagIds === undefined && actor.clientScope.unrestricted);
 
     const invitedBy = actor.id;
 
@@ -444,8 +470,9 @@ export class AdminAuthService {
       roleId,
       permissions: grantedPermissions,
       maskedFields,
-      scopedTagIds,
+      scopedTagIds: resolvedSeesAllClients ? undefined : scopedTagIds,
       seesUntriaged: resolvedSeesUntriaged,
+      seesAllClients: resolvedSeesAllClients,
       invitedBy,
       expiresAt: new Date(Date.now() + 48 * 60 * 60 * 1000), // 48h
     });
@@ -478,8 +505,9 @@ export class AdminAuthService {
       roleId,
       permissions: grantedPermissions,
       maskedFields: maskedFields ?? null,
-      scopedTagIds: scopedTagIds ?? null,
+      scopedTagIds: resolvedSeesAllClients ? null : (scopedTagIds ?? []),
       seesUntriaged: resolvedSeesUntriaged,
+      seesAllClients: resolvedSeesAllClients,
     });
 
     // The token is a bearer credential that creates an admin account. It goes
@@ -560,6 +588,8 @@ export class AdminAuthService {
           // D-60 — same carry, same reason: the intake grant is part of the
           // visibility the inviter chose.
           seesUntriaged: invite.seesUntriaged,
+          // 0154 — the explicit all-clients grant, carried like the rest.
+          seesAllClients: invite.seesAllClients ?? false,
           status: 'active',
         },
         tx,
@@ -611,6 +641,7 @@ export class AdminAuthService {
       maskedFields: admin.maskedFields ?? null,
       scopedTagIds: invite.scopedTagIds ?? null,
       seesUntriaged: admin.seesUntriaged,
+      seesAllClients: admin.seesAllClients ?? false,
     });
 
     /*

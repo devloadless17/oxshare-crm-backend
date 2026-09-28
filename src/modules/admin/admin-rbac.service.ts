@@ -335,6 +335,24 @@ export class AdminRbacService {
    * state the write would produce — asking "does anybody still hold this?" of
    * the current state would happily allow the very write that empties it.
    */
+  /**
+   * Refuse the write that leaves NO active administrator seeing every client.
+   *
+   * Since 0154 "every client" is an explicit grant rather than the default, so
+   * it can run out: were every administrator scoped, a client carrying only a
+   * tag nobody handles would be invisible to everyone — the orphan D-60 was
+   * built to make impossible. Checked AFTER the write, inside the manager lock
+   * the write already holds, so it counts the world the write actually leaves
+   * and two concurrent narrowings cannot each count the other.
+   */
+  private async assertKeepsFullSight(tx: Executor): Promise<void> {
+    if ((await this.admins.countActiveFullSight(tx)) > 0) return;
+    throw new ConflictError(
+      'This would leave no active administrator who sees every client. Keep at least one: ' +
+        'otherwise a client carrying only a tag nobody handles is invisible to everyone.',
+    );
+  }
+
   private async assertNotLastManager(
     key: 'roles.edit' | 'admins.edit',
     /** The state the write would produce, per admin id. */
@@ -441,11 +459,9 @@ export class AdminRbacService {
    * cannot see themselves, and a second-hand one is no different from a direct
    * one.
    *
-   * The EMPTY case is the one worth reading twice. `[]` means UNRESTRICTED, so
-   * a scoped actor handing somebody an empty scope is granting access to every
-   * client in the system — the largest possible widening, expressed as the
-   * smallest possible value. It is refused explicitly rather than falling
-   * through the subset check, which `[] ⊆ anything` would pass.
+   * The EMPTY case used to be refused: `[]` meant UNRESTRICTED, the largest
+   * widening expressed as the smallest value. Since 0154 it means no territory
+   * tags (new clients only, or none), which only ever narrows.
    */
   async assertScopable(actor: AuthenticatedAdmin, tagIds: string[]) {
     const existing = await this.clientTags.findByIds(tagIds);
@@ -457,12 +473,8 @@ export class AdminRbacService {
 
     if (actor.clientScope.unrestricted) return;
 
-    if (tagIds.length === 0) {
-      throw new AuthorizationError(
-        'You cannot give an administrator an empty client scope, because an empty scope ' +
-          'means UNRESTRICTED — every client in the system, including those outside your own.',
-      );
-    }
+    // An EMPTY list is "no territory tags" since 0154 — never every client — so
+    // it narrows and needs no refusal. Every client is only `seesAllClients`.
 
     const held = new Set(actor.clientScope.tagIds);
     const beyond = tagIds.filter((id) => !held.has(id));
@@ -654,10 +666,12 @@ export class AdminRbacService {
       permissions?: string[];
       /** RBAC-03 per-person override. `null` clears it — back to inheriting the role. */
       maskedFields?: string[] | null;
-      /** RBAC-03 territory. An empty array means unrestricted. */
+      /** RBAC-03 territory. An empty array means NO territory tags (0154), never everyone. */
       scopedTagIds?: string[];
       /** D-60 — sees the intake pool (clients with no tags yet). */
       seesUntriaged?: boolean;
+      /** Sees every client — the explicit grant (0154). */
+      seesAllClients?: boolean;
     },
     actor: AuthenticatedAdmin,
   ) {
@@ -693,7 +707,8 @@ export class AdminRbacService {
       patch.permissions ||
       patch.maskedFields !== undefined ||
       patch.scopedTagIds !== undefined ||
-      patch.seesUntriaged !== undefined,
+      patch.seesUntriaged !== undefined ||
+      patch.seesAllClients !== undefined,
     );
 
     /*
@@ -718,7 +733,8 @@ export class AdminRbacService {
     if (
       patch.maskedFields !== undefined ||
       patch.scopedTagIds !== undefined ||
-      patch.seesUntriaged !== undefined
+      patch.seesUntriaged !== undefined ||
+      patch.seesAllClients !== undefined
     ) {
       assertActorCan(actor, 'admins.scope', "change an administrator's client visibility");
     }
@@ -766,6 +782,30 @@ export class AdminRbacService {
       await this.assertScopable(actor, patch.scopedTagIds);
     }
 
+    /*
+     * EVERY CLIENT is the explicit grant (0154) — never what an empty territory
+     * means. Only an actor who sees every client may give it (you cannot hand
+     * out sight you do not have), and never together with territory tags. A
+     * territory written without the grant clears it; `scopedTagIds: []` alone
+     * is "no territory tags": new clients only, or none.
+     */
+    let scopedTagIdsToWrite = patch.scopedTagIds;
+    if (patch.seesAllClients === true) {
+      if (!actor.clientScope.unrestricted) {
+        throw new AuthorizationError(
+          'You cannot grant sight of every client: you do not see every client yourself.',
+        );
+      }
+      if (patch.scopedTagIds !== undefined && patch.scopedTagIds.length > 0) {
+        throw new ValidationError('Choose either every client or a territory of tags — not both.');
+      }
+      scopedTagIdsToWrite = [];
+      update = { ...update, seesAllClients: true };
+    } else if (patch.seesAllClients === false || patch.scopedTagIds !== undefined) {
+      update = { ...update, seesAllClients: false };
+    }
+    const narrowsFullSight = update.seesAllClients === false;
+
     const updated = await this.withManagerLock(async (tx) => {
       /*
        * Demoting the last manager is the same outage as suspending them — see
@@ -788,9 +828,10 @@ export class AdminRbacService {
       const written = (await this.admins.update(id, update, tx))!;
       // After the admin row, so a rejected mask or permission change does not
       // leave a territory applied to an admin whose update failed.
-      if (patch.scopedTagIds !== undefined) {
-        await this.scopes.replace(id, patch.scopedTagIds, actor.id, tx);
+      if (scopedTagIdsToWrite !== undefined) {
+        await this.scopes.replace(id, scopedTagIdsToWrite, actor.id, tx);
       }
+      if (narrowsFullSight) await this.assertKeepsFullSight(tx);
       return written;
     });
 
@@ -806,6 +847,7 @@ export class AdminRbacService {
       // question a compliance review asks after an incident.
       ...(patch.scopedTagIds === undefined ? {} : { scopedTagIds: patch.scopedTagIds }),
       ...(patch.seesUntriaged === undefined ? {} : { seesUntriaged: patch.seesUntriaged }),
+      ...(update.seesAllClients === undefined ? {} : { seesAllClients: update.seesAllClients }),
     });
     return await this.sanitize(updated);
   }
@@ -897,7 +939,9 @@ export class AdminRbacService {
           [],
         );
       }
-      return (await this.admins.update(id, { status }, tx))!;
+      const written = (await this.admins.update(id, { status }, tx))!;
+      if (status === 'suspended') await this.assertKeepsFullSight(tx);
+      return written;
     });
     /*
      * Suspension ends the SESSIONS, not only the account's standing. The
@@ -1017,6 +1061,9 @@ export class AdminRbacService {
       scopedTags,
       // D-60 — the intake grant, beside the territory it belongs with.
       seesUntriaged: admin.seesUntriaged ?? false,
+      // 0154 — the EFFECTIVE all-clients grant: tags restrict whatever the flag
+      // says, so a screen reading this cannot mistake a stale flag for sight.
+      seesAllClients: (admin.seesAllClients ?? false) && scopedTags.length === 0,
     };
   }
 }

@@ -65,7 +65,11 @@ function build(opts: {
         .mockImplementation((adminId: string) =>
           Promise.resolve(
             (opts.scopeTags?.[adminId] ?? []).length > 0
-              ? scopeOf(opts.scopeTags?.[adminId] ?? [])
+              ? scopeOf(
+                  opts.scopeTags?.[adminId] ?? [],
+                  false,
+                  (opts.scopeTags?.[adminId] ?? []).length === 0,
+                )
               : UNRESTRICTED,
           ),
         ),
@@ -155,8 +159,9 @@ describe('notifyAdmins', () => {
       } as unknown as RolesStore,
       {
         scopeFor: vi.fn().mockImplementation((adminId: string) => {
-          if (adminId === 'in-territory') return Promise.resolve(scopeOf(['north']));
-          if (adminId === 'out-of-territory') return Promise.resolve(scopeOf(['south']));
+          if (adminId === 'in-territory') return Promise.resolve(scopeOf(['north'], false, false));
+          if (adminId === 'out-of-territory')
+            return Promise.resolve(scopeOf(['south'], false, false));
           return Promise.resolve(UNRESTRICTED);
         }),
       } as unknown as AdminClientScopesStore,
@@ -193,7 +198,7 @@ describe('notifyAdmins', () => {
           ),
       } as unknown as RolesStore,
       {
-        scopeFor: vi.fn().mockResolvedValue(scopeOf(['south'])),
+        scopeFor: vi.fn().mockResolvedValue(scopeOf(['south'], false, false)),
       } as unknown as AdminClientScopesStore,
       { assertVisible } as unknown as ClientVisibilityService,
       alwaysLeads(),
@@ -227,7 +232,7 @@ describe('notifyAdmins', () => {
           ),
       } as unknown as RolesStore,
       {
-        scopeFor: vi.fn().mockResolvedValue(scopeOf(['north'])),
+        scopeFor: vi.fn().mockResolvedValue(scopeOf(['north'], false, false)),
       } as unknown as AdminClientScopesStore,
       {
         // NOT a NotFoundError: the database blipped. Swallowing this as

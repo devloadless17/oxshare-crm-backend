@@ -83,7 +83,7 @@ describe('commission accruals mask the out-of-scope client (#4)', () => {
     const { rows } = (await store.findAccrualsPage({
       page: 1,
       limit: 10,
-      scope: scopeOf([tagId], false),
+      scope: scopeOf([tagId], false, false),
     })) as unknown as { rows: AccrualRow[] };
 
     // Scoped on the partner, who is in territory — both rows are present.
@@ -96,7 +96,7 @@ describe('commission accruals mask the out-of-scope client (#4)', () => {
     const { rows } = (await store.findAccrualsPage({
       page: 1,
       limit: 10,
-      scope: scopeOf([tagId], false),
+      scope: scopeOf([tagId], false, false),
     })) as unknown as { rows: AccrualRow[] };
 
     const mine = rows.find((r) => r.client.id === inScopeClientId);

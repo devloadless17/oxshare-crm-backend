@@ -30,10 +30,7 @@ import { clientTagAssignments } from '../../database/schema';
  */
 
 export interface ClientScope {
-  /**
-   * True when this actor sees every client: a master admin, or an admin with no
-   * scope rows at all.
-   */
+  /** True when this actor sees every client — the explicit grant (0154). */
   unrestricted: boolean;
   tagIds: readonly string[];
   /**
@@ -48,15 +45,8 @@ export interface ClientScope {
 }
 
 /**
- * The default, and it is DELIBERATELY PERMISSIVE.
- *
- * An empty scope means unrestricted, following RBAC-08's empty allowlist and
- * DECISIONS D-10 for the same reason: the deploy that introduces this feature
- * must not blind every existing sub-admin before anyone has had a chance to
- * assign a territory. Enforcement begins when somebody says who belongs where.
- *
- * The cost of that choice is a real window at invite time, which is why
- * `admin_invites.scoped_tag_ids` exists — see the schema comment.
+ * Every client. What an administrator holding the explicit `sees_all_clients`
+ * grant resolves to — never, since 0154, what an empty territory resolves to.
  */
 export const UNRESTRICTED: ClientScope = Object.freeze({
   unrestricted: true,
@@ -65,17 +55,31 @@ export const UNRESTRICTED: ClientScope = Object.freeze({
 });
 
 /**
- * The intake grant is ADDITIVE, never restrictive: it widens a SCOPED admin's
- * view to include the untriaged pool, and it means nothing to an unrestricted
- * one. Empty territory means unrestricted, full stop — pure D-10.
+ * The one resolution of an administrator's (or invite's, or key's) sight.
  *
- * (An earlier revision read "no tags + grant" as an intake-ONLY admin. That
- * died the moment the grant became TRUE BY DEFAULT (0058): every unrestricted
- * admin carried it, so every unrestricted admin — masters included — silently
- * became intake-only. A default must never be the thing that restricts.)
+ * TAGS RESTRICT, ONLY THE FLAG GRANTS (migration 0154):
+ *
+ *   territory tags present         → only those tags (+ new clients if granted)
+ *   no tags,  seesAllClients       → every client
+ *   no tags, !seesAllClients       → new clients only if granted, otherwise none
+ *
+ * An empty territory used to mean UNRESTRICTED (D-10), which made the widest
+ * sight in the system the result of an absence: clearing an admin's last tag
+ * silently promoted them to every client, and "new clients only" could not be
+ * expressed. A row carrying tags is restricted whatever the flag says, so
+ * nothing can widen by accident.
+ *
+ * Every argument is REQUIRED. A default that is right for one caller and wrong
+ * for another is how the intake grant was once lost in two paths; the caller
+ * holds the row, so the caller passes the flags.
  */
-export function scopeOf(tagIds: readonly string[], includesUntriaged = false): ClientScope {
-  return tagIds.length === 0 ? UNRESTRICTED : { unrestricted: false, tagIds, includesUntriaged };
+export function scopeOf(
+  tagIds: readonly string[],
+  includesUntriaged: boolean,
+  seesAllClients: boolean,
+): ClientScope {
+  if (tagIds.length > 0) return { unrestricted: false, tagIds, includesUntriaged };
+  return seesAllClients ? UNRESTRICTED : { unrestricted: false, tagIds: [], includesUntriaged };
 }
 
 /**
@@ -122,10 +126,9 @@ export function clientScopePredicate(
     : undefined;
 
   /*
-   * FAIL CLOSED when the scope carries neither tags nor the intake grant —
-   * `scopeOf` maps that shape to UNRESTRICTED, so reaching here means the
-   * invariant broke, and of the two ways to be wrong, showing nothing is the
-   * recoverable one. (An empty `IN ()` would also be a SQL syntax error.)
+   * No territory tags: the "new clients only" admin (intake granted) or the
+   * admin who sees no clients at all — both real configurations since 0154.
+   * (An empty `IN ()` would also be a SQL syntax error.)
    */
   if (scope.tagIds.length === 0) return untriaged ?? sql`false`;
 

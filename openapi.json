@@ -17641,6 +17641,9 @@
           "seesUntriaged": {
             "type": "boolean"
           },
+          "seesAllClients": {
+            "type": "boolean"
+          },
           "avatarUrl": {
             "type": "string",
             "nullable": true,
@@ -17666,6 +17669,7 @@
           "maskedFields",
           "scopedTags",
           "seesUntriaged",
+          "seesAllClients",
           "createdAt"
         ]
       },
@@ -17712,7 +17716,7 @@
             }
           },
           "scopedTagIds": {
-            "description": "Client tags this admin is scoped to. Omit or [] means UNRESTRICTED — every client.",
+            "description": "Client tags this admin is limited to. [] means no territory tags (new clients only, or none) — every client is only ever `seesAllClients` (0154).",
             "type": "array",
             "items": {
               "type": "string"
@@ -17721,6 +17725,10 @@
           "seesUntriaged": {
             "type": "boolean",
             "description": "D-60 — sees the intake pool: clients with no tag assignments yet. Meaningful only for a scoped admin. DEFAULTS TO TRUE — restriction is the explicit act; an inviter who does not see the pool cannot grant it, and their default resolves to false."
+          },
+          "seesAllClients": {
+            "type": "boolean",
+            "description": "Sees EVERY client — the explicit grant (0154). Only an administrator who sees every client may give it, and never together with territory tags. An empty territory no longer means every client."
           }
         },
         "required": [
@@ -20089,7 +20097,7 @@
             }
           },
           "scopedTagIds": {
-            "description": "Client tag ids. An EMPTY ARRAY means unrestricted (every client), not none — see D-10.",
+            "description": "Client tag ids. [] means no territory tags (new clients only, or none) — every client is only ever `seesAllClients` (0154).",
             "type": "array",
             "items": {
               "type": "string"
@@ -20098,6 +20106,10 @@
           "seesUntriaged": {
             "type": "boolean",
             "description": "D-60 — sees the intake pool: clients with no tag assignments yet. Meaningful only for a scoped admin. DEFAULTS TO TRUE — restriction is the explicit act; an inviter who does not see the pool cannot grant it, and their default resolves to false."
+          },
+          "seesAllClients": {
+            "type": "boolean",
+            "description": "Sees EVERY client — the explicit grant (0154). Only an administrator who sees every client may give it, and never together with territory tags. An empty territory no longer means every client."
           }
         }
       },

@@ -287,7 +287,7 @@ export class AdminAuthenticator {
     const [clientScope, storedMask] = await Promise.all([
       // D-60: the intake grant rides the admin row; the territory rides its
       // own table. `scopeOf` combines them under one unrestricted rule.
-      this.scopes.scopeFor(admin.id, admin.seesUntriaged ?? false),
+      this.scopes.scopeFor(admin),
       this.roles.resolveMaskedFields(admin.roleId, admin.maskedFields),
     ]);
 
@@ -403,7 +403,7 @@ export class AdminAuthenticator {
     return {
       ...identity,
       permissions,
-      clientScope: scopeOf(row.scopedTagIds ?? [], row.seesUntriaged),
+      clientScope: scopeOf(row.scopedTagIds ?? [], row.seesUntriaged, row.seesAllClients),
       fieldMask: EMPTY_MASK,
     };
   }

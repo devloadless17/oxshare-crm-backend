@@ -592,49 +592,63 @@ describe('visibility at INVITE time runs the updateAdmin rulebook', () => {
     expect(h.invites.create).not.toHaveBeenCalled();
   });
 
-  it('treats an EMPTY territory list as absent — unrestricted was never a choice made', async () => {
-    // And therefore needs no admins.scope: nothing visibility-shaped was set.
-    // The intake grant resolves to its DEFAULT — true, because this inviter
-    // (unrestricted) can grant it (0058: restriction is the explicit act).
+  it('an EMPTY territory list means no territory tags — never every client (0154)', async () => {
+    // It used to be normalised to "absent", which from this inviter meant
+    // UNRESTRICTED: the widest sight, from an empty list.
     const h = build();
     await h.service.createInvite(
       'new@oxshare.com',
       'New',
-      SUB_ADMIN,
+      MASTER,
       undefined,
       ['kyc.review'],
       undefined,
       [],
     );
     expect(h.invites.create).toHaveBeenCalledWith(
-      expect.objectContaining({ scopedTagIds: undefined, seesUntriaged: true }),
+      expect.objectContaining({ scopedTagIds: [], seesAllClients: false }),
     );
   });
 
-  it('REFUSES an empty territory list from a SCOPED inviter — [] means everyone', async () => {
-    /*
-     * The laundering this closes: [] used to be normalised to absent BEFORE
-     * assertScopable ran, so a scoped inviter sending an empty list skipped
-     * both the admins.scope gate and the empty-list refusal — and minted an
-     * admin who saw EVERY client, sight the inviter could not grant.
-     * Normalisation is now unrestricted-actors-only; a scoped actor's []
-     * falls through to assertScopable's refusal by name.
-     */
+  it('lets a SCOPED inviter send an empty list — it narrows, it cannot widen (0154)', async () => {
     const h = build();
     const scopedInviter = {
       ...MASTER,
-      permissions: ['admins.create', 'admins.scope'],
+      permissions: ['admins.create', 'admins.scope', 'kyc.review'],
+      clientScope: { unrestricted: false, tagIds: ['tag-1'], includesUntriaged: false },
+    };
+    await h.service.createInvite(
+      'narrow@oxshare.com',
+      'Narrow',
+      scopedInviter,
+      undefined,
+      ['kyc.review'],
+      undefined,
+      [],
+    );
+    expect(h.invites.create).toHaveBeenCalledWith(
+      expect.objectContaining({ scopedTagIds: [], seesAllClients: false }),
+    );
+  });
+
+  it('REFUSES every-client sight from an inviter who does not have it', async () => {
+    const h = build();
+    const scopedInviter = {
+      ...MASTER,
+      permissions: ['admins.create', 'admins.scope', 'kyc.review'],
       clientScope: { unrestricted: false, tagIds: ['tag-1'], includesUntriaged: false },
     };
     await expect(
       h.service.createInvite(
-        'laundered@oxshare.com',
-        'Laundered',
+        'wide@oxshare.com',
+        'Wide',
         scopedInviter as never,
         undefined,
         ['kyc.review'],
         undefined,
-        [],
+        undefined,
+        undefined,
+        true,
       ),
     ).rejects.toThrow(AuthorizationError);
     expect(h.invites.create).not.toHaveBeenCalled();

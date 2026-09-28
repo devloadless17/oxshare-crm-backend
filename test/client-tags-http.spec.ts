@@ -494,12 +494,11 @@ describe('row-level client scoping', () => {
 });
 
 describe('deleting a tag that is somebody’s territory', () => {
-  it('is refused, naming the escalation it would cause', async () => {
+  it('is refused, naming the consequence', async () => {
     /*
-     * An empty scope means UNRESTRICTED, so cascading this delete would remove
-     * the scoped admin's only scope row and PROMOTE THEM to seeing every client
-     * in the system — privilege escalation performed by a DELETE on a label,
-     * leaving nothing in the audit trail that looks like a permission change.
+     * Cascading this delete would silently change what the scoped admin sees.
+     * Before 0154 it was an escalation — an empty territory meant every client,
+     * so removing their only scope row PROMOTED them to everyone.
      *
      * The FK is ON DELETE RESTRICT and is the real guarantee; this turns its
      * raw 23503 into a sentence that says what would have happened.
@@ -508,7 +507,7 @@ describe('deleting a tag that is somebody’s territory', () => {
     const res = await session.del(`${TAGS}/${alphaTagId}`);
 
     expect(res.status).toBe(409);
-    expect((res.body as { message?: string }).message).toMatch(/every client/i);
+    expect((res.body as { message?: string }).message).toMatch(/in their territory/i);
   });
 
   it('deletes a tag nobody is scoped to', async () => {

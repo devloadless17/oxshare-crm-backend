@@ -3,7 +3,7 @@ import { createHash } from 'crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db, Executor } from '../database/db';
-import { adminInvites, admins } from '../database/schema';
+import { adminClientTagScopes, adminInvites, admins } from '../database/schema';
 import { orderTerms, type SortOrder } from '../common/sorting';
 
 /**
@@ -77,6 +77,8 @@ export interface Admin {
   maskedFields?: string[];
   /** D-60 — sees the intake pool: clients with no tag assignments yet. */
   seesUntriaged?: boolean;
+  /** Sees every client — the explicit grant (0154). See `scopeOf`. */
+  seesAllClients?: boolean;
   /**
    * The cutoff that invalidates access tokens issued before it.
    *
@@ -111,6 +113,8 @@ export interface AdminInvite {
   scopedTagIds?: string[];
   /** D-60 — intake grant chosen at invite time, applied on acceptance. */
   seesUntriaged?: boolean;
+  /** All-clients grant chosen at invite time, applied on acceptance (0154). */
+  seesAllClients?: boolean;
   invitedBy: string;
   expiresAt: Date;
   accepted: boolean;
@@ -184,6 +188,31 @@ export class AdminsStore {
       .values({ ...data, email: data.email.toLowerCase() })
       .returning();
     return toAdmin(row);
+  }
+
+  /**
+   * Active administrators who see EVERY client: the explicit grant (0154) and
+   * no territory tags (tags restrict, only the flag grants). What
+   * `assertKeepsFullSight` counts, inside the caller's transaction.
+   */
+  async countActiveFullSight(executor?: Executor): Promise<number> {
+    const db = executor ?? this.db;
+    const [row] = await db
+      .select({ n: count() })
+      .from(admins)
+      .where(
+        and(
+          eq(admins.status, 'active'),
+          eq(admins.seesAllClients, true),
+          notExists(
+            db
+              .select({ one: sql`1` })
+              .from(adminClientTagScopes)
+              .where(eq(adminClientTagScopes.adminId, admins.id)),
+          ),
+        ),
+      );
+    return Number(row?.n ?? 0);
   }
 
   /**

@@ -871,7 +871,7 @@ export class UploadsController {
    * the authority on whose receipt this is, is whose deposit it belongs to.
    */
   private async assertProofInScope(admin: Admin, fileName: string): Promise<void> {
-    const scope = await this.scopes.scopeFor(admin.id, admin.seesUntriaged ?? false);
+    const scope = await this.scopes.scopeFor(admin);
     if (scope.unrestricted) return;
 
     const owner = await this.depositProofs.ownerOfProof(fileName);
@@ -896,7 +896,7 @@ export class UploadsController {
     // The admin's own intake grant (D-60), not a default — an intake-granted
     // reviewer must reach an untagged client's DOCUMENTS, not just the
     // submission row.
-    const scope = await this.scopes.scopeFor(admin.id, admin.seesUntriaged ?? false);
+    const scope = await this.scopes.scopeFor(admin);
     if (scope.unrestricted) return;
     const client = await this.users.findForAdmin(owner, scope);
     if (!client) throw new NotFoundException('Document not found.');

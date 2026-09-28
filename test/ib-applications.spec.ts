@@ -1369,7 +1369,7 @@ describe('managing a live partner', () => {
     await ctx.db.execute(sql`
       INSERT INTO client_tag_assignments (user_id, tag_id) VALUES (${child}, ${tagId})
     `);
-    const scope = scopeOf([tagId], false);
+    const scope = scopeOf([tagId], false, false);
 
     await expect(service.reassignParent(child, outsider, scope, REVIEWER)).rejects.toThrow(
       /not.*(found|exist)/i,

@@ -418,7 +418,7 @@ describe('the reversal obeys the reader’s TERRITORY, on the column it actually
     const result = await scopedCommissions.reverseAccrual(
       commission.id,
       'in territory',
-      scopeOf([partnerOnlyTagId]),
+      scopeOf([partnerOnlyTagId], false, false),
     );
 
     expect(result.status).toBe('reversed');
@@ -437,7 +437,11 @@ describe('the reversal obeys the reader’s TERRITORY, on the column it actually
     const rebate = (await accrualRows()).find((r) => r.kind === 'rebate')!;
 
     await expect(
-      scopedCommissions.reverseAccrual(rebate.id, 'out of territory', scopeOf([partnerOnlyTagId])),
+      scopedCommissions.reverseAccrual(
+        rebate.id,
+        'out of territory',
+        scopeOf([partnerOnlyTagId], false, false),
+      ),
     ).rejects.toBeInstanceOf(ClientNotFoundError);
 
     // And nothing moved: the row is untouched, not half-reversed.
@@ -456,7 +460,11 @@ describe('the reversal obeys the reader’s TERRITORY, on the column it actually
     const rebate = (await accrualRows()).find((r) => r.kind === 'rebate')!;
 
     await expect(
-      scopedCommissions.reverseAccrual(rebate.id, 'probe', scopeOf([partnerOnlyTagId])),
+      scopedCommissions.reverseAccrual(
+        rebate.id,
+        'probe',
+        scopeOf([partnerOnlyTagId], false, false),
+      ),
     ).rejects.toThrow(/not found/i);
   });
 
@@ -476,7 +484,11 @@ describe('the reversal obeys the reader’s TERRITORY, on the column it actually
 
     // The scoped reader must still be refused, not told "already done".
     await expect(
-      scopedCommissions.reverseAccrual(rebate.id, 'probe', scopeOf([partnerOnlyTagId])),
+      scopedCommissions.reverseAccrual(
+        rebate.id,
+        'probe',
+        scopeOf([partnerOnlyTagId], false, false),
+      ),
     ).rejects.toBeInstanceOf(ClientNotFoundError);
   });
 });

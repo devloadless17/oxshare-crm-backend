@@ -156,15 +156,15 @@ export class AdminTagsService {
      * The database enforces this too (`admin_client_tag_scopes.tag_id` is ON
      * DELETE RESTRICT), and that FK is the real guarantee. This check exists to
      * turn its raw 23503 into a sentence naming the consequence, because the
-     * consequence is not obvious: an empty scope means UNRESTRICTED, so
-     * cascading this delete would PROMOTE every admin scoped to it to seeing
-     * every client in the system.
+     * consequence is not obvious: it silently changes what those administrators
+     * see. (Before 0154 it was worse — an empty territory meant every client,
+     * so the cascade PROMOTED an admin scoped to this tag alone to everyone.)
      */
     const scopedAdmins = await this.scopes.countForTags([id]);
     if (scopedAdmins > 0) {
       throw new ConflictError(
-        `${scopedAdmins} administrator(s) are restricted to this tag. Deleting it would ` +
-          'give them access to every client instead of none. Change their client scope first.',
+        `${scopedAdmins} administrator(s) have this tag in their territory. Deleting it would ` +
+          'silently change which clients they see. Change their client access first.',
       );
     }
 

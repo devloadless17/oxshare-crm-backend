@@ -114,14 +114,14 @@ export class UpdateAdminDto {
   /**
    * RBAC-03 territory: the client tags this administrator may see.
    *
-   * An EMPTY ARRAY MEANS UNRESTRICTED, not "sees nothing" — the RBAC-08 / D-10
-   * precedent, so a deploy cannot blind every existing sub-admin. Any screen
-   * offering this control has to say so in words; it is not inferable.
+   * An EMPTY ARRAY means NO TERRITORY TAGS — new clients only (if granted) or
+   * none. It meant "unrestricted" until 0154, which made the widest sight the
+   * result of clearing a list; every client is now only `seesAllClients`.
    */
   @ApiPropertyOptional({
     type: [String],
     description:
-      'Client tag ids. An EMPTY ARRAY means unrestricted (every client), not none — see D-10.',
+      'Client tag ids. [] means no territory tags (new clients only, or none) — every client is only ever `seesAllClients` (0154).',
   })
   @IsArray()
   @IsOptional()
@@ -134,6 +134,14 @@ export class UpdateAdminDto {
   @IsBoolean()
   @IsOptional()
   seesUntriaged?: boolean;
+
+  @ApiPropertyOptional({
+    description:
+      'Sees EVERY client — the explicit grant (0154). Only an administrator who sees every client may give it, and never together with territory tags. An empty territory no longer means every client.',
+  })
+  @IsBoolean()
+  @IsOptional()
+  seesAllClients?: boolean;
 }
 
 /**

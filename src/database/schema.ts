@@ -445,6 +445,13 @@ export const admins = pgTable('admins', {
    * regardless. Honoured as an OR-branch in `clientScopePredicate`.
    */
   seesUntriaged: boolean('sees_untriaged').notNull().default(true),
+  /**
+   * Sees EVERY client — the explicit grant (0154). Territory tags restrict and
+   * only this grants: with no tags and this false, an admin sees new clients
+   * (if `seesUntriaged`) or none. An empty territory used to mean everyone,
+   * which made the widest sight the result of an absence.
+   */
+  seesAllClients: boolean('sees_all_clients').notNull().default(true),
   /*
    * Password recovery, INITIATED BY ANOTHER MASTER ADMIN — never self-service.
    * See DECISIONS D-44.
@@ -546,6 +553,8 @@ export const adminInvites = pgTable('admin_invites', {
   scopedTagIds: jsonb('scoped_tag_ids').$type<string[]>(),
   /** D-60 — intake grant chosen at invite time, for the same window reason. */
   seesUntriaged: boolean('sees_untriaged').notNull().default(true),
+  /** Sees every client, chosen at invite time (0154). See `admins.sees_all_clients`. */
+  seesAllClients: boolean('sees_all_clients').notNull().default(true),
   invitedBy: uuid('invited_by').notNull(),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   accepted: boolean('accepted').notNull().default(false),
@@ -625,6 +634,8 @@ export const apiKeys = pgTable(
     scopedTagIds: jsonb('scoped_tag_ids').$type<string[]>(),
     /** The creator's intake grant, snapshot with the territory above (D-60). */
     seesUntriaged: boolean('sees_untriaged').notNull().default(true),
+    /** The creator's all-clients grant, snapshot with the territory (0154). */
+    seesAllClients: boolean('sees_all_clients').notNull().default(true),
     /**
      * NULL means no expiry. Stated rather than defaulted to a date, because a
      * key that silently stops working at 3am is worse than one an operator
