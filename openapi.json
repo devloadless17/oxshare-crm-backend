@@ -9918,7 +9918,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TransactionDto"
+                  "$ref": "#/components/schemas/WalletCreditResultDto"
                 }
               }
             }
@@ -9974,7 +9974,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TransactionDto"
+                  "$ref": "#/components/schemas/TradingAccountFundResultDto"
                 }
               }
             }
@@ -19997,6 +19997,12 @@
           },
           "limit": {
             "type": "number"
+          },
+          "maskedFields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         },
         "required": [
@@ -20004,7 +20010,8 @@
           "nextCursor",
           "total",
           "page",
-          "limit"
+          "limit",
+          "maskedFields"
         ]
       },
       "ApiKeyDto": {
@@ -20432,6 +20439,22 @@
           "reason"
         ]
       },
+      "WalletCreditResultDto": {
+        "type": "object",
+        "properties": {
+          "transaction": {
+            "$ref": "#/components/schemas/TransactionDto"
+          },
+          "replayed": {
+            "type": "boolean",
+            "description": "True when the idempotency key replayed an earlier credit — nothing moved again."
+          }
+        },
+        "required": [
+          "transaction",
+          "replayed"
+        ]
+      },
       "FundTradingAccountDto": {
         "type": "object",
         "properties": {
@@ -20457,6 +20480,49 @@
           "amount",
           "reason",
           "direction"
+        ]
+      },
+      "TradingAccountFundResultDto": {
+        "type": "object",
+        "properties": {
+          "transaction": {
+            "nullable": true,
+            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/TransactionDto"
+              }
+            ]
+          },
+          "replayed": {
+            "type": "boolean"
+          },
+          "transfer": {
+            "nullable": true,
+            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/TransferDto"
+              }
+            ]
+          },
+          "transferError": {
+            "type": "string",
+            "nullable": true
+          },
+          "destination": {
+            "type": "string",
+            "enum": [
+              "wallet"
+            ],
+            "description": "Where the money went, on a withdrawal."
+          }
+        },
+        "required": [
+          "transaction",
+          "replayed",
+          "transfer",
+          "transferError"
         ]
       },
       "OpenWalletDto": {

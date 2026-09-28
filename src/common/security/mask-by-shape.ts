@@ -44,7 +44,7 @@ import type { FieldMask } from './field-mask';
 const SWAGGER_PROPERTIES = 'swagger/apiModelProperties';
 
 /** The class of property `key` on `type`, if the emitted metadata names one. */
-function propertyType(type: unknown, key: string): unknown {
+export function propertyType(type: unknown, key: string): unknown {
   if (typeof type !== 'function') return undefined;
   return Reflect.getMetadata('design:type', (type as { prototype: object }).prototype, key);
 }
@@ -65,7 +65,7 @@ function propertyType(type: unknown, key: string): unknown {
  * matches, which is precisely how the first version of this silently masked
  * nothing inside arrays while passing every scalar case.
  */
-function declaredType(type: unknown, key: string): unknown {
+export function declaredType(type: unknown, key: string): unknown {
   if (typeof type !== 'function') return undefined;
   const proto = (type as { prototype: object }).prototype;
   const declared = Reflect.getMetadata(SWAGGER_PROPERTIES, proto, key) as

@@ -40,6 +40,8 @@ import { EmailVerifiedGuard } from '../identity/guards/email-verified.guard';
 import { KycVerifiedGuard } from '../identity/guards/kyc-verified.guard';
 import { User } from '../../store/users.store';
 import { TransactionsService } from './transactions.service';
+import { transactionView } from './transaction-view';
+import { transferView } from './transfer-view';
 import { RequestWithdrawalDto, TransactionDto, WithdrawalMethodDto } from './dto/withdrawal.dto';
 import { DepositRequestDto, RequestDepositDto } from './dto/deposit.dto';
 import {
@@ -399,13 +401,17 @@ export class PaymentsController {
      * `transactions.service.ts` — the balance, the §12.4 per-request and
      * rolling-24h caps, and the rail check.
      */
-    return await this.transactions.requestWithdrawal({
-      userId: req.user.id,
-      amount: dto.amount,
-      currency: dto.currency,
-      destination: dto.destination,
-      methodKey: dto.methodKey,
-    });
+    // The declared shape, never the row: the row carries the desk's payout
+    // state, which is the operator's business (transaction-view.ts).
+    return transactionView(
+      await this.transactions.requestWithdrawal({
+        userId: req.user.id,
+        amount: dto.amount,
+        currency: dto.currency,
+        destination: dto.destination,
+        methodKey: dto.methodKey,
+      }),
+    );
   }
 
   /*
@@ -521,14 +527,17 @@ export class PaymentsController {
      * is the recoverable state, and the idempotency key is the transfer id, so
      * finishing it later cannot double-apply.
      */
-    return await this.transferExecutor.execute(transfer.id);
+    const executed = await this.transferExecutor.execute(transfer.id);
+    // The declared shape, never the row: the row carries the resume scheduler's
+    // bookkeeping, a raw bridge error included (transfer-view.ts).
+    return executed ? transferView(executed) : executed;
   }
 
   @Get('transfers')
   @ApiCookieAuth()
   @ApiOperation({ summary: "The signed-in client's own wallet <-> trading-account transfers" })
   @ApiOkResponse({ type: [TransferDto] })
-  myTransfers(@Req() req: Request & { user: User }) {
-    return this.transfers.listForUser(req.user.id);
+  async myTransfers(@Req() req: Request & { user: User }) {
+    return (await this.transfers.listForUser(req.user.id)).map(transferView);
   }
 }

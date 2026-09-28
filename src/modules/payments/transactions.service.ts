@@ -26,6 +26,7 @@ import type { ListTransactionsQueryDto } from './dto/transaction-query.dto';
 import { clientIdentitySearch } from '../../store/users.store';
 import { TransfersService } from './transfers.service';
 import { TransferExecutor } from './transfer-executor.service';
+import type { TransactionView } from './transaction-view';
 
 /** The stored row, as every read here returns it. */
 type TransactionRow = typeof transactions.$inferSelect;
@@ -75,7 +76,7 @@ export const TRANSACTION_KINDS = [
  * Every payment field is null on a transfer; the two fields at the bottom are
  * what tell the two apart.
  */
-export type TransactionListRow = TransactionRow & {
+export type TransactionListRow = TransactionView & {
   /** Resolved server-side so a client and an operator read the same words. */
   methodName: string | null;
   kind: MovementKind;
@@ -1845,6 +1846,12 @@ export class TransactionsService {
      * by the query builder. Every field is named explicitly: a `SELECT *` spread
      * would quietly start shipping any column added to `transactions` later,
      * including ones a client should not see.
+     *
+     * ⚠️ It named the desk's payout state anyway — `rivalWithdrawalId`,
+     * `rivalSubmittedAt`, `rivalNeedsAttention`, `rivalAttentionReason` — plus
+     * the rail key and a transfer destination, and shipped them to the client.
+     * The shape is `TransactionView` now (transaction-view.ts), so the compiler
+     * refuses a field `TransactionDto` does not declare.
      */
     return {
       items: (rows.rows as unknown as CombinedRow[]).map((row) => ({
@@ -1856,21 +1863,15 @@ export class TransactionsService {
         currency: row.currency,
         state: row.state,
         methodKey: row.method_key,
-        withdrawalMethodKey: row.withdrawal_method_key,
         provider: row.provider,
         providerRef: row.provider_ref,
         destination: row.destination,
-        destinationTradingAccountId: row.destination_trading_account_id,
         proofFilename: row.proof_filename,
         rejectionReason: row.rejection_reason,
         reviewedBy: row.reviewed_by,
         reviewedAt: instantOrNull(row.reviewed_at),
         settledAt: instantOrNull(row.settled_at),
         rivalExternalId: row.rival_external_id,
-        rivalWithdrawalId: row.rival_withdrawal_id,
-        rivalSubmittedAt: instantOrNull(row.rival_submitted_at),
-        rivalNeedsAttention: row.rival_needs_attention,
-        rivalAttentionReason: row.rival_attention_reason,
         createdAt: instantOf(row.created_at),
         methodName: row.method_name,
         kind: row.kind,

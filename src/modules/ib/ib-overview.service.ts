@@ -26,6 +26,7 @@ const REFERRED_CLIENT_PAGE = 200;
 const SUB_PARTNER_PAGE = 200;
 import { IbWalletService } from './ib-wallet.service';
 import type { IbCommissionRowDto, IbOverviewDto } from './dto/ib-overview.dto';
+import { walletView } from '../wallet/wallet-view';
 
 /**
  * The ledger entry types that represent PARTNER income.
@@ -179,7 +180,8 @@ export class IbOverviewService {
 
     return {
       earnings,
-      commissionWallets,
+      // The declared shape — the store hands back whole rows (wallet-view.ts).
+      commissionWallets: commissionWallets.map(walletView),
       referredClients,
       referredClientCount: referredCounts.total,
       subPartners,

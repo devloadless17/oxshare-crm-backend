@@ -90,7 +90,7 @@ const API_RESPONSE = 'swagger/apiResponse';
  * Only 2xx responses: an error body is `AllExceptionsFilter`'s envelope and
  * carries no client projection.
  */
-function declaredResponseType(handler: object): unknown {
+export function declaredResponseType(handler: object): unknown {
   const responses = Reflect.getMetadata(API_RESPONSE, handler) as
     Record<string, { type?: unknown }> | undefined;
   if (!responses) return undefined;

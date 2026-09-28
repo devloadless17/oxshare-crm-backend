@@ -57,6 +57,7 @@ import {
   IbApplicationListMaskDto,
   IbPartnerListMaskDto,
 } from './dto/ib-list-mask.dto';
+import { ibAccountView, ibApplicationView } from './ib-views';
 
 /**
  * Reviewing partner applications.
@@ -233,12 +234,12 @@ export class AdminIbController {
   @ApiOkResponse({ type: IbAccountDto })
   @ScopedToClients('Decides on one client’s application; out-of-scope 404s like a missing one.')
   @Audited('ib.approve')
-  approve(
+  async approve(
     @Req() req: Request & { admin: AuthenticatedAdmin },
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: ApproveIbApplicationDto,
   ) {
-    return this.applications.approve(id, req.admin, req.admin.clientScope, {
+    const account = await this.applications.approve(id, req.admin, req.admin.clientScope, {
       /*
        * Passed THROUGH, never `?? null` — for BOTH fields, and the distinction
        * is the whole bug this line once was. To the service, `undefined` means
@@ -255,6 +256,7 @@ export class AdminIbController {
       parentIbUserId: dto.parentIbUserId,
       agencyId: dto.agencyId,
     });
+    return ibAccountView(account);
   }
 
   @Patch('applications/:id/reject')
@@ -271,12 +273,14 @@ export class AdminIbController {
   @ApiOkResponse({ type: IbApplicationDto })
   @ScopedToClients('Decides on one client’s application; out-of-scope 404s like a missing one.')
   @Audited('ib.reject')
-  reject(
+  async reject(
     @Req() req: Request & { admin: AuthenticatedAdmin },
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: RejectIbApplicationDto,
   ) {
-    return this.applications.reject(id, req.admin, req.admin.clientScope, dto);
+    return ibApplicationView(
+      await this.applications.reject(id, req.admin, req.admin.clientScope, dto),
+    );
   }
 
   // ── partners, once they exist ──────────────────────────────────────────────
@@ -638,12 +642,14 @@ export class AdminIbController {
   @ApiOkResponse({ type: IbAccountDto })
   @ScopedToClients('Acts on one client’s partner account; out-of-scope 404s like a missing one.')
   @Audited('ib.level_change')
-  changeLevel(
+  async changeLevel(
     @Req() req: Request & { admin: AuthenticatedAdmin },
     @Param('userId', ClientRefPipe) userId: string,
     @Body() dto: ChangeIbLevelDto,
   ) {
-    return this.applications.changeLevel(userId, dto.level, req.admin.clientScope, req.admin);
+    return ibAccountView(
+      await this.applications.changeLevel(userId, dto.level, req.admin.clientScope, req.admin),
+    );
   }
 
   @Patch('partners/:userId/parent')
@@ -660,16 +666,18 @@ export class AdminIbController {
   @ApiOkResponse({ type: IbAccountDto })
   @ScopedToClients('Acts on one client’s partner account; out-of-scope 404s like a missing one.')
   @Audited('ib.parent_change')
-  reassignParent(
+  async reassignParent(
     @Req() req: Request & { admin: AuthenticatedAdmin },
     @Param('userId', ClientRefPipe) userId: string,
     @Body() dto: ReassignIbParentDto,
   ) {
-    return this.applications.reassignParent(
-      userId,
-      dto.parentIbUserId,
-      req.admin.clientScope,
-      req.admin,
+    return ibAccountView(
+      await this.applications.reassignParent(
+        userId,
+        dto.parentIbUserId,
+        req.admin.clientScope,
+        req.admin,
+      ),
     );
   }
 
@@ -686,12 +694,14 @@ export class AdminIbController {
   @ApiOkResponse({ type: IbAccountDto })
   @ScopedToClients('Acts on one client’s partner account; out-of-scope 404s like a missing one.')
   @Audited('ib.partners.suspend')
-  setActive(
+  async setActive(
     @Req() req: Request & { admin: AuthenticatedAdmin },
     @Param('userId', ClientRefPipe) userId: string,
     @Body() dto: SetIbActiveDto,
   ) {
-    return this.applications.setActive(userId, dto.active, req.admin.clientScope, req.admin);
+    return ibAccountView(
+      await this.applications.setActive(userId, dto.active, req.admin.clientScope, req.admin),
+    );
   }
 }
 

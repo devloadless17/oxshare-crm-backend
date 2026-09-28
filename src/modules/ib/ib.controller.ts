@@ -7,6 +7,7 @@ import {
   ApiOperation,
   ApiTags,
 } from '@nestjs/swagger';
+import { walletView } from '../wallet/wallet-view';
 import { Throttle } from '@nestjs/throttler';
 import {
   IDEMPOTENCY_HEADER,
@@ -27,6 +28,7 @@ import { PublicAgencyDto } from '../products/dto/catalogue.dto';
 import { WalletDto } from '../wallet/dto/wallet-response.dto';
 import { OpenOwnWalletDto } from '../wallet/dto/open-wallet.dto';
 import { ProductsStore } from '../../store/products.store';
+import { ibApplicationView } from './ib-views';
 
 /**
  * The client's own view of the partner programme.
@@ -189,8 +191,8 @@ export class IbController {
       'opened on the first confirmed payout anyway; this shows the card before then.',
   })
   @ApiCreatedResponse({ type: WalletDto })
-  openCommissionWallet(@Req() req: Request & { user: User }, @Body() dto: OpenOwnWalletDto) {
-    return this.ibWallets.openCommissionWallet(req.user.id, dto.currency);
+  async openCommissionWallet(@Req() req: Request & { user: User }, @Body() dto: OpenOwnWalletDto) {
+    return walletView(await this.ibWallets.openCommissionWallet(req.user.id, dto.currency));
   }
 
   @Get('wallet/transfers')
@@ -269,7 +271,7 @@ export class IbController {
       'introducer and cannot be chosen.',
   })
   @ApiOkResponse({ type: IbApplicationDto })
-  apply(@Req() req: Request & { user: User }, @Body() dto: CreateIbApplicationDto) {
-    return this.applications.apply(req.user.id, dto);
+  async apply(@Req() req: Request & { user: User }, @Body() dto: CreateIbApplicationDto) {
+    return ibApplicationView(await this.applications.apply(req.user.id, dto));
   }
 }

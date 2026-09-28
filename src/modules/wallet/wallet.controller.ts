@@ -12,6 +12,7 @@ import { JwtAuthGuard } from '../identity/guards/jwt-auth.guard';
 import { EmailVerifiedGuard } from '../identity/guards/email-verified.guard';
 import { User } from '../../store/users.store';
 import { WalletService } from './wallet.service';
+import { walletView } from './wallet-view';
 import { LedgerListResponseDto, StatementDto, WalletDto } from './dto/wallet-response.dto';
 import { OpenOwnWalletDto } from './dto/open-wallet.dto';
 import { StatementService } from './statement.service';
@@ -48,8 +49,9 @@ export class WalletController {
     summary: "The signed-in client's wallets — balance, on_hold and available, all as strings",
   })
   @ApiOkResponse({ type: [WalletDto] })
-  myWallets(@Req() req: Request & { user: User }) {
-    return this.wallets.listWallets(req.user.id);
+  async myWallets(@Req() req: Request & { user: User }) {
+    // The declared shape: the list spreads the whole row (wallet-view.ts).
+    return (await this.wallets.listWallets(req.user.id)).map(walletView);
   }
 
   /**
@@ -70,8 +72,8 @@ export class WalletController {
       'already holds returns it unchanged.',
   })
   @ApiCreatedResponse({ type: WalletDto })
-  openWallet(@Req() req: Request & { user: User }, @Body() dto: OpenOwnWalletDto) {
-    return this.wallets.openOwnWallet(req.user.id, dto.currency);
+  async openWallet(@Req() req: Request & { user: User }, @Body() dto: OpenOwnWalletDto) {
+    return walletView(await this.wallets.openOwnWallet(req.user.id, dto.currency));
   }
 
   /**

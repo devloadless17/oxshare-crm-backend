@@ -519,7 +519,16 @@ export class AdminClientsService {
       stateProvince: client.stateProvince,
       postalCode: client.postalCode,
       createdAt: client.createdAt,
-      tags,
+      // The declared tag shape: an assignment also carries who and when, which the
+      // profile never declared (the per-client tags route serves provenance).
+      tags: tags.map(({ id, slug, label, color, description, createdAt }) => ({
+        id,
+        slug,
+        label,
+        color,
+        description,
+        createdAt,
+      })),
       /*
        * How THIS admin may change each detail right now — the server's rule
        * (`adminEditRule`), stated once, so the dialog renders it rather than

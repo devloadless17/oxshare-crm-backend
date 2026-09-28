@@ -13,6 +13,8 @@ import {
 import { TRANSACTION_KINDS } from '../../payments/transactions.service';
 import type { RejectionContext } from '../../../store/rejection-reasons.store';
 import { PROFILE_FIELD_KEYS } from '../../../common/profile/client-profile';
+import { TransactionDto } from '../../payments/dto/withdrawal.dto';
+import { TransferDto } from '../../payments/dto/transfer.dto';
 
 // Response DTOs so /api/docs-json carries response schemas (API-CONTRACTS
 // Part C). Both frontends generate TypeScript types from the Swagger JSON —
@@ -1611,11 +1613,63 @@ export class AuditListResponseDto {
   @ApiProperty() total: number;
   @ApiProperty() page: number;
   @ApiProperty() limit: number;
+  /**
+   * Client fields withheld from THIS page by the reader's role (RBAC-03) —
+   * `maskAuditRow` removes them from `details` and from a client actor's row.
+   * Returned since the audit read learned to mask, and declared since the
+   * response projection (28 Sep 2026) made an undeclared key a refusal.
+   */
+  @ApiProperty({ type: [String] })
+  maskedFields: string[];
 }
 
 export { MessageResponseDto } from '../../../common/dto/message-response.dto';
 
 // ── Money (ARCHITECTURE §6: every monetary field is a STRING) ────────────────
+
+/**
+ * `POST /admin/wallets/credit` — the deposit the credit wrote, and whether this
+ * request replayed an earlier one.
+ *
+ * The route declared `TransactionDto` while answering this WRAPPER, so the
+ * published contract described a shape the route never sent — the console
+ * hand-declared the real one. Found by the response projection's census
+ * (28 Sep 2026), which would otherwise have stripped `replayed` and
+ * `transaction` as undeclared and emptied the response.
+ */
+@NoClientFields(
+  'the outcome of a hand credit: a transaction addressed by ids (TransactionDto, exempt) and a replay flag - no client-owned field',
+)
+export class WalletCreditResultDto {
+  @ApiProperty({ type: TransactionDto }) transaction: TransactionDto;
+  @ApiProperty({
+    description: 'True when the idempotency key replayed an earlier credit — nothing moved again.',
+  })
+  replayed: boolean;
+}
+
+/**
+ * `POST /admin/trading-accounts/:id/fund` — both legs of a hand movement.
+ *
+ * A DEPOSIT is a wallet credit then a transfer: `transaction` is the credit and
+ * `transferError` says why the onward leg did not go through, when it did not.
+ * A WITHDRAWAL writes no transaction row (`transaction` is null) and cannot
+ * half-happen (`transferError` is null). Declared as `TransactionDto` until the
+ * 28 Sep 2026 projection audit — the same wrong-wrapper declaration as the
+ * credit above, and invisible to the census because no test drove the route
+ * past its scope check.
+ */
+@NoClientFields(
+  'the outcome of a hand trading-account movement: a transaction and a transfer addressed by ids (both exempt shapes), a replay flag and an error sentence - no client-owned field',
+)
+export class TradingAccountFundResultDto {
+  @ApiProperty({ type: TransactionDto, nullable: true }) transaction: TransactionDto | null;
+  @ApiProperty() replayed: boolean;
+  @ApiProperty({ type: TransferDto, nullable: true }) transfer: TransferDto | null;
+  @ApiProperty({ type: String, nullable: true }) transferError: string | null;
+  @ApiPropertyOptional({ enum: ['wallet'], description: 'Where the money went, on a withdrawal.' })
+  destination?: 'wallet';
+}
 
 /**
  * The client behind a payout — and the reason three of its four fields are
