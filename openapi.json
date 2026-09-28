@@ -511,6 +511,70 @@
         ]
       }
     },
+    "/v1/auth/register/email-available": {
+      "post": {
+        "operationId": "AuthController_emailAvailable[0]",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailAvailabilityDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmailAvailabilityResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Whether an email address is free to sign up with",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/v1/identity/register/email-available": {
+      "post": {
+        "operationId": "AuthController_emailAvailable[1]",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailAvailabilityDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmailAvailabilityResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Whether an email address is free to sign up with",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
     "/v1/auth/verify-email": {
       "post": {
         "operationId": "AuthController_verifyEmail[0]",
@@ -12226,11 +12290,35 @@
         "properties": {
           "message": {
             "type": "string",
-            "example": "Registration successful. Please check your email to verify your account."
+            "example": "We have sent a 6-digit code to your email to confirm it."
           }
         },
         "required": [
           "message"
+        ]
+      },
+      "EmailAvailabilityDto": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "example": "john@example.com"
+          }
+        },
+        "required": [
+          "email"
+        ]
+      },
+      "EmailAvailabilityResponseDto": {
+        "type": "object",
+        "properties": {
+          "available": {
+            "type": "boolean",
+            "example": true
+          }
+        },
+        "required": [
+          "available"
         ]
       },
       "VerifyEmailDto": {

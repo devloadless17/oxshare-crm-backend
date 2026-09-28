@@ -27,7 +27,6 @@ let users: UsersStore;
 let ib: IbStore;
 
 const sendVerificationEmail = vi.fn().mockResolvedValue(undefined);
-const sendAccountExistsEmail = vi.fn().mockResolvedValue(undefined);
 
 beforeAll(async () => {
   ctx = await startMoneyTestDb();
@@ -46,7 +45,7 @@ beforeAll(async () => {
       get: (key: string) =>
         key === 'JWT_ACCESS_SECRET' ? 'test-email-code-secret-at-least-32-chars' : undefined,
     } as never,
-    { sendVerificationEmail, sendAccountExistsEmail } as never,
+    { sendVerificationEmail } as never,
     users,
     {} as never, // csrf
     {} as never, // refreshTokens

@@ -121,9 +121,7 @@ export class RefreshResponseDto {
  * live response.
  */
 export class RegistrationResponseDto {
-  @ApiProperty({
-    example: 'Registration successful. Please check your email to verify your account.',
-  })
+  @ApiProperty({ example: 'We have sent a 6-digit code to your email to confirm it.' })
   message: string;
 
   /*
@@ -248,4 +246,14 @@ export class AvatarResponseDto {
     example: '/uploads/avatars/6f1c...c2.png',
   })
   avatarUrl: string | null;
+}
+
+/**
+ * Whether an address is free to sign up with. `false` means it already has an
+ * account: the portal says so and offers a password reset and sign-in, the
+ * owner's ruling of 28 Sep 2026 (see `AuthService.register`).
+ */
+export class EmailAvailabilityResponseDto {
+  @ApiProperty({ example: true })
+  available: boolean;
 }

@@ -107,6 +107,29 @@ export class ProfileLockedError extends DomainError {
 }
 
 /**
+ * Sign-up with an address that already has an account. → 409
+ * `EMAIL_ALREADY_REGISTERED`, with the sentence under `email`.
+ *
+ * ⚠️ The owner's ruling (28 Sep 2026) REVERSES the enumeration-safe design: the
+ * sign-up form now says plainly that an address is taken. Registration used to
+ * answer a taken address exactly as a new one and email the holder instead, so
+ * the form told nobody who holds an account. The client who already had one
+ * then stood on a code screen waiting for a code that never came, while their
+ * inbox said the opposite (reported). The accepted cost: anyone can test
+ * whether an address has an account, bounded by the sign-up rate limits.
+ */
+export class EmailAlreadyRegisteredError extends DomainError {
+  readonly code = 'EMAIL_ALREADY_REGISTERED';
+
+  constructor(
+    message: string,
+    readonly fields: Record<string, string>,
+  ) {
+    super(message, { fields });
+  }
+}
+
+/**
  * The verification link's 24 hours are up. → 400 `VERIFICATION_TOKEN_EXPIRED`
  *
  * A distinct subclass ONLY so it carries a distinct `code`, exactly as

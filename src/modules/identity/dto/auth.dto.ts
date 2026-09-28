@@ -216,3 +216,13 @@ export class ChangePasswordDto {
   @MaxLength(100)
   newPassword: string;
 }
+
+/**
+ * `POST /auth/register/email-available` — the sign-up form's first step asks
+ * whether the address is free before the client types their details.
+ */
+export class EmailAvailabilityDto {
+  @ApiProperty({ example: 'john@example.com' })
+  @IsEmail()
+  email: string;
+}

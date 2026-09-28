@@ -3,7 +3,6 @@ import { ConfigService } from '@nestjs/config';
 import * as nodemailer from 'nodemailer';
 import { SmtpConfigService, type EffectiveSmtpConfig } from './smtp-config.service';
 import {
-  accountExists,
   emailChangedNotice,
   adminInvite,
   adminPasswordReset,
@@ -196,14 +195,6 @@ export class EmailService {
     const url = `${this.portalUrl()}/auth/reset-password?token=${token}`;
     this.logLink('password reset link', email, url);
     await this.send(email, 'password reset email', passwordReset(url));
-  }
-
-  async sendAccountExistsEmail(email: string): Promise<void> {
-    await this.send(
-      email,
-      'account-exists notice',
-      accountExists(`${this.portalUrl()}/auth/login`),
-    );
   }
 
   // FR-ADM-03 / ARCH §8.5: approve and reject both notify the client inline.

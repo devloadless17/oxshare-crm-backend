@@ -32,12 +32,14 @@ import {
   RefreshResponseDto,
   MessageResponseDto,
   RegistrationResponseDto,
+  EmailAvailabilityResponseDto,
   SessionDto,
   VerifyEmailResponseDto,
   UserProfileDto,
 } from './dto/auth-response.dto';
 import {
   RegisterDto,
+  EmailAvailabilityDto,
   LoginDto,
   ResendVerificationDto,
   VerifyEmailCodeDto,
@@ -74,6 +76,24 @@ export class AuthController {
   @ApiCreatedResponse({ type: RegistrationResponseDto })
   register(@Body() dto: RegisterDto) {
     return this.auth.register(dto);
+  }
+
+  /**
+   * Is this address free to sign up with? The portal's FIRST sign-up step asks,
+   * so a client who already has an account is told at once, with a password
+   * reset and sign-in offered, not after typing their details again. POST so
+   * the address stays out of URLs and access logs, as it does everywhere in
+   * sign-up. The owner's ruling (28 Sep 2026); `AuthService.register` states
+   * what it costs.
+   */
+  @NoCsrf('A question about sign-up, before any session exists: it changes nothing.')
+  @Post('register/email-available')
+  @HttpCode(HttpStatus.OK)
+  @Throttle({ default: { ttl: 600_000, limit: 30 } })
+  @ApiOperation({ summary: 'Whether an email address is free to sign up with' })
+  @ApiOkResponse({ type: EmailAvailabilityResponseDto })
+  async emailAvailable(@Body() dto: EmailAvailabilityDto): Promise<EmailAvailabilityResponseDto> {
+    return { available: await this.auth.emailAvailable(dto.email) };
   }
 
   /*
