@@ -244,7 +244,8 @@ export class IbCommissionTypesService {
     const [row] = await this.db
       .select({ next: sql<number>`coalesce(max(${ibCommissionTypes.sortOrder}), -1)::int + 1` })
       .from(ibCommissionTypes);
-    return Number(row?.next ?? 0);
+    // A position, not money — `::int` already makes it a JS number.
+    return row?.next ?? 0;
   }
 }
 

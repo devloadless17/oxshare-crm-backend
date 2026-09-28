@@ -16813,9 +16813,6 @@
             "format": "date-time",
             "type": "string"
           },
-          "reviewedBy": {
-            "type": "string"
-          },
           "reviewedAt": {
             "format": "date-time",
             "type": "string"

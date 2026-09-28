@@ -338,11 +338,23 @@ export class KycService {
     steps: readonly KycStepConfig[],
     chosen?: ChosenDocument,
   ): Promise<
-    Omit<KycSubmission, 'formSnapshot'> & { verificationLevel: number; steps: StepState[] }
+    Omit<KycSubmission, 'formSnapshot' | 'reviewedBy'> & {
+      verificationLevel: number;
+      steps: StepState[];
+    }
   > {
     const user = await this.users.findById(userId);
-    // The form snapshot is the reviewer's record of what was asked — not the client's.
-    const { formSnapshot: _internal, ...view } = this.withPersonalView(submission, user);
+    /*
+     * Two fields are the desk's, not the client's: the form snapshot (the
+     * reviewer's record of what was asked) and `reviewedBy` — an ADMIN's
+     * internal id, which also names whoever currently holds a claim. It went
+     * to every client until 28 Sep 2026; the portal never read it.
+     */
+    const {
+      formSnapshot: _internal,
+      reviewedBy: _desk,
+      ...view
+    } = this.withPersonalView(submission, user);
     return {
       ...view,
       verificationLevel: user?.verificationLevel ?? 0,

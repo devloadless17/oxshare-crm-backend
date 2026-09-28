@@ -819,10 +819,11 @@ export const kycSubmissions = pgTable(
     rejectedFields: jsonb('rejected_fields').$type<string[]>(),
     /**
      * When a reviewer returned an APPROVED verification to the client to redo
-     * the items named in `rejected_fields` (0147). Set with the return, cleared
-     * by the next submission — it is what lets the client be told "please
-     * update your verification" rather than "rejected", and the reviewer see
-     * that this resubmission follows a re-verification.
+     * the items named in `rejected_fields` (0147). Set with the return and
+     * cleared ONLY by the next approval — not by the resubmission, and not by
+     * a rejection of it, so the client keeps being told "please update your
+     * verification" rather than "rejected" for the whole round, and the
+     * reviewer sees that this resubmission follows a re-verification.
      */
     reverificationRequestedAt: timestamp('reverification_requested_at', { withTimezone: true }),
     /**

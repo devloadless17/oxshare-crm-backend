@@ -1,7 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import Decimal from 'decimal.js';
 import { and, count, desc, eq, isNotNull, or, sql } from 'drizzle-orm';
-import { getDb } from '../../database/db';
+import type { getDb } from '../../database/db';
 import {
   currencies,
   ledgerEntries,

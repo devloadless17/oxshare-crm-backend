@@ -700,9 +700,11 @@ function parseStatus(value?: string): IbApplicationStatusDto | undefined {
   return IB_APPLICATION_STATUSES.find((s) => s === value);
 }
 
+/** A page or limit from the query string — a count, never money. */
 function parsePositive(value?: string): number | undefined {
-  const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+  if (!value || !/^\d+$/.test(value)) return undefined;
+  const parsed = Number.parseInt(value, 10);
+  return parsed > 0 ? parsed : undefined;
 }
 
 /**

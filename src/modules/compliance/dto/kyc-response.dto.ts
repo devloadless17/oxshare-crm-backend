@@ -291,7 +291,7 @@ export class KycStatusDto {
   })
   steps: KycStepStateDto[];
   @ApiPropertyOptional() submittedAt?: Date;
-  @ApiPropertyOptional() reviewedBy?: string;
+  // No `reviewedBy`: an admin's internal id is not the client's to see.
   @ApiPropertyOptional() reviewedAt?: Date;
   @ApiProperty() createdAt: Date;
 }

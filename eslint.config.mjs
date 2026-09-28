@@ -2,6 +2,40 @@
 import eslint from '@eslint/js';
 import tseslint from 'typescript-eslint';
 
+/** Where money is computed and moved. `partners/` was renamed `ib/` on 6 Aug 2026. */
+const MONEY_MODULES = [
+  'src/modules/wallet/**/*.ts',
+  'src/modules/ib/**/*.ts',
+  'src/modules/payments/**/*.ts',
+];
+
+/** The commission engine's pure seam (ARCHITECTURE §8.6). */
+const COMMISSION_SEAM = 'src/modules/ib/commission.ts';
+
+const NO_HTTP = {
+  name: '@nestjs/common',
+  importNames: [
+    'HttpException',
+    'BadRequestException',
+    'UnauthorizedException',
+    'ForbiddenException',
+    'NotFoundException',
+    'ConflictException',
+    'InternalServerErrorException',
+    'HttpStatus',
+  ],
+  message:
+    'Throw a DomainError from common/errors/domain-errors.ts instead. AllExceptionsFilter maps it to a status code — that mapping lives in exactly one place on purpose.',
+};
+
+const NO_GETDB = {
+  name: '../../database/db',
+  importNames: ['getDb'],
+  allowTypeImports: true,
+  message:
+    'Inject the db instead: `@Inject(DRIZZLE_DB) private readonly db: Db`. Type-only imports (Db, Executor, typeof getDb) are fine.',
+};
+
 // This config exists because it did not. `npm run lint` was defined in
 // package.json and wired into CI, but with no config file ESLint 9 exits
 // immediately — and CI hid that with `continue-on-error: true`. A floating
@@ -70,11 +104,7 @@ export default tseslint.config(
     // ── §6.1: monetary values are strings and decimals, never floats ────────
     // Verified 0 violations when this landed; the rule keeps it that way.
     // `money.ts` owns every arithmetic operation and uses decimal.js.
-    files: [
-      'src/modules/wallet/**/*.ts',
-      'src/modules/partners/**/*.ts',
-      'src/modules/payments/**/*.ts',
-    ],
+    files: ['src/modules/wallet/**/*.ts', 'src/modules/ib/**/*.ts', 'src/modules/payments/**/*.ts'],
     ignores: ['**/*.spec.ts'],
     rules: {
       'no-restricted-globals': [
@@ -131,6 +161,7 @@ export default tseslint.config(
      */
     files: [
       'src/modules/wallet/**/*.ts',
+      'src/modules/ib/**/*.ts',
       'src/modules/payments/**/*.ts',
       'src/config/money-limits.ts',
     ],
@@ -148,68 +179,57 @@ export default tseslint.config(
     },
   },
 
+  // ── IMPORT BANS, composed so none can erase another ─────────────────────
+  //
+  // Flat config does not MERGE a rule's options across the blocks matching a
+  // file: the LAST block replaces them outright. Until 28 Sep 2026 every ban
+  // below sat on the one rule `no-restricted-imports`, and `eslint
+  // --print-config` showed what that cost:
+  //   - every store file had lost the "no HTTP in domain code" ban (the
+  //     layering block replaced it);
+  //   - every money service had lost the `getDb` ban (the HTTP block
+  //     replaced it);
+  //   - the commission seam was protected by nothing at all: three blocks
+  //     named `src/modules/partners/`, which f5e257a removed on 6 Aug when the
+  //     engine was rebuilt in `src/modules/ib/`; and the seam's
+  //     `'**/database/*'` pattern never matches a RELATIVE import such as
+  //     `'../../database/db'` anyway.
+  //
+  // So: PATH bans (HTTP, getDb) live on `@typescript-eslint/no-restricted-imports`
+  // and PATTERN bans (layering, pure seams) on `no-restricted-imports`, and
+  // wherever two path bans meet on one file, ONE block states both. Patterns
+  // are regexes over the import string, which see relative paths.
+  // `test/lint-composition.spec.ts` lints a real violation in every place —
+  // add a case there when you add a ban here.
   {
     // ── The money path declares its dependencies ────────────────────────────
-    // These four services used to call the module-level getDb() singleton from
-    // inside each method. They now take the db by constructor injection, which
+    // These services used to call the module-level getDb() singleton from
+    // inside each method. They take the db by constructor injection now, which
     // is behaviour-identical (DRIZZLE_DB's factory *is* getDb) but visible.
-    // Reaching for the global again would silently undo that.
-    files: [
-      'src/modules/wallet/**/*.ts',
-      'src/modules/partners/**/*.ts',
-      'src/modules/payments/**/*.ts',
-    ],
+    files: MONEY_MODULES,
     ignores: ['**/*.spec.ts'],
-    rules: {
-      'no-restricted-imports': [
-        'error',
-        {
-          paths: [
-            {
-              name: '../../database/db',
-              importNames: ['getDb'],
-              message:
-                'Inject the db instead: `@Inject(DRIZZLE_DB) private readonly db: Db`. Type-only imports (Db, Executor) from this module are fine.',
-            },
-          ],
-        },
-      ],
-    },
+    rules: { '@typescript-eslint/no-restricted-imports': ['error', { paths: [NO_GETDB] }] },
   },
-
   {
     // ── Domain code must not know about HTTP ────────────────────────────────
     // Services and stores throw DomainError subclasses; AllExceptionsFilter is
-    // the single place that maps them to status codes. Verified 0 violations
-    // when this landed — HttpException appears only in controllers, guards,
-    // strategies and the filter, which is the transport edge and correct.
-    files: ['src/**/*.service.ts', 'src/store/**/*.ts', 'src/modules/partners/commission.ts'],
+    // the single place that maps them to status codes. HttpException belongs to
+    // controllers, guards, strategies and the filter — the transport edge.
+    files: ['src/**/*.service.ts', 'src/store/**/*.ts', COMMISSION_SEAM],
+    rules: { '@typescript-eslint/no-restricted-imports': ['error', { paths: [NO_HTTP] }] },
+  },
+  {
+    // Where the two path bans MEET: a money service, and the commission seam.
+    // Stated together, because either block alone would erase the other here.
+    files: [
+      ...MONEY_MODULES.map((glob) => glob.replace(/\*\.ts$/, '*.service.ts')),
+      COMMISSION_SEAM,
+    ],
+    ignores: ['**/*.spec.ts'],
     rules: {
-      'no-restricted-imports': [
-        'error',
-        {
-          paths: [
-            {
-              name: '@nestjs/common',
-              importNames: [
-                'HttpException',
-                'BadRequestException',
-                'UnauthorizedException',
-                'ForbiddenException',
-                'NotFoundException',
-                'ConflictException',
-                'InternalServerErrorException',
-                'HttpStatus',
-              ],
-              message:
-                'Throw a DomainError from common/errors/domain-errors.ts instead. AllExceptionsFilter maps it to a status code — that mapping lives in exactly one place on purpose.',
-            },
-          ],
-        },
-      ],
+      '@typescript-eslint/no-restricted-imports': ['error', { paths: [NO_HTTP, NO_GETDB] }],
     },
   },
-
   {
     // ── Layering direction ─────────────────────────────────────────────────
     // The repository and shared layers may not depend on feature modules. This
@@ -228,7 +248,7 @@ export default tseslint.config(
         {
           patterns: [
             {
-              group: ['**/modules/**', '../modules/*', '../../modules/*'],
+              regex: '(^|/)modules/',
               message:
                 'Layering inversion: store/, common/, config/ and database/ are depended UPON by modules, never the reverse. Move the shared piece down, or invert with an interface.',
             },
@@ -237,18 +257,17 @@ export default tseslint.config(
       ],
     },
   },
-
   {
     // The two pure seams (ARCHITECTURE §8.6). No DB, no HTTP, no Nest — that is
     // what makes them unit-testable without Testcontainers.
-    files: ['src/modules/partners/commission.ts', 'src/modules/wallet/money.ts'],
+    files: [COMMISSION_SEAM, 'src/modules/wallet/money.ts'],
     rules: {
       'no-restricted-imports': [
         'error',
         {
           patterns: [
             {
-              group: ['@nestjs/*', 'drizzle-orm*', '**/database/*', '**/store/*'],
+              regex: '^@nestjs/|^drizzle-orm|(^|/)(database|store)(/|$)',
               message:
                 'ARCHITECTURE §8.6: this file is a pure seam — no DB, no HTTP, no framework. Put anything needing those in the sibling *.service.ts.',
             },

@@ -46,8 +46,16 @@ Services and stores throw the `DomainError` subclasses from `common/errors/domai
 single mapping point and emits `{ statusCode, code, message, requestId, timestamp, path }`.
 
 `HttpException` is legitimate **only at the transport edge** — controllers, guards, strategies,
-pipes, filters. Lint enforces this: it is a `no-restricted-imports` error inside `*.service.ts`,
-`store/**` and `commission.ts`. Adding a new failure mode means adding a `DomainError` subclass
+pipes, filters. Lint enforces this: it is a `@typescript-eslint/no-restricted-imports` error inside
+`*.service.ts`, `store/**` and `modules/ib/commission.ts`.
+
+⚠️ **Flat config keeps only the LAST matching block's options for a rule — it never merges them.**
+Until 28 Sep 2026 every import ban shared `no-restricted-imports`, so the layering block erased this
+ban on every store, this block erased the `getDb` ban on every money service, and three blocks still
+named `modules/partners/` (gone since f5e257a, 6 Aug) — the commission seam had no protection at
+all. Path bans now sit on the typescript-eslint rule, pattern bans on the base rule, and a file
+where two path bans meet gets ONE block stating both. `test/lint-composition.spec.ts` lints a real
+violation in each place: add a case when you add a ban. Adding a new failure mode means adding a `DomainError` subclass
 with a `code`, not a new HTTP throw.
 
 ## The two client-facing reads added for the portal
@@ -546,7 +554,8 @@ journal entry by hand.
 
 ## Money code — read ARCHITECTURE §6 and §8.6 first
 
-`src/modules/wallet/`, `src/modules/partners/`, `src/modules/payments/`.
+`src/modules/wallet/`, `src/modules/ib/` (the commission engine; `partners/` until 6 Aug),
+`src/modules/payments/`.
 
 - **`money.ts` and `commission.ts` are pure seams.** No Nest, no Drizzle, no `database/`, no
   `store/` — lint blocks those imports. `resolveChain`, `calculate`, `wouldCreateCycle` and

@@ -213,6 +213,33 @@ describe('the client KYC routes', () => {
     expect(res.body.userId).toBe(otherId);
   });
 
+  /*
+   * `reviewed_by` is an ADMIN's internal id — and, while a review is open, the
+   * one holding the claim. It went to every client in their own status until
+   * 28 Sep 2026. The portal never read it, and it is not the client's to see.
+   */
+  it('never shows the client which admin holds or decided their submission', async () => {
+    const [reviewer] = await ctx.db.db
+      .select({ id: admins.id })
+      .from(admins)
+      .where(eq(admins.email, REVIEWER.email));
+    await ctx.db.db
+      .update(kycSubmissions)
+      .set({ reviewedBy: reviewer.id })
+      .where(eq(kycSubmissions.userId, otherId));
+    try {
+      const session = await actingAs(ctx, 'portal', OTHER);
+      const res = await session.get('/v1/kyc/status').expect(200);
+      expect(res.body).not.toHaveProperty('reviewedBy');
+      expect(JSON.stringify(res.body)).not.toContain(reviewer.id);
+    } finally {
+      await ctx.db.db
+        .update(kycSubmissions)
+        .set({ reviewedBy: null })
+        .where(eq(kycSubmissions.userId, otherId));
+    }
+  });
+
   it('refuse a step edit once the submission is under review', async () => {
     const session = await actingAs(ctx, 'portal', CLIENT);
     const res = await session.post('/v1/kyc/step', {
