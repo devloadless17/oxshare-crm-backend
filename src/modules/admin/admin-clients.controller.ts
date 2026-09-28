@@ -446,6 +446,9 @@ export class AdminClientsController {
   @ApiOperation({
     summary: 'Suspend or reactivate a client account (requires clients.suspend)',
   })
+  // Declared so the RBAC-03 interceptor masks it: without a declared shape it
+  // walks nothing, and this answered masked fields in the clear.
+  @ApiOkResponse({ type: ClientAccountDto })
   @ScopedToClients('UsersStore.findForAdmin(id, scope) — an out-of-scope client is 404, never 403.')
   @Audited('client.suspend')
   setClientStatus(

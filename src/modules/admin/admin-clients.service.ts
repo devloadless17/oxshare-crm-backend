@@ -1010,7 +1010,16 @@ export class AdminClientsService {
       referralCode: code,
     });
 
-    return updated;
+    /*
+     * The same view every client-account write answers with — never the row.
+     *
+     * This returned `updated` itself: the full `users` row, `passwordHash` and
+     * the email-verification and password-reset token hashes included, to any
+     * administrator holding `clients.referrer.set`. The route declares
+     * `ClientAccountDto`, but a declaration is a promise about the shape, not
+     * a filter, and nothing held the body to it.
+     */
+    return this.profileView(updated, actor);
   }
 
   async setClientStatus(userId: string, status: 'active' | 'suspended', actor: AuthenticatedAdmin) {
@@ -1063,24 +1072,13 @@ export class AdminClientsService {
       },
     );
 
-    // Through the mask like every other client read. This built its own
-    // object and skipped it, so an admin whose role hid `client.email` could
-    // read the address out of the 200 by suspending and reactivating.
-    const view = {
-      id: updated.id,
-      portalId: updated.portalId,
-      email: updated.email,
-      firstName: updated.firstName,
-      lastName: updated.lastName,
-      type: updated.type,
-      status: updated.status,
-      verificationLevel: updated.verificationLevel,
-      country: updated.country,
-      createdAt: updated.createdAt,
-    };
-    return {
-      ...view,
-      maskedFields: maskedFieldsFor('client', actor.fieldMask),
-    };
+    /*
+     * The shared account view, masked by the global interceptor because the
+     * route declares `ClientAccountDto`. This built its own object and the route
+     * declared no response type, so the interceptor never ran and an admin whose
+     * role hid `client.email` could read the address out of the 200 by
+     * suspending and reactivating — while `maskedFields` claimed it was hidden.
+     */
+    return this.profileView(updated, actor);
   }
 }
