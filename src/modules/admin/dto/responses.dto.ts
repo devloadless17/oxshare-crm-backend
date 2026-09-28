@@ -973,6 +973,9 @@ export class ClientAccountDto {
   @ClientField('client.city')
   @ApiProperty({ type: String, nullable: true })
   city: string | null;
+  @ClientField('client.stateProvince')
+  @ApiProperty({ type: String, nullable: true })
+  stateProvince: string | null;
   @ClientField('client.postalCode')
   @ApiProperty({ type: String, nullable: true })
   postalCode: string | null;
@@ -1044,6 +1047,9 @@ export class ClientProfileDto {
   @ClientField('client.city')
   @ApiPropertyOptional()
   city?: string;
+  @ClientField('client.stateProvince')
+  @ApiPropertyOptional()
+  stateProvince?: string;
   @ClientField('client.postalCode')
   @ApiPropertyOptional()
   postalCode?: string;

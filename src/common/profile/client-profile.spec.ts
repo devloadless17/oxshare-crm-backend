@@ -261,6 +261,36 @@ describe('an address is a place', () => {
   );
 });
 
+/*
+ * State / Province (28 Sep 2026): free text, optional — the owner's call. A
+ * comma is part of real names ("Washington, D.C."), which a city's rule never
+ * needed; a value that names nothing is still refused.
+ */
+describe('a state or province is a named place, typed freely', () => {
+  it.each([
+    'California',
+    'Mount Lebanon',
+    'Île-de-France',
+    'Washington, D.C.',
+    'Newfoundland and Labrador',
+  ])('accepts %s', (typed) => {
+    expect(ok('stateProvince', typed)).toBe(typed);
+  });
+
+  it('refuses what names no place, and what is too long', () => {
+    expect(refused('stateProvince', '12345')).toBe(true);
+    expect(refused('stateProvince', '-Beirut')).toBe(true);
+    expect(refused('stateProvince', 'Bei<rut>')).toBe(true);
+    expect(refused('stateProvince', 'x'.repeat(101))).toBe(true);
+  });
+
+  it('is optional: it can be cleared, like the postal code', () => {
+    const check = checkProfile({ stateProvince: '   ' }, { asOf: AS_OF });
+    expect(check.errors).toEqual({});
+    expect(check.values).toEqual({ stateProvince: null });
+  });
+});
+
 describe('checkProfile — absent is untouched, blank is cleared, names never are', () => {
   it('leaves a field the caller did not send alone', () => {
     const check = checkProfile({ city: 'Beirut' }, { asOf: AS_OF });

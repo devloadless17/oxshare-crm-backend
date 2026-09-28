@@ -146,6 +146,16 @@ export const IDENTITY_FIELDS: readonly IdentityField[] = [
   { id: 'f-7', name: 'address', label: 'Residential Address', type: 'text', required: true },
   { id: 'f-city', name: 'city', label: 'City', type: 'text', required: true },
   {
+    // Added 28 Sep 2026 (the owner's list): free text, optional — many
+    // countries have no state or province in an address.
+    id: 'f-state-province',
+    name: 'stateProvince',
+    label: 'State / Province',
+    type: 'text',
+    required: false,
+    hint: 'Leave blank if your address has none',
+  },
+  {
     id: 'f-postal-code',
     name: 'postalCode',
     label: 'Postal / ZIP code',
@@ -549,6 +559,10 @@ const PLATFORM_LABELS: ReadonlyMap<string, string> = new Map(
       ['Country of Residence', ['country', 'countryofresidence', 'residencecountry', 'residence']],
       ['Residential Address', ['address', 'residentialaddress', 'streetaddress', 'homeaddress']],
       ['City', ['city', 'town', 'cityortown']],
+      [
+        'State / Province',
+        ['state', 'province', 'stateprovince', 'stateorprovince', 'region', 'county'],
+      ],
       ['Postal / ZIP code', ['postalcode', 'postcode', 'zip', 'zipcode', 'postalzipcode']],
       ['Email', ['email', 'emailaddress']],
       ['Passport', ['passport']],

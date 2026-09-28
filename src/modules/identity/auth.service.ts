@@ -1286,6 +1286,7 @@ export class AuthService {
       nationality: user.nationality,
       address: user.address,
       city: user.city,
+      stateProvince: user.stateProvince,
       postalCode: user.postalCode,
       createdAt: user.createdAt,
       /*

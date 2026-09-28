@@ -175,6 +175,12 @@
         "aliases": ["kyc.personalInfo.city"]
       },
       {
+        "key": "client.stateProvince",
+        "label": "State / Province",
+        "maskable": true,
+        "aliases": ["kyc.personalInfo.stateProvince"]
+      },
+      {
         "key": "client.postalCode",
         "label": "Postal code",
         "maskable": true,

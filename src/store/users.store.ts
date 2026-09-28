@@ -194,6 +194,7 @@ export interface User {
   nationality?: string;
   address?: string;
   city?: string;
+  stateProvince?: string;
   postalCode?: string;
   /**
    * The partner who introduced them, or undefined for a direct signup.
@@ -243,6 +244,7 @@ const toUser = ({
   nationality: r.nationality ?? undefined,
   address: r.address ?? undefined,
   city: r.city ?? undefined,
+  stateProvince: r.stateProvince ?? undefined,
   postalCode: r.postalCode ?? undefined,
   referredByIbUserId: r.referredByIbUserId ?? undefined,
 });

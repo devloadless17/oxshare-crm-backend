@@ -46,6 +46,7 @@ export const PROFILE_FIELD_KEYS = [
   'country',
   'address',
   'city',
+  'stateProvince',
   'postalCode',
 ] as const;
 
@@ -79,6 +80,7 @@ export const PROFILE_FIELD_TYPE: Readonly<Record<ProfileKey, string>> = {
   country: 'select',
   address: 'text',
   city: 'text',
+  stateProvince: 'text',
   postalCode: 'text',
 };
 
@@ -103,6 +105,7 @@ export const PROFILE_MAX_LENGTH: Readonly<Record<ProfileKey, number>> = {
   country: 100,
   address: 200,
   city: 100,
+  stateProvince: 100,
   postalCode: 12,
 };
 
@@ -116,6 +119,7 @@ const LABEL: Readonly<Record<ProfileKey, string>> = {
   country: 'Country of residence',
   address: 'Address',
   city: 'City',
+  stateProvince: 'State / Province',
   postalCode: 'Postal code',
 };
 
@@ -241,6 +245,12 @@ const NAME = /^\p{L}[\p{L}\p{M}'’. -]*$/u;
 /** A city may carry a number — "6th of October City" — but must name something. */
 const CITY = /^[\p{L}\p{N}][\p{L}\p{M}\p{N}'’.() -]*$/u;
 const HAS_LETTER = /\p{L}/u;
+/**
+ * A state, province or region, typed by the client (free text, the owner's
+ * call): "California", "Île-de-France", "Mount Lebanon", "Washington, D.C.".
+ * Starts with a letter; a comma is allowed, which a city's rule does not need.
+ */
+const STATE_PROVINCE = /^\p{L}[\p{L}\p{M}\p{N}'’.,() -]*$/u;
 /** No control characters anywhere: they hide text from the person reading it. */
 const CONTROL = /\p{Cc}/u;
 /** Letters and digits first, then spaces or hyphens — "10001", "SW1A 1AA", "1100-2080". */
@@ -396,6 +406,13 @@ export function normaliseProfileValue(key: ProfileKey, raw: string, asOf: Date):
     case 'city': {
       if (value.length > PROFILE_MAX_LENGTH.city || !CITY.test(value) || !HAS_LETTER.test(value)) {
         return { ok: false, message: 'Enter the name of your city or town.' };
+      }
+      return { ok: true, value };
+    }
+
+    case 'stateProvince': {
+      if (value.length > PROFILE_MAX_LENGTH.stateProvince || !STATE_PROVINCE.test(value)) {
+        return { ok: false, message: 'Enter your state, province or region.' };
       }
       return { ok: true, value };
     }

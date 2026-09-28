@@ -282,6 +282,13 @@ export const users = pgTable(
     nationality: varchar('nationality', { length: 100 }),
     address: varchar('address', { length: 200 }),
     city: varchar('city', { length: 100 }),
+    /**
+     * State, province or region — free text, optional (0150, 28 Sep 2026).
+     * Named `state_province`, not `state`: `transactions.state` and
+     * `transfers.state` exist, and an unqualified `state` in a joined raw
+     * query would silently read the wrong table's column.
+     */
+    stateProvince: varchar('state_province', { length: 100 }),
     postalCode: varchar('postal_code', { length: 12 }),
     /**
      * The partner who introduced this client, captured at registration.

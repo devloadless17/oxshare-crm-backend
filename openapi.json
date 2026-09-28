@@ -11775,6 +11775,7 @@
                 "country",
                 "address",
                 "city",
+                "stateProvince",
                 "postalCode"
               ]
             }
@@ -11793,6 +11794,7 @@
                 "country",
                 "address",
                 "city",
+                "stateProvince",
                 "postalCode"
               ]
             }
@@ -12442,6 +12444,10 @@
             "example": "Sheikh Zayed Road, Tower 2, Apt 1204"
           },
           "city": {
+            "type": "string",
+            "example": "Dubai"
+          },
+          "stateProvince": {
             "type": "string",
             "example": "Dubai"
           },
@@ -18234,6 +18240,9 @@
           "city": {
             "type": "string"
           },
+          "stateProvince": {
+            "type": "string"
+          },
           "postalCode": {
             "type": "string"
           },
@@ -18369,6 +18378,11 @@
             "example": "Beirut",
             "maxLength": 100
           },
+          "stateProvince": {
+            "type": "string",
+            "example": "Mount Lebanon",
+            "maxLength": 100
+          },
           "postalCode": {
             "type": "string",
             "example": "1103 2080",
@@ -18455,6 +18469,10 @@
             "type": "string",
             "nullable": true
           },
+          "stateProvince": {
+            "type": "string",
+            "nullable": true
+          },
           "postalCode": {
             "type": "string",
             "nullable": true
@@ -18487,6 +18505,7 @@
           "nationality",
           "address",
           "city",
+          "stateProvince",
           "postalCode",
           "createdAt",
           "maskedFields"
@@ -18780,6 +18799,7 @@
               "country",
               "address",
               "city",
+              "stateProvince",
               "postalCode"
             ]
           },
@@ -19262,6 +19282,12 @@
             "type": "string",
             "example": "Beirut",
             "maxLength": 100
+          },
+          "stateProvince": {
+            "type": "string",
+            "example": "Mount Lebanon",
+            "maxLength": 100,
+            "description": "Send an empty string to clear it — many addresses have none."
           },
           "postalCode": {
             "type": "string",

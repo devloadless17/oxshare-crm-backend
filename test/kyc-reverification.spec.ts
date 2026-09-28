@@ -144,6 +144,7 @@ describe('the review is laid out by the server', () => {
       'Country of Residence',
       'Residential Address',
       'City',
+      'State / Province',
       'Postal / ZIP code',
     ]);
     // Named precisely, never guessed: the document on file, with its own pages.

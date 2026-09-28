@@ -38,6 +38,7 @@ describe('the identity and the documents', () => {
       'country',
       'address',
       'city',
+      'stateProvince',
       'postalCode',
     ]);
     expect(layout.identityDocument).toEqual({

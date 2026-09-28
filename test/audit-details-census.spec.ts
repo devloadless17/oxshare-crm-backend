@@ -79,6 +79,17 @@ function actionsWritingDetails(): string[] {
       for (const match of text.matchAll(/audit:\s*\{[^}]*?action:\s*'([a-z_]+\.[a-z_.]+)'/g)) {
         found.add(match[1]);
       }
+      /*
+       * …or CHOOSES it from what actually changed: `audit: (changed, verification)
+       * => …` (`ClientProfileService.editAsAdmin`, 28 Sep 2026 — a desk edit that
+       * touches a verified detail is a correction). Missing this form is how
+       * the census once lost `kyc.identity_correct` without anything else moving.
+       */
+      for (const match of text.matchAll(
+        /audit:\s*\([^)]*\)\s*=>[\s\S]{0,400}?action:\s*'([a-z_]+\.[a-z_.]+)'/g,
+      )) {
+        found.add(match[1]);
+      }
     }
   }
   /*

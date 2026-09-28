@@ -42,8 +42,10 @@ describe('the identity fields', () => {
     expect(new Set(IDENTITY_FIELDS.map((field) => field.id)).size).toBe(IDENTITY_FIELDS.length);
   });
 
-  it('require everything to verify but the postal code', () => {
-    expect(VERIFICATION_REQUIRED).toEqual(PROFILE_FIELD_KEYS.filter((key) => key !== 'postalCode'));
+  it('require everything to verify but the postal code and the state — many addresses have neither', () => {
+    expect(VERIFICATION_REQUIRED).toEqual(
+      PROFILE_FIELD_KEYS.filter((key) => key !== 'postalCode' && key !== 'stateProvince'),
+    );
   });
 
   it('require at sign-up who the person is and how to reach them — a subset of verification', () => {

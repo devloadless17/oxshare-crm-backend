@@ -63,6 +63,7 @@ const TARGET = {
   nationality: 'MatrixNationality',
   address: 'MatrixStreet 12',
   city: 'MatrixCity',
+  stateProvince: 'MatrixProvince',
   postalCode: 'MX 9901',
 };
 
@@ -77,6 +78,7 @@ const SENTINEL: Record<string, string> = {
   'client.nationality': TARGET.nationality,
   'client.address': TARGET.address,
   'client.city': TARGET.city,
+  'client.stateProvince': TARGET.stateProvince,
   'client.postalCode': TARGET.postalCode,
   /*
    * A BROKER'S OWN questions, masked as ONE unit rather than per field.

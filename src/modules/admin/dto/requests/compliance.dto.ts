@@ -402,6 +402,16 @@ export class CorrectKycIdentityDto {
   city?: string;
 
   @ApiPropertyOptional({
+    example: 'Mount Lebanon',
+    maxLength: 100,
+    description: 'Send an empty string to clear it — many addresses have none.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  stateProvince?: string;
+
+  @ApiPropertyOptional({
     example: '1103 2080',
     maxLength: 12,
     description: 'Send an empty string to clear it — many addresses have none.',

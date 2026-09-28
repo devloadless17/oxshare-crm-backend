@@ -204,7 +204,18 @@ describe("the client's identity is the platform's", () => {
     );
   });
 
-  it.each(['First name', 'SURNAME', 'Date of birth', 'E-mail', 'Mobile', 'Passport', 'ZIP'])(
+  it.each([
+    'First name',
+    'SURNAME',
+    'Date of birth',
+    'E-mail',
+    'Mobile',
+    'Passport',
+    'ZIP',
+    'State',
+    'Province',
+    'State / Province',
+  ])(
     'refuses a question labelled "%s" — a second copy of something the platform collects',
     (label) => {
       const shadow = [

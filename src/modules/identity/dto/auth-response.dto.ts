@@ -47,6 +47,7 @@ export class UserProfileDto {
   @ApiPropertyOptional({ example: 'Emirati' }) nationality?: string;
   @ApiPropertyOptional({ example: 'Sheikh Zayed Road, Tower 2, Apt 1204' }) address?: string;
   @ApiPropertyOptional({ example: 'Dubai' }) city?: string;
+  @ApiPropertyOptional({ example: 'Dubai' }) stateProvince?: string;
   @ApiPropertyOptional({ example: '00000' }) postalCode?: string;
   @ApiProperty() createdAt: Date;
 

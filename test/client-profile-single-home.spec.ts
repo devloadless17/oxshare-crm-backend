@@ -465,6 +465,7 @@ describe('what a reviewer is checking cannot move under them', () => {
         'lastName',
         'nationality',
         'postalCode',
+        'stateProvince',
       ].sort();
 
       const corrector = await read(MASTER);
@@ -502,6 +503,7 @@ describe('what a reviewer is checking cannot move under them', () => {
           'lastName',
           'nationality',
           'postalCode',
+          'stateProvince',
         ].sort(),
       );
       expect(fields?.['phone']).toBeUndefined();

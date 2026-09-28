@@ -442,6 +442,7 @@ export class AdminClientsService {
       nationality: client.nationality,
       address: client.address,
       city: client.city,
+      stateProvince: client.stateProvince,
       postalCode: client.postalCode,
       createdAt: client.createdAt,
       tags,
@@ -813,6 +814,7 @@ export class AdminClientsService {
       nationality?: string | null;
       address?: string | null;
       city?: string | null;
+      stateProvince?: string | null;
       postalCode?: string | null;
       createdAt: Date;
     },
@@ -834,6 +836,7 @@ export class AdminClientsService {
       nationality: user.nationality ?? null,
       address: user.address ?? null,
       city: user.city ?? null,
+      stateProvince: user.stateProvince ?? null,
       postalCode: user.postalCode ?? null,
       createdAt: user.createdAt,
     };

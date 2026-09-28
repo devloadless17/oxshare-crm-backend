@@ -104,6 +104,12 @@ export class UpdateClientProfileDto {
   @MaxLength(100)
   city?: string;
 
+  @ApiPropertyOptional({ example: 'Mount Lebanon', maxLength: 100 })
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  stateProvince?: string;
+
   @ApiPropertyOptional({ example: '1103 2080', maxLength: 12 })
   @IsOptional()
   @IsString()
