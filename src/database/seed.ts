@@ -1237,6 +1237,9 @@ export async function reassertReviewPool(db: ReturnType<typeof getDb>): Promise<
           reviewedAt: null,
           reviewedBy: null,
           rejectionReason: null,
+          // The items returned with it, as a resubmission clears them — left
+          // behind, a pending fixture carried a previous run's returned pages.
+          rejectedFields: null,
           // A re-verification request is part of the decision being reset.
           reverificationRequestedAt: null,
           // And the evidence: approval re-asks the judge, which reads pages.

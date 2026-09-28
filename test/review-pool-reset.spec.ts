@@ -98,6 +98,7 @@ describe('the review pool reset', () => {
         reviewedAt: decidedAt,
         reviewedBy: reviewerId,
         rejectionReason: 'a reason from a previous run',
+        rejectedFields: ['doc_front', 'selfie'],
       })
       .where(eq(kycSubmissions.userId, client.id));
 
@@ -120,6 +121,7 @@ describe('the review pool reset', () => {
         reviewedAt: kycSubmissions.reviewedAt,
         reviewedBy: kycSubmissions.reviewedBy,
         rejectionReason: kycSubmissions.rejectionReason,
+        rejectedFields: kycSubmissions.rejectedFields,
       })
       .from(kycSubmissions)
       .where(eq(kycSubmissions.userId, client.id));
@@ -129,6 +131,8 @@ describe('the review pool reset', () => {
     expect(after.reviewedBy, 'reset to pending but still claimed by a reviewer').toBeNull();
     expect(after.reviewedAt, 'reset to pending but still carrying a decision time').toBeNull();
     expect(after.rejectionReason, 'reset to pending but still carrying a rejection').toBeNull();
+    // A resubmission clears what was returned (`submit()`); the reset must too.
+    expect(after.rejectedFields, 'reset to pending but still carrying returned items').toBeNull();
   });
 
   it('re-activates a fixture a spec suspended, so the next run can still sign in', async () => {
