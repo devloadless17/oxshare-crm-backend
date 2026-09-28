@@ -718,3 +718,71 @@ describe('a question’s name outlives the question (0148, reported 26 Sep 2026)
     ]);
   });
 });
+
+/*
+ * THE VERSION A SAVE NAMES, AS IT ARRIVES IN PRODUCTION (reported 28 Sep 2026).
+ *
+ * The builder sends back the `ETag` it read the form with (`If-Match`), and a
+ * form somebody else has changed since answers 409 KYC_CONFIG_STALE. Nothing
+ * tested that against the server — the builder's page test mocks the header.
+ * In production Caddy compresses the GET and rewrites the ETag to
+ * `"<digest>-zstd"`; the builder echoed it, and EVERY save answered "someone
+ * else changed this form" when nobody had.
+ */
+describe('the version a save names (If-Match)', () => {
+  type Step = { id: string; slug: string; description?: string };
+
+  const read = async () => {
+    const res = await session.get('/v1/admin/kyc-config');
+    expect(res.status).toBe(200);
+    const etag = res.headers['etag'] as string | undefined;
+    expect(etag, 'the form was served without a strong version').toMatch(/^"[0-9a-f]{64}"$/);
+    return { steps: res.body as Step[], etag: etag as string };
+  };
+  const save = (steps: Step[], ifMatch?: string) =>
+    session.put(
+      '/v1/admin/kyc-config',
+      { steps },
+      ifMatch === undefined ? undefined : { headers: { 'If-Match': ifMatch } },
+    );
+
+  it('saves with the version exactly as it was read', async () => {
+    const { steps, etag } = await read();
+    const res = await save(steps, etag);
+    expect(res.status, JSON.stringify(res.body).slice(0, 200)).toBe(200);
+  });
+
+  it('saves with the version as a compressing proxy hands it back — the production bug', async () => {
+    const { steps, etag } = await read();
+    const asProxied = [etag.replace(/"$/, '-zstd"'), etag.replace(/"$/, '-gzip"'), `W/${etag}`];
+    for (const ifMatch of asProxied) {
+      const res = await save(steps, ifMatch);
+      expect(res.status, `If-Match ${ifMatch} answered ${JSON.stringify(res.body)}`).toBe(200);
+    }
+  });
+
+  it('still REFUSES a save over somebody else’s newer change, and keeps theirs', async () => {
+    const mine = await read();
+    const original = structuredClone(mine.steps);
+
+    // A colleague saves first, from the same version.
+    const theirs = structuredClone(mine.steps);
+    const target = theirs[theirs.length - 1];
+    target.description = 'A colleague’s newer wording';
+    expect((await save(theirs, mine.etag)).status).toBe(200);
+
+    // Mine, named at the version I read — even as the proxy decorated it.
+    for (const ifMatch of [mine.etag, mine.etag.replace(/"$/, '-zstd"')]) {
+      const res = await save(mine.steps, ifMatch);
+      expect(res.status, `If-Match ${ifMatch}`).toBe(409);
+      expect((res.body as { code?: string }).code).toBe('KYC_CONFIG_STALE');
+    }
+    const now = (await read()).steps.find((step) => step.id === target.id);
+    expect(now?.description, 'the stale save replaced the colleague’s change').toBe(
+      'A colleague’s newer wording',
+    );
+
+    // Named no version: last write wins — how an operator's restore works.
+    expect((await save(original)).status).toBe(200);
+  });
+});

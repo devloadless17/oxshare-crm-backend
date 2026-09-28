@@ -1071,6 +1071,13 @@ they live here:
 - **`If-Match` is optional on `PUT /admin/kyc-config`.** The builder always sends it; a caller that
   omits it gets last-write-wins, which is what the e2e restore relies on. Sent and stale, it is 409
   `KYC_CONFIG_STALE`, decided under `pg_advisory_xact_lock`.
+- ⚠️ **The version never comes back as it was sent, in production.** Caddy's `encode zstd gzip`
+  appends the encoding to a strong ETag it compresses (`"<digest>-zstd"` to a browser) and does not
+  strip it from `If-Match`. Compared as sent, EVERY production save answered 409 "someone else
+  changed this form" (reported 28 Sep 2026; localhost has no proxy, so no test saw it). `If-Match`
+  is read with `versionFromIfMatch` (`common/http/if-match.ts`), which FINDS the digest inside
+  whatever a proxy wrapped around it. Pinned by `if-match.spec.ts` and the If-Match block of
+  `test/kyc-config-round-trip.spec.ts`. Any new strong ETag used for `If-Match` goes through it.
 - **Approval re-asks the judge, so an e2e fixture must satisfy it.** `fixtureEvidence` in `seed.ts` gives the
   review pool and the fresh client placeholder page paths. They are never real objects, and the file route
   answers 404 for them.

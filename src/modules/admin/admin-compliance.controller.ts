@@ -65,18 +65,7 @@ import { kycStatusEnum } from '../../database/schema';
 import { NotClientScoped, ScopedToClients } from './guards/client-scope.decorator';
 import { Audited } from './guards/audited.decorator';
 import { AnnouncesChange } from '../../common/realtime/announces-change.decorator';
-
-/**
- * The version an `If-Match` header names: the bare digest, with the quotes and
- * any weak-validator prefix an HTTP client may have kept on the `ETag` removed.
- * Absent means the caller named none — a builder predating the check, which is
- * let through rather than refused, so deploying the API first breaks no screen.
- */
-function versionFrom(ifMatch: string | undefined): string | undefined {
-  const value = ifMatch?.trim();
-  if (!value) return undefined;
-  return value.replace(/^W\//, '').replace(/^"|"$/g, '');
-}
+import { versionFromIfMatch } from '../../common/http/if-match';
 
 /** KYC review queue, configurable rejection reasons and the KYC step configurator. */
 @ApiTags('admin')
@@ -545,7 +534,7 @@ export class AdminComplianceController {
     return this.compliance.updateKycConfig(
       dto.steps as unknown as KycStepConfig[],
       req.admin,
-      versionFrom(ifMatch),
+      versionFromIfMatch(ifMatch),
     );
   }
 
