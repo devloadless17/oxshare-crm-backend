@@ -26,7 +26,14 @@ import {
 import { AdminHoldingsService } from './admin-holdings.service';
 import type { AuthenticatedAdmin } from './guards/admin.guard';
 import type { CsvColumn } from '../../common/export/csv';
-import { emailVerifiedFilter, kycStatusFilter, UUID_RE } from './admin-clients.service';
+import {
+  emailVerifiedFilter,
+  kycStatusFilter,
+  referredFilter,
+  UUID_RE,
+  withReferrers,
+  type ClientRowReferrer,
+} from './admin-clients.service';
 
 /**
  * Row sources for the admin table exports.
@@ -115,6 +122,24 @@ export class AdminExportService {
      */
     { header: 'Phone', value: (r) => r.phone },
     { header: 'Tags', value: (r) => r.tags.map((t) => t.label).join(', ') },
+    /*
+     * The partner who introduced them — the Referrals page's column, so a file
+     * exported from there says whose client each row is. By Portal ID, the
+     * number staff search by. Empty for a client nobody introduced, and for a
+     * reader without `ib.view` (see `withReferrers`); "outside your territory"
+     * for an introducer this reader may not see, never a blank that reads as
+     * "not introduced".
+     */
+    {
+      header: 'Introduced by',
+      value: (r) => {
+        if (!r.referrer) return '';
+        if (r.referrer.outsideTerritory) return 'Outside your territory';
+        // A masked name leaves the Portal ID, which is never masked.
+        const name = [r.referrer.firstName, r.referrer.lastName].filter(Boolean).join(' ');
+        return name ? `${r.referrer.portalId} ${name}` : String(r.referrer.portalId);
+      },
+    },
     { header: 'Registered at', value: (r) => r.createdAt },
   ];
 
@@ -198,6 +223,7 @@ export class AdminExportService {
       emailVerified: emailVerifiedFilter(query.emailVerified),
       kycStatus: kycStatusFilter(query.kycStatus),
       referredBy,
+      referred: referredFilter(query.referred),
       sort,
       order,
       // The whole point. Row-level visibility, in the WHERE clause.
@@ -211,8 +237,12 @@ export class AdminExportService {
      */
     const page = rows.slice(0, limit);
 
-    const tagsByClient = await this.tags.tagsForClients(page.map((r) => r.id));
-    const withTags = page.map((row) => ({ ...row, tags: tagsByClient.get(row.id) ?? [] }));
+    const [tagsByClient, referred] = await Promise.all([
+      this.tags.tagsForClients(page.map((r) => r.id)),
+      // The same introducer lookup as the list — scoped, one query per batch.
+      withReferrers(page, this.users, actor.clientScope, actorHasPermission(actor, 'ib.view')),
+    ]);
+    const withTags = referred.map((row) => ({ ...row, tags: tagsByClient.get(row.id) ?? [] }));
 
     /*
      * Field masking applies to a file exactly as it applies to a screen.
@@ -843,6 +873,8 @@ export interface ClientExportQuery {
    * this partner brought in" produced every client in the scope.
    */
   referredBy?: string;
+  /** The Referrals page's `?referred=true` — the file is that page's rows. */
+  referred?: string;
   sort?: string;
   order?: string;
 }
@@ -862,6 +894,8 @@ export interface ClientExportRow {
   country: string | null;
   phone: string | null;
   tags: { label: string }[];
+  /** Absent when nobody introduced them, or for a reader without `ib.view`. */
+  referrer?: ClientRowReferrer;
   createdAt: Date;
 }
 

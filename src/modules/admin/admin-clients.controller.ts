@@ -97,6 +97,15 @@ export class AdminClientsController {
       'sees their own territory. A value that is not a Portal ID is a 400, never a silently ' +
       'unfiltered list.',
   })
+  @ApiQuery({
+    name: 'referred',
+    required: false,
+    enum: ['true', 'false'],
+    description:
+      '`true`: only clients a partner introduced (the Referrals page); `false`: only clients ' +
+      'nobody introduced. On users.referred_by_ib_user_id, so a referred client who later ' +
+      'became a partner still counts. Any other value is a 400.',
+  })
   @ApiQuery({ name: 'sort', required: false, enum: Object.keys(CLIENT_SORT_COLUMNS) })
   @ApiQuery({ name: 'order', required: false, enum: ['asc', 'desc'] })
   @ScopedToClients(
@@ -117,6 +126,7 @@ export class AdminClientsController {
     @Query('kycStatus') kycStatus?: string,
     @Query('tag') tag?: string,
     @Query('referredBy', ClientRefPipe) referredBy?: string,
+    @Query('referred') referred?: string,
     @Query('sort') sort?: string,
     @Query('order') order?: string,
   ) {
@@ -150,6 +160,8 @@ export class AdminClientsController {
         // there — an ignored filter is what puts a "filtered by X" banner over
         // every row in the system.
         referredBy,
+        // Validated in the service: `true`, `false` or absent, anything else a 400.
+        referred,
         // `sort`/`order` are validated in the service against the SORTABLE_COLUMNS
         // allowlist, which is where the column mapping lives. Validating here too
         // would put the allowlist in two places.
@@ -242,6 +254,15 @@ export class AdminClientsController {
       'Clients introduced by this partner, by Portal ID — the same filter as the list, so the ' +
       'file matches the screen it was exported from.',
   })
+  @ApiQuery({
+    name: 'referred',
+    required: false,
+    enum: ['true', 'false'],
+    description:
+      '`true`: only clients a partner introduced (the Referrals page); `false`: only clients ' +
+      'nobody introduced. On users.referred_by_ib_user_id, so a referred client who later ' +
+      'became a partner still counts. Any other value is a 400.',
+  })
   @ApiQuery({ name: 'sort', required: false, enum: Object.keys(CLIENT_SORT_COLUMNS) })
   @ApiQuery({ name: 'order', required: false, enum: ['asc', 'desc'] })
   @ScopedToClients(
@@ -266,6 +287,7 @@ export class AdminClientsController {
     @Query('kycStatus') kycStatus?: string,
     @Query('tag') tag?: string,
     @Query('referredBy', ClientRefPipe) referredBy?: string,
+    @Query('referred') referred?: string,
     @Query('sort') sort?: string,
     @Query('order') order?: string,
   ) {
@@ -287,6 +309,8 @@ export class AdminClientsController {
       // One partner's book — the Network tab's "see all" view. Validated in
       // `clientBatch` like the list validates it: malformed is a 400.
       referredBy,
+      // The Referrals page's filter, parsed by the list's own function.
+      referred,
       sort,
       order,
     };
