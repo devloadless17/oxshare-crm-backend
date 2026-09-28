@@ -1105,9 +1105,16 @@ slices; this is the state after the dual write (slice 5).
 | `client_verifications` | every decision, append-only: `outcome`, `level_after`, `method`, who, why |
 | `client_verification_documents` | exactly which versions each decision covered |
 
-- **Today the KYC columns are still what gets READ.** ONE routine, `identity_adopt(user)` (0152),
-  derives the record from the KYC rows — for the backfill, the dual write, fixtures and the boot
-  repair — so there is no second implementation to drift. Two things run it:
+- **Evidence is READ from the record; the KYC columns are still WRITTEN.** Every read of a
+  submission's or attempt's identity document, proof of address and selfie goes through
+  `KycStore`'s `submissionRead`/`attemptRead`, which rebuild the KYC shapes from the version each
+  pointer names (`identity_evidence`, 0152) — paths in the one spelling. The columns are read by
+  nothing but adoption until the contract slice drops them. Two exceptions, both deliberate: the
+  writes that RETURN a row (`update`, `transition`) hand back what they wrote, and a broker's own
+  uploads are still read from `stepData` (no pointer names their versions yet).
+- ONE routine, `identity_adopt(user)` (0152), derives the record from the KYC rows — for the
+  backfill, the dual write, fixtures and the boot repair — so there is no second implementation to
+  drift. Two things run it:
   - **the KYC code**, inside each transaction that changes evidence or decides
     (`ClientIdentityService.recordFromKyc`), so the record is current WITHIN that transaction;
   - **deferred triggers (0153)** on `kyc_submissions` and `kyc_submission_attempts`, at COMMIT, for

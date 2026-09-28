@@ -1,4 +1,16 @@
-import { and, asc, eq, inArray, isNull, ne, or, sql, SQL, type SQLWrapper } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  eq,
+  getTableColumns,
+  inArray,
+  isNull,
+  ne,
+  or,
+  sql,
+  SQL,
+  type SQLWrapper,
+} from 'drizzle-orm';
 import { clientIdentitySearch } from './users.store';
 import { Inject, Injectable } from '@nestjs/common';
 import { orderTerms, type SortOrder } from '../common/sorting';
@@ -172,6 +184,46 @@ export type KycFormSnapshot = {
 }[];
 
 type Row = typeof kycSubmissions.$inferSelect;
+type AttemptRow = typeof kycSubmissionAttempts.$inferSelect;
+
+/**
+ * A submission as READ (identity-core plan, slice 6): the platform's three
+ * documents come from the client's identity RECORD — the version each pointer
+ * names, rebuilt in the KYC shape by `identity_evidence` (0152) — not from the
+ * columns the KYC layer still writes. Those are written until the contract
+ * slice drops them, and read by nothing but the adoption routine.
+ *
+ * The same shape, so no reader changes, with each path in its one spelling
+ * (`uploads/kyc/<name>`). The writes that RETURN a row (`update`,
+ * `transition`) still hand back what they wrote: the record catches up with
+ * `recordFromKyc` in the same transaction, after them. A broker's own uploads
+ * (`stepData`) are still read from the answers — no pointer names their
+ * versions yet; the contract slice gives them one.
+ */
+const submissionRead = {
+  ...getTableColumns(kycSubmissions),
+  document: sql<
+    Row['document']
+  >`identity_evidence(${kycSubmissions.identityDocumentId}, 'identity')`,
+  selfie: sql<Row['selfie']>`identity_evidence(${kycSubmissions.selfieDocumentId}, 'selfie')`,
+  addressProof: sql<
+    Row['addressProof']
+  >`identity_evidence(${kycSubmissions.addressDocumentId}, 'address')`,
+};
+
+/** An archived attempt as READ — its evidence from the record, as `submissionRead`. */
+const attemptRead = {
+  ...getTableColumns(kycSubmissionAttempts),
+  document: sql<
+    AttemptRow['document']
+  >`identity_evidence(${kycSubmissionAttempts.identityDocumentId}, 'identity')`,
+  selfie: sql<
+    AttemptRow['selfie']
+  >`identity_evidence(${kycSubmissionAttempts.selfieDocumentId}, 'selfie')`,
+  addressProof: sql<
+    AttemptRow['addressProof']
+  >`identity_evidence(${kycSubmissionAttempts.addressDocumentId}, 'address')`,
+};
 
 const toSubmission = (r: Row): KycSubmission => ({
   userId: r.userId,
@@ -253,7 +305,7 @@ export class KycStore {
 
   async findByUserId(userId: string): Promise<KycSubmission | undefined> {
     const [row] = await this.db
-      .select()
+      .select(submissionRead)
       .from(kycSubmissions)
       .where(eq(kycSubmissions.userId, userId))
       .limit(1);
@@ -271,7 +323,7 @@ export class KycStore {
    */
   async lockForUpdate(userId: string, executor: Executor): Promise<KycSubmission | undefined> {
     const [row] = await executor
-      .select()
+      .select(submissionRead)
       .from(kycSubmissions)
       .where(eq(kycSubmissions.userId, userId))
       .for('update')
@@ -400,7 +452,7 @@ export class KycStore {
   }
 
   async findAll(): Promise<KycSubmission[]> {
-    const rows = await this.db.select().from(kycSubmissions);
+    const rows = await this.db.select(submissionRead).from(kycSubmissions);
     return rows.map(toSubmission);
   }
 
@@ -623,7 +675,7 @@ export class KycStore {
 
   async findByStatus(status: KycStatus): Promise<KycSubmission[]> {
     const rows = await this.db
-      .select()
+      .select(submissionRead)
       .from(kycSubmissions)
       .where(eq(kycSubmissions.status, status));
     return rows.map(toSubmission);
@@ -686,7 +738,7 @@ export class KycStore {
   /** This client's decided attempts, oldest first. */
   async listAttempts(userId: string): Promise<KycAttempt[]> {
     const rows = await this.db
-      .select()
+      .select(attemptRead)
       .from(kycSubmissionAttempts)
       .where(eq(kycSubmissionAttempts.userId, userId))
       .orderBy(asc(kycSubmissionAttempts.attemptNo));

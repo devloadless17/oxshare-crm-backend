@@ -49,6 +49,31 @@ CREATE OR REPLACE FUNCTION identity_page_key(p_path text) RETURNS text AS $$
    WHERE p_path IS NOT NULL;
 $$ LANGUAGE sql IMMUTABLE;
 
+-- The other direction: a version of the record, as the KYC shape its pointer
+-- stands in for — `{docType, frontFilePath, frontFileName, backFilePath,
+-- backFileName}` for an identity document, `{docType, filePath, fileName,
+-- page2FilePath, page2FileName}` for a proof of address, `{filePath,
+-- fileName}` for a selfie. It is what every read of evidence returns
+-- (`KycStore`, slice 6): the KYC columns are still written, and read by
+-- nothing but adoption. NULL for no version.
+CREATE OR REPLACE FUNCTION identity_evidence(p_document uuid, p_slot text) RETURNS jsonb AS $$
+  SELECT jsonb_strip_nulls(CASE p_slot
+           WHEN 'identity' THEN jsonb_build_object(
+             'docType', d.doc_type,
+             'frontFilePath', p0.storage_key, 'frontFileName', p0.file_name,
+             'backFilePath', p1.storage_key, 'backFileName', p1.file_name)
+           WHEN 'address' THEN jsonb_build_object(
+             'docType', d.doc_type,
+             'filePath', p0.storage_key, 'fileName', p0.file_name,
+             'page2FilePath', p1.storage_key, 'page2FileName', p1.file_name)
+           ELSE jsonb_build_object('filePath', p0.storage_key, 'fileName', p0.file_name)
+         END)
+    FROM client_documents d
+    LEFT JOIN client_document_pages p0 ON p0.document_id = d.id AND p0.part = 0
+    LEFT JOIN client_document_pages p1 ON p1.document_id = d.id AND p1.part = 1
+   WHERE d.id = p_document;
+$$ LANGUAGE sql STABLE;
+
 -- The pages a KYC value holds for a slot, as [{part, key, name}] in part order.
 CREATE OR REPLACE FUNCTION identity_pages(p_slot text, p_value jsonb) RETURNS jsonb AS $$
   SELECT coalesce(

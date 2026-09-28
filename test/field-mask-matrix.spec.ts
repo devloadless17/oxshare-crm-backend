@@ -233,7 +233,13 @@ beforeAll(async () => {
     // guard refuses — a key with no distinguishable value is one it would
     // silently not be testing.
     stepData: { 'compliance-questions': { sourceOfFunds: SENTINEL['kyc.stepData'] } },
-    addressProof: { docType: 'utility_bill', fileName: 'MatrixProofFile.pdf' },
+    // A real page: evidence is read from the client's record, which holds pages
+    // — a name with no file is nothing a client ever presented.
+    addressProof: {
+      docType: 'utility_bill',
+      filePath: 'uploads/kyc/matrix-proof.pdf',
+      fileName: 'MatrixProofFile.pdf',
+    },
   });
 
   /*
