@@ -69,6 +69,69 @@ export function emailVerifiedFilter(value: string | undefined): boolean | undefi
 }
 
 /**
+ * A caller's `?referred=` — `true` (introduced by a partner), `false` (by
+ * nobody), or absent. Anything else is a 400, never a quietly unfiltered list:
+ * the Referrals page puts "clients a partner introduced" over whatever comes
+ * back, and a typo answering with every client would make that heading a lie.
+ *
+ * Exported for the export, for the reason `emailVerifiedFilter` gives.
+ */
+export function referredFilter(value: string | undefined): boolean | undefined {
+  if (value === undefined || value === '') return undefined;
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  throw new ValidationError('referred must be true or false.');
+}
+
+/** Who introduced a client, as a list row carries it — see `withReferrers`. */
+export interface ClientRowReferrer {
+  ibUserId: string;
+  portalId?: number;
+  firstName?: string;
+  lastName?: string;
+  outsideTerritory: boolean;
+}
+
+/**
+ * A page of client rows with the partner who introduced each one — the
+ * Referrals page's "Introduced by" column, and the export's.
+ *
+ * ONE query for the page (`introducersInScope`), never one per row, and the
+ * profile's three-way rule for what a row says:
+ *
+ * - nobody introduced them → no `referrer`;
+ * - a partner inside the reader's territory → their Portal ID and name;
+ * - a partner outside it → `outsideTerritory: true` and no identity. The
+ *   attribution is still told, because "not introduced" would be false.
+ *
+ * Only for a reader holding `ib.view`, as on the profile: who introduced whom
+ * is the partner programme's data. Without it the key is absent and the rows
+ * are exactly what they were before this existed. The raw attribution id is
+ * stripped either way — it is how the referrer is found, not part of the row.
+ */
+export async function withReferrers<T extends { referredByIbUserId: string | null }>(
+  rows: readonly T[],
+  users: UsersStore,
+  scope: ClientScope,
+  canSeeNetwork: boolean,
+): Promise<Array<Omit<T, 'referredByIbUserId'> & { referrer?: ClientRowReferrer }>> {
+  const introducers = canSeeNetwork
+    ? await users.introducersInScope(
+        rows.flatMap((row) => (row.referredByIbUserId ? [row.referredByIbUserId] : [])),
+        scope,
+      )
+    : new Map<string, { portalId: number; firstName: string; lastName: string }>();
+  return rows.map(({ referredByIbUserId, ...row }) => {
+    if (!canSeeNetwork || !referredByIbUserId) return row;
+    const introducer = introducers.get(referredByIbUserId);
+    const referrer: ClientRowReferrer = introducer
+      ? { ibUserId: referredByIbUserId, ...introducer, outsideTerritory: false }
+      : { ibUserId: referredByIbUserId, outsideTerritory: true };
+    return { ...row, referrer };
+  });
+}
+
+/**
  * How many referred clients a PROFILE shows.
  *
  * A profile is not a client list. An IB with 4,000 referrals would otherwise
@@ -179,6 +242,7 @@ export class AdminClientsService {
       kycStatus?: string;
       tag?: string;
       referredBy?: string;
+      referred?: string;
       sort?: string;
       order?: string;
     },
@@ -288,6 +352,7 @@ export class AdminClientsService {
       kycStatus: kycStatusFilter(query.kycStatus),
       tagSlug: query.tag,
       referredBy,
+      referred: referredFilter(query.referred),
       sort,
       order,
       // Row-level visibility, applied in the WHERE clause. An out-of-scope
@@ -299,8 +364,17 @@ export class AdminClientsService {
 
     // Tags for the whole page in ONE query — never per row. 25 extra round
     // trips per keystroke of the search box is the N+1 ARCHITECTURE §5 names.
-    const tagsByClient = await this.tags.tagsForClients(paged.items.map((r) => r.id));
-    const withTags = paged.items.map((row) => ({
+    // The introducers likewise, in one more.
+    const [tagsByClient, referred] = await Promise.all([
+      this.tags.tagsForClients(paged.items.map((r) => r.id)),
+      withReferrers(
+        paged.items,
+        this.users,
+        actor.clientScope,
+        actorHasPermission(actor, 'ib.view'),
+      ),
+    ]);
+    const withTags = referred.map((row) => ({
       ...row,
       tags: tagsByClient.get(row.id) ?? [],
     }));

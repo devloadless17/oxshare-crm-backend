@@ -8,6 +8,7 @@ import {
   eq,
   getTableColumns,
   gt,
+  inArray,
   isNotNull,
   isNull,
   lt,
@@ -400,6 +401,36 @@ export class UsersStore {
    * the row is fetched: fetch-then-discard puts the value in the process, one
    * refactor away from a response.
    */
+  /**
+   * The partners who introduced a page of clients — ONE query, never one per
+   * row — keyed by id, holding only those inside the reader's territory.
+   *
+   * Absence is meaningful: an introducer the map does not hold is real and
+   * outside the territory (the caller knows they exist from the attribution
+   * column), so it is told as "introduced by a partner outside your territory",
+   * never as "not introduced". The same three-way rule as the profile's
+   * `referrerOf`.
+   */
+  async introducersInScope(
+    ids: readonly string[],
+    scope: ClientScope,
+  ): Promise<Map<string, { portalId: number; firstName: string; lastName: string }>> {
+    const unique = [...new Set(ids)];
+    if (unique.length === 0) return new Map();
+    const scoped = clientScopePredicate(scope, users.id);
+    const byId = inArray(users.id, unique);
+    const rows = await this.db
+      .select({
+        id: users.id,
+        portalId: users.portalId,
+        firstName: users.firstName,
+        lastName: users.lastName,
+      })
+      .from(users)
+      .where(scoped ? and(byId, scoped) : byId);
+    return new Map(rows.map(({ id, ...introducer }) => [id, introducer]));
+  }
+
   async findByIdInScope(id: string, scope: ClientScope): Promise<User | undefined> {
     const scoped = clientScopePredicate(scope, users.id);
     const where = scoped ? and(eq(users.id, id), scoped) : eq(users.id, id);
@@ -894,6 +925,13 @@ export class UsersStore {
      * surface with its own rules.
      */
     referredBy?: string;
+    /**
+     * Introduced by ANY partner (`true`) or by none (`false`) — the console's
+     * Referrals page is this list with `true`. On the attribution column, NOT
+     * the derived `type`: a referred client who later became a partner reads
+     * as `partner` there, and is still somebody a partner brought in.
+     */
+    referred?: boolean;
     /** R-2.5 server-side sort. Validated by `clientSortKey` before it gets here. */
     sort?: ClientSortKey;
     order?: 'asc' | 'desc';
@@ -975,6 +1013,11 @@ export class UsersStore {
      */
     if (filter.referredBy) {
       conditions.push(eq(users.referredByIbUserId, filter.referredBy));
+    }
+    if (typeof filter.referred === 'boolean') {
+      conditions.push(
+        filter.referred ? isNotNull(users.referredByIbUserId) : isNull(users.referredByIbUserId),
+      );
     }
 
     // The row-level visibility predicate. In the WHERE clause, never after the
@@ -1084,6 +1127,13 @@ export class UsersStore {
        */
       phone: users.phone,
       createdAt: users.createdAt,
+      /*
+       * The ATTRIBUTION, as an id only. The callers turn it into the row's
+       * `referrer` through `introducersInScope`, which is where the reader's
+       * territory is applied to the introducer — a join here would hand over
+       * the name of a partner the reader may not see.
+       */
+      referredByIbUserId: users.referredByIbUserId,
     };
 
     // OFFSET is kept for one release so both frontends can move at their own
