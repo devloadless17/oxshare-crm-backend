@@ -7,13 +7,18 @@ import { collectsAnswers, isDataBearingStep } from './step-slugs';
 import { documentTypeFor, typedAnswersFor } from './kyc-answers';
 import { catalogueDocument } from '../../common/kyc/document-catalogue';
 import {
-  asPageFlags,
   CANONICAL_FILE_STEP,
   documentFlagLabel,
   flagsSettledByUpload,
   outstandingDocumentFlags,
 } from './kyc-document-rules';
-import { answerKeysOf, flagLabel, reviewLayout } from './kyc-review-layout';
+import {
+  answerKeysOf,
+  flagLabel,
+  returnableItems,
+  returnedFlags,
+  reviewLayout,
+} from './kyc-review-layout';
 import {
   approvalBlockers,
   isPlainUpload,
@@ -315,6 +320,58 @@ export class KycService {
   /** The submission, with its personal step read as one record. */
   private withPersonalView(submission: KycSubmission, user: User | undefined): KycSubmission {
     return { ...submission, personalInfo: this.personalView(submission, user) };
+  }
+
+  /**
+   * The flags a return stores. REFUSED, naming each, when a reviewer names
+   * something the client cannot answer (`returnableItems`): an unknown id used
+   * to be stored as given — shown nowhere, blocking nothing, answered by
+   * nobody — and a page the document on file does not have told the client to
+   * replace a back side their passport never had.
+   */
+  private returnFlags(
+    ids: readonly string[],
+    steps: readonly KycStepConfig[],
+    evidence: KycSubmission,
+    field: 'rejectedFields' | 'items',
+  ): string[] {
+    const returnable = returnableItems(steps, reviewLayout(steps, evidence), evidence);
+    const { flags, unknown } = returnedFlags(ids, steps, returnable);
+    if (unknown.length > 0) {
+      throw new FieldValidationError(`The client cannot be asked for: ${unknown.join(', ')}.`, {
+        [field]:
+          `Not something this client can update: ${unknown.join(', ')}. Choose from the ` +
+          'details, the pages on file and the questions on their form.',
+      });
+    }
+    return flags;
+  }
+
+  /**
+   * What the client last PRESENTED, as the last decision recorded it: the
+   * archived attempt's evidence and answers. Undefined when nothing was ever
+   * decided (a returned row from before attempts were archived).
+   */
+  private async lastPresented(
+    userId: string,
+  ): Promise<
+    | Pick<
+        KycSubmission,
+        'document' | 'selfie' | 'addressProof' | 'stepData' | 'personalInfo' | 'submittedAt'
+      >
+    | undefined
+  > {
+    const attempts = await this.kycStore.listAttempts(userId);
+    const last = attempts.at(-1);
+    if (!last) return undefined;
+    return {
+      document: last.document,
+      selfie: last.selfie,
+      addressProof: last.addressProof,
+      stepData: last.stepData,
+      personalInfo: last.personalInfo,
+      submittedAt: last.submittedAt,
+    };
   }
 
   // ─── Get status ────────────────────────────────────────────────────────────
@@ -1437,7 +1494,7 @@ export class KycService {
       this.users.findById(userId),
       this.kycConfig.getSteps(),
     ]);
-    const flags = asPageFlags(items, steps);
+    const flags = this.returnFlags(items, steps, submission, 'items');
 
     await this.db.transaction(async (tx) => {
       const updated = await this.kycStore.transition(
@@ -1541,7 +1598,14 @@ export class KycService {
   }
 
   // ─── Admin: reject ─────────────────────────────────────────────────────────
-  async reject(userId: string, adminId: string, reason: string, rejectedFields: string[] = []) {
+  async reject(
+    userId: string,
+    adminId: string,
+    reason: string,
+    rejectedFields: string[] = [],
+    /** The configured reason chosen, when one was — kept on the decision (0151). */
+    reasonId?: string,
+  ) {
     const submission = await this.kycStore.findByUserId(userId);
     if (!submission) throw new NotFoundError('KYC submission not found.');
     const user = await this.users.findById(userId);
@@ -1555,9 +1619,19 @@ export class KycService {
      * NOT do is reject a submission that was never submitted.
      */
     await this.assertNotHeldByAnother(submission, adminId);
-    // A whole document returned is every page of it returned (`asPageFlags`).
+    /*
+     * WHAT IS BEING DECIDED. A submission with a reviewer, or approved, is its
+     * live evidence. One already RETURNED is being returned again — a correction
+     * of the return — and the client may have uploaded replacements since, which
+     * they never presented. Deciding on the live row would freeze those drafts
+     * as evidence of a decision nobody made about them; the correction decides
+     * what the LAST decision did.
+     */
+    const decided = submission.status === 'rejected' ? await this.lastPresented(userId) : undefined;
+    const evidence = { ...submission, ...decided };
+    // A whole document returned is every page of it ON FILE returned.
     const steps = await this.kycConfig.getSteps();
-    const flags = asPageFlags(rejectedFields, steps);
+    const flags = this.returnFlags(rejectedFields, steps, evidence, 'rejectedFields');
 
     await this.db.transaction(async (tx) => {
       const updated = await this.kycStore.transition(
@@ -1608,8 +1682,9 @@ export class KycService {
         );
       }
       await this.kycStore.archiveAttempt(
-        this.withPersonalView(updated, await this.users.findById(userId)),
+        { ...this.withPersonalView(updated, await this.users.findById(userId)), ...decided },
         tx,
+        { reasonId },
       );
       /*
        * Take the verification level back, in the SAME transaction.

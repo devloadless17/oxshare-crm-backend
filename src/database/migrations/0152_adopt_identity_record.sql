@@ -33,23 +33,42 @@
 
 -- ── Helpers ─────────────────────────────────────────────────────────────────
 
+-- The ONE spelling of a stored KYC file: `uploads/kyc/<name>`.
+--
+-- The KYC columns have held several over the years — `./uploads/kyc/x.jpg`,
+-- `/uploads/kyc/x.jpg`, `uploads\kyc\x.jpg`, a bare `x.jpg` (the list
+-- `filenameFromStored` in storage-key.ts reads) — and every one is the same
+-- file, served by `GET /uploads/kyc/<name>` from the same bucket: only the
+-- NAME matters. The record keeps one spelling so the file route can find a
+-- page's owner by an exact, indexed key. NULL for a value that names no file
+-- (empty, a directory, a dot-name), exactly where `filenameFromStored` is.
+CREATE OR REPLACE FUNCTION identity_page_key(p_path text) RETURNS text AS $$
+  SELECT CASE WHEN name = '' OR left(name, 1) = '.' THEN NULL
+              ELSE 'uploads/kyc/' || name END
+    FROM (SELECT regexp_replace(replace(p_path, '\', '/'), '^.*/', '') AS name) n
+   WHERE p_path IS NOT NULL;
+$$ LANGUAGE sql IMMUTABLE;
+
 -- The pages a KYC value holds for a slot, as [{part, key, name}] in part order.
 CREATE OR REPLACE FUNCTION identity_pages(p_slot text, p_value jsonb) RETURNS jsonb AS $$
   SELECT coalesce(
            jsonb_agg(jsonb_build_object('part', part, 'key', key, 'name', name) ORDER BY part),
            '[]'::jsonb)
     FROM (
-          SELECT 0 AS part, p_value->>'frontFilePath' AS key, p_value->>'frontFileName' AS name
+          SELECT 0 AS part, identity_page_key(p_value->>'frontFilePath') AS key,
+                 p_value->>'frontFileName' AS name
            WHERE p_slot = 'identity'
           UNION ALL
-          SELECT 1, p_value->>'backFilePath', p_value->>'backFileName' WHERE p_slot = 'identity'
+          SELECT 1, identity_page_key(p_value->>'backFilePath'), p_value->>'backFileName'
+           WHERE p_slot = 'identity'
           UNION ALL
-          SELECT 0, p_value->>'filePath', p_value->>'fileName'
+          SELECT 0, identity_page_key(p_value->>'filePath'), p_value->>'fileName'
            WHERE p_slot IN ('address', 'selfie') OR p_slot LIKE 'other:%'
           UNION ALL
-          SELECT 1, p_value->>'page2FilePath', p_value->>'page2FileName' WHERE p_slot = 'address'
+          SELECT 1, identity_page_key(p_value->>'page2FilePath'), p_value->>'page2FileName'
+           WHERE p_slot = 'address'
          ) p
-   WHERE key IS NOT NULL AND key <> '';
+   WHERE key IS NOT NULL;
 $$ LANGUAGE sql IMMUTABLE;
 
 -- A page set's identity: which file at which part — names are not identity.
@@ -243,14 +262,15 @@ BEGIN
       SELECT coalesce(max(seq), 0) + 1 INTO v_seq FROM client_verifications WHERE user_id = p_user;
       SELECT email INTO v_email FROM admins WHERE id = att.reviewed_by;
       INSERT INTO client_verifications
-        (user_id, seq, outcome, level_after, method, admin_id, admin_email, reason, returned_items, decided_at)
+        (user_id, seq, outcome, level_after, method, admin_id, admin_email, reason_id, reason,
+         returned_items, decided_at)
       VALUES (
         p_user, v_seq,
         CASE WHEN att.status = 'approved' THEN 'verified'
              WHEN v_reverification THEN 'reverification_requested'
              ELSE 'returned' END,
         CASE WHEN att.status = 'approved' THEN 1 ELSE 0 END,
-        'manual_review', att.reviewed_by, v_email, att.rejection_reason,
+        'manual_review', att.reviewed_by, v_email, att.reason_id, att.rejection_reason,
         CASE WHEN jsonb_typeof(att.rejected_fields) = 'array' THEN att.rejected_fields ELSE '[]'::jsonb END,
         coalesce(att.reviewed_at, att.archived_at))
       RETURNING id INTO v_verification;

@@ -11,6 +11,7 @@ import { sortKey, sortOrder } from '../../common/sorting';
 import { RejectionContext, RejectionReasonsStore } from '../../store/rejection-reasons.store';
 import { KycService } from '../compliance/kyc.service';
 import {
+  FieldValidationError,
   KycConfigStaleError,
   NotFoundError,
   ValidationError,
@@ -462,6 +463,17 @@ export class AdminComplianceService {
     if (reasonId) {
       const configured = await this.rejectionReasons.findById(reasonId);
       if (!configured) throw new NotFoundError('Rejection reason not found.');
+      /*
+       * A KYC decision takes a KYC reason. The list is shared with withdrawals
+       * and partner applications, and nothing checked which one was chosen — a
+       * verification could be returned "for" a withdrawal reason. Now that the
+       * id is KEPT on the decision (0151), it must mean what it says.
+       */
+      if (configured.context !== 'kyc') {
+        throw new FieldValidationError('That is not a KYC rejection reason.', {
+          reasonId: 'Choose one of the KYC rejection reasons.',
+        });
+      }
       effectiveReason = effectiveReason
         ? `${configured.label} — ${effectiveReason}`
         : configured.label;
@@ -469,7 +481,13 @@ export class AdminComplianceService {
     if (!effectiveReason) {
       throw new ValidationError('A rejection reason (reasonId or reason text) is required.');
     }
-    const result = await this.kycService.reject(userId, adminId, effectiveReason, rejectedFields);
+    const result = await this.kycService.reject(
+      userId,
+      adminId,
+      effectiveReason,
+      rejectedFields,
+      reasonId,
+    );
     this.audit.record(adminId, 'kyc.reject', 'kyc_submission', userId, {
       status: result.status,
       verificationLevel: result.user?.verificationLevel,

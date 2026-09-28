@@ -24,8 +24,7 @@ import { EmailVerifiedGuard } from '../identity/guards/email-verified.guard';
 import { EmailNotVerifiedError } from '../../common/errors/domain-errors';
 import { AdminsStore, type Admin } from '../../store/admins.store';
 import { RolesStore } from '../../store/roles.store';
-import { KycStore } from '../../store/kyc.store';
-import { isStoredFile } from './step-slugs';
+import { ClientIdentityService } from '../client-identity/client-identity.service';
 import { UsersStore } from '../../store/users.store';
 import { AuditLogStore } from '../../store/audit-log.store';
 import { DepositProofsStore } from '../../store/deposit-proofs.store';
@@ -104,7 +103,7 @@ export class UploadsController {
     private readonly config: ConfigService,
     private readonly admins: AdminsStore,
     private readonly roles: RolesStore,
-    private readonly kyc: KycStore,
+    private readonly identity: ClientIdentityService,
     private readonly users: UsersStore,
     private readonly auditLog: AuditLogStore,
     private readonly files: StoredFilesService,
@@ -829,7 +828,7 @@ export class UploadsController {
       mayRead: (permissions) =>
         permissions.includes('kyc.documents.view') || permissions.includes('kyc.review'),
       assertInScope: (admin, fileName) => this.assertDocumentInScope(admin, fileName),
-      clientOwns: (userId, fileName) => this.submissionReferencesFile(userId, fileName),
+      clientOwns: (userId, fileName) => this.clientOwnsDocument(userId, fileName),
       audit: { action: 'kyc.document.view', subjectType: 'kyc_document' },
       adminForbidden:
         'The kyc.documents.view or kyc.review permission is required to view documents.',
@@ -882,59 +881,38 @@ export class UploadsController {
   }
 
   private async assertDocumentInScope(admin: Admin, fileName: string): Promise<void> {
+    /*
+     * The OWNER first, for EVERY admin — scoped or not.
+     *
+     * A file no client's record holds is an orphan: a replaced draft page whose
+     * deletion failed, the leftovers of a reset, a name somebody guessed. It is
+     * nobody's document, so there is nothing to serve. Until 28 Sep 2026 an
+     * UNRESTRICTED admin skipped this lookup and was handed any file in the
+     * documents bucket by name — the one reader with no owner check at all.
+     */
+    const owner = await this.identity.ownerOfKycFile(fileName);
+    if (!owner) throw new NotFoundException('Document not found.');
+
     // The admin's own intake grant (D-60), not a default — an intake-granted
     // reviewer must reach an untagged client's DOCUMENTS, not just the
     // submission row.
     const scope = await this.scopes.scopeFor(admin.id, admin.seesUntriaged ?? false);
     if (scope.unrestricted) return;
-
-    const owner = await this.kyc.ownerOfDocument(fileName);
-    if (!owner) throw new NotFoundException('Document not found.');
     const client = await this.users.findForAdmin(owner, scope);
     if (!client) throw new NotFoundException('Document not found.');
   }
 
   /**
-   * Does this client own this document — now, or in a previous attempt?
+   * Does this client own this document? Their identity RECORD says (0151):
+   * every version of every document they ever presented or are working on —
+   * the live submission, a returned attempt, a broker's own upload step, and
+   * what was decided before a reset.
    *
-   * The history half matters: a decided attempt keeps the documents it was
-   * decided on (see `kycSubmissionAttempts`), so once a client is rejected and
-   * re-uploads, the refused document is still theirs. Checking only the LIVE
-   * submission would 403 a client on their own passport the moment they replaced
-   * it — and would do it silently, since the file is still on disk and still
-   * readable by any reviewing admin.
-   *
-   * The live row is checked first because it is one query and covers the
-   * overwhelmingly common case; the history is only consulted on a miss.
+   * It used to be read from the KYC rows, and the reset was the hole: the live
+   * row goes, and the check stopped at "no submission", so a client lost their
+   * own archived passport — while any reviewing admin could still open it.
    */
-  private async submissionReferencesFile(userId: string, fileName: string): Promise<boolean> {
-    const sub = await this.kyc.findByUserId(userId);
-    if (!sub) return false;
-    const paths = [
-      sub.document?.frontFilePath,
-      sub.document?.backFilePath,
-      sub.selfie?.filePath,
-      sub.addressProof?.filePath,
-      sub.addressProof?.page2FilePath,
-      /*
-       * A CUSTOM STEP'S DOCUMENTS COUNT TOO.
-       *
-       * A step the broker added stores its uploads under its own slug in
-       * `step_data`, not in the four columns above. Leaving them out would mean
-       * the upload succeeds and the file is then unopenable by anyone — the
-       * owner included — because this is the check that answers "is this
-       * client's document". A 404 on a passport the client just uploaded is
-       * indistinguishable from losing it.
-       */
-      ...Object.values(sub.stepData ?? {}).flatMap((answers) =>
-        Object.values(answers)
-          .filter(isStoredFile)
-          .map((f) => f.filePath),
-      ),
-    ];
-    if (paths.some((p) => p && basename(p) === fileName)) return true;
-
-    const archived = await this.kyc.archivedDocumentPaths(userId);
-    return archived.some((p) => basename(p) === fileName);
+  private async clientOwnsDocument(userId: string, fileName: string): Promise<boolean> {
+    return (await this.identity.ownerOfKycFile(fileName)) === userId;
   }
 }

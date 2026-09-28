@@ -129,6 +129,28 @@ describe('a document version: a draft, then frozen for ever', () => {
     ).toMatch(/pages of a frozen version never change/);
   });
 
+  it('stores a page under ONE spelling only — the one the file route looks up', async () => {
+    const id = await draft('other:customField_spelling', null);
+    for (const spelling of [
+      '/uploads/kyc/x.png',
+      './uploads/kyc/x.png',
+      'uploads\\kyc\\x.png',
+      'x.png',
+      'uploads/kyc/.hidden.png',
+      'uploads/kyc/',
+      'uploads/avatars/x.png',
+    ]) {
+      expect(
+        await refusal(
+          `INSERT INTO client_document_pages (document_id, part, storage_key) VALUES ($1, 0, $2)`,
+          [id, spelling],
+        ),
+        spelling,
+      ).toMatch(/client_document_pages_key_ck/);
+    }
+    await page(id, 0, 'uploads/kyc/x.png');
+  });
+
   it('lets a DRAFT be deleted, pages and all', async () => {
     const id = await draft('selfie', null);
     await page(id, 0);

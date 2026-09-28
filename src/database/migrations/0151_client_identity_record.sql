@@ -76,8 +76,9 @@ CREATE TABLE IF NOT EXISTS client_document_pages (
   document_id      uuid NOT NULL REFERENCES client_documents(id) ON DELETE CASCADE,
   -- The catalogue's part index: 0 front / first page, 1 back / second page.
   part             smallint NOT NULL,
-  -- `uploads/kyc/<file>` as the KYC columns hold it; the file route resolves
-  -- its owner through this. NOT NULL, while `stored_object_id` may be NULL:
+  -- `uploads/kyc/<file>`, in ONE spelling whatever the KYC columns held (see
+  -- `client_document_pages_key_ck` below); the file route resolves a page's
+  -- owner by this exact key. NOT NULL, while `stored_object_id` may be NULL:
   -- files uploaded before `stored_objects` (0064) have no registry row.
   storage_key      text NOT NULL,
   stored_object_id uuid REFERENCES stored_objects(id) ON DELETE RESTRICT,
@@ -88,6 +89,15 @@ CREATE TABLE IF NOT EXISTS client_document_pages (
 );
 CREATE INDEX IF NOT EXISTS client_document_pages_storage_key_idx
   ON client_document_pages (storage_key);
+
+-- The one spelling, refused rather than repaired. The KYC columns have held
+-- `./uploads/kyc/x`, `/uploads/kyc/x`, `uploads\kyc\x` and a bare `x` over the
+-- years, all the same file; the file route looks a page up by EXACTLY
+-- `uploads/kyc/<name>`, so a page stored any other way is a document its owner
+-- could never open. 0152's `identity_page_key` is what writes it.
+ALTER TABLE client_document_pages DROP CONSTRAINT IF EXISTS client_document_pages_key_ck;
+ALTER TABLE client_document_pages ADD CONSTRAINT client_document_pages_key_ck
+  CHECK (storage_key ~ '^uploads/kyc/[^/\\.][^/\\]*$');
 
 -- A frozen version never changes; only a draft can be deleted; freezing needs
 -- at least one page — a presented document with nothing in it is no evidence.

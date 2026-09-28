@@ -2,7 +2,7 @@ import { and, eq, isNull, sql } from 'drizzle-orm';
 import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db } from '../database/db';
-import { storedObjects } from '../database/schema';
+import { clientDocumentPages, clientDocuments, storedObjects } from '../database/schema';
 
 /**
  * The upload registry (migration 0064).
@@ -93,17 +93,38 @@ export class StoredObjectsStore {
   }
 
   /**
-   * How many bytes this client currently holds, across every bucket.
+   * How many bytes count against this client's allowance, across every bucket.
    *
    * Soft-deleted rows are excluded: a client who was rejected and re-uploaded has
    * not consumed quota for the document that was replaced. Backed by the partial
    * index `stored_objects_owner_live_idx`.
+   *
+   * EVIDENCE is excluded too: a page of a FROZEN version of the client's identity
+   * record (0151) — something they presented for review. The record keeps it for
+   * ever and nobody can delete it, least of all the client, so counting it meant
+   * every round of KYC permanently shrank the room for the next: a client
+   * returned twice for a blurred 9MB scan could be refused the upload that would
+   * finally have passed, with nothing they could remove to make space. What still
+   * counts is what the client CAN remove — drafts, and anything no version holds.
+   * Matched by the page's key, which is the registry key under `uploads/` (0151's
+   * one spelling).
    */
   async liveBytesForOwner(ownerUserId: string): Promise<number> {
     const [row] = await this.db
       .select({ total: sql<string>`COALESCE(SUM(${storedObjects.byteSize}), 0)` })
       .from(storedObjects)
-      .where(and(eq(storedObjects.ownerUserId, ownerUserId), isNull(storedObjects.deletedAt)));
+      .where(
+        and(
+          eq(storedObjects.ownerUserId, ownerUserId),
+          isNull(storedObjects.deletedAt),
+          sql`NOT EXISTS (
+                SELECT 1 FROM ${clientDocumentPages}
+                  JOIN ${clientDocuments} ON ${clientDocuments.id} = ${clientDocumentPages.documentId}
+                 WHERE ${clientDocumentPages.storageKey} = 'uploads/' || ${storedObjects.storageKey}
+                   AND ${clientDocuments.userId} = ${storedObjects.ownerUserId}
+                   AND ${clientDocuments.frozenAt} IS NOT NULL)`,
+        ),
+      );
     // A byte count, not money — §6.1's no-coercion rule is about monetary values,
     // and a file size has no fractional part to lose. `bigint` arrives as a string
     // from the driver, so it is parsed here rather than left to a caller.
@@ -118,29 +139,6 @@ export class StoredObjectsStore {
       .where(and(eq(storedObjects.bucket, bucket), eq(storedObjects.storageKey, storageKey)))
       .limit(1);
     return row as StoredObjectRow | undefined;
-  }
-
-  /**
-   * The owner of a document, by its bare FILENAME.
-   *
-   * This is the lookup that used to be an unindexed `::text ILIKE '%name%'` across
-   * three JSONB columns. The route it serves takes a filename and no bucket — the
-   * client-scope check in `uploads.controller.ts` has only that — so the match is
-   * on the key's suffix, covered by `stored_objects_key_idx`.
-   *
-   * `LIKE` with a leading `%` cannot use the index for a prefix seek, but the
-   * pattern is anchored to a `/` + the full filename, so it is a scan over one
-   * small index rather than three JSONB blobs cast to text. Returns `undefined`
-   * for anything not in the registry, and the caller falls back to the legacy
-   * JSONB search for objects uploaded before this table existed.
-   */
-  async ownerOfFilename(filename: string): Promise<string | undefined> {
-    const [row] = await this.db
-      .select({ ownerUserId: storedObjects.ownerUserId })
-      .from(storedObjects)
-      .where(sql`${storedObjects.storageKey} LIKE ${'%/' + filename}`)
-      .limit(1);
-    return row?.ownerUserId ?? undefined;
   }
 
   /** Soft-delete: the bytes are gone, the record that they existed is not. */

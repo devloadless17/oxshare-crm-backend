@@ -193,6 +193,19 @@ beforeAll(async () => {
   await attempt(flagged, 1, 'rejected', { document: passport('f-front') }, at(2), ['doc_front']);
   await q(`UPDATE kyc_submission_attempts SET reverification = true WHERE user_id = $1`, [flagged]);
 
+  // Every spelling the KYC columns have held for a stored file, and one that
+  // names no file at all (a bare directory).
+  const spellings = await client('spellings');
+  await live(spellings, 'in_progress', {
+    document: {
+      docType: 'national_id',
+      frontFilePath: './uploads/kyc/mig0152-sp-front.png',
+      backFilePath: 'uploads\\kyc\\mig0152-sp-back.png',
+    },
+    selfie: { filePath: 'mig0152-sp-selfie.png' },
+    addressProof: { docType: 'utility_bill', filePath: '/uploads/kyc/' },
+  });
+
   // A type chosen, no page yet.
   const typeOnly = await client('type-only');
   await live(typeOnly, 'in_progress', { document: { docType: 'national_id' } });
@@ -293,6 +306,24 @@ describe('0152 — adopting the evidence', () => {
   it('trusts the attempt’s own re-verification flag, without an audit row', async () => {
     expect((await decisions(ids['flagged'])).map((d) => d.outcome)).toEqual([
       'reverification_requested',
+    ]);
+  });
+
+  it('stores every old spelling of a file as the ONE the file route looks up', async () => {
+    expect(await versions(ids['spellings'])).toEqual([
+      {
+        slot: 'address',
+        doc_type: 'utility_bill',
+        frozen: false,
+        keys: [], // `/uploads/kyc/` names a directory, not a file
+      },
+      {
+        slot: 'identity',
+        doc_type: 'national_id',
+        frozen: false,
+        keys: [key('sp-front'), key('sp-back')],
+      },
+      { slot: 'selfie', doc_type: null, frozen: false, keys: [key('sp-selfie')] },
     ]);
   });
 

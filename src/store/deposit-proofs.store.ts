@@ -11,13 +11,14 @@ import { transactions } from '../database/schema';
  * needs the owning client, and a client's ownership check needs to know the file
  * is theirs.
  *
- * ## ⚠️ Why this is not `StoredObjectsStore.ownerOfFilename`
+ * ## ⚠️ Why this is not a lookup in the upload registry
  *
- * That method answers "who uploaded this object", across EVERY bucket, by
- * matching `storage_key LIKE '%/<name>'`. Using it here would let a client fetch
- * their own KYC passport through the deposit-receipt route — the file is theirs,
- * so the check passes — and the read would be audited as `deposit.proof.view`,
- * leaving a hole in the KYC access trail where a passport read should be.
+ * `stored_objects` answers "who uploaded this object", across EVERY bucket.
+ * Asking it here would let a client fetch their own KYC passport through the
+ * deposit-receipt route — the file is theirs, so the check passes — and the
+ * read would be audited as `deposit.proof.view`, leaving a hole in the KYC
+ * access trail where a passport read should be. (The KYC route asks its own
+ * question the same way: the client's identity record, 0151.)
  *
  * This asks the question the route actually means: is there a DEPOSIT carrying
  * this receipt, and whose is it? A filename from another bucket matches nothing.

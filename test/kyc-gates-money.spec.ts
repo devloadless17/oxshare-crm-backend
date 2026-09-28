@@ -16,7 +16,6 @@ import { KycStore } from '../src/store/kyc.store';
 import { UsersStore } from '../src/store/users.store';
 import { AdminsStore } from '../src/store/admins.store';
 import { KycConfigStore } from '../src/store/kyc-config.store';
-import { StoredObjectsStore } from '../src/store/stored-objects.store';
 import { auditStubAs } from './audit-stub';
 import { AuditLogStore } from '../src/store/audit-log.store';
 import type { EmailService } from '../src/modules/email/email.service';
@@ -128,7 +127,7 @@ beforeAll(async () => {
   kyc = new KycService(
     kycEmail,
     storedFilesStub(),
-    new KycStore(db, new StoredObjectsStore(db)),
+    new KycStore(db),
     new UsersStore(db),
     new KycConfigStore(db),
     db,
@@ -142,7 +141,7 @@ beforeAll(async () => {
       new UsersStore(db),
       new AuditLogStore(db),
       // The review's state, through the port the KYC layer provides.
-      new KycIdentityReview(new KycStore(db, new StoredObjectsStore(db))),
+      new KycIdentityReview(new KycStore(db)),
     ),
     // The client's identity record (0151), on the real tables: every decision
     // here is recorded there in the same transaction.

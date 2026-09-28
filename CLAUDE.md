@@ -1132,6 +1132,17 @@ slices; this is the state after the dual write (slice 5).
   `identity.record_drift` (`notify`). `identity_adopt` locks the client's KYC row first, so a
   repair waits for a KYC change in flight instead of racing it. To simulate such a write in a test,
   `SET LOCAL session_replication_role = replica` (`identity-drift-repair.spec.ts`).
+- **Whose file is it? The record says** — `GET /uploads/kyc/:file` resolves the owner from the
+  record's pages (`ClientIdentityService.ownerOfKycFile`) for EVERY reader. So an orphan is a 404
+  even for an unrestricted admin (who was handed any file by name until 28 Sep 2026), a client
+  keeps their presented documents after a reset (the live row goes, the record stays), and a file
+  two records claim is served to nobody. A page is stored in ONE spelling, `uploads/kyc/<name>`
+  (0152's `identity_page_key`, enforced by `client_document_pages_key_ck`), whatever the KYC
+  columns held — `./uploads/…`, `/uploads/…`, backslashes and bare names all reached production at
+  some point. Pinned by `test/kyc-file-owner.spec.ts`.
+- **The 50MB upload allowance never counts evidence**: a page of a FROZEN version is kept for ever
+  and nobody can delete it, so counting it made each KYC round shrink the room for the next
+  (`StoredObjectsStore.liveBytesForOwner`; `test/upload-quota-evidence.spec.ts`).
 - **The core never imports the KYC layer** — lint bans `compliance/` and `store/kyc*` in
   `modules/profile/**`, `modules/client-identity/**`, `store/client-identity.store.ts` and
   `common/profile/**`. The profile writer reaches the KYC row through the `IDENTITY_REVIEW` port,

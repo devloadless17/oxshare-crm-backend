@@ -49,9 +49,6 @@ export function storedObjectsStub() {
     findByKey() {
       return Promise.resolve(undefined);
     },
-    ownerOfFilename() {
-      return Promise.resolve(undefined);
-    },
     markDeleted(bucket: string, storageKey: string) {
       deleted.push({ bucket, storageKey });
       return Promise.resolve();

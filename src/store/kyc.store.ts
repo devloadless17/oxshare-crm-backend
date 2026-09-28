@@ -3,7 +3,6 @@ import { clientIdentitySearch } from './users.store';
 import { Inject, Injectable } from '@nestjs/common';
 import { orderTerms, type SortOrder } from '../common/sorting';
 import { DRIZZLE_DB } from '../database/database.module';
-import { StoredObjectsStore } from './stored-objects.store';
 import type { Db, Executor } from '../database/db';
 import { kycSubmissionAttempts, kycSubmissions, users } from '../database/schema';
 import {
@@ -238,10 +237,7 @@ export function stepDataFilePaths(stepData: KycSubmission['stepData'] | undefine
 
 @Injectable()
 export class KycStore {
-  constructor(
-    @Inject(DRIZZLE_DB) private readonly db: Db,
-    private readonly storedObjects: StoredObjectsStore,
-  ) {}
+  constructor(@Inject(DRIZZLE_DB) private readonly db: Db) {}
 
   async getOrCreate(userId: string): Promise<KycSubmission> {
     const existing = await this.findByUserId(userId);
@@ -650,8 +646,12 @@ export class KycStore {
   async archiveAttempt(
     submission: KycSubmission,
     executor?: Executor,
-    /** A re-verification request, archived as what it is rather than a plain rejection. */
-    options: { reverification?: boolean } = {},
+    options: {
+      /** A re-verification request, archived as what it is rather than a plain rejection. */
+      reverification?: boolean;
+      /** The configured reason the reviewer chose, kept beside the words the client read. */
+      reasonId?: string;
+    } = {},
   ): Promise<void> {
     await (executor ?? this.db)
       .insert(kycSubmissionAttempts)
@@ -676,6 +676,7 @@ export class KycStore {
         reviewedAt: submission.reviewedAt ?? null,
         reviewedBy: submission.reviewedBy ?? null,
         reverification: options.reverification ?? false,
+        reasonId: options.reasonId ?? null,
         // What the broker's own steps asked, kept with the attempt it labels.
         formSnapshot: submission.formSnapshot ?? null,
       })
@@ -704,73 +705,6 @@ export class KycStore {
       reviewedBy: r.reviewedBy ?? undefined,
       archivedAt: r.archivedAt,
     }));
-  }
-
-  /**
-   * The client a KYC document belongs to, live submission or archived attempt.
-   *
-   * Exists so the uploads controller can apply the CLIENT SCOPE to an admin's
-   * document read. That route takes a filename, not a client id, so there was
-   * nothing to scope against: a scoped administrator who held a filename from a
-   * screenshot, a stale tab or a shared ticket could fetch the passport of a
-   * client they are not allowed to see, and the read would even be audited as
-   * legitimate.
-   *
-   * Matched with a jsonb containment test rather than by loading submissions and
-   * comparing in JavaScript — the filename is caller-supplied and the answer
-   * decides whether PII is served, so the comparison belongs in the query where
-   * a later code path cannot skip it.
-   *
-   * Both tables are searched, and the second is not optional: an archived
-   * attempt keeps the documents it was decided on, so a rejected-and-replaced
-   * passport is still that client's. Checking only the live row would make an
-   * out-of-scope admin's read of a superseded document fall through to
-   * "unowned" and be allowed.
-   */
-  async ownerOfDocument(fileName: string): Promise<string | undefined> {
-    /*
-     * The registry first — an indexed lookup on `stored_objects.storage_key`.
-     *
-     * The scan below is what this replaces: three JSONB columns cast to text and
-     * matched with a leading-wildcard ILIKE, twice, on a route that serves identity
-     * documents. It is correct and it does not scale, and it was the only reverse
-     * lookup the system had.
-     *
-     * It is KEPT as the fallback rather than deleted, because there is no backfill
-     * migration: documents uploaded before `stored_objects` existed have no row, and
-     * the client-scope check that calls this must keep working for them. A miss here
-     * means "not in the registry", not "not ours".
-     */
-    const registered = await this.storedObjects.ownerOfFilename(fileName);
-    if (registered) return registered;
-
-    const needle = `%${fileName}%`;
-
-    const [live] = await this.db
-      .select({ userId: kycSubmissions.userId })
-      .from(kycSubmissions)
-      .where(
-        or(
-          sql`${kycSubmissions.document}::text ILIKE ${needle}`,
-          sql`${kycSubmissions.selfie}::text ILIKE ${needle}`,
-          sql`${kycSubmissions.addressProof}::text ILIKE ${needle}`,
-        ),
-      )
-      .limit(1);
-    if (live) return live.userId;
-
-    const [archived] = await this.db
-      .select({ userId: kycSubmissionAttempts.userId })
-      .from(kycSubmissionAttempts)
-      .where(
-        or(
-          sql`${kycSubmissionAttempts.document}::text ILIKE ${needle}`,
-          sql`${kycSubmissionAttempts.selfie}::text ILIKE ${needle}`,
-          sql`${kycSubmissionAttempts.addressProof}::text ILIKE ${needle}`,
-        ),
-      )
-      .limit(1);
-    return archived?.userId;
   }
 
   /**

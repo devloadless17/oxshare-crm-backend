@@ -50,6 +50,24 @@ export class ClientIdentityStore {
     await executor.execute(sql`SELECT identity_adopt(${userId}::uuid)`);
   }
 
+  /**
+   * The client whose record holds this stored file — the ONE place that says.
+   *
+   * By the page's exact key (0151 stores one spelling, and indexes it).
+   * Undefined when no client's record holds it — an orphan — and ALSO when two
+   * do: a file is never shared, so that is a data error, and guessing whose it
+   * is would be how one client's passport is served to another.
+   */
+  async ownerOfFile(storageKey: string): Promise<string | undefined> {
+    const result = await this.db.execute<{ user_id: string }>(sql`
+      SELECT DISTINCT d.user_id
+        FROM client_document_pages p
+        JOIN client_documents d ON d.id = p.document_id
+       WHERE p.storage_key = ${storageKey}
+       LIMIT 2`);
+    return result.rows.length === 1 ? result.rows[0].user_id : undefined;
+  }
+
   /** What is out of step — for one client, or everyone. Empty is healthy. */
   async drift(userId?: string, executor: Executor = this.db): Promise<IdentityDrift[]> {
     const result = await executor.execute<{

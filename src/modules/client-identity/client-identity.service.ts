@@ -1,5 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ALERT_KINDS, raiseAlert } from '../../common/logging/alerts';
+import { KYC_BUCKET } from '../../common/uploads/stored-files.service';
+import { filenameFromStored, storedPath } from '../../common/uploads/storage/storage-key';
 import type { Executor } from '../../database/db';
 import {
   ClientIdentityStore,
@@ -39,6 +41,18 @@ export class ClientIdentityService {
    */
   async recordFromKyc(userId: string, executor: Executor): Promise<void> {
     await this.store.adopt(userId, executor);
+  }
+
+  /**
+   * The client a KYC file (`GET /uploads/kyc/<name>`) belongs to: whoever's
+   * record holds it — live, returned, or kept as evidence after a reset.
+   * Undefined for a name no single client's record holds, or one that names no
+   * file at all.
+   */
+  async ownerOfKycFile(fileName: string): Promise<string | undefined> {
+    const name = filenameFromStored(fileName);
+    if (!name || name !== fileName) return undefined;
+    return this.store.ownerOfFile(storedPath(KYC_BUCKET.dir, name));
   }
 
   /** What is out of step between the KYC rows and the record. Empty is healthy. */

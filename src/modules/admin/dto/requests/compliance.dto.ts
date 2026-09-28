@@ -9,6 +9,7 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
+  IsUUID,
   MaxLength,
   ValidateNested,
 } from 'class-validator';
@@ -94,16 +95,20 @@ export class RejectDto {
   @IsOptional()
   reason?: string;
 
-  @ApiPropertyOptional({ description: 'Id of a configured rejection reason.' })
-  @IsString()
+  @ApiPropertyOptional({ description: 'Id of a configured KYC rejection reason.' })
+  @IsUUID()
   @IsOptional()
   reasonId?: string;
 
   @ApiPropertyOptional({
     type: [String],
-    description: 'Field names the client must re-submit, e.g. ["doc_front"].',
+    description:
+      'What the client must update: identity details by key, pages on file by slot ' +
+      '(e.g. "doc_front"), the selfie, or a question on their form. Anything else is refused.',
   })
   @IsArray()
+  @IsString({ each: true })
+  @MaxLength(100, { each: true })
   @IsOptional()
   rejectedFields?: string[];
 }
