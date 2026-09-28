@@ -157,7 +157,6 @@ const AUDITED_WITHOUT_A_SHAPE: readonly string[] = [
   'GET /admin/kyc-config',
   'GET /admin/mt5/groups',
   'GET /admin/trading-accounts/:id/live',
-  'PATCH /admin/clients/:id/status',
   'POST /admin/ib/accruals/:id/reverse',
   'POST /admin/kyc-config/reset',
   'POST /admin/kyc-config/steps',
@@ -229,9 +228,16 @@ describe('the response-shape census', () => {
      * exposures say hand-checking is what runs out — so the count is pinned, and
      * it may go DOWN as routes gain DTOs and never up.
      */
+    /*
+     * EXACTLY the list's length, not a ceiling above it. The cap stood at 13
+     * over a 12-entry list, so one route could join without anything turning
+     * red. `PATCH /admin/clients/:id/status` left on 28 Sep 2026 when it gained
+     * `ClientAccountDto` (it had answered masked fields in the clear). Lower
+     * this with every route that gains a shape; never raise it.
+     */
     expect(
       AUDITED_WITHOUT_A_SHAPE.length,
       'this list may only shrink — a new entry means a route was exempted rather than typed',
-    ).toBeLessThanOrEqual(13);
+    ).toBeLessThanOrEqual(11);
   });
 });
