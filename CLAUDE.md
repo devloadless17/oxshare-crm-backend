@@ -1105,11 +1105,16 @@ slices; this is the state after the dual write (slice 5).
 | `client_verifications` | every decision, append-only: `outcome`, `level_after`, `method`, who, why |
 | `client_verification_documents` | exactly which versions each decision covered |
 
-- **Today the KYC columns are still what gets READ.** Every KYC transaction that changes evidence or
-  decides also calls `ClientIdentityService.recordFromKyc` → `identity_adopt(user)` (0152), in the
-  same transaction. ONE routine derives the record from the KYC rows — for the backfill, the dual
-  write, the seed fixtures and the boot repair — so there is no second implementation to drift.
-  Reads move to the record in slice 6.
+- **Today the KYC columns are still what gets READ.** ONE routine, `identity_adopt(user)` (0152),
+  derives the record from the KYC rows — for the backfill, the dual write, fixtures and the boot
+  repair — so there is no second implementation to drift. Two things run it:
+  - **the KYC code**, inside each transaction that changes evidence or decides
+    (`ClientIdentityService.recordFromKyc`), so the record is current WITHIN that transaction;
+  - **deferred triggers (0153)** on `kyc_submissions` and `kyc_submission_attempts`, at COMMIT, for
+    EVERY writer — an older build during a rollback, raw SQL, a test fixture, a KYC path added
+    later. Deferred because a decision is several writes; adopted after the first, a half-made
+    decision would be "explained" with an invented legacy row. The same stance as the bell (0140):
+    a new path that moves the KYC rows needs no record code.
 - **History is protected by triggers, even from a superuser** (the ledger lesson, 0120): a frozen
   version, its pages and every decision refuse UPDATE and DELETE. The one escape is
   `SELECT set_config('oxshare.identity_maintenance', 'on', true)`, local to its transaction.
@@ -1121,10 +1126,12 @@ slices; this is the state after the dual write (slice 5).
   is healthy. `identity_adopt` must clear EVERY kind: `migration-0152-adopt-identity.spec.ts`
   creates each one and proves a single adoption clears it (mutation-checked).
 - **Every boot repairs drift, in every environment** (`main.ts` → `repairDrift`, outside the seed
-  guard like `reportPermissionDrift`): a rollback runs an older build that writes the KYC rows only.
-  One transaction per client, never blocks the boot, and any drift raises `identity.record_drift`
-  (`notify`). `identity_adopt` locks the client's KYC row first, so the repair waits for a KYC
-  change in flight instead of racing it.
+  guard like `reportPermissionDrift`) — the DETECTOR for what the triggers cannot see: rows written
+  with triggers off (a restore, replication), a verification level set directly, an edit through
+  the escape. One transaction per client, never blocks the boot, and any drift raises
+  `identity.record_drift` (`notify`). `identity_adopt` locks the client's KYC row first, so a
+  repair waits for a KYC change in flight instead of racing it. To simulate such a write in a test,
+  `SET LOCAL session_replication_role = replica` (`identity-drift-repair.spec.ts`).
 - **The core never imports the KYC layer** — lint bans `compliance/` and `store/kyc*` in
   `modules/profile/**`, `modules/client-identity/**`, `store/client-identity.store.ts` and
   `common/profile/**`. The profile writer reaches the KYC row through the `IDENTITY_REVIEW` port,

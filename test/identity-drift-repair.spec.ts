@@ -8,10 +8,11 @@ import { ClientIdentityStore } from '../src/store/client-identity.store';
  * THE BOOT REPAIR — what a rollback leaves behind is put right on the next
  * boot, and somebody is told (identity-core plan, slice 5).
  *
- * Everything current writes the KYC rows and the identity record in one
- * transaction. An older build — which a rollback runs on this schema — writes
- * the KYC rows only. `ClientIdentityService.repairDrift`, called by main.ts in
- * every environment, adopts each client `identity_drift` names:
+ * The record follows every write to the KYC rows at commit (0153's triggers),
+ * whoever makes it. What those cannot see is a row written with triggers OFF —
+ * a restore, replication — and a verification level written directly.
+ * `ClientIdentityService.repairDrift`, called by main.ts in every environment,
+ * adopts each client `identity_drift` names:
  *
  *  - each in its OWN transaction, so a client that cannot be repaired is left
  *    as it was and holds up neither the others nor the boot;
@@ -35,6 +36,19 @@ async function client(name: string): Promise<string> {
     [`repair-${name}@example.com`],
   );
   return row.id;
+}
+
+/** A write the record's triggers cannot see: triggers off, as a restore or replication runs. */
+async function withoutTriggers(text: string, values: unknown[]): Promise<void> {
+  const client = await ctx.pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(`SET LOCAL session_replication_role = replica`);
+    await client.query(text, values);
+    await client.query('COMMIT');
+  } finally {
+    client.release();
+  }
 }
 
 /** A client working on a passport, adopted — in step. */
@@ -92,14 +106,15 @@ afterEach(() => {
 });
 
 describe('the boot repair', () => {
-  it('repairs every client an older build left out of step, and raises ONE alert', async () => {
+  it('repairs every client left out of step, and raises ONE alert', async () => {
     const submitted = await working('submitted');
     const levelled = await client('levelled');
     await working('untouched');
 
-    // What an older build does: submit without freezing, and approve without
-    // recording the decision.
-    await q(`UPDATE kyc_submissions SET status = 'submitted' WHERE user_id = $1`, [submitted]);
+    // A submission restored with triggers off, and a level set by hand.
+    await withoutTriggers(`UPDATE kyc_submissions SET status = 'submitted' WHERE user_id = $1`, [
+      submitted,
+    ]);
     await q(`UPDATE users SET verification_level = 1 WHERE id = $1`, [levelled]);
 
     const result = await service.repairDrift();

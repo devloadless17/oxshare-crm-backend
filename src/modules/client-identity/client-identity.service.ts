@@ -50,16 +50,16 @@ export class ClientIdentityService {
    * Bring every client whose KYC rows and record disagree back in step — run on
    * EVERY boot, in every environment (main.ts).
    *
-   * Every KYC transaction here moves the record with it; code from before the
-   * record does not. A rollback runs that older build on this schema, and what
-   * it writes reaches the KYC rows only — so once rolled forward, those clients
-   * are out of step, and from the slice that reads the record, out of step is a
-   * screen showing their documents as they were before the rollback. So, like
-   * `reportPermissionDrift`, this sits outside main.ts's seed guard: production
-   * is where rollbacks happen.
+   * The record follows every write to the KYC rows at commit — 0153's triggers
+   * see current code, an older build during a rollback and raw SQL alike. What
+   * they cannot see is a row written with triggers OFF (a restore,
+   * replication), a verification level written directly, or an edit made
+   * through the record's own escape; and from the slice that reads the record,
+   * out of step is a screen showing documents that are not the client's latest.
+   * So this looks on every boot — like `reportPermissionDrift`, outside main.ts's
+   * seed guard, because production is where restores happen.
    *
-   * Any drift is an ALERT, not routine (`identity.record_drift`): something
-   * wrote the KYC rows without the record since the last boot. A client it
+   * Any drift is an ALERT, not routine (`identity.record_drift`). A client it
    * cannot repair is also an ERROR naming them, and is left exactly as it was.
    * It never throws — a repair must not be the reason the process does not
    * start.
@@ -85,8 +85,8 @@ export class ClientIdentityService {
             ? `${failed.length} client(s)' identity record is out of step with their KYC rows ` +
                 `and could not be repaired; ${repaired} other(s) were.`
             : `${repaired} client(s)' identity record was out of step with their KYC rows and ` +
-                'has been repaired. An older build (a rollback) or a direct database edit ' +
-                'wrote the KYC rows without it since the last boot.',
+                'has been repaired. Something wrote them where the record could not follow — ' +
+                'a verification level set directly, or rows restored with triggers off.',
           context,
         );
       }

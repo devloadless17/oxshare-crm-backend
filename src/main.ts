@@ -226,8 +226,8 @@ async function bootstrap() {
   await reportPermissionDrift();
 
   // The client identity record against the KYC rows — outside the guard too,
-  // for the same reason: an older build writes the KYC rows only, and a
-  // rollback runs one in production. Repairs, alerts, never stops the boot.
+  // for the same reason: what its triggers cannot see (a restore, a level set
+  // by hand) happens in production. Repairs, alerts, never stops the boot.
   await app.get(ClientIdentityService).repairDrift();
 
   /*

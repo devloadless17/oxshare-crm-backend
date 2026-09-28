@@ -124,13 +124,13 @@ export const ALERT_KINDS = {
    * Clients' identity records (documents, selfie, verification decisions) were
    * out of step with their KYC rows at boot.
    *
-   * Until the identity-core contract slice, everything current writes both in
-   * one transaction. Code from BEFORE the record writes the KYC rows only, so
-   * this means an older build ran on this database since the last boot — a
-   * rollback — or somebody edited it by hand. The boot repairs what it can;
-   * a client it could NOT repair is named in the log, and from the slice that
-   * reads the record their documents read as they were before. `notify`,
-   * because nothing is lost: the KYC rows still hold everything.
+   * Until the identity-core contract slice the record is derived from the KYC
+   * rows, and it follows every write to them at commit (0153's triggers) —
+   * whoever makes it. So this means a write those could not see: a
+   * verification level set directly, rows restored or replicated with triggers
+   * off, or an edit through the record's own escape. The boot repairs what it
+   * can; a client it could NOT repair is named in the log. `notify`, because
+   * nothing is lost: the KYC rows still hold everything.
    */
   IDENTITY_RECORD_DRIFT: 'identity.record_drift',
   /**
@@ -340,7 +340,7 @@ export const ALERT_THRESHOLDS: Record<AlertKind, { severity: AlertSeverity; rule
   },
   [ALERT_KINDS.IDENTITY_RECORD_DRIFT]: {
     severity: 'notify',
-    rule: 'Any occurrence at boot. After a deliberate rollback it is expected once — the context counts what was repaired, by kind — and needs only a note that the rollback happened. Without one, somebody wrote the KYC rows directly: find out who. `failed` above zero is the part to act on: those clients are named in the log, their KYC rows still hold everything, and each boot retries them; fix the cause the log gives and the next boot repairs them.',
+    rule: 'Any occurrence at boot. After a restore it is expected once — the context counts what was repaired, by kind — and needs only a note that the restore happened. A `level` count without one means somebody set a verification level by hand: find out who. `failed` above zero is the part to act on: those clients are named in the log, their KYC rows still hold everything, and each boot retries them; fix the cause the log gives and the next boot repairs them.',
   },
   [ALERT_KINDS.UNHANDLED_REJECTION]: {
     severity: 'page',
