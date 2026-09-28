@@ -168,7 +168,13 @@ describe('returning an APPROVED verification to the client', () => {
 
   it('refuses a return with no reason, or nothing to update', async () => {
     const admin = await actingAs(ctx, 'admin', ADMIN);
-    for (const body of [{ items: ['passport'] }, { reason: REASON, items: [] }]) {
+    for (const body of [
+      { items: ['passport'] },
+      { reason: '', items: ['passport'] },
+      // Trimmed first: a reason of spaces is still no reason.
+      { reason: '   ', items: ['passport'] },
+      { reason: REASON, items: [] },
+    ]) {
       const res = await admin.post(`/v1/admin/kyc/${clientId}/reverify`).send(body);
       expect(res.status, JSON.stringify(body)).toBe(400);
     }
@@ -268,5 +274,28 @@ describe('returning an APPROVED verification to the client', () => {
     expect(submission.reverificationRequestedAt).toBeNull();
     expect(user.verificationLevel).toBe(1);
     expect(user.address).toBe('Verdun Street 4');
+  });
+
+  /*
+   * Reported 28 Sep 2026: the reason had to be ten characters, so a reviewer
+   * padded a complete one ("Expired") before the button would work, with
+   * nothing on screen saying why. A reason must EXIST; its length is the
+   * reviewer's call. It reaches the client as written, trimmed.
+   */
+  it('takes a SHORT reason, trimmed — what matters is that there is one', async () => {
+    const email = ctx.app.get(EmailService);
+    const asked = vi.spyOn(email, 'sendKycReverificationEmail').mockResolvedValue(undefined);
+
+    const admin = await actingAs(ctx, 'admin', ADMIN);
+    const res = await admin
+      .post(`/v1/admin/kyc/${clientId}/reverify`)
+      .send({ reason: '  Expired ', items: ['passport'] });
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+
+    const { submission } = await row();
+    expect(submission.status).toBe('rejected');
+    expect(submission.rejectionReason).toBe('Expired');
+    expect(asked).toHaveBeenCalledWith(CLIENT.email, 'Layla', 'Expired', ['Passport']);
+    asked.mockRestore();
   });
 });

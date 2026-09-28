@@ -453,11 +453,28 @@ describe('what the route refuses', () => {
 
   it('refuses a correction with no reason — a verified record never changes silently', async () => {
     const session = await actingAs(ctx, 'admin', ADMIN);
-    for (const body of [{ lastName: 'Smith' }, { reason: 'typo', lastName: 'Smith' }]) {
+    for (const body of [
+      { lastName: 'Smith' },
+      { reason: '', lastName: 'Smith' },
+      // Trimmed first: a reason of spaces is still no reason.
+      { reason: '   ', lastName: 'Smith' },
+    ]) {
       const res = await session.patch(ROUTE(userId)).send(body);
       expect(res.status, `${JSON.stringify(body)} answered ${res.status}`).toBe(400);
     }
     expect(await profile()).toEqual(ORIGINAL);
+  });
+
+  /*
+   * Reported 28 Sep 2026: a ten-character floor made a reviewer pad a complete
+   * reason ("Typo") before Save would work. A reason must EXIST; how long it
+   * is, is the reviewer's call.
+   */
+  it('takes a SHORT reason — what matters is that there is one', async () => {
+    const session = await actingAs(ctx, 'admin', ADMIN);
+    const res = await session.patch(ROUTE(userId)).send({ reason: 'Typo', lastName: 'Smith' });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect((await profile())['lastName']).toBe('Smith');
   });
 
   it('refuses an empty body rather than logging a correction that changed nothing', async () => {

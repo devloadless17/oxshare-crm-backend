@@ -1,3 +1,4 @@
+import { applyDecorators } from '@nestjs/common';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   ArrayNotEmpty,
@@ -9,10 +10,9 @@ import {
   IsOptional,
   IsString,
   MaxLength,
-  MinLength,
   ValidateNested,
 } from 'class-validator';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import type { RejectionContext } from '../../../../store/rejection-reasons.store';
 import type { KycDocumentType } from '../../../../store/kyc-config.store';
 import { DOCUMENT_CATALOGUE, documentFieldType } from '../../../../common/kyc/document-catalogue';
@@ -61,6 +61,33 @@ const KYC_FIELD_TYPES = [
 // ends up with twelve spellings of "the image is unreadable".
 const REJECTION_CONTEXTS = ['kyc', 'withdrawal', 'deposit'] as const;
 
+/** The most a reviewer's reason may hold — it is emailed and shown as written. */
+const KYC_REASON_MAX = 500;
+
+/**
+ * A reviewer's REASON on an approved verification — the correction's audit
+ * note, the re-verification's message to the client. ONE rule for both: any
+ * text that is not blank, trimmed, up to {@link KYC_REASON_MAX} characters.
+ *
+ * It demanded ten characters until it was reported on 28 Sep 2026: a reviewer
+ * had to pad a complete reason ("Expired", "Wrong surname") before the button
+ * would work, with nothing on screen saying why. The rule that
+ * matters is that a reason EXISTS — a verified record never changes, and a
+ * client is never sent back, without one — not how long it is. Whitespace is
+ * trimmed first, so a reason of spaces is still no reason.
+ */
+function KycReason(example: string, description?: string) {
+  return applyDecorators(
+    ApiProperty({ example, minLength: 1, maxLength: KYC_REASON_MAX, description }),
+    Transform(({ value }: { value: unknown }) =>
+      typeof value === 'string' ? value.trim() : value,
+    ),
+    IsString(),
+    IsNotEmpty({ message: 'Give a reason.' }),
+    MaxLength(KYC_REASON_MAX),
+  );
+}
+
 export class RejectDto {
   @ApiPropertyOptional({ description: 'Free-text reason, when not using a configured reasonId.' })
   @IsString()
@@ -88,14 +115,7 @@ export class RejectDto {
  * document), shown on their form and the reviewer's.
  */
 export class ReverifyKycDto {
-  @ApiProperty({
-    example: 'Your passport on file has expired. Please upload your new one.',
-    minLength: 10,
-    maxLength: 500,
-  })
-  @IsString()
-  @MinLength(10)
-  @MaxLength(500)
+  @KycReason('Your passport on file has expired. Please upload your new one.')
   reason: string;
 
   @ApiProperty({ type: [String], example: ['doc_front', 'address'], minItems: 1 })
@@ -321,15 +341,10 @@ export class KycConfigDto {
  * would write an audit row that changed nothing.
  */
 export class CorrectKycIdentityDto {
-  @ApiProperty({
-    example: 'Surname misspelt at registration; passport reads "Haddad".',
-    minLength: 10,
-    maxLength: 500,
-    description: 'Why the verified record is being changed. Recorded on the audit row.',
-  })
-  @IsString()
-  @MinLength(10)
-  @MaxLength(500)
+  @KycReason(
+    'Surname misspelt at registration; passport reads "Haddad".',
+    'Why the verified record is being changed. Recorded on the audit row.',
+  )
   reason: string;
 
   @ApiPropertyOptional({ example: 'Layla', maxLength: 100 })

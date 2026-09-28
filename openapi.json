@@ -19214,7 +19214,7 @@
           "reason": {
             "type": "string",
             "example": "Surname misspelt at registration; passport reads \"Haddad\".",
-            "minLength": 10,
+            "minLength": 1,
             "maxLength": 500,
             "description": "Why the verified record is being changed. Recorded on the audit row."
           },
@@ -19290,7 +19290,7 @@
           "reason": {
             "type": "string",
             "example": "Your passport on file has expired. Please upload your new one.",
-            "minLength": 10,
+            "minLength": 1,
             "maxLength": 500
           },
           "items": {
