@@ -291,6 +291,20 @@ export class ConflictError extends DomainError {
 }
 
 /**
+ * A tag change that would take the client out of the ACTING administrator's
+ * own view, sent without the confirmation that says they meant it. → 409
+ *
+ * Its own code because the console answers it with a question, not an error:
+ * "after this you will no longer see this client — continue?", and the resend
+ * carries `confirmLeavesScope=true`. Handing a client to another desk is a
+ * legitimate act (owner, 28 Sep 2026); doing it by accident, with the client
+ * vanishing from the screen mid-task, is what the confirmation stops.
+ */
+export class TagChangeLeavesScopeError extends DomainError {
+  readonly code = 'TAG_CHANGE_LEAVES_SCOPE';
+}
+
+/**
  * A correction to an APPROVED KYC submission was refused by the same rules that
  * govern submission — the value is impossible, in the future, or under 18. → 409
  *

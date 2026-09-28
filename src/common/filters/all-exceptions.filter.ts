@@ -15,6 +15,7 @@ import {
   AccountNameTakenError,
   ConflictError,
   KycCorrectionRefusedError,
+  TagChangeLeavesScopeError,
   KycConfigStaleError,
   ReferralCodeUnknownError,
   ReferralPartnerInactiveError,
@@ -67,6 +68,9 @@ const DOMAIN_STATUS = new Map<new (...args: never[]) => DomainError, HttpStatus>
   [EmailNotVerifiedError, HttpStatus.FORBIDDEN],
   [KycNotVerifiedError, HttpStatus.FORBIDDEN],
   [ConflictError, HttpStatus.CONFLICT],
+  // A tag change that would hide the client from the admin making it: the
+  // console asks "hand them over?" and resends confirmed. See the class.
+  [TagChangeLeavesScopeError, HttpStatus.CONFLICT],
   // Its own code (KYC_CORRECTION_REFUSED) but the same status: the caller
   // branches on the code, and 409 is still what happened.
   [KycCorrectionRefusedError, HttpStatus.CONFLICT],

@@ -7848,6 +7848,18 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "confirmLeavesScope",
+            "required": false,
+            "in": "query",
+            "description": "Required when the change takes the client out of your own territory — without it that answers 409 TAG_CHANGE_LEAVES_SCOPE.",
+            "schema": {
+              "enum": [
+                "true"
+              ],
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -7856,10 +7868,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/ClientTagAssignmentDto"
-                  }
+                  "$ref": "#/components/schemas/ClientTagChangeResultDto"
                 }
               }
             }
@@ -7870,7 +7879,7 @@
             "cookie": []
           }
         ],
-        "summary": "Attach a tag to a client",
+        "summary": "Attach a tag to a client (any tag, on a client you can see)",
         "tags": [
           "admin"
         ]
@@ -7893,6 +7902,18 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "confirmLeavesScope",
+            "required": false,
+            "in": "query",
+            "description": "Required when the change takes the client out of your own territory — without it that answers 409 TAG_CHANGE_LEAVES_SCOPE.",
+            "schema": {
+              "enum": [
+                "true"
+              ],
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -7901,10 +7922,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/ClientTagAssignmentDto"
-                  }
+                  "$ref": "#/components/schemas/ClientTagChangeResultDto"
                 }
               }
             }
@@ -7915,7 +7933,7 @@
             "cookie": []
           }
         ],
-        "summary": "Detach a tag from a client",
+        "summary": "Detach a tag from a client (any tag, on a client you can see)",
         "tags": [
           "admin"
         ]
@@ -18734,6 +18752,26 @@
           "label",
           "createdAt",
           "assignedAt"
+        ]
+      },
+      "ClientTagChangeResultDto": {
+        "type": "object",
+        "properties": {
+          "assignments": {
+            "description": "The client’s tags after the change. Empty when `stillVisible` is false.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ClientTagAssignmentDto"
+            }
+          },
+          "stillVisible": {
+            "type": "boolean",
+            "description": "False when the change took the client out of the acting admin’s territory — sent only with confirmLeavesScope=true."
+          }
+        },
+        "required": [
+          "assignments",
+          "stillVisible"
         ]
       },
       "KycDocumentDto": {

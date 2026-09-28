@@ -25,13 +25,18 @@ import {
 import { NotAudited } from './guards/audited.decorator';
 import { AdminTagsService } from './admin-tags.service';
 import { CreateClientTagDto, UpdateClientTagDto } from './dto/requests/tags.dto';
-import { ClientTagAssignmentDto, ClientTagDto, ClientTagWithCountDto } from './dto/responses.dto';
+import {
+  ClientTagAssignmentDto,
+  ClientTagChangeResultDto,
+  ClientTagDto,
+  ClientTagWithCountDto,
+} from './dto/responses.dto';
 import {
   PermissionsGuard,
   RequirePermissions,
   type AuthenticatedAdmin,
 } from './guards/admin.guard';
-import { UuidParam } from '../../common/query-params';
+import { enumQuery, UuidParam } from '../../common/query-params';
 import { ClientRefPipe } from '../../common/client-ref.pipe';
 import { NotClientScoped, ScopedToClients } from './guards/client-scope.decorator';
 import { Audited } from './guards/audited.decorator';
@@ -189,40 +194,67 @@ export class AdminTagsController {
     return this.tags.tagsForClient(id, req.admin);
   }
 
+  // Any tag, on any client the actor can see — including a tag outside their
+  // own territory, which is how a client is handed to another desk. A change
+  // that takes the client out of the actor's own view answers 409
+  // TAG_CHANGE_LEAVES_SCOPE until it is resent with confirmLeavesScope=true.
+
   @Post('clients/:id/tags/:tagId')
   @UseGuards(PermissionsGuard)
   @RequirePermissions('clients.tag')
   @ApiCookieAuth()
-  @ApiOperation({ summary: 'Attach a tag to a client' })
-  @ApiOkResponse({ type: [ClientTagAssignmentDto] })
+  @ApiOperation({ summary: 'Attach a tag to a client (any tag, on a client you can see)' })
+  @ApiQuery({
+    name: 'confirmLeavesScope',
+    required: false,
+    enum: ['true'],
+    description:
+      'Required when the change takes the client out of your own territory — without it that answers 409 TAG_CHANGE_LEAVES_SCOPE.',
+  })
+  @ApiOkResponse({ type: ClientTagChangeResultDto })
   @ScopedToClients(
-    "AdminTagsService.assertClientVisible, plus the tag must be inside the acting admin's own scope.",
+    'AdminTagsService.assertClientVisible, re-asked under the client tag lock; an out-of-scope client 404s.',
   )
   @Audited('client_tag.assign')
   assign(
     @Param('id', ClientRefPipe) id: string,
     @Param('tagId', UuidParam) tagId: string,
+    @Query('confirmLeavesScope') confirmLeavesScope: string | undefined,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
-    return this.tags.assign(id, tagId, req.admin);
+    return this.tags.assign(id, tagId, req.admin, {
+      confirmLeavesScope:
+        enumQuery(confirmLeavesScope, ['true'] as const, 'confirmLeavesScope') === 'true',
+    });
   }
 
   @Delete('clients/:id/tags/:tagId')
   @UseGuards(PermissionsGuard)
   @RequirePermissions('clients.tag')
   @ApiCookieAuth()
-  @ApiOperation({ summary: 'Detach a tag from a client' })
-  @ApiOkResponse({ type: [ClientTagAssignmentDto] })
+  @ApiOperation({ summary: 'Detach a tag from a client (any tag, on a client you can see)' })
+  @ApiQuery({
+    name: 'confirmLeavesScope',
+    required: false,
+    enum: ['true'],
+    description:
+      'Required when the change takes the client out of your own territory — without it that answers 409 TAG_CHANGE_LEAVES_SCOPE.',
+  })
+  @ApiOkResponse({ type: ClientTagChangeResultDto })
   @ScopedToClients(
-    'assertClientVisible, plus a scoped admin may not remove the last tag keeping the client visible to them.',
+    'AdminTagsService.assertClientVisible, re-asked under the client tag lock; an out-of-scope client 404s.',
   )
   @Audited('client_tag.unassign')
   unassign(
     @Param('id', ClientRefPipe) id: string,
     @Param('tagId', UuidParam) tagId: string,
+    @Query('confirmLeavesScope') confirmLeavesScope: string | undefined,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
-    return this.tags.unassign(id, tagId, req.admin);
+    return this.tags.unassign(id, tagId, req.admin, {
+      confirmLeavesScope:
+        enumQuery(confirmLeavesScope, ['true'] as const, 'confirmLeavesScope') === 'true',
+    });
   }
 }
 

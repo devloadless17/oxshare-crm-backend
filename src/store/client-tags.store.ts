@@ -1,7 +1,7 @@
 import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
-import type { Db } from '../database/db';
+import type { Db, Executor } from '../database/db';
 import { clientTagAssignments, clientTags } from '../database/schema';
 import { clientScopePredicate, type ClientScope } from '../common/security/client-scope';
 
@@ -13,6 +13,13 @@ export interface ClientTag {
   description?: string;
   createdAt: Date;
 }
+
+/**
+ * The advisory-lock namespace for per-client tag changes (`lockAssignments`).
+ * An arbitrary constant, distinct from `MANAGER_INVARIANT_LOCK` (715_001); the
+ * two-key form it is used in cannot collide with a one-key lock anyway.
+ */
+const CLIENT_TAGS_LOCK_NAMESPACE = 715_002;
 
 /** A tag ON a client, plus the provenance of that assignment. */
 export interface ClientTagAssignment extends ClientTag {
@@ -260,8 +267,13 @@ export class ClientTagsStore {
    * intake tag (D-60). The column was nullable from day one; the signature
    * just never admitted it.
    */
-  async assign(userId: string, tagId: string, assignedBy: string | null): Promise<boolean> {
-    const inserted = await this.db
+  async assign(
+    userId: string,
+    tagId: string,
+    assignedBy: string | null,
+    executor?: Executor,
+  ): Promise<boolean> {
+    const inserted = await (executor ?? this.db)
       .insert(clientTagAssignments)
       .values({ userId, tagId, assignedBy })
       .onConflictDoNothing()
@@ -270,12 +282,44 @@ export class ClientTagsStore {
   }
 
   /** Detach a tag. Returns whether anything was removed — same reasoning. */
-  async unassign(userId: string, tagId: string): Promise<boolean> {
-    const removed = await this.db
+  async unassign(userId: string, tagId: string, executor?: Executor): Promise<boolean> {
+    const removed = await (executor ?? this.db)
       .delete(clientTagAssignments)
       .where(and(eq(clientTagAssignments.userId, userId), eq(clientTagAssignments.tagId, tagId)))
       .returning();
     return removed.length > 0;
+  }
+
+  /**
+   * Make one client's tag changes take turns, for the rest of `executor`'s
+   * transaction.
+   *
+   * A tag change is judged against the client's CURRENT tags ("does the client
+   * stay in the actor's view afterwards?"), and that judgement is a read. Two
+   * concurrent removals each saw the other tag still in place, both passed, and
+   * together they hid the client from the actor with no confirmation. Holding
+   * this lock across read-judge-write makes the second change see the first.
+   *
+   * An ADVISORY lock rather than `FOR UPDATE` on the `users` row: every money
+   * path inserts rows referencing `users`, and a foreign-key check takes KEY
+   * SHARE on the row it references — the conflict that deadlocked concurrent
+   * withdrawals before `lockWallet` moved to NO KEY UPDATE. This lock touches no
+   * row, so it can conflict with nothing but another tag change on this client.
+   * Two keys (namespace, client), released at commit or rollback.
+   */
+  async lockAssignments(userId: string, executor: Executor): Promise<void> {
+    await executor.execute(
+      sql`SELECT pg_advisory_xact_lock(${CLIENT_TAGS_LOCK_NAMESPACE}, hashtext(${userId}))`,
+    );
+  }
+
+  /** The ids of the tags a client carries — what a tag change is judged on. */
+  async tagIdsForClient(userId: string, executor?: Executor): Promise<string[]> {
+    const rows = await (executor ?? this.db)
+      .select({ tagId: clientTagAssignments.tagId })
+      .from(clientTagAssignments)
+      .where(eq(clientTagAssignments.userId, userId));
+    return rows.map((row) => row.tagId);
   }
 
   /** How many clients carry a tag — what the delete confirmation quotes. */

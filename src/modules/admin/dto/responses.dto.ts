@@ -687,6 +687,33 @@ export class ClientTagAssignmentDto extends ClientTagDto {
   @ApiProperty() assignedAt: Date;
 }
 
+/**
+ * What adding or removing a tag answers: the client's tags afterwards, and
+ * whether the acting admin can still see the client at all.
+ *
+ * A scoped admin may hand a client to another desk by tag (owner, 28 Sep 2026).
+ * After that the client is outside their territory, so `assignments` comes back
+ * EMPTY rather than describing somebody they may no longer see, and
+ * `stillVisible: false` tells the console to leave the page instead of
+ * refetching into a 404.
+ */
+@NoClientFields(
+  'the outcome of a tag change: tag labels (configuration) and a visibility flag about the reader - no client-owned field on it',
+)
+export class ClientTagChangeResultDto {
+  @ApiProperty({
+    type: [ClientTagAssignmentDto],
+    description: 'The client’s tags after the change. Empty when `stillVisible` is false.',
+  })
+  assignments: ClientTagAssignmentDto[];
+
+  @ApiProperty({
+    description:
+      'False when the change took the client out of the acting admin’s territory — sent only with confirmLeavesScope=true.',
+  })
+  stillVisible: boolean;
+}
+
 @NoClientFields(
   'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
 )

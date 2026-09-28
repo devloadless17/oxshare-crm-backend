@@ -140,3 +140,24 @@ export function clientScopePredicate(
 
   return untriaged ? sql`(${territory} OR ${untriaged})` : territory;
 }
+
+/**
+ * Would this actor see a client carrying exactly `tagIds`? The in-memory twin
+ * of `clientScopePredicate`.
+ *
+ * It exists for the one question the SQL predicate cannot answer: a tag set
+ * that is not stored yet. "If this tag is added or removed, does the client
+ * stay in the actor's view?" has to be decided BEFORE the write, which is why
+ * `AdminTagsService` asks it here rather than re-reading afterwards.
+ *
+ * Two definitions of visibility are a drift waiting to happen, so this one is
+ * pinned to the other: `test/client-scope-twin.spec.ts` evaluates both over a
+ * matrix of scopes and tag sets against real Postgres and fails on any
+ * disagreement. Change one and that spec makes you change the other.
+ */
+export function seesClientWithTags(scope: ClientScope, tagIds: readonly string[]): boolean {
+  if (scope.unrestricted) return true;
+  // The intake branch: no assignments at all, and the grant to see them.
+  if (tagIds.length === 0) return scope.includesUntriaged === true;
+  return tagIds.some((tagId) => scope.tagIds.includes(tagId));
+}
