@@ -322,6 +322,24 @@ export class ClientTagsStore {
     return rows.map((row) => row.tagId);
   }
 
+  /**
+   * How many clients carrying this tag the reader may NOT see — what refuses a
+   * scoped admin's delete (a delete strips the tag from every client, and a
+   * change to a client outside your territory is not yours to make).
+   *
+   * Zero for an unrestricted reader by construction: the predicate is absent.
+   * The SAME predicate the lists use, negated in the WHERE clause.
+   */
+  async countClientsForTagOutside(tagId: string, scope: ClientScope): Promise<number> {
+    const visible = clientScopePredicate(scope, clientTagAssignments.userId);
+    if (visible === undefined) return 0;
+    const [row] = await this.db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(clientTagAssignments)
+      .where(and(eq(clientTagAssignments.tagId, tagId), sql`NOT (${visible})`));
+    return row?.n ?? 0;
+  }
+
   /** How many clients carry a tag — what the delete confirmation quotes. */
   async countClientsForTag(tagId: string): Promise<number> {
     const [row] = await this.db

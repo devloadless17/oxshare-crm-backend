@@ -168,6 +168,32 @@ export class AdminTagsService {
       );
     }
 
+    /*
+     * A scoped admin deletes a tag only if every client carrying it is one they
+     * can see.
+     *
+     * Deleting a tag removes it from EVERY client that carries it. For a client
+     * outside the actor's territory that is a change to a record they may not
+     * even look at — and it could move another desk's clients into the "new
+     * clients" pool, which the actor may see: a way to widen their own view by
+     * deleting a label. The refusal gives the COUNT, never who (owner, 28 Sep
+     * 2026: a count, no identity). Rename stays open: it changes a label, not
+     * which clients carry it, and the slug a URL filters on never changes.
+     *
+     * The race is stated rather than hidden: a tag assigned to an out-of-scope
+     * client in the instant between this count and the delete is removed with
+     * the rest. It needs two admins on one tag in the same moment, and every
+     * part of it is audited.
+     */
+    const outside = await this.tags.countClientsForTagOutside(id, actor.clientScope);
+    if (outside > 0) {
+      throw new ConflictError(
+        `"${tag.label}" is also on ${outside} client${outside === 1 ? '' : 's'} outside your ` +
+          'territory. Deleting it would change their records too, which only an administrator ' +
+          'who can see them may do.',
+      );
+    }
+
     const assigned = await this.tags.countClientsForTag(id);
     await this.tags.delete(id);
     this.audit.record(actor.id, 'client_tag.delete', 'client_tag', id, {
