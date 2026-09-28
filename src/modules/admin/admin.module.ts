@@ -4,6 +4,8 @@ import { AdminApiKeysController } from './admin-api-keys.controller';
 import { AdminAuthController } from './admin-auth.controller';
 import { AdminTagsController } from './admin-tags.controller';
 import { AdminClientsController } from './admin-clients.controller';
+import { AdminClientIdentityController } from './admin-client-identity.controller';
+import { AdminClientIdentityService } from './admin-client-identity.service';
 import { AdminComplianceController } from './admin-compliance.controller';
 import { AdminRbacController } from './admin-rbac.controller';
 import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
@@ -46,6 +48,7 @@ import { AdminExportModule } from './admin-export.module';
 
 const ADMIN_SERVICES = [
   AdminIpAllowlistService,
+  AdminClientIdentityService,
   AdminAuthService,
   /*
    * What an administrator may do to their OWN account, kept apart from
@@ -99,6 +102,7 @@ const ADMIN_SERVICES = [
   controllers: [
     AdminAuthController,
     AdminClientsController,
+    AdminClientIdentityController,
     AdminTagsController,
     AdminComplianceController,
     AdminRbacController,

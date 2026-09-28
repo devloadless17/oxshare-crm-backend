@@ -5,6 +5,7 @@ import { filenameFromStored, storedPath } from '../../common/uploads/storage/sto
 import type { Executor } from '../../database/db';
 import {
   ClientIdentityStore,
+  type IdentityDecisionRow,
   type IdentityDrift,
   type IdentityRepair,
 } from '../../store/client-identity.store';
@@ -53,6 +54,39 @@ export class ClientIdentityService {
     const name = filenameFromStored(fileName);
     if (!name || name !== fileName) return undefined;
     return this.store.ownerOfFile(storedPath(KYC_BUCKET.dir, name));
+  }
+
+  /**
+   * The client's identity record as a reader sees it: each document slot with
+   * its versions, newest first, and every verification decision, newest first.
+   * A version's status is READ FROM THE LOG, never stored: a draft; presented
+   * and awaiting review; or the outcome of the latest decision that covered it,
+   * with the pages that decision returned.
+   */
+  async recordOf(userId: string): Promise<IdentityRecord> {
+    const { versions, decisions } = await this.store.recordOf(userId);
+    const slots = new Map<string, IdentityVersion[]>();
+    for (const row of versions) {
+      const version: IdentityVersion = {
+        id: row.id,
+        docType: row.docType,
+        status: !row.frozenAt ? 'draft' : (row.decision?.outcome ?? 'awaiting_review'),
+        returnedPages:
+          row.decision && row.decision.outcome !== 'verified'
+            ? returnedPagesOf(row.slot, row.decision.returnedItems ?? [])
+            : [],
+        createdAt: row.createdAt,
+        presentedAt: row.frozenAt,
+        pages: row.pages,
+      };
+      slots.set(row.slot, [...(slots.get(row.slot) ?? []), version]);
+    }
+    return {
+      documents: [...slots.entries()]
+        .sort(([a], [b]) => slotOrder(a) - slotOrder(b) || a.localeCompare(b))
+        .map(([slot, list]) => ({ slot, versions: list })),
+      verifications: decisions,
+    };
   }
 
   /** What is out of step between the KYC rows and the record. Empty is healthy. */
@@ -114,4 +148,44 @@ export class ClientIdentityService {
       return undefined;
     }
   }
+}
+
+export type IdentityVersionStatus =
+  'draft' | 'awaiting_review' | 'verified' | 'returned' | 'reverification_requested';
+
+export interface IdentityVersion {
+  id: string;
+  docType: string | null;
+  status: IdentityVersionStatus;
+  /** The item ids of this version's pages the covering decision returned (`doc_back`). */
+  returnedPages: string[];
+  createdAt: Date;
+  /** When it was presented for review — null for a draft. */
+  presentedAt: Date | null;
+  pages: { part: number; path: string; fileName: string | null }[];
+}
+
+export interface IdentityRecord {
+  documents: { slot: string; versions: IdentityVersion[] }[];
+  verifications: IdentityDecisionRow[];
+}
+
+/** The returned-item ids a slot's pages answer to, by part. */
+const PAGE_ITEMS: Readonly<Record<string, readonly string[]>> = {
+  identity: ['doc_front', 'doc_back'],
+  address: ['address_proof', 'address_proof_2'],
+  selfie: ['selfie'],
+};
+
+/** Which returned items name a page of this slot — a broker's upload answers to its field key. */
+function returnedPagesOf(slot: string, items: readonly string[]): string[] {
+  const own = PAGE_ITEMS[slot];
+  if (own) return items.filter((item) => own.includes(item));
+  return items.filter((item) => `other:${item}` === slot);
+}
+
+/** The platform's three first, in the order the review shows them; a broker's after. */
+function slotOrder(slot: string): number {
+  const at = ['identity', 'address', 'selfie'].indexOf(slot);
+  return at === -1 ? 3 : at;
 }

@@ -7619,6 +7619,43 @@
         ]
       }
     },
+    "/v1/admin/clients/{id}/identity": {
+      "get": {
+        "description": "Documents need kyc.documents.view (or kyc.review) and decisions need kyc.view; a half the reader may not see is ABSENT, not empty.",
+        "operationId": "AdminClientIdentityController_recordFor",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientIdentityRecordDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "A client's identity record: every document version, and every verification decision",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/tags": {
       "get": {
         "operationId": "AdminTagsController_list",
@@ -18642,6 +18679,207 @@
         "required": [
           "status"
         ]
+      },
+      "ClientIdentityPageDto": {
+        "type": "object",
+        "properties": {
+          "part": {
+            "type": "number",
+            "example": 0
+          },
+          "label": {
+            "type": "string",
+            "example": "Photo Page"
+          },
+          "path": {
+            "type": "string",
+            "example": "uploads/kyc/2f0c….jpg",
+            "description": "Opened through GET /uploads/kyc/:file, which checks the reader and audits it."
+          },
+          "fileName": {
+            "type": "string",
+            "nullable": true,
+            "description": "The name it was uploaded as."
+          }
+        },
+        "required": [
+          "part",
+          "label",
+          "path"
+        ]
+      },
+      "ClientIdentityVersionDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "docType": {
+            "type": "string",
+            "nullable": true,
+            "example": "passport"
+          },
+          "docLabel": {
+            "type": "string",
+            "nullable": true,
+            "example": "Passport"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "draft",
+              "awaiting_review",
+              "verified",
+              "returned",
+              "reverification_requested"
+            ],
+            "description": "Read from the verification log: a draft; presented and awaiting review; or the outcome of the latest decision that covered it."
+          },
+          "returnedPages": {
+            "example": [
+              "doc_back"
+            ],
+            "description": "Which of its pages that decision returned.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "presentedAt": {
+            "type": "string",
+            "nullable": true,
+            "format": "date-time",
+            "description": "When it was presented for review; null for a draft."
+          },
+          "pages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ClientIdentityPageDto"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "returnedPages",
+          "createdAt",
+          "pages"
+        ]
+      },
+      "ClientIdentityDocumentDto": {
+        "type": "object",
+        "properties": {
+          "slot": {
+            "type": "string",
+            "example": "identity",
+            "description": "identity | address | selfie | other:<field>"
+          },
+          "label": {
+            "type": "string",
+            "example": "Identity document"
+          },
+          "versions": {
+            "description": "Newest first.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ClientIdentityVersionDto"
+            }
+          }
+        },
+        "required": [
+          "slot",
+          "label",
+          "versions"
+        ]
+      },
+      "ClientVerificationDto": {
+        "type": "object",
+        "properties": {
+          "seq": {
+            "type": "number"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "verified",
+              "returned",
+              "reverification_requested"
+            ]
+          },
+          "levelAfter": {
+            "type": "number",
+            "example": 1
+          },
+          "method": {
+            "type": "string",
+            "example": "manual_review",
+            "description": "manual_review | legacy | fixture | import | provider"
+          },
+          "decidedBy": {
+            "type": "string",
+            "nullable": true,
+            "description": "The reviewer's email as it was when they decided."
+          },
+          "reason": {
+            "type": "string",
+            "nullable": true
+          },
+          "returnedItems": {
+            "example": [
+              "doc_front"
+            ],
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "returnedLabels": {
+            "example": [
+              "Identity document — first page"
+            ],
+            "description": "returnedItems as a person reads them, in the same order.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "decidedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "seq",
+          "outcome",
+          "levelAfter",
+          "method",
+          "returnedItems",
+          "returnedLabels",
+          "decidedAt"
+        ]
+      },
+      "ClientIdentityRecordDto": {
+        "type": "object",
+        "properties": {
+          "documents": {
+            "description": "Absent without kyc.documents.view (or kyc.review).",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ClientIdentityDocumentDto"
+            }
+          },
+          "verifications": {
+            "description": "Newest first. Absent without kyc.view.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ClientVerificationDto"
+            }
+          }
+        }
       },
       "ClientTagWithCountDto": {
         "type": "object",

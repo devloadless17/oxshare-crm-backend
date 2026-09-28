@@ -22,6 +22,34 @@ export interface IdentityDrift {
   problem: IdentityDriftProblem;
 }
 
+/** One version of one of the client's documents, as stored. */
+export type IdentityVersionRow = {
+  id: string;
+  slot: string;
+  docType: string | null;
+  createdAt: Date;
+  frozenAt: Date | null;
+  pages: { part: number; path: string; fileName: string | null }[];
+  /** The latest decision that covered this version, if any has. */
+  decision: {
+    seq: number;
+    outcome: IdentityDecisionRow['outcome'];
+    returnedItems: string[];
+  } | null;
+};
+
+/** One verification decision, as the log keeps it. */
+export type IdentityDecisionRow = {
+  seq: number;
+  outcome: 'verified' | 'returned' | 'reverification_requested';
+  levelAfter: number;
+  method: string;
+  decidedBy: string | null;
+  reason: string | null;
+  returnedItems: string[];
+  decidedAt: Date;
+};
+
 /** What one repair pass found and did. */
 export interface IdentityRepair {
   /** Clients brought back in step. */
@@ -66,6 +94,41 @@ export class ClientIdentityStore {
        WHERE p.storage_key = ${storageKey}
        LIMIT 2`);
     return result.rows.length === 1 ? result.rows[0].user_id : undefined;
+  }
+
+  /**
+   * The client's whole record: every version of every document, newest first
+   * within its slot, each with its pages and the LATEST decision that covered
+   * it; and every decision, newest first.
+   */
+  async recordOf(userId: string): Promise<{
+    versions: IdentityVersionRow[];
+    decisions: IdentityDecisionRow[];
+  }> {
+    const versions = await this.db.execute<IdentityVersionRow>(sql`
+      SELECT d.id, d.slot, d.doc_type AS "docType", d.created_at AS "createdAt",
+             d.frozen_at AS "frozenAt",
+             coalesce(json_agg(json_build_object('part', p.part, 'path', p.storage_key,
+                                                 'fileName', p.file_name) ORDER BY p.part)
+                        FILTER (WHERE p.document_id IS NOT NULL), '[]') AS pages,
+             (SELECT json_build_object('seq', v.seq, 'outcome', v.outcome,
+                                       'returnedItems', v.returned_items)
+                FROM client_verification_documents c
+                JOIN client_verifications v ON v.id = c.verification_id
+               WHERE c.document_id = d.id
+               ORDER BY v.seq DESC LIMIT 1) AS decision
+        FROM client_documents d
+        LEFT JOIN client_document_pages p ON p.document_id = d.id
+       WHERE d.user_id = ${userId}::uuid
+       GROUP BY d.id
+       ORDER BY d.slot, d.frozen_at DESC NULLS FIRST, d.created_at DESC`);
+    const decisions = await this.db.execute<IdentityDecisionRow>(sql`
+      SELECT seq, outcome, level_after AS "levelAfter", method, admin_email AS "decidedBy",
+             reason, returned_items AS "returnedItems", decided_at AS "decidedAt"
+        FROM client_verifications
+       WHERE user_id = ${userId}::uuid
+       ORDER BY seq DESC`);
+    return { versions: versions.rows, decisions: decisions.rows };
   }
 
   /** What is out of step — for one client, or everyone. Empty is healthy. */
