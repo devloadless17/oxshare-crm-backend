@@ -1384,6 +1384,44 @@ describe('managing a live partner', () => {
     expect(moved.parentIbUserId).toBe(outsider);
   });
 
+  it('approves their OWN client under an introducer outside the territory — and hides who (R1)', async () => {
+    /*
+     * The introducer is INHERITED, not chosen: the reviewer holds the applicant
+     * and the platform places a partner under whoever recruited them. Scoping
+     * the inherited parent made a desk unable to approve its own client
+     * whenever the recruiter sat in another territory. A CHOSEN outside parent
+     * is still refused (#5, above).
+     */
+    const introducer = await makeClient('inherit-outside-top@test.local');
+    const middle = (
+      await service.approve(
+        (await service.apply(introducer, { agencyId: AGENCY.id })).id,
+        REVIEWER,
+        UNRESTRICTED,
+      )
+    ).userId;
+    const client = await makeClient('inherit-outside-client@test.local');
+    await ctx.db.execute(
+      sql`UPDATE users SET referred_by_ib_user_id = ${middle} WHERE id = ${client}`,
+    );
+    const { rows: tagRows } = await ctx.db.execute<{ id: string }>(sql`
+      INSERT INTO client_tags (slug, label) VALUES ('ib-inherit-mine', 'Mine') RETURNING id`);
+    await ctx.db.execute(sql`
+      INSERT INTO client_tag_assignments (user_id, tag_id) VALUES (${client}, ${tagRows[0].id})`);
+    const scope = scopeOf([tagRows[0].id], false, false);
+
+    const application = await service.apply(client, {});
+    const account = await service.approve(application.id, REVIEWER, scope);
+    expect(account.parentIbUserId).toBe(middle); // placed under the recruiter
+
+    const view = await service.accountViewFor(account, scope);
+    expect(view.parentIbUserId).toBeNull();
+    expect(view.parentOutsideTerritory).toBe(true);
+    expect(JSON.stringify(view)).not.toContain(middle);
+    // The same account, seen by an unrestricted reader, names the parent.
+    expect((await service.accountViewFor(account, UNRESTRICTED)).parentIbUserId).toBe(middle);
+  });
+
   /*
    * The reassignment half of the `maxDirectPartners` pair, gone with 0055 for
    * the same reason. The check it exercised — that a reassignment goes through

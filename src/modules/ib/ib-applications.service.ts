@@ -1,3 +1,4 @@
+import { ibAccountView } from './ib-views';
 import { Inject, Injectable } from '@nestjs/common';
 import { randomBytes } from 'node:crypto';
 import { DRIZZLE_DB } from '../../database/database.module';
@@ -680,12 +681,30 @@ export class IbApplicationsService {
         : await this.inheritedParentIbUserIdFor(application.userId);
 
     if (parentIbUserId) {
-      // The chosen parent is scoped too (#5): a scoped admin approving an
-      // application may only place the new partner under a parent inside their
-      // own territory — an out-of-scope parent is a 404 before
-      // `assertParentHasRoom` can leak its exists/suspended/full state.
-      await this.visibility.assertVisible(parentIbUserId, scope);
-      await this.assertParentHasRoom(parentIbUserId);
+      const parentVisible = await this.canSee(parentIbUserId, scope);
+      if (options.parentIbUserId !== undefined && !parentVisible) {
+        // A CHOSEN parent is scoped (#5): a scoped reviewer places the new
+        // partner only under a parent in their own territory — out of it is a
+        // 404, before `assertParentHasRoom` can describe it.
+        await this.visibility.assertVisible(parentIbUserId, scope);
+      }
+      /*
+       * An INHERITED parent is not the reviewer's choice: it is the platform's
+       * rule that a partner starts under whoever recruited them, and the
+       * reviewer holds the applicant. Refusing it made a reviewer unable to
+       * approve their own client whenever the introducer sat in another
+       * territory. If that hidden introducer cannot take them, say so without
+       * describing a partner the reviewer may not see.
+       */
+      try {
+        await this.assertParentHasRoom(parentIbUserId);
+      } catch (error) {
+        if (parentVisible || !(error instanceof ValidationError)) throw error;
+        throw new ValidationError(
+          'This applicant’s introducer, a partner outside your territory, cannot take a new ' +
+            'sub-partner. Choose a parent in your territory, or place them at the top.',
+        );
+      }
     }
 
     /*
@@ -1139,6 +1158,29 @@ export class IbApplicationsService {
    *   controller so it sits with the other applyMask calls, where the census
    *   can see it.
    */
+  /** Whether this reader may see this client — for a fact, never an error. */
+  private canSee(clientId: string, scope: ClientScope): Promise<boolean> {
+    if (scope.unrestricted) return Promise.resolve(true);
+    return this.visibility.assertVisible(clientId, scope).then(
+      () => true,
+      () => false,
+    );
+  }
+
+  /**
+   * A partner account as THIS reader may see it (`IbAccountDto`): a parent
+   * outside their territory is the fact, never the uuid (R1). Every admin route
+   * answering an account goes through here — approval can place a partner
+   * under an introducer the reviewer may not see.
+   */
+  async accountViewFor(account: Parameters<typeof ibAccountView>[0], scope: ClientScope) {
+    const view = ibAccountView(account);
+    if (view.parentIbUserId && !(await this.canSee(view.parentIbUserId, scope))) {
+      return { ...view, parentIbUserId: null, parentOutsideTerritory: true };
+    }
+    return { ...view, parentOutsideTerritory: false };
+  }
+
   async partnerDetailFor(userId: string, scope: ClientScope, fieldMask: FieldMask) {
     await this.visibility.assertVisible(userId, scope);
 

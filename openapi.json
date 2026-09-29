@@ -13227,7 +13227,12 @@
           },
           "parentIbUserId": {
             "type": "string",
-            "nullable": true
+            "nullable": true,
+            "description": "Null at the top of a chain — or, on an admin response, when the parent is outside your territory (`parentOutsideTerritory`)."
+          },
+          "parentOutsideTerritory": {
+            "type": "boolean",
+            "description": "Admin responses only: true when a parent exists that the reader may not see. The fact, never the id (R1)."
           },
           "referralCode": {
             "type": "string",

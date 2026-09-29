@@ -57,7 +57,7 @@ import {
   IbApplicationListMaskDto,
   IbPartnerListMaskDto,
 } from './dto/ib-list-mask.dto';
-import { ibAccountView, ibApplicationView } from './ib-views';
+import { ibApplicationView } from './ib-views';
 
 /**
  * Reviewing partner applications.
@@ -256,7 +256,7 @@ export class AdminIbController {
       parentIbUserId: dto.parentIbUserId,
       agencyId: dto.agencyId,
     });
-    return ibAccountView(account);
+    return this.applications.accountViewFor(account, req.admin.clientScope);
   }
 
   @Patch('applications/:id/reject')
@@ -647,8 +647,9 @@ export class AdminIbController {
     @Param('userId', ClientRefPipe) userId: string,
     @Body() dto: ChangeIbLevelDto,
   ) {
-    return ibAccountView(
+    return this.applications.accountViewFor(
       await this.applications.changeLevel(userId, dto.level, req.admin.clientScope, req.admin),
+      req.admin.clientScope,
     );
   }
 
@@ -671,13 +672,14 @@ export class AdminIbController {
     @Param('userId', ClientRefPipe) userId: string,
     @Body() dto: ReassignIbParentDto,
   ) {
-    return ibAccountView(
+    return this.applications.accountViewFor(
       await this.applications.reassignParent(
         userId,
         dto.parentIbUserId,
         req.admin.clientScope,
         req.admin,
       ),
+      req.admin.clientScope,
     );
   }
 
@@ -699,8 +701,9 @@ export class AdminIbController {
     @Param('userId', ClientRefPipe) userId: string,
     @Body() dto: SetIbActiveDto,
   ) {
-    return ibAccountView(
+    return this.applications.accountViewFor(
       await this.applications.setActive(userId, dto.active, req.admin.clientScope, req.admin),
+      req.admin.clientScope,
     );
   }
 }

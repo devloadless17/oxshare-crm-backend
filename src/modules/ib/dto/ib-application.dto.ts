@@ -136,7 +136,20 @@ export class IbApplicationDto {
 export class IbAccountDto {
   @ApiProperty() userId: string;
   @ApiProperty() level: number;
-  @ApiProperty({ type: 'string', nullable: true }) parentIbUserId: string | null;
+  @ApiProperty({
+    type: 'string',
+    nullable: true,
+    description:
+      'Null at the top of a chain — or, on an admin response, when the parent is ' +
+      'outside your territory (`parentOutsideTerritory`).',
+  })
+  parentIbUserId: string | null;
+  @ApiPropertyOptional({
+    description:
+      'Admin responses only: true when a parent exists that the reader may not see. The ' +
+      'fact, never the id (R1).',
+  })
+  parentOutsideTerritory?: boolean;
   @ApiProperty({ description: 'What a client types at registration to be attributed here.' })
   referralCode: string;
   @ApiProperty() active: boolean;
