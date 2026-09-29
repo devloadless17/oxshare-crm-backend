@@ -488,6 +488,28 @@ describe('the mask reaches the FILE — an export is not a bypass', () => {
     expect(res.text).not.toContain('export-theirs@oxshare-e2e.test');
   });
 
+  it('a hidden cell reads [hidden] — a blank would say the client has none (D-82)', async () => {
+    const masked = await actingAs(ctx, 'admin', MASKED);
+    for (const path of [
+      '/v1/admin/clients/export',
+      '/v1/admin/kyc/export',
+      '/v1/admin/ib/applications/export',
+      '/v1/admin/ib/partners/export',
+    ]) {
+      const res = await masked.get(path).expect(200);
+      const line = res.text
+        .split('\r\n')
+        .find((row) => row.split(',').includes(String(minePortalId)));
+      expect(line, `${path}: the client's row is missing — the case is vacuous`).toBeDefined();
+      expect(line?.split(','), path).toContain('[hidden]');
+    }
+    // And a reader whose role hides nothing is never told a value is hidden.
+    const master = await actingAs(ctx, 'admin', MASTER);
+    expect((await master.get('/v1/admin/clients/export').expect(200)).text).not.toContain(
+      '[hidden]',
+    );
+  });
+
   it('phone is a COLUMN, and the mask reaches it too', async () => {
     /*
      * The client CSV carried no phone at all — so "call everyone who

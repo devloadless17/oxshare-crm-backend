@@ -27,6 +27,7 @@ import type { Db, Executor } from '../database/db';
 import { auditLog, users } from '../database/schema';
 import { currentClientIp, currentFieldMask } from '../common/logging/request-context';
 import { clientIdByPortalId, escapeLike, parsePortalId } from './users.store';
+import { HIDDEN_TEXT } from '../common/security/mask-by-shape';
 
 /**
  * The subject types whose rows concern ONE client. `audit_log_client_of` (0156)
@@ -114,7 +115,7 @@ export type AuditSubjectType =
 export const OUTSIDE_TERRITORY = '[client outside your territory]';
 
 /** A client actor's email or IP, for a role whose mask hides it (D-82). */
-export const HIDDEN_FROM_ROLE = '[hidden]';
+export const HIDDEN_FROM_ROLE = HIDDEN_TEXT;
 
 /**
  * Where an audit row's `details` names a CLIENT — by Portal ID since 0159.

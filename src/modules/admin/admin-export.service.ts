@@ -8,7 +8,7 @@ import { IbStore } from '../../store/ib.store';
 import { RolesStore } from '../../store/roles.store';
 import { AuthorizationError, ValidationError } from '../../common/errors/domain-errors';
 import { actorHasPermission, assertActorCan, assertActorCanAny } from '../../common/security/actor';
-import { maskByShape } from '../../common/security/mask-by-shape';
+import { maskForExport } from '../../common/security/mask-by-shape';
 import { ClientRowDto, KycSubmissionDto } from './dto/responses.dto';
 import {
   FinancialExportRowDto,
@@ -247,7 +247,7 @@ export class AdminExportService {
      * this would make the export button a documented bypass of the masking
      * feature, which is the same class of defect as skipping the client scope.
      */
-    return maskByShape(ClientRowDto, withTags, actor.fieldMask);
+    return maskForExport(ClientRowDto, withTags, actor.fieldMask);
   }
 
   // ── Withdrawals ───────────────────────────────────────────────────────────
@@ -313,7 +313,7 @@ export class AdminExportService {
      * re-imports it. A CSV has nowhere to put `maskedFields`, so the header is
      * the only place left to say the column exists at all.
      */
-    return maskByShape(WithdrawalExportRowDto, rows, actor.fieldMask);
+    return maskForExport(WithdrawalExportRowDto, rows, actor.fieldMask);
   }
 
   // ── Financial transactions (the platform-wide movement list) ──────────────
@@ -380,7 +380,7 @@ export class AdminExportService {
      * CSV writer renders the removed field as blank, never a dropped column
      * that shifts every later value under the wrong heading.
      */
-    return maskByShape(FinancialExportRowDto, rows, actor.fieldMask);
+    return maskForExport(FinancialExportRowDto, rows, actor.fieldMask);
   }
 
   // ── Wallets ───────────────────────────────────────────────────────────────
@@ -469,7 +469,7 @@ export class AdminExportService {
      * DECLARED schemas and not over routes.
      */
     const rows = await this.holdings.walletExportBatch(query, actor, offset, limit, startedAt);
-    return maskByShape(WalletExportRowDto, rows, actor.fieldMask);
+    return maskForExport(WalletExportRowDto, rows, actor.fieldMask);
   }
 
   // ── Trading accounts ──────────────────────────────────────────────────────
@@ -541,7 +541,7 @@ export class AdminExportService {
       limit,
       startedAt,
     );
-    return maskByShape(TradingAccountExportRowDto, rows, actor.fieldMask);
+    return maskForExport(TradingAccountExportRowDto, rows, actor.fieldMask);
   }
 
   // ── KYC ───────────────────────────────────────────────────────────────────
@@ -599,7 +599,7 @@ export class AdminExportService {
     // The same mask the queue applies (admin-compliance.service.ts). Without
     // it the export was the one KYC surface that handed a masked reviewer the
     // client email — a downloadable copy of exactly what every screen withheld.
-    return maskByShape(KycSubmissionDto, items, actor.fieldMask);
+    return maskForExport(KycSubmissionDto, items, actor.fieldMask);
   }
 
   // ── Audit log ─────────────────────────────────────────────────────────────
@@ -697,7 +697,7 @@ export class AdminExportService {
      * Same declaration as the list read (`audit-detail-fields.ts`), so the two
      * cannot drift: one definition, two call sites.
      */
-    return items.slice(0, limit).map((row) => maskAuditRow(row, actor.fieldMask));
+    return items.slice(0, limit).map((row) => maskAuditRow(row, actor.fieldMask, 'file'));
   }
 
   // ── IB applications ───────────────────────────────────────────────────────
@@ -755,7 +755,7 @@ export class AdminExportService {
      * The interceptor cannot cover this: the response is a byte stream by the
      * time it exists, which is why every export masks its ROWS instead.
      */
-    return maskByShape(IbApplicationExportRowDto, rows, actor.fieldMask);
+    return maskForExport(IbApplicationExportRowDto, rows, actor.fieldMask);
   }
 
   // ── IB partners ───────────────────────────────────────────────────────────
@@ -797,7 +797,7 @@ export class AdminExportService {
       active: filter.active,
     });
     // Same reasoning as `ibApplicationBatch` above.
-    return maskByShape(IbPartnerExportRowDto, rows, actor.fieldMask);
+    return maskForExport(IbPartnerExportRowDto, rows, actor.fieldMask);
   }
 
   // ── Roles ─────────────────────────────────────────────────────────────────
