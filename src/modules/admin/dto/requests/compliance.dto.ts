@@ -364,6 +364,11 @@ export class KycConfigDto {
  * audit row beside the value on both sides, and the client is emailed which
  * details changed. At least one field besides the reason — an empty correction
  * would write an audit row that changed nothing.
+ *
+ * An empty value CLEARS a detail, unless the client's verification required it
+ * — as the form stood when they submitted, which the broker decides (Phase 2).
+ * That is the service's call (`ClientProfileService.editAsAdmin`), the same one
+ * the client page's Edit dialog gets; a name is never cleared.
  */
 export class CorrectKycIdentityDto {
   @KycReason(
@@ -395,34 +400,29 @@ export class CorrectKycIdentityDto {
   })
   @IsOptional()
   @IsString()
-  @IsNotEmpty()
   dateOfBirth?: string;
 
   @ApiPropertyOptional({ example: 'Lebanese', maxLength: 100 })
   @IsOptional()
   @IsString()
-  @IsNotEmpty()
   @MaxLength(100)
   nationality?: string;
 
   @ApiPropertyOptional({ example: 'Lebanon', maxLength: 100 })
   @IsOptional()
   @IsString()
-  @IsNotEmpty()
   @MaxLength(100)
   country?: string;
 
   @ApiPropertyOptional({ example: '12 Rue Verdun', maxLength: 200 })
   @IsOptional()
   @IsString()
-  @IsNotEmpty()
   @MaxLength(200)
   address?: string;
 
   @ApiPropertyOptional({ example: 'Beirut', maxLength: 100 })
   @IsOptional()
   @IsString()
-  @IsNotEmpty()
   @MaxLength(100)
   city?: string;
 

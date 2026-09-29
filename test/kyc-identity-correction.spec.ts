@@ -483,3 +483,37 @@ describe('what the route refuses', () => {
     expect(res.status).toBe(400);
   });
 });
+
+describe('what a correction may CLEAR follows the requirements the client was verified under', () => {
+  it('refuses clearing what they required, clears what the form left optional (Phase 2)', async () => {
+    const session = await actingAs(ctx, 'admin', ADMIN);
+
+    // No requirements on record: an approval from before 0158, judged by the fixed tier.
+    const legacy = await session.patch(ROUTE(userId)).send({ reason: REASON, address: '' });
+    expect(legacy.status, JSON.stringify(legacy.body)).toBe(400);
+    expect((await profile()).address).toBe(ORIGINAL.address);
+
+    // Verified under a form that asked for the address without requiring it.
+    await ctx.db.db
+      .update(kycSubmissions)
+      .set({
+        formPolicy: {
+          steps: [],
+          identity: [
+            { name: 'address', required: false },
+            { name: 'city', required: true },
+          ],
+        },
+      })
+      .where(eq(kycSubmissions.userId, userId));
+
+    const cleared = await session.patch(ROUTE(userId)).send({ reason: REASON, address: '' });
+    expect(cleared.status, JSON.stringify(cleared.body)).toBe(200);
+    expect((await profile()).address).toBeNull();
+
+    const refused = await session.patch(ROUTE(userId)).send({ reason: REASON, city: '' });
+    expect(refused.status).toBe(400);
+    expect(JSON.stringify(refused.body)).toMatch(/city is required/i);
+    expect((await profile()).city).toBe(ORIGINAL.city);
+  });
+});

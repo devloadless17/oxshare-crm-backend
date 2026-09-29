@@ -20,7 +20,7 @@ import {
   type ClientProfile,
   type ProfileKey,
 } from '../../common/profile/client-profile';
-import { identityField, VERIFICATION_REQUIRED } from '../../common/kyc/identity-core';
+import { identityField } from '../../common/kyc/identity-core';
 import { AuditLogStore, type AuditSubjectType } from '../../store/audit-log.store';
 import {
   IDENTITY_REVIEW,
@@ -272,7 +272,7 @@ export class ClientProfileService {
      * read here only to choose the refusal; the decision is re-made under the
      * locks below.
      */
-    const status = await this.review.statusOf(userId);
+    const { status, verifiedRequired } = await this.review.standingOf(userId);
     if (status === 'approved') {
       for (const [key, value] of Object.entries(input)) {
         if (!isProfileKey(key) || typeof value !== 'string' || value.trim() === '') continue;
@@ -299,13 +299,15 @@ export class ClientProfileService {
 
     const written = await this.update(userId, input, actor, {
       asOf,
-      // A correction never CLEARS a detail the verification required.
-      required:
-        status === 'approved'
-          ? Object.keys(input).filter((key): key is ProfileKey =>
-              VERIFICATION_REQUIRED.includes(key as ProfileKey),
-            )
-          : undefined,
+      /*
+       * A correction never CLEARS a detail the verification required — as the
+       * form stood when the client submitted. Since Phase 2 the broker decides
+       * that, so a detail the form left optional may be cleared on a verified
+       * record, and one it required may not.
+       */
+      required: Object.keys(input).filter(
+        (key): key is ProfileKey => isProfileKey(key) && verifiedRequired.includes(key),
+      ),
       guard: (changed, verification) => {
         const held: Record<string, string> = {};
         for (const key of changed) {

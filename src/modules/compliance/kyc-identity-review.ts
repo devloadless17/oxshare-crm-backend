@@ -3,8 +3,10 @@ import type { Executor } from '../../database/db';
 import {
   IDENTITY_REVIEW,
   type IdentityReviewPort,
+  type IdentityReviewStanding,
   type IdentityReviewState,
 } from '../../common/provisioning/identity-review.port';
+import { VERIFICATION_REQUIRED } from '../../common/kyc/identity-core';
 import { KycStore } from '../../store/kyc.store';
 
 /**
@@ -30,8 +32,23 @@ export class KycIdentityReview implements IdentityReviewPort {
     await this.kyc.update(userId, { rejectedFields: remaining }, executor);
   }
 
-  async statusOf(userId: string): Promise<string | undefined> {
-    return (await this.kyc.findByUserId(userId))?.status;
+  async standingOf(userId: string): Promise<IdentityReviewStanding> {
+    const submission = await this.kyc.findByUserId(userId);
+    if (submission?.status !== 'approved') {
+      return { status: submission?.status, verifiedRequired: [] };
+    }
+    /*
+     * What the approval was judged against: the requirements recorded when the
+     * client submitted (0158). An approval with none on record predates them,
+     * and the platform's fixed tier is what it was judged by.
+     */
+    const policy = submission.formPolicy;
+    return {
+      status: submission.status,
+      verifiedRequired: policy
+        ? policy.identity.filter((detail) => detail.required).map((detail) => detail.name)
+        : VERIFICATION_REQUIRED,
+    };
   }
 }
 

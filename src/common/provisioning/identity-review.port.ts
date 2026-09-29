@@ -21,6 +21,17 @@ export interface IdentityReviewState {
   returnedItems: string[];
 }
 
+export interface IdentityReviewStanding {
+  /** Where the review stands — the KYC status; absent when there is none. */
+  status?: string;
+  /**
+   * While the review stands VERIFIED: the identity details that verification
+   * REQUIRED, as the form stood when the client submitted — the broker decides
+   * them since Phase 2. What a correction may never clear. Empty otherwise.
+   */
+  verifiedRequired: readonly string[];
+}
+
 export interface IdentityReviewPort {
   /**
    * Lock the client's review for this transaction and say where it stands.
@@ -33,7 +44,7 @@ export interface IdentityReviewPort {
   keepReturned(userId: string, remaining: string[], executor: Executor): Promise<void>;
 
   /** Where the review stands, read without a lock — only to CHOOSE a refusal. */
-  statusOf(userId: string): Promise<string | undefined>;
+  standingOf(userId: string): Promise<IdentityReviewStanding>;
 }
 
 export const IDENTITY_REVIEW = Symbol('IDENTITY_REVIEW');
