@@ -8702,6 +8702,37 @@
         ]
       }
     },
+    "/v1/admin/kyc-config/identity-catalogue": {
+      "get": {
+        "description": "The platform owns their names, kinds and meaning; the builder decides which are asked, where, and whether each is required. `required` here is the default tier.",
+        "operationId": "AdminComplianceController_getIdentityCatalogue",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/KycFieldConfigDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "The identity details Personal Information may ask for",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/kyc-config/steps": {
       "post": {
         "operationId": "AdminComplianceController_addKycStep",
@@ -16727,7 +16758,11 @@
           },
           "alwaysOn": {
             "type": "boolean",
-            "description": "A built-in step that cannot be switched off."
+            "description": "Always false: every step can be switched off."
+          },
+          "evidenceRequired": {
+            "type": "boolean",
+            "description": "Identity document, selfie and proof of address steps: whether the client must provide it, or may skip it. Absent on other steps."
           }
         },
         "required": [
@@ -19863,6 +19898,10 @@
           "enabled": {
             "type": "boolean"
           },
+          "evidenceRequired": {
+            "type": "boolean",
+            "description": "Identity document, selfie and proof of address steps: whether the client must provide it (default true) or may skip it."
+          },
           "fields": {
             "type": "array",
             "items": {
@@ -19892,6 +19931,11 @@
             "items": {
               "$ref": "#/components/schemas/KycStepDto"
             }
+          },
+          "format": {
+            "type": "number",
+            "example": 2,
+            "description": "The builder format this save was made in. Since Phase 2 (identity placements, evidence required, every step editable) it must be 2; an older console answers 409 `KYC_BUILDER_OUTDATED` rather than saving a form it cannot represent."
           }
         },
         "required": [

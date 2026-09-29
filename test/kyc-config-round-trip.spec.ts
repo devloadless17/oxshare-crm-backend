@@ -117,7 +117,7 @@ describe('the KYC config round trip', () => {
       'the GET did not hydrate `document`, so this cannot prove the DTO tolerates it',
     ).toBeDefined();
 
-    const write = await session.put('/v1/admin/kyc-config').send({ steps });
+    const write = await session.put('/v1/admin/kyc-config').send({ format: 2, steps });
     expect(
       write.status,
       `PUT refused its own GET: ${JSON.stringify(write.body).slice(0, 300)}`,
@@ -136,7 +136,7 @@ describe('the KYC config round trip', () => {
     // Two steps AFTER Personal Information — which is pinned first (identity core).
     const swapped = [steps[0], steps[2], steps[1], ...steps.slice(3)];
 
-    const write = await session.put('/v1/admin/kyc-config').send({ steps: swapped });
+    const write = await session.put('/v1/admin/kyc-config').send({ format: 2, steps: swapped });
     expect(write.status, `reorder refused: ${JSON.stringify(write.body).slice(0, 200)}`).toBe(200);
 
     /*
@@ -157,20 +157,28 @@ describe('the KYC config round trip', () => {
     ]);
 
     // Leave the config as it was found.
-    await session.put('/v1/admin/kyc-config').send({ steps });
+    await session.put('/v1/admin/kyc-config').send({ format: 2, steps });
   });
 
-  it('refuses moving Personal Information from the front, and changes nothing', async () => {
+  it('persists moving Personal Information anywhere (Phase 2: the order is the broker’s)', async () => {
     const read = await session.get('/v1/admin/kyc-config');
     const steps = read.body as { slug: string }[];
     const moved = [...steps.slice(1), steps[0]];
 
-    const write = await session.put('/v1/admin/kyc-config').send({ steps: moved });
-    expect(write.status).toBe(400);
-    expect(JSON.stringify(write.body)).toMatch(/Personal Information comes first/);
-    expect(((await session.get('/v1/admin/kyc-config')).body as { slug: string }[])[0].slug).toBe(
-      'personal',
-    );
+    const write = await session.put('/v1/admin/kyc-config').send({ format: 2, steps: moved });
+    expect(write.status, JSON.stringify(write.body).slice(0, 300)).toBe(200);
+    const after = (await session.get('/v1/admin/kyc-config')).body as { slug: string }[];
+    expect(after.at(-1)?.slug).toBe('personal');
+
+    // Leave the config as it was found.
+    await session.put('/v1/admin/kyc-config').send({ format: 2, steps });
+  });
+
+  it('refuses a save from an OUTDATED console, and changes nothing', async () => {
+    const read = await session.get('/v1/admin/kyc-config');
+    const write = await session.put('/v1/admin/kyc-config').send({ steps: read.body });
+    expect(write.status).toBe(409);
+    expect((write.body as { code: string }).code).toBe('KYC_BUILDER_OUTDATED');
   });
 });
 
@@ -208,7 +216,7 @@ describe('an empty configuration is refused, and refused BEFORE the delete', () 
       'no steps configured — this case cannot prove anything',
     ).toBeGreaterThan(0);
 
-    const wipe = await session.put('/v1/admin/kyc-config').send({ steps: [] });
+    const wipe = await session.put('/v1/admin/kyc-config').send({ format: 2, steps: [] });
 
     expect(
       wipe.status,
@@ -274,6 +282,7 @@ describe('a step the caller did not name', () => {
      * every form now keeps.
      */
     const write = await session.put('/v1/admin/kyc-config').send({
+      format: 2,
       steps: [
         ...original,
         { id: 'step-audit', slug: 'other', title: 'Other', enabled: true, fields: [field('fa')] },
@@ -305,7 +314,7 @@ describe('a step the caller did not name', () => {
     );
 
     // Leave the config as it was found.
-    await session.put('/v1/admin/kyc-config').send({ steps: original });
+    await session.put('/v1/admin/kyc-config').send({ format: 2, steps: original });
   });
 });
 
@@ -430,6 +439,7 @@ describe('a field goes only on a step that can store it', () => {
     const before = stepsOf((await session.get('/v1/admin/kyc-config')).body);
 
     const write = await session.put('/v1/admin/kyc-config').send({
+      format: 2,
       steps: [...before, { slug: 'extra-docs', title: 'Extra', enabled: true, fields: [passport] }],
     });
     expect(write.status, JSON.stringify(write.body).slice(0, 300)).toBe(400);
@@ -578,7 +588,7 @@ describe('0137 puts every catalogue document on the step that holds its kind', (
     const read = await session.get('/v1/admin/kyc-config');
     const write = await session
       .put('/v1/admin/kyc-config')
-      .send({ steps: Array.isArray(read.body) ? read.body : read.body.steps });
+      .send({ format: 2, steps: Array.isArray(read.body) ? read.body : read.body.steps });
     expect(write.status, JSON.stringify(write.body).slice(0, 300)).toBe(200);
 
     await ctx.db.db.delete(kycConfigSteps).where(eq(kycConfigSteps.id, 'step-0137'));
@@ -742,7 +752,7 @@ describe('the version a save names (If-Match)', () => {
   const save = (steps: Step[], ifMatch?: string) =>
     session.put(
       '/v1/admin/kyc-config',
-      { steps },
+      { format: 2, steps },
       ifMatch === undefined ? undefined : { headers: { 'If-Match': ifMatch } },
     );
 

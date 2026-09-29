@@ -258,6 +258,15 @@ export class KycStepDto {
   @IsOptional()
   enabled?: boolean;
 
+  @ApiPropertyOptional({
+    description:
+      'Identity document, selfie and proof of address steps: whether the client must provide it ' +
+      '(default true) or may skip it.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  evidenceRequired?: boolean;
+
   @ApiProperty({ type: [KycFieldDto] })
   @IsArray()
   @ValidateNested({ each: true })
@@ -329,6 +338,17 @@ export class KycConfigDto {
   @ValidateNested({ each: true })
   @Type(() => KycStepDto)
   steps: KycStepDto[];
+
+  @ApiPropertyOptional({
+    example: 2,
+    description:
+      'The builder format this save was made in. Since Phase 2 (identity placements, evidence ' +
+      'required, every step editable) it must be 2; an older console answers 409 ' +
+      '`KYC_BUILDER_OUTDATED` rather than saving a form it cannot represent.',
+  })
+  @IsOptional()
+  @IsInt()
+  format?: number;
 }
 
 /**

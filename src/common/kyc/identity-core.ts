@@ -81,8 +81,16 @@ export interface FormStep<F extends FormField = FormField> {
   fields: F[];
   /** One of the four built-in steps — served on read, never stored. */
   core?: boolean;
-  /** A built-in step that cannot be switched off — served on read, never stored. */
+  /**
+   * Kept for older readers and always false: since Phase 2 (29 Sep 2026) every
+   * step, the built-in ones included, can be switched off.
+   */
   alwaysOn?: boolean;
+  /**
+   * On the identity document, selfie and proof of address steps: must the client
+   * provide it (true, the default), or may they skip it. Meaningless elsewhere.
+   */
+  evidenceRequired?: boolean;
 }
 
 /** One of the platform's identity fields. */
@@ -210,14 +218,14 @@ export const CORE_STEPS: readonly CoreStep[] = [
     title: 'Personal Information',
     icon: 'User',
     description: 'Legal identity details exactly as they appear on your government ID.',
-    alwaysOn: true,
+    alwaysOn: false,
   },
   {
     slug: 'document',
     title: 'Identity Document',
     icon: 'FileText',
     description: 'Upload a valid Passport, National ID, Driving License or Residence Permit.',
-    alwaysOn: true,
+    alwaysOn: false,
     documents: 'identity',
   },
   {
@@ -339,68 +347,171 @@ export function acceptedDocuments(
 // ─── The form as the platform serves it, and as it is stored ─────────────────
 
 /**
- * A step as every reader sees it: the platform's parts rebuilt from code, the
- * broker's parts exactly as stored.
+ * A step as every reader sees it (Phase 2, 29 Sep 2026 — the owner's "everything
+ * customizable"): the broker's title, order and switch, with the platform's
+ * parts rebuilt from code where they sit.
  *
- *  - a built-in step takes its fixed title and icon, is marked `core`, and an
- *    always-on one is enabled whatever a row says;
- *  - Personal Information opens with the nine identity fields (`system`), then
- *    the broker's questions — a profile key stored by an older build is dropped
- *    rather than shown twice;
- *  - the selfie step opens with its camera (`system`);
- *  - a document step lists its accepted documents, rebuilt from their types.
+ *  - an identity field on Personal Information is a PLACEMENT the broker chose —
+ *    where it sits and whether it is required; its name, label, type and hint
+ *    are the platform's, rebuilt here, so no save can rename or retype one, and
+ *    a second placement of the same detail is dropped;
+ *  - the selfie step opens with its camera (`system`), required when the
+ *    step's evidence is;
+ *  - a document step lists its accepted documents first, rebuilt from their
+ *    types, then any question of the broker's.
  */
 export function platformStep<S extends FormStep>(step: S): S {
   const core = coreStepOf(step.slug);
   if (!core) return { ...step, core: false, alwaysOn: false };
 
-  const own = step.fields.filter((field) => !isPlatformField(core.slug, field));
+  const evidenceRequired = step.evidenceRequired !== false;
+  const placed = new Set<string>();
+  const own: FormField[] = [];
+  for (const field of step.fields) {
+    if (core.slug === 'personal' && isProfileKey(field.name)) {
+      if (placed.has(field.name)) continue;
+      placed.add(field.name);
+      own.push({ ...identityField(field.name)!, required: Boolean(field.required), system: true });
+    } else if (!isPlatformField(core.slug, field)) {
+      own.push(field);
+    }
+  }
   const platform: FormField[] =
-    core.slug === 'personal'
-      ? IDENTITY_FIELDS.map((field) => ({ ...field, system: true }))
-      : core.slug === 'selfie'
-        ? [{ ...SELFIE_FIELD, system: true }]
-        : acceptedDocuments(step.fields, core.documents!).map(documentField);
+    core.slug === 'selfie'
+      ? [{ ...SELFIE_FIELD, required: evidenceRequired, system: true }]
+      : core.documents
+        ? acceptedDocuments(step.fields, core.documents).map(documentField)
+        : [];
   return {
     ...step,
-    title: core.title,
     icon: core.icon,
-    enabled: core.alwaysOn ? true : step.enabled,
+    evidenceRequired: core.slug === 'personal' ? undefined : evidenceRequired,
     core: true,
-    alwaysOn: core.alwaysOn,
+    alwaysOn: false,
     // The platform's fields are plain `FormField`s; the caller's field type is a
     // structural superset whose extra members are all optional.
-    fields: [...(platform as S['fields']), ...own],
+    fields: [...(platform as S['fields']), ...(own as S['fields'])],
   };
 }
 
 /**
- * A step as it is STORED: the platform's parts reduced to the one fact each
- * carries, or dropped entirely.
- *
- * The identity fields and the selfie camera are not stored at all; a document
- * field keeps only its type (its id, name and label follow from it); a built-in
- * step's title and icon are the platform's. The flags `core`, `alwaysOn` and
- * `system` describe the served form and never reach a row.
+ * A step as it is STORED: an identity placement as the platform's field with the
+ * broker's `required`, a document as its type, the selfie camera not at all
+ * (it follows from the step), and the flags that describe the served form
+ * (`core`, `alwaysOn`, `system`) never.
  */
 export function storedStep<S extends FormStep>(step: S): S {
   const { core: _core, alwaysOn: _alwaysOn, ...rest } = step;
   const unflagged = rest.fields.map(({ system: _system, ...field }) => field);
   const spec = coreStepOf(step.slug);
-  if (!spec) return { ...rest, fields: unflagged } as S;
+  if (!spec) return { ...rest, evidenceRequired: undefined, fields: unflagged } as S;
 
-  const own = unflagged.filter((field) => !isPlatformField(spec.slug, field));
+  const placed = new Set<string>();
+  const kept: FormField[] = [];
+  for (const field of unflagged) {
+    if (spec.slug === 'personal' && isProfileKey(field.name)) {
+      if (placed.has(field.name)) continue;
+      placed.add(field.name);
+      const { id, name, label, type } = identityField(field.name)!;
+      kept.push({ id, name, label, type, required: Boolean(field.required) });
+    } else if (!isPlatformField(spec.slug, field)) {
+      kept.push(field);
+    }
+  }
   const documents: FormField[] = spec.documents
     ? acceptedDocuments(unflagged, spec.documents).map(documentField)
     : [];
   return {
     ...rest,
-    title: spec.title,
     icon: spec.icon,
-    enabled: spec.alwaysOn ? true : step.enabled,
-    fields: [...documents, ...own],
+    evidenceRequired: spec.slug === 'personal' ? undefined : rest.evidenceRequired !== false,
+    fields: [...documents, ...kept],
   } as S;
 }
+
+/**
+ * The identity details the form asks for, where the broker placed them, each
+ * with whether it is required — Personal Information's identity fields, or
+ * none when that step is switched off.
+ */
+export function identityPlacements(
+  steps: readonly FormStep[],
+): { name: ProfileKey; required: boolean }[] {
+  const personal = steps.find((step) => step.slug === 'personal');
+  if (!personal?.enabled) return [];
+  return personal.fields
+    .filter((field) => isProfileKey(field.name))
+    .map((field) => ({ name: field.name as ProfileKey, required: Boolean(field.required) }));
+}
+
+/**
+ * The requirements a submission was made under (0158): each built-in step's
+ * switch and, for the evidence steps, whether evidence was required; and the
+ * identity details asked, each with whether it was required.
+ */
+export interface FormPolicy {
+  steps: { slug: string; enabled: boolean; evidenceRequired?: boolean }[];
+  identity: { name: string; required: boolean }[];
+}
+
+/** The requirements the form sets NOW — what a submission records as its policy. */
+export function policyOf(steps: readonly FormStep[]): FormPolicy {
+  return {
+    steps: steps
+      .filter((step) => coreStepOf(step.slug))
+      .map((step) => ({
+        slug: step.slug,
+        enabled: step.enabled,
+        ...(step.slug === 'personal' ? {} : { evidenceRequired: step.evidenceRequired !== false }),
+      })),
+    identity: identityPlacements(steps),
+  };
+}
+
+/**
+ * The form as it stood for a submission: today's steps with the built-in
+ * steps' switches, evidence requirements and identity placements put back to
+ * what `policy` recorded. The broker's own questions are left as they are —
+ * approval does not re-ask them.
+ */
+export function withPolicy<
+  S extends {
+    slug: string;
+    enabled: boolean;
+    evidenceRequired?: boolean;
+    fields: readonly { name: string; required: boolean }[];
+  },
+>(steps: readonly S[], policy: FormPolicy): S[] {
+  return steps.map((step) => {
+    const recorded = policy.steps.find((candidate) => candidate.slug === step.slug);
+    if (!recorded) return step;
+    const evidenceRequired = recorded.evidenceRequired;
+    let fields = step.fields;
+    if (step.slug === 'personal') {
+      const own = step.fields.filter((field) => !isProfileKey(field.name));
+      const identity = policy.identity
+        .filter((placed) => isProfileKey(placed.name))
+        .map((placed) => ({
+          ...identityField(placed.name)!,
+          required: placed.required,
+          system: true,
+        }));
+      fields = [...identity, ...own];
+    } else if (step.slug === 'selfie') {
+      fields = step.fields.map((field) =>
+        field.name === SELFIE_FIELD.name
+          ? { ...field, required: evidenceRequired !== false }
+          : field,
+      );
+    }
+    return { ...step, enabled: recorded.enabled, evidenceRequired, fields };
+  });
+}
+
+/** Every identity detail, placed in the platform's order with its default tier. */
+export const DEFAULT_IDENTITY_PLACEMENTS: readonly FormField[] = IDENTITY_FIELDS.map(
+  ({ id, name, label, type, required }) => ({ id, name, label, type, required }),
+);
 
 /**
  * A field the platform owns on a built-in step: an identity field on Personal
@@ -421,14 +532,12 @@ export function isPlatformField(slug: string, field: { name: string; type?: stri
 }
 
 /**
- * Personal Information first, every other step in its own order, numbered
- * from one — the order a client meets them in. The identity every later step
- * is checked against is collected before anything is checked against it.
+ * Every step in the broker's order, numbered from one — the order a client meets
+ * them in. Personal Information was forced first until Phase 2; the order is
+ * the broker's now.
  */
 export function inFormOrder<S extends FormStep>(steps: readonly S[]): S[] {
-  const personal = steps.filter((step) => step.slug === 'personal');
-  const rest = steps.filter((step) => step.slug !== 'personal');
-  return [...personal, ...rest].map((step, index) => ({ ...step, stepNumber: index + 1 }));
+  return steps.map((step, index) => ({ ...step, stepNumber: index + 1 }));
 }
 
 // ─── What a broker's own field and step may be called ────────────────────────

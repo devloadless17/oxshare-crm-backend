@@ -395,6 +395,7 @@ describe('the step configurator is a different permission from reviewing', () =>
     const before = (await master.get('/v1/admin/kyc-config')).body as { slug: string }[];
 
     const res = await master.put('/v1/admin/kyc-config', {
+      format: 2,
       steps: [
         {
           slug: 'proof-of-funds',
@@ -413,7 +414,7 @@ describe('the step configurator is a different permission from reviewing', () =>
       ],
     });
     expect(res.status).toBe(400);
-    expect(JSON.stringify(res.body)).toMatch(/cannot be removed/);
+    expect(JSON.stringify(res.body)).toMatch(/cannot be deleted/);
 
     // RE-READ: nothing was written.
     const after = (await master.get('/v1/admin/kyc-config')).body as { slug: string }[];

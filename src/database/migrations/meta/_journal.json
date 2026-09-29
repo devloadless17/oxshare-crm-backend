@@ -1107,6 +1107,13 @@
       "when": 1789140138750,
       "tag": "0157_masked_search_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 159,
+      "version": "7",
+      "when": 1789140198750,
+      "tag": "0158_kyc_form_customizable",
+      "breakpoints": true
     }
   ]
 }

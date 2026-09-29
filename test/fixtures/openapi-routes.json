@@ -61,6 +61,7 @@
   "GET /v1/admin/kyc",
   "GET /v1/admin/kyc-config",
   "GET /v1/admin/kyc-config/document-catalogue",
+  "GET /v1/admin/kyc-config/identity-catalogue",
   "GET /v1/admin/kyc/export",
   "GET /v1/admin/kyc/{userId}",
   "GET /v1/admin/kyc/{userId}/history",

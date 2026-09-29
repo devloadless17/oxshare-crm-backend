@@ -11,6 +11,7 @@ import {
   SQL,
   type SQLWrapper,
 } from 'drizzle-orm';
+import type { FormPolicy } from '../common/kyc/identity-core';
 import { clientIdentitySearch } from './users.store';
 import { Inject, Injectable } from '@nestjs/common';
 import { orderTerms, type SortOrder } from '../common/sorting';
@@ -172,6 +173,8 @@ export interface KycSubmission {
    * view of their own submission.
    */
   formSnapshot?: KycFormSnapshot;
+  /** The requirements in force when the client submitted (0158) — what approval re-checks. */
+  formPolicy?: FormPolicy;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -240,6 +243,7 @@ const toSubmission = (r: Row): KycSubmission => ({
   stepData: r.stepData ?? {},
   reverificationRequestedAt: r.reverificationRequestedAt ?? undefined,
   formSnapshot: r.formSnapshot ?? undefined,
+  formPolicy: r.formPolicy ?? undefined,
   createdAt: r.createdAt,
   updatedAt: r.updatedAt,
 });
@@ -264,6 +268,7 @@ const toColumns = (
     ['stepData', 'stepData'],
     ['reverificationRequestedAt', 'reverificationRequestedAt'],
     ['formSnapshot', 'formSnapshot'],
+    ['formPolicy', 'formPolicy'],
   ];
   /*
    * `key in patch`, not a truthiness test: a key present with `null` MEANS

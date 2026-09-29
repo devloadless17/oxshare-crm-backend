@@ -5,11 +5,12 @@ import { DEFAULT_KYC_STEPS, type KycStepConfig } from '../../store/kyc-config.st
 import {
   assertCoreSteps,
   assertFieldKeys,
-  assertIdentityUnchanged,
+  assertIdentityPlacements,
   assertKycConfigIntegrity,
   assertNoSecondCopies,
   assertStepAddresses,
   assertStepsHoldWhatTheyAreFor,
+  assertStepTitles,
 } from './kyc-config-integrity';
 
 /**
@@ -75,19 +76,10 @@ describe('the four built-in steps', () => {
       const { message, fields } = refusal(() =>
         assertCoreSteps(FORM.filter((step) => step.slug !== slug)),
       );
-      expect(message).toMatch(/cannot be removed/);
+      expect(message).toMatch(/cannot be deleted\. Switch it off/);
       expect(Object.keys(fields)).toEqual(['steps']);
     },
   );
-
-  it('points the two that may be switched off at the switch', () => {
-    expect(
-      refusal(() => assertCoreSteps(FORM.filter((step) => step.slug !== 'address'))).message,
-    ).toMatch(/Switch it off/);
-    expect(
-      refusal(() => assertCoreSteps(FORM.filter((step) => step.slug !== 'personal'))).message,
-    ).not.toMatch(/Switch it off/);
-  });
 
   it('refuses a built-in step twice, at the second one', () => {
     const twice = [...FORM, { ...FORM[at('document')], id: 'step-copy' }];
@@ -96,19 +88,16 @@ describe('the four built-in steps', () => {
     expect(Object.keys(fields)).toEqual([`steps.${twice.length - 1}`]);
   });
 
-  it.each(['personal', 'document'])('refuses switching %s off', (slug) => {
-    const off = edit(slug, (step) => ({ ...step, enabled: false }));
-    expect(refusal(() => assertCoreSteps(off)).message).toMatch(/always on/);
-  });
-
-  it.each(['selfie', 'address'])('ALLOWS switching %s off', (slug) => {
+  it.each(['personal', 'document', 'selfie', 'address'])('ALLOWS switching %s off', (slug) => {
     const off = edit(slug, (step) => ({ ...step, enabled: false }));
     expect(() => assertKycConfigIntegrity(FORM, off)).not.toThrow();
   });
 
-  it('refuses renaming a built-in step, and allows rewording its description', () => {
+  it('ALLOWS retitling a built-in step — but never to a title another step has', () => {
     const renamed = edit('address', (step) => ({ ...step, title: 'Address check' }));
-    expect(refusal(() => assertCoreSteps(renamed)).message).toMatch(/keeps its name/);
+    expect(() => assertKycConfigIntegrity(FORM, renamed)).not.toThrow();
+    const clash = edit('address', (step) => ({ ...step, title: 'personal  information' }));
+    expect(refusal(() => assertStepTitles(clash)).message).toMatch(/Two steps are called/);
 
     const reworded = edit('address', (step) => ({
       ...step,
@@ -117,11 +106,9 @@ describe('the four built-in steps', () => {
     expect(() => assertKycConfigIntegrity(FORM, reworded)).not.toThrow();
   });
 
-  it('keeps Personal Information first, and says so at its own position', () => {
+  it('ALLOWS any order — Personal Information need not come first', () => {
     const moved = [...FORM.slice(1), FORM[0]];
-    const { message, fields } = refusal(() => assertCoreSteps(moved));
-    expect(message).toMatch(/Personal Information comes first/);
-    expect(Object.keys(fields)).toEqual([`steps.${moved.length - 1}`]);
+    expect(() => assertKycConfigIntegrity(FORM, moved)).not.toThrow();
   });
 });
 
@@ -162,44 +149,45 @@ describe("the client's identity is the platform's", () => {
     expect(Object.keys(fields)[0]).toMatch(new RegExp(`^steps\\.${personal}\\.fields\\.\\d+$`));
   });
 
-  it.each([
-    ['a new label', { label: 'Given name' }],
-    ['a new type', { type: 'date' }],
-    ['a new key', { name: 'givenName' }],
-  ])('refuses giving First Name %s', (_, change) => {
+  it('refuses giving First Name a new key — its name is the platform’s', () => {
     const changed = edit('personal', (step) => ({
       ...step,
       fields: step.fields.map((field, index) =>
-        index === firstName ? { ...field, ...change } : field,
+        index === firstName ? { ...field, name: 'givenName' } : field,
       ),
     }));
-    const { message, fields } = refusal(() => assertIdentityUnchanged(changed));
+    const { message, fields } = refusal(() => assertIdentityPlacements(changed));
     expect(message).toMatch(/fixed by the platform/);
     expect(fields).toHaveProperty(`steps.${personal}.fields.${firstName}`);
   });
 
-  it('refuses making a required identity field optional, and the postal code required', () => {
-    const optional = edit('personal', (step) => ({
+  it('refuses asking for an identity detail twice', () => {
+    const twice = edit('personal', (step) => ({
       ...step,
-      fields: step.fields.map((field) =>
-        field.name === 'address' ? { ...field, required: false } : field,
-      ),
+      fields: [...step.fields, step.fields[firstName]],
     }));
-    expect(refusal(() => assertIdentityUnchanged(optional)).message).toMatch(/always required/);
+    expect(refusal(() => assertIdentityPlacements(twice)).message).toMatch(/asked for once/);
+  });
 
-    const required = edit('personal', (step) => ({
+  it('ALLOWS any detail optional or required, reordered, or not asked at all (Phase 2)', () => {
+    const arranged = edit('personal', (step) => ({
       ...step,
-      fields: step.fields.map((field) =>
-        field.name === 'postalCode' ? { ...field, required: true } : field,
-      ),
+      fields: step.fields
+        .filter((field) => field.name !== 'address')
+        .reverse()
+        .map((field) =>
+          field.name === 'postalCode' || field.name === 'city'
+            ? { ...field, required: field.name === 'postalCode' }
+            : field,
+        ),
     }));
-    expect(refusal(() => assertIdentityUnchanged(required)).message).toMatch(/always optional/);
+    expect(() => assertKycConfigIntegrity(FORM, arranged)).not.toThrow();
   });
 
   it('refuses asking for an identity field on any other step', () => {
     const phone = FORM[personal].fields.find((field) => field.name === 'phone')!;
     const moved = [...FORM, custom({ fields: [{ ...phone, system: undefined }] })];
-    expect(refusal(() => assertIdentityUnchanged(moved)).message).toMatch(
+    expect(refusal(() => assertIdentityPlacements(moved)).message).toMatch(
       /asked for once — on Personal Information/,
     );
   });
@@ -255,7 +243,7 @@ describe('each built-in step holds what it is for, and nothing else', () => {
   it('refuses a passport on a step of the broker’s own — a client has one passport', () => {
     const second = [...FORM, custom({ fields: [{ ...passport, id: 'f-second', name: 'pp2' }] })];
     expect(refusal(() => assertStepsHoldWhatTheyAreFor(second)).message).toMatch(
-      /once each, so there is never a second one/,
+      /collected on the Identity Document and Proof of Address steps only/,
     );
   });
 
@@ -282,7 +270,7 @@ describe('each built-in step holds what it is for, and nothing else', () => {
   });
 
   it.each(['document', 'address', 'selfie'])(
-    'refuses any field of the broker’s own on %s',
+    'ALLOWS a field of the broker’s own on %s (Phase 2)',
     (slug) => {
       const extra = edit(slug, (step) => ({
         ...step,
@@ -291,13 +279,11 @@ describe('each built-in step holds what it is for, and nothing else', () => {
           { id: 'f-x', name: 'customField_x', label: 'Bank letter', type: 'file', required: true },
         ],
       }));
-      expect(refusal(() => assertStepsHoldWhatTheyAreFor(extra)).message).toMatch(
-        /on a step of your own/,
-      );
+      expect(() => assertKycConfigIntegrity(FORM, extra)).not.toThrow();
     },
   );
 
-  it.each(['file', 'camera'])('refuses a %s upload on Personal Information', (type) => {
+  it.each(['file', 'camera'])('ALLOWS a %s upload on Personal Information (Phase 2)', (type) => {
     const upload = edit('personal', (step) => ({
       ...step,
       fields: [
@@ -305,9 +291,7 @@ describe('each built-in step holds what it is for, and nothing else', () => {
         { id: 'f-x', name: 'customField_x', label: 'Payslip', type, required: false },
       ],
     }));
-    expect(refusal(() => assertStepsHoldWhatTheyAreFor(upload)).message).toMatch(
-      /Uploads go on a step of your own/,
-    );
+    expect(() => assertKycConfigIntegrity(FORM, upload)).not.toThrow();
   });
 
   it('ALLOWS questions on Personal Information, and uploads on a step of the broker’s own', () => {
@@ -417,10 +401,10 @@ describe('every step has its own address, and keeps it', () => {
     expect(() => assertKycConfigIntegrity([...FORM, old], [...FORM, old])).not.toThrow();
   });
 
-  it('refuses a step of the broker’s own wearing a built-in step’s name', () => {
+  it('refuses a step of the broker’s own wearing another step’s title', () => {
     const lookalike = [...FORM, custom({ title: 'Identity document' })];
-    expect(refusal(() => assertStepAddresses(FORM, lookalike)).message).toMatch(
-      /name of a built-in step/,
+    expect(refusal(() => assertKycConfigIntegrity(FORM, lookalike)).message).toMatch(
+      /Two steps are called/,
     );
   });
 });

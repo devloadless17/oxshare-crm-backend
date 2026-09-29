@@ -34,7 +34,8 @@ import { exportFormat, streamCsv, EXPORT_RATE_LIMIT } from '../../common/export/
 import { KYC_SORT_COLUMNS } from '../../store/kyc.store';
 import { KycStepConfig } from '../../store/kyc-config.store';
 import { DOCUMENT_CATALOGUE } from '../../common/kyc/document-catalogue';
-import { KycDocumentTypeDto } from '../compliance/dto/kyc-response.dto';
+import { KycDocumentTypeDto, KycFieldConfigDto } from '../compliance/dto/kyc-response.dto';
+import { IDENTITY_FIELDS } from '../../common/kyc/identity-core';
 import { RejectionContext } from '../../store/rejection-reasons.store';
 import {
   KycConfigDto,
@@ -512,6 +513,29 @@ export class AdminComplianceController {
     return DOCUMENT_CATALOGUE;
   }
 
+  @Get('kyc-config/identity-catalogue')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('kyc.view', 'kyc.edit')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'The identity details Personal Information may ask for',
+    description:
+      'The platform owns their names, kinds and meaning; the builder decides which are asked, ' +
+      'where, and whether each is required. `required` here is the default tier.',
+  })
+  @ApiOkResponse({ type: [KycFieldConfigDto] })
+  @NotClientScoped('A catalogue of the platform’s identity fields — no client data.')
+  getIdentityCatalogue() {
+    return IDENTITY_FIELDS.map(({ id, name, label, type, required, hint }) => ({
+      id,
+      name,
+      label,
+      type,
+      required,
+      ...(hint ? { hint } : {}),
+    }));
+  }
+
   @Put('kyc-config')
   @UseGuards(PermissionsGuard)
   @RequirePermissions('kyc.edit')
@@ -535,6 +559,7 @@ export class AdminComplianceController {
       dto.steps as unknown as KycStepConfig[],
       req.admin,
       versionFromIfMatch(ifMatch),
+      dto.format,
     );
   }
 

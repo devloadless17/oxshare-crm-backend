@@ -341,6 +341,19 @@ export class KycConfigStaleError extends DomainError {
 }
 
 /**
+ * A KYC form saved by a console older than the form it would replace. → 409
+ * `KYC_BUILDER_OUTDATED`
+ *
+ * An older builder knows nothing of identity placements or optional evidence,
+ * so what it sends would silently erase them (Personal Information without its
+ * placements reads as "ask for no identity details"). It is refused, and the
+ * sentence says to reload.
+ */
+export class KycBuilderOutdatedError extends DomainError {
+  readonly code = 'KYC_BUILDER_OUTDATED';
+}
+
+/**
  * Repairing a client's referral attribution, refused. THREE CODES, NOT ONE. → 400
  *
  * They need three different sentences and one status makes the screen guess:

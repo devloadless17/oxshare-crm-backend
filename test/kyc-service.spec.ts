@@ -1209,12 +1209,15 @@ describe('submit asks for every page and every returned document', () => {
     await expect(h.service.submit('user-1')).resolves.toBeDefined();
   });
 
-  it('refuses a required phone the profile does not hold', async () => {
+  it('refuses a phone the form REQUIRES and the profile does not hold — and not an optional one', async () => {
     // "+961" can no longer be stored at all (the profile keeps a dialable number
-    // or none), so what reaches submission is the absence — still refused.
-    // Required by the platform, whatever the builder's flag says.
+    // or none), so what reaches submission is the absence.
     const h = build({ stored: completeSubmission(), user: { ...USER, phone: undefined } });
-    h.kycConfig.getSteps.mockResolvedValue(
+    await expect(h.service.submit('user-1')).rejects.toThrow(/Phone Number is required/);
+
+    // Phase 2: the broker made it optional — the absence is no longer owed.
+    const optional = build({ stored: completeSubmission(), user: { ...USER, phone: undefined } });
+    optional.kycConfig.getSteps.mockResolvedValue(
       defaultSteps().map((step) =>
         step.slug === 'personal'
           ? {
@@ -1224,7 +1227,7 @@ describe('submit asks for every page and every returned document', () => {
           : step,
       ),
     );
-    await expect(h.service.submit('user-1')).rejects.toThrow(/Phone Number is required/);
+    await expect(optional.service.submit('user-1')).resolves.toBeDefined();
   });
 
   it('announces a correction as a RESUBMISSION even after a step was saved', async () => {

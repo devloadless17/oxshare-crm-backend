@@ -20,6 +20,7 @@ import {
   reviewLayout,
 } from './kyc-review-layout';
 import {
+  answersInPlace,
   approvalBlockers,
   isPlainUpload,
   stepStates,
@@ -46,7 +47,12 @@ import {
   NotFoundError,
   ValidationError,
 } from '../../common/errors/domain-errors';
-import { acceptedDocuments, coreStepOf, isPlatformField } from '../../common/kyc/identity-core';
+import {
+  acceptedDocuments,
+  coreStepOf,
+  isPlatformField,
+  policyOf,
+} from '../../common/kyc/identity-core';
 import { DRIZZLE_DB } from '../../database/database.module';
 import {
   NOTIFICATION_DISPATCH,
@@ -391,7 +397,7 @@ export class KycService {
     steps: readonly KycStepConfig[],
     chosen?: ChosenDocument,
   ): Promise<
-    Omit<KycSubmission, 'formSnapshot' | 'reviewedBy' | 'updatedAt'> & {
+    Omit<KycSubmission, 'formSnapshot' | 'formPolicy' | 'reviewedBy' | 'updatedAt'> & {
       steps: StepState[];
     }
   > {
@@ -408,10 +414,13 @@ export class KycService {
      */
     const {
       formSnapshot: _internal,
+      formPolicy: _policy,
       reviewedBy: _desk,
       updatedAt: _written,
-      ...view
+      ...asStored
     } = this.withPersonalView(submission, user);
+    // A question the broker moved shows its answer where it is asked now.
+    const view = answersInPlace(steps, asStored);
     return {
       ...view,
       steps: stepStates(steps, view, new Date(), chosen),
@@ -986,6 +995,8 @@ export class KycService {
           // What the broker's own steps asked, as the client answered them — the
           // review labels their answers from this, whatever the builder does next.
           formSnapshot: formSnapshotOf(steps),
+          // The requirements it is made under — what approval will re-check (0158).
+          formPolicy: policyOf(steps),
         },
         tx,
       );
@@ -1074,7 +1085,12 @@ export class KycService {
       this.users.findById(userId),
       this.kycConfig.getSteps(),
     ]);
-    const { formSnapshot: _inLayout, ...view } = this.withPersonalView(submission, user);
+    // The snapshot is in the layout; the policy is what approval re-checks — neither is shown.
+    const {
+      formSnapshot: _inLayout,
+      formPolicy: _checkedAtApproval,
+      ...view
+    } = this.withPersonalView(submission, user);
     return {
       ...view,
       user: user ? reviewerView(user) : undefined,

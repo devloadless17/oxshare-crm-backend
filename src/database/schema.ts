@@ -23,6 +23,7 @@ import {
 } from 'drizzle-orm/pg-core';
 // Type-only: the stored shape of `mt5_groups.commissions`. Erased at runtime.
 import type { Mt5GroupCommission } from '../common/mt5-group-terms';
+import type { FormPolicy } from '../common/kyc/identity-core';
 
 // Drizzle schema for the LIVE domain model, aligned with ARCHITECTURE §5 where
 // that section defines the table (users) and with the in-memory stores being
@@ -861,6 +862,13 @@ export const kycSubmissions = pgTable(
       jsonb('form_snapshot').$type<
         { slug: string; title: string; fields: { name: string; label: string; type: string }[] }[]
       >(),
+    /*
+     * The REQUIREMENTS in force when the client submitted (0158): which steps
+     * were on, which evidence was required, which identity details were asked
+     * and required. Approval re-checks against these, so a form tightened
+     * afterwards never strands a submission already waiting.
+     */
+    formPolicy: jsonb('form_policy').$type<FormPolicy>(),
     submittedAt: timestamp('submitted_at', { withTimezone: true }),
     reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
     /*
@@ -1098,6 +1106,8 @@ export const kycConfigSteps = pgTable('kyc_config_steps', {
   icon: varchar('icon', { length: 50 }),
   enabled: boolean('enabled').notNull().default(true),
   fields: jsonb('fields').$type<Record<string, unknown>[]>().notNull().default([]),
+  /** Identity document, selfie, proof of address: must the client provide it (0158). */
+  evidenceRequired: boolean('evidence_required').notNull().default(true),
 });
 
 /*

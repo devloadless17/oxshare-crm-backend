@@ -3,7 +3,7 @@ import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:f
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
-import { platformStep } from '../src/common/kyc/identity-core';
+import { IDENTITY_FIELDS, platformStep } from '../src/common/kyc/identity-core';
 import { assertKycConfigIntegrity } from '../src/modules/admin/kyc-config-integrity';
 import type { KycFieldConfig, KycStepConfig } from '../src/store/kyc-config.store';
 
@@ -180,13 +180,9 @@ describe('the form', () => {
     // "firstname" was a second copy of the first name, and the stored lastName
     // is the platform's to serve: both leave the row, and the identity comes
     // back on every read.
+    // Since Phase 2 the identity comes back as stored PLACEMENTS — 0158, below.
     const personal = await stepOf('personal');
     expect(personal.fields.map((f) => f.label)).toEqual(['Occupation']);
-    expect(
-      platformStep(toStep(personal))
-        .fields.slice(0, 2)
-        .map((f) => f.label),
-    ).toEqual(['First Name', 'Last Name']);
   });
 
   it('keeps each document on its own step, once, as the catalogue names it', async () => {
@@ -370,3 +366,20 @@ function toStep(row: Row): KycStepConfig {
     fields: row.fields,
   };
 }
+
+describe('then 0158 (Phase 2): the identity is stored as placements', () => {
+  it('writes all ten back, first and in the platform’s order — and a re-run changes nothing', async () => {
+    // Without them the form would silently stop asking for the client's name.
+    await q(`UPDATE kyc_config_steps SET fields = $1 WHERE slug = 'personal'`, [
+      JSON.stringify([field('field-occupation', 'customField_occupation', 'Occupation')]),
+    ]);
+    const phase2 = readFileSync(join(MIGRATIONS, '0158_kyc_form_customizable.sql'), 'utf8');
+    const names = async () => (await stepOf('personal')).fields.map((f) => f.name);
+    const expected = [...IDENTITY_FIELDS.map((f) => f.name), 'customField_occupation'];
+
+    await ctx.pool.query(phase2);
+    expect(await names()).toEqual(expected);
+    await ctx.pool.query(phase2);
+    expect(await names()).toEqual(expected);
+  });
+});

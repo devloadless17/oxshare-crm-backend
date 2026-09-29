@@ -12,6 +12,7 @@ import { RejectionContext, RejectionReasonsStore } from '../../store/rejection-r
 import { KycService } from '../compliance/kyc.service';
 import {
   FieldValidationError,
+  KycBuilderOutdatedError,
   KycConfigStaleError,
   NotFoundError,
   ValidationError,
@@ -36,6 +37,12 @@ import { AdminsStore } from '../../store/admins.store';
  * and the configurable rejection reasons both KYC and withdrawals draw on
  * (FR-ADM-03).
  */
+/**
+ * The KYC builder format a whole-form save must declare (Phase 2, 29 Sep 2026):
+ * identity placements, per-step evidence requirements, every step editable.
+ */
+export const KYC_BUILDER_FORMAT = 2;
+
 @Injectable()
 export class AdminComplianceService {
   constructor(
@@ -612,7 +619,18 @@ export class AdminComplianceService {
    * leave a form with no steps at all.
    */
 
-  async updateKycConfig(steps: KycStepConfig[], actor: AuthenticatedAdmin, version?: string) {
+  async updateKycConfig(
+    steps: KycStepConfig[],
+    actor: AuthenticatedAdmin,
+    version?: string,
+    format?: number,
+  ) {
+    if (format !== KYC_BUILDER_FORMAT) {
+      throw new KycBuilderOutdatedError(
+        'This console is out of date. Reload the page to get the current KYC builder, then ' +
+          'make your change again.',
+      );
+    }
     const { after } = await this.changeKycConfig(
       actor,
       { action: 'kyc_config.replace', version },
