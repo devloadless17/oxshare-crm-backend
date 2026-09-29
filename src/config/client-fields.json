@@ -267,7 +267,8 @@
       {
         "key": "client.payoutDestination",
         "label": "Payout destination",
-        "maskable": true,
+        "maskable": false,
+        "reason": "A withdrawal is paid to it: whoever approves or settles one has to see where the money goes.",
         "$comment": "The bank account, card, wallet address or payment phone a withdrawal is paid to. It was marked 'not a client-owned attribute' on both withdrawal desks, so no role could hide it (D-82). The desks and their CSVs carry it as `destination`.",
         "aliases": [
           "withdrawal.destination",
