@@ -498,28 +498,22 @@ describe("a partner's SUB-PARTNERS follow the reader's territory too", () => {
     expect(body.directPartners.map((p) => p.userId)).toEqual([subMineId]);
   });
 
-  it('publishes NO out-of-territory count beside the scoped list', async () => {
+  it('says how many it withheld — a count, never who (R2)', async () => {
     /*
-     * The obvious next move after scoping this list is to add "3 of 5" so the
-     * reader is not silently under-reported. It is deliberately NOT done, for
-     * two reasons that both come from this codebase.
-     *
-     * `client-network-tree.tsx` keeps `referredShown` and `referredTotal` BOTH
-     * scoped, and says why: "an unscoped count over a scoped list would read 12
-     * of 213 and then show 12, which is correct and looks like a bug". And
-     * `admin-stats.service.ts` states the rule such a count would break — "A
-     * COUNT IS A DISCLOSURE" — so a total here would hand over precisely what
-     * the rows withhold: how many partners this line has in territories the
-     * reader is denied.
-     *
-     * That pair exists on the client profile to publish a ROW CAP. There is no
-     * cap on sub-partners, so a scoped total would only restate the array's
-     * length.
+     * This case used to pin the opposite: NO out-of-territory count, on the
+     * argument that "a count is a disclosure". The owner weighed that on
+     * 28 Sep 2026 and ruled "a count, no identity" everywhere a relation
+     * crosses a territory: a line that silently drops people reads as a
+     * partner with nobody beneath them. The profile's `referredOutsideScope`
+     * already said so for referred clients; this is the same for sub-partners.
      */
-    const body = (await detailFor(SCOPED, partnerId)) as unknown as Record<string, unknown>;
+    const scoped = (await detailFor(SCOPED, partnerId)) as unknown as Record<string, unknown>;
+    expect(scoped['directPartnersOutsideScope']).toBe(1);
+    expect(typeof scoped['referredClientsOutsideScope']).toBe('number');
 
-    expect(body['directPartnersTotal']).toBeUndefined();
-    expect(body['directPartnersShown']).toBeUndefined();
+    const master = (await detailFor(MASTER, partnerId)) as unknown as Record<string, unknown>;
+    expect(master['directPartnersOutsideScope']).toBe(0);
+    expect(master['referredClientsOutsideScope']).toBe(0);
   });
 
   it('leaks NOTHING about the sub-partner outside the territory — not even the id', async () => {

@@ -10,6 +10,7 @@ import {
   or,
   sql,
   type SQLWrapper,
+  not,
 } from 'drizzle-orm';
 import { Inject, Injectable } from '@nestjs/common';
 import { orderTerms, type SortOrder } from '../common/sorting';
@@ -394,16 +395,13 @@ export class IbStore {
    * oracle than the 403-versus-404 distinction `client-scope.ts` refuses to
    * give away.
    *
-   * And NO out-of-territory total is published beside the rows, which is the
-   * half worth stating because the obvious fix is to add one. `referredShown` /
-   * `referredTotal` on the client profile are BOTH scoped, deliberately —
-   * `client-network-tree.tsx` records why: "an unscoped count over a scoped list
-   * would read 12 of 213 and then show 12, which is correct and looks like a
-   * bug". And a count is itself a disclosure (`admin-stats.service.ts`), so an
-   * unscoped total here would hand over exactly the fact the rows withhold: how
-   * many partners this line has in territories the reader is denied. The pair
-   * exists there to publish a ROW CAP; this list has no cap, so a scoped total
-   * would only restate `rows.length`.
+   * What it withheld is said as a COUNT (`countDirectPartnersOutside`), never
+   * as rows: the owner's ruling of 28 Sep 2026 — "a count, no identity",
+   * everywhere a relation crosses a territory (R2). This comment used to argue
+   * the opposite, that a count is itself a disclosure; the owner weighed that
+   * and chose the count, because a line that silently drops people reads as a
+   * partner with nobody beneath them. It matches `referredOutsideScope` on the
+   * client profile.
    *
    * It also settles a response that contradicted itself: `countReferredBy` on
    * this same partner-detail payload is scoped, so the counts obeyed territory
@@ -444,6 +442,21 @@ export class IbStore {
       .orderBy(asc(ibAccounts.level), desc(ibAccounts.approvedAt));
 
     return rows;
+  }
+
+  /**
+   * How many of this partner's DIRECT sub-partners `findDirectPartners`
+   * withheld from this reader — the count, never who (R2). Zero for an
+   * unrestricted reader, without a query.
+   */
+  async countDirectPartnersOutside(parentUserId: string, scope: ClientScope): Promise<number> {
+    const inScope = clientScopePredicate(scope, ibAccounts.userId);
+    if (!inScope) return 0;
+    const [{ value }] = await this.db
+      .select({ value: count() })
+      .from(ibAccounts)
+      .where(and(eq(ibAccounts.parentIbUserId, parentUserId), not(inScope)));
+    return value;
   }
 
   /**

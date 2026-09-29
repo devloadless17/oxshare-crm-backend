@@ -1145,13 +1145,23 @@ export class IbApplicationsService {
     const account = await this.ib.findAccount(userId);
     if (!account) return null;
 
-    const [directPartners, earningsMap, referredCount, agencies, products] = await Promise.all([
+    const [
+      directPartners,
+      directPartnersOutsideScope,
+      earningsMap,
+      referredCount,
+      referredOutsideScope,
+      agencies,
+      products,
+    ] = await Promise.all([
       this.ib.findDirectPartners(userId, scope),
+      this.ib.countDirectPartnersOutside(userId, scope),
       this.ib.earningsByPartner([userId]),
       // Scoped, like every other client read on this route: `assertVisible`
       // above proves the PARTNER is visible and says nothing about their
       // clients. See UsersStore.countReferredBy.
       this.users.countReferredBy(userId, scope),
+      this.users.countReferredOutsideScope(userId, scope),
       account.agencyId ? this.catalogue.listAgencies() : Promise.resolve([]),
       account.agencyId ? this.catalogue.listProducts() : Promise.resolve([]),
     ]);
@@ -1241,13 +1251,14 @@ export class IbApplicationsService {
         : null,
       /** True when a parent exists but sits outside this reader's territory. */
       parentOutsideTerritory,
-      /* SCOPED to the reader's territory, and no total beside it — see
-         `IbStore.findDirectPartners` for why publishing one would give away the
-         fact the rows withhold. */
+      /* SCOPED to the reader's territory; what it withheld is the count beside
+         it — never who (R2, the owner's ruling). */
       directPartners,
+      directPartnersOutsideScope,
       /* How many CLIENTS they introduced — the other half of a partner's line,
          and the number the earnings are a consequence of. */
       referredClientCount: referredCount,
+      referredClientsOutsideScope: referredOutsideScope,
       // One entry per currency; `[]` is "nothing earned yet".
       earnings: earningsMap.get(userId) ?? [],
     };

@@ -616,15 +616,36 @@ export class IbPartnerDetailDto {
   @ApiProperty({
     type: [IbSubPartnerRowDto],
     description:
-      'SCOPED to the reader’s territory. No out-of-territory total accompanies it — a count ' +
-      'is itself a disclosure, and there is no row cap here for one to describe.',
+      'SCOPED to the reader’s territory. The ones withheld are counted in ' +
+      '`directPartnersOutsideScope` — never named.',
   })
   directPartners: IbSubPartnerRowDto[];
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  @ApiProperty({
+    type: 'integer',
+    description:
+      'How many direct sub-partners sit OUTSIDE the reader’s territory, and so are absent from ' +
+      '`directPartners`. Zero for an unrestricted reader. A count, no identity (R2): a line ' +
+      'that silently dropped them would read as a partner with nobody beneath them.',
+  })
+  directPartnersOutsideScope: number;
   @NotClientField(
     'not a client-owned attribute \u2014 referredClientCount describes the record rather than the person',
   )
   @ApiProperty({ description: 'How many clients they introduced.' })
   referredClientCount: number;
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  @ApiProperty({
+    type: 'integer',
+    description:
+      'How many clients this partner introduced sit OUTSIDE the reader’s territory, and so are ' +
+      'absent from `referredClientCount`. Zero for an unrestricted reader. A count, no identity.',
+  })
+  referredClientsOutsideScope: number;
   @NotClientField(
     'not a client-owned attribute \u2014 earnings describes the record rather than the person',
   )
