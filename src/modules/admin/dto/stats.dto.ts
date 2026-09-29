@@ -276,13 +276,17 @@ export class RegistrationSeriesDto {
 export class KycTrendPointDto {
   @ApiProperty({ example: '2026-08-01' }) date: string;
 
-  @ApiProperty({ description: 'Submissions whose submitted_at falls on this day.' })
+  @ApiProperty({
+    description:
+      'Submissions made on this day — every one, including those since decided, replaced or ' +
+      'reset: the archived attempts plus the submissions still waiting.',
+  })
   submitted: number;
 
   @ApiProperty({
     description:
-      'Submissions REVIEWED on this day whose status is approved. A rejection reviewed the ' +
-      'same day is not counted here.',
+      'Approvals decided on this day by a review, from the decision log. An approval later ' +
+      'reversed stays on its day; a rejection is never counted.',
   })
   approved: number;
 }

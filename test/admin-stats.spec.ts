@@ -203,22 +203,28 @@ async function makeClient(options: {
   const userId = rows[0].id;
 
   if (options.kyc) {
-    await db.execute(sql`
+    const at = (daysAgo: number | undefined) =>
+      daysAgo === undefined
+        ? sql`NULL`
+        : sql`(now() AT TIME ZONE 'UTC')::date - make_interval(days => ${daysAgo}) + interval '6 hours'`;
+    const live = sql`
       INSERT INTO kyc_submissions (user_id, status, submitted_at, reviewed_at)
-      VALUES (
-        ${userId}, ${options.kyc.status}::kyc_status,
-        ${
-          options.kyc.submittedDaysAgo === undefined
-            ? sql`NULL`
-            : sql`(now() AT TIME ZONE 'UTC')::date - make_interval(days => ${options.kyc.submittedDaysAgo}) + interval '6 hours'`
-        },
-        ${
-          options.kyc.reviewedDaysAgo === undefined
-            ? sql`NULL`
-            : sql`(now() AT TIME ZONE 'UTC')::date - make_interval(days => ${options.kyc.reviewedDaysAgo}) + interval '6 hours'`
-        }
-      )
-    `);
+      VALUES (${userId}, ${options.kyc.status}::kyc_status,
+              ${at(options.kyc.submittedDaysAgo)}, ${at(options.kyc.reviewedDaysAgo)})`;
+    /*
+     * A DECIDED submission is archived as an attempt, as every decision in the
+     * code archives it — which is what puts the decision on the log the trend
+     * counts. One statement, so the record adopts both at the same commit.
+     */
+    await db.execute(
+      options.kyc.status === 'approved' || options.kyc.status === 'rejected'
+        ? sql`
+            WITH live AS (${live} RETURNING user_id, status, submitted_at, reviewed_at)
+            INSERT INTO kyc_submission_attempts
+              (user_id, attempt_no, status, submitted_at, reviewed_at, archived_at)
+            SELECT user_id, 1, status, submitted_at, reviewed_at, reviewed_at FROM live`
+        : live,
+    );
   }
 
   if (options.withdrawal) {
@@ -827,3 +833,40 @@ describe('GET /admin/stats/withdrawal-volume', () => {
  * suite that only asserted "the scoped admin sees a small number" would have no
  * way to notice.
  */
+
+describe('the KYC trend is HISTORY, not the live rows', () => {
+  it('keeps an approval since reversed, and a submission since replaced, on their days', async () => {
+    const trend = async () =>
+      (await getAs<Series<KycTrendPoint>>(MASTER, '/v1/admin/stats/kyc-trend?days=7')).body;
+    const on = (body: Series<KycTrendPoint>, daysAgo: number) =>
+      body.points.find((point) => point.date === utcDaysAgo(daysAgo))!;
+    const before = await trend();
+
+    // Submitted and approved 6 days ago; re-verification requested 4 days ago
+    // (archived again, same submission); resubmitted today, still waiting.
+    const id = await makeClient({ email: 'stats-history@oxshare-e2e.test', daysAgo: 30 });
+    const day = (n: number) =>
+      sql`(now() AT TIME ZONE 'UTC')::date - make_interval(days => ${n}) + interval '6 hours'`;
+    await ctx.db.db.execute(sql`
+      WITH approved AS (
+        INSERT INTO kyc_submission_attempts
+          (user_id, attempt_no, status, submitted_at, reviewed_at, archived_at)
+        VALUES (${id}, 1, 'approved', ${day(6)}, ${day(6)}, ${day(6)})
+      ), reverify AS (
+        INSERT INTO kyc_submission_attempts
+          (user_id, attempt_no, status, submitted_at, reviewed_at, archived_at, reverification)
+        VALUES (${id}, 2, 'rejected', ${day(6)}, ${day(4)}, ${day(4)}, true)
+      )
+      INSERT INTO kyc_submissions (user_id, status, submitted_at)
+      VALUES (${id}, 'submitted', ${day(0)})
+    `);
+
+    const after = await trend();
+    const delta = (daysAgo: number, key: 'submitted' | 'approved') =>
+      on(after, daysAgo)[key] - on(before, daysAgo)[key];
+    expect(delta(6, 'submitted')).toBe(1); // once, though archived twice
+    expect(delta(6, 'approved')).toBe(1); // reversed since — still history
+    expect(delta(0, 'submitted')).toBe(1); // today's resubmission, waiting
+    expect(delta(4, 'approved')).toBe(0); // a re-verification is not an approval
+  });
+});
