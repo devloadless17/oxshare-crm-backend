@@ -1202,7 +1202,10 @@ export class AuthService {
     // (R-3.3).
     const jti = randomUUID();
     const refreshToken = this.jwt.sign(
-      { sub: user.id, jti, typ: TOKEN_KIND.refresh },
+      // A string, like the access token's: `refreshFromToken` reads it with
+      // `parsePortalId`, which refuses a number — a numeric `sub` here made
+      // every portal refresh a 401 (found live on 29 Sep 2026, after 0159).
+      { sub: String(user.id), jti, typ: TOKEN_KIND.refresh },
       {
         secret: this.config.getOrThrow<string>('JWT_REFRESH_SECRET'),
         expiresIn: '30d',

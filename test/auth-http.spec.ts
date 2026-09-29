@@ -184,6 +184,27 @@ describe('refresh, over the wire', () => {
     await sessionFrom(ctx, 'admin', rotated).get(ADMIN_ME).expect(200);
   });
 
+  it('rotates the PORTAL pair too — the client stays signed in past fifteen minutes', async () => {
+    /*
+     * Every other portal refresh in the suite expects a 401 (after sign-out,
+     * after suspension), so a refresh that ALWAYS failed passed all of them.
+     * That is what happened after 0159: the refresh token's `sub` was minted
+     * as a number, `parsePortalId` refused it, and every client would have
+     * been signed out when the access token expired. This is the success path.
+     */
+    const session = await actingAs(ctx, 'portal', CLIENT);
+    const res = await session.post('/v1/auth/refresh').expect(200);
+
+    const rotated = parseSetCookies(res);
+    expect(rotated[COOKIE_BASES.clientRefresh]).toBeTruthy();
+    expect(rotated[COOKIE_BASES.clientRefresh]).not.toBe(
+      session.cookies[COOKIE_BASES.clientRefresh],
+    );
+    await sessionFrom(ctx, 'portal', rotated).get(PORTAL_ME).expect(200);
+    // And again from the rotated token: a pair that refreshes once but not twice is no session.
+    await sessionFrom(ctx, 'portal', rotated).post('/v1/auth/refresh').expect(200);
+  });
+
   it('REGRESSION: refuses a refresh token used as an access token', async () => {
     // The whole point of a 15-minute access token, on a surface where both
     // kinds were signed with one secret. See token-audience.ts.
