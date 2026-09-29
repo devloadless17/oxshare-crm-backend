@@ -8,6 +8,7 @@ import { Mt5BridgeClient } from '../trading/mt5/mt5-bridge.client';
 import { BridgeLogsDto, BridgeOperationsDto, BridgeOutboxDto } from './dto/bridge.dto';
 import { NotClientScoped } from './guards/client-scope.decorator';
 import { PermissionsGuard, RequirePermissions } from './guards/admin.guard';
+import { FullSightGuard } from './guards/full-sight.guard';
 
 /**
  * The MT5 bridge's own internals: its delivery queue, its balance operations,
@@ -51,7 +52,7 @@ export class AdminBridgeController {
   constructor(private readonly bridge: Mt5BridgeClient) {}
 
   @Get('outbox')
-  @UseGuards(PermissionsGuard)
+  @UseGuards(PermissionsGuard, FullSightGuard)
   @RequirePermissions('trading.view')
   /*
    * Stated for all three routes here, and the reason is the same one: there is
@@ -69,7 +70,8 @@ export class AdminBridgeController {
    */
   @NotClientScoped(
     'Passthrough to the bridge HTTP API; reads no CRM rows, so there is no column to scope. ' +
-      'The payload does name client logins — see the note above this decorator.',
+      'The payload does name client logins — see the note above this decorator.' +
+      ' Refused to a territory-scoped admin (FullSightGuard): free text cannot be sliced.',
   )
   @ApiOperation({
     summary: "The bridge's deal delivery queue",
@@ -92,11 +94,12 @@ export class AdminBridgeController {
   }
 
   @Get('operations')
-  @UseGuards(PermissionsGuard)
+  @UseGuards(PermissionsGuard, FullSightGuard)
   @RequirePermissions('trading.view')
   @NotClientScoped(
     'Passthrough to the bridge HTTP API; reads no CRM rows, so there is no column to scope. ' +
-      'The payload does name client logins — see the note on `outbox`.',
+      'The payload does name client logins — see the note on `outbox`.' +
+      ' Refused to a territory-scoped admin (FullSightGuard): free text cannot be sliced.',
   )
   @ApiOperation({
     summary: 'Balance operations, including the ones stuck mid-flight',
@@ -119,11 +122,12 @@ export class AdminBridgeController {
   }
 
   @Get('logs')
-  @UseGuards(PermissionsGuard)
+  @UseGuards(PermissionsGuard, FullSightGuard)
   @RequirePermissions('trading.view')
   @NotClientScoped(
     'Passthrough to the bridge HTTP API; reads no CRM rows, so there is no column to scope. ' +
-      'The log text can mention client logins — see the note on `outbox`.',
+      'The log text can mention client logins — see the note on `outbox`.' +
+      ' Refused to a territory-scoped admin (FullSightGuard): free text cannot be sliced.',
   )
   @ApiOperation({
     summary: "The tail of the bridge's log for today",
