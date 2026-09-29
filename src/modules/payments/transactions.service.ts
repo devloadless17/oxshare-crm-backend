@@ -258,6 +258,7 @@ function toMovementRow(row: AdminCombinedRow) {
     proofFilename: row.proof_filename,
     createdAt: instantOf(row.created_at),
     settledAt: instantOrNull(row.settled_at),
+    reviewedAt: instantOrNull(row.reviewed_at),
   };
 }
 

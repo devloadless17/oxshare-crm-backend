@@ -2094,6 +2094,14 @@ export class AdminTransactionRowDto {
   @NotClientField('a timestamp the system recorded, describing the record rather than the client')
   @ApiPropertyOptional({ type: Date, nullable: true })
   settledAt?: Date | null;
+  /*
+   * When an operator decided it — approved, refused or settled. Null for money
+   * no person decided (a gateway deposit, a transfer). The client profile's
+   * Details view shows it beside the rejection reason.
+   */
+  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
+  @ApiPropertyOptional({ type: Date, nullable: true })
+  reviewedAt?: Date | null;
   /**
    * A person must reconcile this payment — the platform reported another
    * amount, reversed it, paid against a failed row, or disagrees about a
