@@ -1062,21 +1062,24 @@ because new uploads are interleaved with old orphans.
 
 The dev database was reset this way on 10 Sep 2026.
 
-## KYC: the identity core (migration 0147, 26 Sep 2026)
+## KYC: the identity core (0147, 26 Sep 2026) and the broker's form (0158, 29 Sep 2026)
 
 The rules are cross-repo and live in `../CLAUDE.md` ("The identity core is the PLATFORM's"). Where
 they live here:
 
 | file | owns |
 |---|---|
-| `common/kyc/identity-core.ts` | the pure seam: `IDENTITY_FIELDS`, the tiers, `CORE_STEPS`, reserved slugs and names, `newCustomSlug`, label normalising |
-| `store/kyc-config.store.ts` | injects the identity into Personal Information on READ, strips it on WRITE; the `ETag` version |
+| `common/kyc/identity-core.ts` | the pure seam: `IDENTITY_FIELDS`, the tiers, `CORE_STEPS`, reserved slugs and names, `newCustomSlug`, label normalising; `platformStep`/`storedStep` (a placement read back as the platform's detail, written as `{name, required}`); `FormPolicy`, `policyOf`, `withPolicy` |
+| `store/kyc-config.store.ts` | stores Personal Information's identity PLACEMENTS and rebuilds them on read (it injected and stripped all of them until 0158); `evidence_required`; the `ETag` version |
 | `modules/admin/kyc-config-integrity.ts` | every refusal, keyed `steps.i[.fields.j]` — run by EVERY config write |
-| `modules/compliance/kyc-step-state.ts` | the one judge; `approvalBlockers` is what approval re-asks |
+| `modules/compliance/kyc-step-state.ts` | the one judge; `approvalBlockers` is what approval re-asks, against the submission's `form_policy`; `answerElsewhere`/`answersInPlace` find an answer by its key on whichever step holds the question now |
 | `modules/compliance/kyc-review-layout.ts` | the review's `layout`, from `form_snapshot` then the config |
 | `KycService.requestReverification` | `POST /admin/kyc/:id/reverify` — level 0, the stamp, its own email |
 | `kyc_field_labels` (0148) | every question's name, written by `setSteps` and never deleted — so an answer to a question since removed is named in the review, not printed as its key |
 
+- **`format: 2` is required on `PUT /admin/kyc-config`** (`KYC_BUILDER_FORMAT`); anything else is 409
+  `KYC_BUILDER_OUTDATED`, because a pre-0158 console would save the form without its identity
+  placements. The per-step routes (`/admin/kyc-config/steps…`) do not ask for it: no console uses them.
 - **`If-Match` is optional on `PUT /admin/kyc-config`.** The builder always sends it; a caller that
   omits it gets last-write-wins, which is what the e2e restore relies on. Sent and stale, it is 409
   `KYC_CONFIG_STALE`, decided under `pg_advisory_xact_lock`.
@@ -1091,7 +1094,9 @@ they live here:
   review pool and the fresh client placeholder page paths. They are never real objects, and the file route
   answers 404 for them.
 - Pinned by `common/kyc/identity-core.spec.ts`, `kyc-config-integrity.spec.ts`,
-  `test/migration-0147-kyc-identity-core.spec.ts` and `test/kyc-reverification.spec.ts`.
+  `test/migration-0147-kyc-identity-core.spec.ts` (0158's placements too), `test/kyc-reverification.spec.ts`
+  and `test/kyc-form-customizable.spec.ts` (details taken off, optional selfie, a tightened form, a
+  moved question).
 
 ## The client's identity RECORD (0151–0152, 28 Sep 2026)
 
