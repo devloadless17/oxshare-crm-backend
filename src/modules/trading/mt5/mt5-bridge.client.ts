@@ -58,6 +58,14 @@ export interface Mt5AccountSnapshot {
   marginLevel: string | null;
 }
 
+/** Who an account belongs to, as MT5 records it — the link screen's check. */
+export interface Mt5AccountHolder {
+  login: number;
+  name: string;
+  email: string;
+  group: string;
+}
+
 export interface Mt5BalanceResult {
   dealId: number;
   /** True when this idempotency key had already run — same deal, not a new one. */
@@ -275,6 +283,25 @@ export class Mt5BridgeClient {
     } catch (error) {
       if (error instanceof ExternalServiceError && error.message.includes('404')) {
         return false;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * The holder's name and email as MT5 records them, for an operator confirming
+   * whose account a login is before linking it (`GET /accounts/{login}/holder`).
+   *
+   * Null on a 404 — which is also what a bridge predating the route answers, so
+   * a caller treats null as "MT5 could not say", never as "no such account"; the
+   * snapshot read decides that.
+   */
+  async getAccountHolder(login: string): Promise<Mt5AccountHolder | null> {
+    try {
+      return await this.request<Mt5AccountHolder>('GET', `/accounts/${login}/holder`);
+    } catch (error) {
+      if (error instanceof ExternalServiceError && error.message.includes('404')) {
+        return null;
       }
       throw error;
     }

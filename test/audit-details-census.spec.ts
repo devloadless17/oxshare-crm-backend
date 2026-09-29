@@ -216,6 +216,8 @@ const WRITES_DETAILS: readonly string[] = [
   'settings.smtp.update',
   'settings.trading.update',
   'trading.account_create',
+  'trading.account_link',
+  'trading.account_product',
   'trading.deposit',
   'trading.withdraw',
   'transfer.abandon',

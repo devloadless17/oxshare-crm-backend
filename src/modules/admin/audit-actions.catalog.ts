@@ -213,6 +213,8 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   // the other two move money on a server the CRM does not own, with no ledger
   // row anywhere else to reconcile against — this log is the only record.
   { action: 'trading.account_create', label: 'MT5 account opened', group: 'Compliance' },
+  { action: 'trading.account_link', label: 'Existing MT5 account linked', group: 'Compliance' },
+  { action: 'trading.account_product', label: 'Trading account product set', group: 'Compliance' },
   { action: 'trading.deposit', label: 'MT5 account credited', group: 'Compliance' },
   { action: 'trading.withdraw', label: 'MT5 account debited', group: 'Compliance' },
 

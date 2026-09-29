@@ -5435,6 +5435,128 @@
         ]
       }
     },
+    "/v1/admin/mt5/accounts/{login}": {
+      "get": {
+        "description": "MT5's snapshot and holder name/email, the products that sell its group, whether the CRM already owns the login (the owner is named only inside your territory), and how many of its deals are waiting to accrue. Read-only.",
+        "operationId": "Mt5AccountsController_lookup",
+        "parameters": [
+          {
+            "name": "login",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Mt5AccountLookupDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Look up an MT5 login to link it to a client",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/trading-accounts/link": {
+      "post": {
+        "description": "Records the login under the client with its product; its waiting deals accrue on the next commission run. Refuses a login the CRM already has (409), one MT5 does not have (404), a currency the platform does not hold, and a product that does not sell the group.",
+        "operationId": "Mt5AccountsController_link",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinkMt5AccountDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinkedMt5AccountDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Link an existing MT5 account to a client",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/trading-accounts/{id}/product": {
+      "patch": {
+        "description": "The product must sell the account's MT5 group. Applies to trades not yet decided; accruals already written keep the terms that priced them.",
+        "operationId": "Mt5AccountsController_setProduct",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetTradingAccountProductDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TradingAccountProductDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Set a trading account's product",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/trading-accounts/{id}/live": {
       "get": {
         "operationId": "Mt5AccountsController_live",
@@ -16937,6 +17059,234 @@
           "currency",
           "leverage",
           "environment"
+        ]
+      },
+      "Mt5ProductOptionDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string",
+            "example": "Standard"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ]
+      },
+      "Mt5AccountOwnerDto": {
+        "type": "object",
+        "properties": {
+          "portalId": {
+            "type": "integer",
+            "description": "Absent when the owner is outside your territory."
+          },
+          "name": {
+            "type": "string",
+            "description": "Absent when the owner is outside your territory."
+          },
+          "outsideTerritory": {
+            "type": "boolean",
+            "description": "True when a client you may not see already owns it."
+          }
+        },
+        "required": [
+          "outsideTerritory"
+        ]
+      },
+      "Mt5AccountLookupDto": {
+        "type": "object",
+        "properties": {
+          "login": {
+            "type": "string",
+            "example": "5000123"
+          },
+          "group": {
+            "type": "string",
+            "example": "real\\Standard"
+          },
+          "currency": {
+            "type": "string",
+            "example": "USD"
+          },
+          "leverage": {
+            "type": "integer"
+          },
+          "balance": {
+            "type": "string",
+            "example": "1250.00000000"
+          },
+          "equity": {
+            "type": "string",
+            "example": "1250.00000000"
+          },
+          "credit": {
+            "type": "string",
+            "example": "0.00000000"
+          },
+          "holderName": {
+            "type": "string",
+            "nullable": true,
+            "description": "The holder's name as MT5 records it; null if the bridge could not say or your role hides names."
+          },
+          "holderEmail": {
+            "type": "string",
+            "nullable": true,
+            "description": "Null if the bridge could not say or your role hides emails."
+          },
+          "environment": {
+            "type": "string",
+            "enum": [
+              "live",
+              "demo"
+            ],
+            "nullable": true,
+            "description": "What the catalogue sells the group as; null when no product carries it."
+          },
+          "currencyKnown": {
+            "type": "boolean",
+            "description": "Whether the account's currency is one this platform holds."
+          },
+          "products": {
+            "description": "The products that sell this group.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Mt5ProductOptionDto"
+            }
+          },
+          "owner": {
+            "nullable": true,
+            "description": "The CRM client who already owns this login; null when nobody does.",
+            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Mt5AccountOwnerDto"
+              }
+            ]
+          },
+          "waitingDeals": {
+            "type": "integer",
+            "description": "Deals on this login ingested but not yet paid on — they accrue once it is linked."
+          }
+        },
+        "required": [
+          "login",
+          "group",
+          "currency",
+          "leverage",
+          "balance",
+          "equity",
+          "credit",
+          "environment",
+          "currencyKnown",
+          "products",
+          "waitingDeals"
+        ]
+      },
+      "LinkMt5AccountDto": {
+        "type": "object",
+        "properties": {
+          "userId": {
+            "type": "integer",
+            "description": "The client the account is linked to."
+          },
+          "login": {
+            "type": "string",
+            "example": "5000123",
+            "description": "The MT5 login, as digits."
+          },
+          "productId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The product whose commission terms the account's trades pay. Must sell the account's group; required when several products do, and optional when one does (it is used)."
+          }
+        },
+        "required": [
+          "userId",
+          "login"
+        ]
+      },
+      "LinkedMt5AccountDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "login": {
+            "type": "string"
+          },
+          "group": {
+            "type": "string"
+          },
+          "productId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "environment": {
+            "type": "string",
+            "enum": [
+              "live",
+              "demo"
+            ]
+          },
+          "currency": {
+            "type": "string"
+          },
+          "balance": {
+            "type": "string"
+          },
+          "waitingDeals": {
+            "type": "integer",
+            "description": "Deals now waiting to accrue on the next run."
+          }
+        },
+        "required": [
+          "id",
+          "login",
+          "group",
+          "productId",
+          "environment",
+          "currency",
+          "balance",
+          "waitingDeals"
+        ]
+      },
+      "SetTradingAccountProductDto": {
+        "type": "object",
+        "properties": {
+          "productId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true,
+            "description": "A product that sells the account's MT5 group, or null to record none."
+          }
+        },
+        "required": [
+          "productId"
+        ]
+      },
+      "TradingAccountProductDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "productId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          }
+        },
+        "required": [
+          "id",
+          "productId"
         ]
       },
       "Mt5GroupCommissionTierDto": {

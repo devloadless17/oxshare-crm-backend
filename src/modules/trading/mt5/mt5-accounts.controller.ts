@@ -1,9 +1,17 @@
-import { Body, Controller, Get, Param, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
 import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Request } from 'express';
 import { ParseUUIDPipe } from '@nestjs/common';
 import { Mt5AccountsService } from './mt5-accounts.service';
-import { CreateMt5AccountDto, CreatedMt5AccountDto } from './dto/mt5-account.dto';
+import {
+  CreateMt5AccountDto,
+  CreatedMt5AccountDto,
+  LinkedMt5AccountDto,
+  LinkMt5AccountDto,
+  Mt5AccountLookupDto,
+  SetTradingAccountProductDto,
+  TradingAccountProductDto,
+} from './dto/mt5-account.dto';
 import {
   PermissionsGuard,
   RequirePermissions,
@@ -89,6 +97,85 @@ export class Mt5AccountsController {
       },
       req.admin,
     );
+  }
+
+  /*
+   * ── Linking an EXISTING MT5 account to a client (owner, 29 Sep 2026) ───────
+   *
+   * Search the client, look the login up, see both side by side, link, choose
+   * the product. `trading.create`: linking gives a client an account exactly as
+   * opening one does, and pays commission on it from the next run.
+   */
+
+  /** One MT5 login, for the link screen — MT5's account and holder, and its options. */
+  @Get('mt5/accounts/:login')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('trading.create')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Look up an MT5 login to link it to a client',
+    description:
+      "MT5's snapshot and holder name/email, the products that sell its group, whether the CRM " +
+      'already owns the login (the owner is named only inside your territory), and how many of ' +
+      'its deals are waiting to accrue. Read-only.',
+  })
+  @ApiOkResponse({ type: Mt5AccountLookupDto })
+  @NotClientScoped(
+    'The path names an MT5 login, not a client. When the CRM already owns the login, the owner ' +
+      'is resolved with clientScopePredicate and named only inside the reader territory.',
+  )
+  lookup(@Req() req: Request & { admin: AuthenticatedAdmin }, @Param('login') login: string) {
+    return this.accounts.lookupMt5Account(login, req.admin);
+  }
+
+  /** Link a login MT5 already has to a client, with its product. */
+  @Post('trading-accounts/link')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('trading.create')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Link an existing MT5 account to a client',
+    description:
+      'Records the login under the client with its product; its waiting deals accrue on the next ' +
+      'commission run. Refuses a login the CRM already has (409), one MT5 does not have (404), a ' +
+      'currency the platform does not hold, and a product that does not sell the group.',
+  })
+  @ScopedToClients(
+    'Mt5AccountsService.linkMt5Account reads the target client with clientScopePredicate; a ' +
+      'client outside the territory is 404, like one that does not exist.',
+  )
+  @Audited('trading.account_link')
+  @ApiOkResponse({ type: LinkedMt5AccountDto })
+  link(@Req() req: Request & { admin: AuthenticatedAdmin }, @Body() dto: LinkMt5AccountDto) {
+    return this.accounts.linkMt5Account(
+      { userId: dto.userId, login: dto.login, productId: dto.productId },
+      req.admin,
+    );
+  }
+
+  /** Set, change or clear the product a trading account's trades pay under. */
+  @Patch('trading-accounts/:id/product')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('trading.create')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: "Set a trading account's product",
+    description:
+      "The product must sell the account's MT5 group. Applies to trades not yet decided; " +
+      'accruals already written keep the terms that priced them.',
+  })
+  @ScopedToClients(
+    "Mt5AccountsService.setAccountProduct joins the account's owner under clientScopePredicate; " +
+      'an account of a client outside the territory is 404.',
+  )
+  @Audited('trading.account_product')
+  @ApiOkResponse({ type: TradingAccountProductDto })
+  setProduct(
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() dto: SetTradingAccountProductDto,
+  ) {
+    return this.accounts.setAccountProduct(id, dto.productId, req.admin);
   }
 
   /*
