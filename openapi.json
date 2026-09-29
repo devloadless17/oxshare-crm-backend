@@ -19208,13 +19208,19 @@
             "example": "Date of Birth"
           },
           "required": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "Required by the form as it stands; false when not asked."
+          },
+          "asked": {
+            "type": "boolean",
+            "description": "The form asks it now, so the client can answer it — only these can be returned. The others are shown for comparison with the document."
           }
         },
         "required": [
           "key",
           "label",
-          "required"
+          "required",
+          "asked"
         ]
       },
       "KycReviewPageDto": {

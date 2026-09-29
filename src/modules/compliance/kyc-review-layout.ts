@@ -72,7 +72,13 @@ export interface KycReviewSection {
 }
 
 export interface KycReviewLayout {
-  identity: { key: ProfileKey; label: string; required: boolean }[];
+  /**
+   * Every identity detail, in the platform's order: the reviewer compares the
+   * client's name and date of birth with the document even where the form does
+   * not ask for them. `asked` — the form asks it now (Phase 2: the broker places
+   * them), so the client can answer it if it is returned; `required` — as placed.
+   */
+  identity: { key: ProfileKey; label: string; required: boolean; asked: boolean }[];
   identityDocument: KycReviewDocument;
   proofOfAddress: KycReviewDocument & { asked: boolean };
   selfie: { asked: boolean; label: string };
@@ -118,11 +124,17 @@ export function reviewLayout(
 ): KycReviewLayout {
   const asked = (slug: string) => steps.some((step) => step.slug === slug && step.enabled);
   const additional = additionalSections(steps, submission, recorded);
+  const placed = new Map(
+    (steps.find((step) => step.slug === 'personal' && step.enabled)?.fields ?? [])
+      .filter((field) => isProfileKey(field.name))
+      .map((field) => [field.name, Boolean(field.required)]),
+  );
   return {
     identity: IDENTITY_FIELDS.map((field) => ({
       key: field.name,
       label: field.label,
-      required: field.required,
+      required: placed.get(field.name) ?? false,
+      asked: placed.has(field.name),
     })),
     identityDocument: documentOf(submission.document?.docType, 'identity', 'Identity document'),
     proofOfAddress: {
@@ -277,7 +289,11 @@ export function returnableItems(
   layout: KycReviewLayout,
   submission: Pick<KycSubmission, 'document' | 'addressProof' | 'selfie'>,
 ): Set<string> {
-  const items = new Set<string>(layout.identity.map((field) => field.key));
+  // Only a detail the form ASKS: returning one it does not would ask the client
+  // for something their form gives them no field for.
+  const items = new Set<string>(
+    layout.identity.filter((field) => field.asked).map((field) => field.key),
+  );
   const onFile: Record<string, string | undefined> = {
     doc_front: submission.document?.frontFilePath,
     doc_back: submission.document?.backFilePath,

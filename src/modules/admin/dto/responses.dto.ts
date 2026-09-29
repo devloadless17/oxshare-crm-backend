@@ -296,7 +296,14 @@ export class KycReviewSelfieDto {
 export class KycReviewIdentityFieldDto {
   @ApiProperty({ enum: PROFILE_FIELD_KEYS }) key: (typeof PROFILE_FIELD_KEYS)[number];
   @ApiProperty({ example: 'Date of Birth' }) label: string;
-  @ApiProperty() required: boolean;
+  @ApiProperty({ description: 'Required by the form as it stands; false when not asked.' })
+  required: boolean;
+  @ApiProperty({
+    description:
+      'The form asks it now, so the client can answer it — only these can be returned. ' +
+      'The others are shown for comparison with the document.',
+  })
+  asked: boolean;
 }
 
 /** One of the broker's own questions, and where its answer is filed. */

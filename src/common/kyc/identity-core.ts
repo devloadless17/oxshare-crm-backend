@@ -110,6 +110,13 @@ export interface IdentityField extends FormField {
  * broker's (the owner's ruling): everything but the postal code, which many
  * addresses do not have — the UAE's and Qatar's among them.
  */
+/**
+ * Advice for an OPTIONAL detail. Where the broker makes that detail required it
+ * is dropped (`platformStep`): "leave blank" beside a required asterisk told the
+ * client two opposite things (found in local testing, 29 Sep 2026).
+ */
+const BLANK_ALLOWED_HINT = 'Leave blank if your address has none';
+
 export const IDENTITY_FIELDS: readonly IdentityField[] = [
   {
     id: 'f-1',
@@ -161,7 +168,7 @@ export const IDENTITY_FIELDS: readonly IdentityField[] = [
     label: 'State / Province',
     type: 'text',
     required: false,
-    hint: 'Leave blank if your address has none',
+    hint: BLANK_ALLOWED_HINT,
   },
   {
     id: 'f-postal-code',
@@ -169,7 +176,7 @@ export const IDENTITY_FIELDS: readonly IdentityField[] = [
     label: 'Postal / ZIP code',
     type: 'text',
     required: false,
-    hint: 'Leave blank if your address has none',
+    hint: BLANK_ALLOWED_HINT,
   },
 ];
 
@@ -371,7 +378,15 @@ export function platformStep<S extends FormStep>(step: S): S {
     if (core.slug === 'personal' && isProfileKey(field.name)) {
       if (placed.has(field.name)) continue;
       placed.add(field.name);
-      own.push({ ...identityField(field.name)!, required: Boolean(field.required), system: true });
+      const detail = identityField(field.name)!;
+      const required = Boolean(field.required);
+      const { hint, ...rest } = detail;
+      own.push({
+        ...rest,
+        ...(hint && !(required && hint === BLANK_ALLOWED_HINT) ? { hint } : {}),
+        required,
+        system: true,
+      });
     } else if (!isPlatformField(core.slug, field)) {
       own.push(field);
     }
