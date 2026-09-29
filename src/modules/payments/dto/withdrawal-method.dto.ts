@@ -54,8 +54,11 @@ export class AdminWithdrawalMethodDto {
   })
   internalLabel: string;
 
+  /** @deprecated Always false since 0168 — see `AdminPaymentMethodDto.builtIn`. */
   @ApiProperty({
-    description: 'The platform’s code depends on this rail (`whish`, the Rival payouts).',
+    description:
+      'Deprecated: always false. No rail is built in since payment providers (0168); ' +
+      'any rail no withdrawal references can be deleted.',
   })
   builtIn: boolean;
 
@@ -63,6 +66,27 @@ export class AdminWithdrawalMethodDto {
     description: 'A withdrawal references this method. Such a method cannot be deleted.',
   })
   inUse: boolean;
+
+  @ApiProperty({
+    example: 'rival',
+    description: 'The payment provider behind the rail (0168). Fixed at creation.',
+  })
+  providerCode: string;
+
+  @ApiProperty({
+    example: 'whish',
+    description: 'The provider’s payout channel the rail uses. Fixed at creation.',
+  })
+  channelCode: string;
+
+  @ApiProperty({
+    enum: ['provider', 'desk'],
+    description:
+      'Who pays a request on it now: the provider (an automated payout it is switched on ' +
+      'for), or the desk by hand — always for a desk or cash rail, and for an automated one ' +
+      'while its provider is off or not set up.',
+  })
+  paidBy: 'provider' | 'desk';
 
   @ApiProperty()
   createdAt: Date;
@@ -72,12 +96,29 @@ export class AdminWithdrawalMethodDto {
 }
 
 export class CreateWithdrawalMethodDto {
+  /**
+   * The payout route — which provider pays, on which of its declared payout
+   * channels (0168). Fixed once the method exists. Omitted, the desk pays
+   * (`manual` · `desk`), which is what every rail but Whish has always been.
+   */
+  @ApiPropertyOptional({ example: 'rival', maxLength: 40 })
+  @IsOptional()
+  @IsString()
+  @Length(1, 40)
+  providerCode?: string;
+
+  @ApiPropertyOptional({ example: 'whish', maxLength: 40 })
+  @IsOptional()
+  @IsString()
+  @Length(1, 40)
+  channelCode?: string;
+
   @ApiPropertyOptional({
     example: 'whish',
     maxLength: 40,
     description:
       'The permanent ID. Omit it — the platform generates one (`wm_…`) and the console never ' +
-      'shows it. Given only to create a rail the CODE matches on (whish).',
+      'shows it.',
   })
   @IsOptional()
   @IsString()

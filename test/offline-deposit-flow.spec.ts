@@ -11,7 +11,7 @@ import { AuditLogStore } from '../src/store/audit-log.store';
 import { emailStubAs } from './email-stub';
 import { notificationsStubAs } from './notifications-stub';
 import { transferExecutorStubAs, transfersStubAs } from './transfer-chain-stub';
-import { gatewayStubAs } from './gateway-stub';
+import { gatewayStub } from './gateway-stub';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
 import { randomUUID } from 'node:crypto';
 import type { ProofFieldInputDto } from '../src/modules/payments/dto/payment-method.dto';
@@ -41,18 +41,19 @@ const OTHER_ADMIN = '00000000-0000-4000-8000-000000000002';
 const OFFLINE = 'offline_receipt';
 const PLAIN = 'plain_manual';
 const RECEIPT = '11111111-1111-4111-8111-111111111111.jpg';
+const providers = gatewayStub();
 
 beforeAll(async () => {
   ctx = await startMoneyTestDb();
   wallets = new WalletService(ctx.db);
   const currencies = new CurrenciesService(ctx.db, auditStubAs());
-  methods = new PaymentMethodsService(ctx.db, currencies, auditStubAs(), gatewayStubAs());
+  methods = new PaymentMethodsService(ctx.db, currencies, auditStubAs(), providers);
   transactions = new TransactionsService(
     wallets,
     ctx.db,
     methods,
     currencies,
-    gatewayStubAs(),
+    providers,
     new ConfigService(),
     emailStubAs(),
     notificationsStubAs(),
@@ -234,11 +235,18 @@ describe('approving an offline deposit', () => {
 
   it('REFUSES to credit a gateway deposit by hand', async () => {
     const userId = await makeClient('offline-gateway@test.local');
-    const deposit = await declare(userId, '100');
-    // The same row, re-badged as a gateway payment — which is exactly the state
-    // the guard has to recognise, since the provider column is what tells the
-    // two eras apart.
-    await ctx.db.execute(sql`UPDATE transactions SET provider = 'whish' WHERE id = ${deposit.id}`);
+    // A deposit on Rival's hosted page, still waiting for its webhook. Its route
+    // is fixed at filing (0168), so it is filed as one rather than re-badged.
+    providers.rivalUsable.mockResolvedValue(true);
+    await ctx.db.execute(sql`UPDATE payment_methods SET enabled = true WHERE key = 'whish'`);
+    const deposit = await transactions.requestDeposit({
+      userId,
+      amount: '100',
+      currency: 'USD',
+      method: 'whish',
+    });
+    providers.rivalUsable.mockResolvedValue(false);
+    expect(deposit.state).toBe('pending');
 
     /*
      * A gateway deposit is confirmed by the provider's webhook. Crediting one

@@ -3456,14 +3456,6 @@
             "schema": {
               "type": "string"
             }
-          },
-          {
-            "name": "method",
-            "required": true,
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
           }
         ],
         "responses": {
@@ -3491,14 +3483,6 @@
             "name": "reference",
             "required": true,
             "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "method",
-            "required": true,
-            "in": "query",
             "schema": {
               "type": "string"
             }
@@ -4102,7 +4086,7 @@
     },
     "/v1/admin/payment-methods": {
       "get": {
-        "description": "Includes disabled methods — turning them on and off is the point of the screen. Clients see a narrower list: GET /payments/methods returns only what is enabled AND, for a gateway, reachable from this deployment.",
+        "description": "Includes disabled methods — turning them on and off is the point of the screen. Clients see a narrower list: GET /payments/methods returns only what is enabled AND whose payment provider can take money — `availability` on each row says which.",
         "operationId": "AdminPaymentMethodsController_list",
         "parameters": [],
         "responses": {
@@ -4254,7 +4238,7 @@
         ]
       },
       "delete": {
-        "description": "Only a method NO transaction references (a typo, a test row) — 409 otherwise: its deposits must keep naming it, so disable it instead. A gateway method is never deleted.",
+        "description": "Only a method NO transaction references (a typo, a test row) — 409 otherwise: its deposits must keep naming it, so disable it instead.",
         "operationId": "AdminPaymentMethodsController_remove",
         "parameters": [
           {
@@ -4430,7 +4414,7 @@
         ]
       },
       "delete": {
-        "description": "Only a method NO withdrawal references — 409 otherwise; disable it instead. `whish` is never deleted.",
+        "description": "Only a method NO withdrawal references — 409 otherwise; disable it instead.",
         "operationId": "AdminWithdrawalMethodsController_remove",
         "parameters": [
           {
@@ -4460,6 +4444,247 @@
           }
         ],
         "summary": "Delete a withdrawal method that was never used",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/payment-providers": {
+      "get": {
+        "operationId": "AdminPaymentProvidersController_list",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/PaymentProviderDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Every payment provider, with its state, channels and methods",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/payment-providers/{code}": {
+      "get": {
+        "operationId": "AdminPaymentProvidersController_get",
+        "parameters": [
+          {
+            "name": "code",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentProviderDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "One payment provider",
+        "tags": [
+          "admin"
+        ]
+      },
+      "put": {
+        "description": "Merged: an absent key is left as it is; `null` or an empty string removes one. Secrets are write-only. A generated secret (a webhook key) is rotated, never typed. Switching on needs every required setting; sandbox is refused on a production deployment.",
+        "operationId": "AdminPaymentProvidersController_update",
+        "parameters": [
+          {
+            "name": "code",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdatePaymentProviderDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentProviderDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Change a provider’s settings, secrets, environment or switch",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/payment-providers/{code}/events": {
+      "get": {
+        "description": "Newest first, at most 200 (`limit`, default 50).",
+        "operationId": "AdminPaymentProvidersController_events",
+        "parameters": [
+          {
+            "name": "code",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ProviderEventDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "What the provider last reported, and what was done about it",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/payment-providers/{code}/test": {
+      "post": {
+        "description": "Changes no setting; the result becomes the provider’s health line.",
+        "operationId": "AdminPaymentProvidersController_test",
+        "parameters": [
+          {
+            "name": "code",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderTestResultDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Test the connection with the saved settings",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/payment-providers/{code}/secrets/{name}/rotate": {
+      "post": {
+        "description": "Returned in plaintext THIS ONCE, to paste into the provider’s dashboard. Deliveries signed with the old one are refused from now until the dashboard is updated; the poller catches up on anything refused in between.",
+        "operationId": "AdminPaymentProvidersController_rotate",
+        "parameters": [
+          {
+            "name": "code",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RotatedProviderSecretDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Generate a new value for a generated secret (a webhook key)",
         "tags": [
           "admin"
         ]
@@ -11344,6 +11569,18 @@
               ],
               "type": "string"
             }
+          },
+          {
+            "name": "decidedBy",
+            "required": false,
+            "in": "query",
+            "description": "Only movements a person decides: deposits paid outside the platform and every withdrawal. A deposit on a provider’s hosted page is settled by the provider. (0168)",
+            "schema": {
+              "enum": [
+                "desk"
+              ],
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -11471,6 +11708,18 @@
               ],
               "type": "string"
             }
+          },
+          {
+            "name": "decidedBy",
+            "required": false,
+            "in": "query",
+            "description": "Only movements a person decides: deposits paid outside the platform and every withdrawal. A deposit on a provider’s hosted page is settled by the provider. (0168)",
+            "schema": {
+              "enum": [
+                "desk"
+              ],
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -11594,6 +11843,18 @@
             "schema": {
               "enum": [
                 "true"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "decidedBy",
+            "required": false,
+            "in": "query",
+            "description": "Only movements a person decides: deposits paid outside the platform and every withdrawal. A deposit on a provider’s hosted page is settled by the provider. (0168)",
+            "schema": {
+              "enum": [
+                "desk"
               ],
               "type": "string"
             }
@@ -15273,11 +15534,30 @@
           "logoUrl": {
             "type": "string",
             "nullable": true
+          },
+          "destinationKind": {
+            "type": "string",
+            "enum": [
+              "none",
+              "phone",
+              "crypto_address",
+              "iban",
+              "text"
+            ],
+            "example": "phone"
+          },
+          "destinationNetwork": {
+            "type": "string",
+            "nullable": true,
+            "example": "TRC20",
+            "description": "A crypto rail’s network: an address is valid on one only."
           }
         },
         "required": [
           "key",
-          "name"
+          "name",
+          "destinationKind",
+          "destinationNetwork"
         ]
       },
       "RequestWithdrawalDto": {
@@ -15739,11 +16019,31 @@
           },
           "builtIn": {
             "type": "boolean",
-            "description": "The platform’s code depends on this method (a payment gateway), so it cannot be deleted."
+            "description": "Deprecated: always false. No method is built in since payment providers (0168); any method no transaction references can be deleted."
           },
           "inUse": {
             "type": "boolean",
             "description": "A transaction references this method. Such a method cannot be deleted — disable it."
+          },
+          "providerCode": {
+            "type": "string",
+            "example": "rival",
+            "description": "The payment provider the method runs on (0168). Fixed at creation."
+          },
+          "channelCode": {
+            "type": "string",
+            "example": "whish",
+            "description": "The provider’s deposit channel the method uses. Fixed at creation."
+          },
+          "availability": {
+            "type": "string",
+            "enum": [
+              "offered",
+              "disabled",
+              "provider_off",
+              "provider_not_configured"
+            ],
+            "description": "Whether clients are offered it: `offered`; `disabled` (switched off here); `provider_off` or `provider_not_configured` (enabled, but its provider cannot take money, so clients do not see it)."
           }
         },
         "required": [
@@ -15761,7 +16061,10 @@
           "ownMaxAmount",
           "internalLabel",
           "builtIn",
-          "inUse"
+          "inUse",
+          "providerCode",
+          "channelCode",
+          "availability"
         ]
       },
       "ProofFieldInputDto": {
@@ -15808,11 +16111,21 @@
       "CreatePaymentMethodDto": {
         "type": "object",
         "properties": {
+          "providerCode": {
+            "type": "string",
+            "example": "rival",
+            "maxLength": 40
+          },
+          "channelCode": {
+            "type": "string",
+            "example": "whish",
+            "maxLength": 40
+          },
           "key": {
             "type": "string",
             "example": "whish",
             "maxLength": 40,
-            "description": "The permanent ID. Omit it — the platform generates one (`pm_…`) and the console never shows it. Given only to create a row the CODE dispatches on (a gateway such as whish)."
+            "description": "The permanent ID. Omit it — the platform generates one (`pm_…`) and the console never shows it."
           },
           "name": {
             "type": "string",
@@ -15984,11 +16297,29 @@
           },
           "builtIn": {
             "type": "boolean",
-            "description": "The platform’s code depends on this rail (`whish`, the Rival payouts)."
+            "description": "Deprecated: always false. No rail is built in since payment providers (0168); any rail no withdrawal references can be deleted."
           },
           "inUse": {
             "type": "boolean",
             "description": "A withdrawal references this method. Such a method cannot be deleted."
+          },
+          "providerCode": {
+            "type": "string",
+            "example": "rival",
+            "description": "The payment provider behind the rail (0168). Fixed at creation."
+          },
+          "channelCode": {
+            "type": "string",
+            "example": "whish",
+            "description": "The provider’s payout channel the rail uses. Fixed at creation."
+          },
+          "paidBy": {
+            "type": "string",
+            "enum": [
+              "provider",
+              "desk"
+            ],
+            "description": "Who pays a request on it now: the provider (an automated payout it is switched on for), or the desk by hand — always for a desk or cash rail, and for an automated one while its provider is off or not set up."
           },
           "createdAt": {
             "format": "date-time",
@@ -16008,6 +16339,9 @@
           "internalLabel",
           "builtIn",
           "inUse",
+          "providerCode",
+          "channelCode",
+          "paidBy",
           "createdAt",
           "updatedAt"
         ]
@@ -16015,11 +16349,21 @@
       "CreateWithdrawalMethodDto": {
         "type": "object",
         "properties": {
+          "providerCode": {
+            "type": "string",
+            "example": "rival",
+            "maxLength": 40
+          },
+          "channelCode": {
+            "type": "string",
+            "example": "whish",
+            "maxLength": 40
+          },
           "key": {
             "type": "string",
             "example": "whish",
             "maxLength": 40,
-            "description": "The permanent ID. Omit it — the platform generates one (`wm_…`) and the console never shows it. Given only to create a rail the CODE matches on (whish)."
+            "description": "The permanent ID. Omit it — the platform generates one (`wm_…`) and the console never shows it."
           },
           "name": {
             "type": "string",
@@ -16073,6 +16417,509 @@
             "type": "number"
           }
         }
+      },
+      "ProviderCheckDto": {
+        "type": "object",
+        "properties": {
+          "at": {
+            "type": "string"
+          },
+          "ok": {
+            "type": "boolean"
+          },
+          "message": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": [
+          "at",
+          "ok",
+          "message"
+        ]
+      },
+      "ProviderSettingDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "baseUrl"
+          },
+          "label": {
+            "type": "string",
+            "example": "API base URL"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "url",
+              "text",
+              "secret"
+            ]
+          },
+          "required": {
+            "type": "boolean",
+            "description": "The provider cannot be switched on without it."
+          },
+          "hint": {
+            "type": "string",
+            "nullable": true
+          },
+          "generated": {
+            "type": "boolean",
+            "description": "Minted by the platform (a webhook key): rotated with POST …/secrets/:name/rotate, never typed."
+          },
+          "value": {
+            "type": "string",
+            "nullable": true,
+            "description": "The stored value of a URL or text setting. Always null for a secret."
+          },
+          "isSet": {
+            "type": "boolean",
+            "description": "Whether a value is stored. A secret is never returned."
+          },
+          "fingerprint": {
+            "type": "string",
+            "nullable": true,
+            "example": "3fa1b2c4",
+            "description": "sha256[:8] of a generated secret: which one, without carrying it."
+          }
+        },
+        "required": [
+          "name",
+          "label",
+          "kind",
+          "required",
+          "hint",
+          "generated",
+          "value",
+          "isSet",
+          "fingerprint"
+        ]
+      },
+      "ProviderChannelDto": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "example": "whish"
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "deposit",
+              "payout"
+            ]
+          },
+          "label": {
+            "type": "string",
+            "example": "Whish"
+          },
+          "flow": {
+            "type": "string",
+            "enum": [
+              "redirect",
+              "offline",
+              "adjustment",
+              "automated",
+              "desk",
+              "cash"
+            ]
+          },
+          "bindable": {
+            "type": "boolean",
+            "description": "May a method bind it? False for the desk’s own adjustments."
+          },
+          "currencies": {
+            "nullable": true,
+            "description": "The currencies it carries; null when the provider judges that itself.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "destinationKind": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "none",
+              "phone",
+              "crypto_address",
+              "iban",
+              "text"
+            ],
+            "description": "Payouts: what the client must give. Null on a deposit channel."
+          },
+          "destinationNetwork": {
+            "type": "string",
+            "nullable": true,
+            "example": "TRC20"
+          },
+          "destinationLabel": {
+            "type": "string",
+            "nullable": true,
+            "example": "Whish phone number"
+          },
+          "acceptsReceipt": {
+            "type": "boolean",
+            "description": "Deposits paid outside the platform may ask for a receipt."
+          }
+        },
+        "required": [
+          "code",
+          "direction",
+          "label",
+          "flow",
+          "bindable",
+          "currencies",
+          "destinationKind",
+          "destinationNetwork",
+          "destinationLabel",
+          "acceptsReceipt"
+        ]
+      },
+      "ProviderMethodDto": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "The method’s permanent id; the console never shows it."
+          },
+          "internalLabel": {
+            "type": "string",
+            "example": "Whish (Rival)",
+            "description": "What the desk calls it."
+          },
+          "name": {
+            "type": "string",
+            "example": "Whish Money",
+            "description": "What clients see."
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "deposit",
+              "payout"
+            ]
+          },
+          "channelCode": {
+            "type": "string",
+            "example": "whish"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "availability": {
+            "type": "string",
+            "enum": [
+              "offered",
+              "disabled",
+              "provider_off",
+              "provider_not_configured"
+            ],
+            "description": "Deposit methods: whether clients are offered it, and if not, why. A payout method is offered whenever it is enabled — see `paidBy`."
+          },
+          "paidBy": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "provider",
+              "desk"
+            ],
+            "description": "Payout methods: who pays a request now. Null on a deposit method."
+          }
+        },
+        "required": [
+          "key",
+          "internalLabel",
+          "name",
+          "direction",
+          "channelCode",
+          "enabled",
+          "availability",
+          "paidBy"
+        ]
+      },
+      "ProviderActivityDto": {
+        "type": "object",
+        "properties": {
+          "total": {
+            "type": "number",
+            "description": "Deposits and withdrawals filed on this provider in the last 24h."
+          },
+          "succeeded": {
+            "type": "number"
+          },
+          "failed": {
+            "type": "number",
+            "description": "Failed or rejected."
+          },
+          "pending": {
+            "type": "number",
+            "description": "Still pending, or approved and awaiting the payout."
+          }
+        },
+        "required": [
+          "total",
+          "succeeded",
+          "failed",
+          "pending"
+        ]
+      },
+      "PaymentProviderDto": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "example": "rival"
+          },
+          "name": {
+            "type": "string",
+            "example": "Rival"
+          },
+          "builtIn": {
+            "type": "boolean",
+            "description": "Built into the platform (the desk): always on, no settings."
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "environment": {
+            "type": "string",
+            "enum": [
+              "live",
+              "sandbox"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "connected",
+              "unverified",
+              "failing",
+              "off",
+              "not_configured",
+              "sandbox_refused"
+            ]
+          },
+          "statusMessage": {
+            "type": "string",
+            "nullable": true,
+            "description": "One sentence explaining the status."
+          },
+          "usable": {
+            "type": "boolean",
+            "description": "Can its methods take money right now?"
+          },
+          "configuredFrom": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "console",
+              "environment"
+            ],
+            "description": "`environment`: nothing is saved here and the deployment’s variables configure it (a development floor). Null for a built-in provider or one not set up."
+          },
+          "lastEventAt": {
+            "type": "string",
+            "nullable": true,
+            "description": "The last verified inbound event."
+          },
+          "lastCheck": {
+            "nullable": true,
+            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ProviderCheckDto"
+              }
+            ]
+          },
+          "webhookEndpoint": {
+            "type": "string",
+            "nullable": true,
+            "description": "Where the provider must deliver its events. Null without API_PUBLIC_URL."
+          },
+          "settings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProviderSettingDto"
+            }
+          },
+          "channels": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProviderChannelDto"
+            }
+          },
+          "methods": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProviderMethodDto"
+            }
+          },
+          "last24h": {
+            "$ref": "#/components/schemas/ProviderActivityDto"
+          },
+          "updatedAt": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": [
+          "code",
+          "name",
+          "builtIn",
+          "enabled",
+          "environment",
+          "status",
+          "statusMessage",
+          "usable",
+          "configuredFrom",
+          "lastEventAt",
+          "webhookEndpoint",
+          "settings",
+          "channels",
+          "methods",
+          "last24h",
+          "updatedAt"
+        ]
+      },
+      "ProviderEventDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "eventType": {
+            "type": "string",
+            "example": "payment.succeeded",
+            "description": "payment.pending|succeeded|failed|reversed, payout.submitted|completed|rejected|cancelled"
+          },
+          "providerType": {
+            "type": "string",
+            "nullable": true,
+            "example": "transaction.completed"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "webhook",
+              "poll",
+              "desk"
+            ]
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "applied",
+              "ignored",
+              "rejected",
+              "failed"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "nullable": true
+          },
+          "transactionId": {
+            "type": "string",
+            "nullable": true
+          },
+          "receivedAt": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "eventType",
+          "providerType",
+          "source",
+          "outcome",
+          "reason",
+          "transactionId",
+          "receivedAt"
+        ]
+      },
+      "UpdatePaymentProviderDto": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "environment": {
+            "type": "string",
+            "enum": [
+              "live",
+              "sandbox"
+            ]
+          },
+          "settings": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string",
+              "nullable": true
+            },
+            "example": {
+              "baseUrl": "https://portal.rivalpayments.com/v1"
+            }
+          },
+          "secrets": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string",
+              "nullable": true
+            },
+            "example": {
+              "apiKey": "tsk_…"
+            }
+          }
+        }
+      },
+      "ProviderTestResultDto": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "message": {
+            "type": "string"
+          },
+          "checkedAt": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "ok",
+          "message",
+          "checkedAt"
+        ]
+      },
+      "RotatedProviderSecretDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "webhookKey"
+          },
+          "secret": {
+            "type": "string",
+            "description": "The new secret, in plaintext, THIS ONCE — paste it into the provider’s dashboard. It is never retrievable again."
+          },
+          "fingerprint": {
+            "type": "string",
+            "example": "3fa1b2c4"
+          },
+          "webhookEndpoint": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": [
+          "name",
+          "secret",
+          "fingerprint",
+          "webhookEndpoint"
+        ]
       },
       "StatementLineDto": {
         "type": "object",
@@ -21925,6 +22772,24 @@
           "provider": {
             "type": "string"
           },
+          "providerCode": {
+            "type": "string",
+            "example": "rival",
+            "description": "The payment provider that pays it."
+          },
+          "channelCode": {
+            "type": "string",
+            "example": "whish",
+            "description": "The provider’s payout channel."
+          },
+          "providerEnvironment": {
+            "type": "string",
+            "enum": [
+              "live",
+              "sandbox"
+            ],
+            "example": "live"
+          },
           "methodName": {
             "type": "string",
             "example": "Whish Money"
@@ -22029,6 +22894,9 @@
           "currency",
           "state",
           "provider",
+          "providerCode",
+          "channelCode",
+          "providerEnvironment",
           "methodName",
           "requestedAt",
           "rivalNeedsAttention",

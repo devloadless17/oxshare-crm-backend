@@ -96,6 +96,8 @@
     "leverages.view",
     "payments.create",
     "payments.edit",
+    "payments.providers.edit",
+    "payments.providers.view",
     "payments.view",
     "reconciliation.view",
     "roles.create",

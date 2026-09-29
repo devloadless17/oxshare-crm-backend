@@ -172,10 +172,10 @@ export class PaymentsController {
   @ApiOperation({ summary: "The current state of one of the caller's own gateway deposits" })
   depositStatus(
     @Param('reference') reference: string,
-    @Query('method') method: string,
+    @Query('method') method: string | undefined,
     @Req() req: Request & { user: User },
   ) {
-    return this.transactions.gatewayDepositState(method, reference, req.user.id);
+    return this.transactions.gatewayDepositState(method || undefined, reference, req.user.id);
   }
 
   @Post('deposits/:reference/settle')
@@ -191,10 +191,12 @@ export class PaymentsController {
   })
   settleDeposit(
     @Param('reference') reference: string,
-    @Query('method') method: string,
+    @Query('method') method: string | undefined,
     @Req() req: Request & { user: User },
   ) {
-    return this.transactions.settleGatewayDeposit(method, reference, { ownerId: req.user.id });
+    return this.transactions.settleGatewayDeposit(method || undefined, reference, {
+      ownerId: req.user.id,
+    });
   }
 
   @Post('deposits')

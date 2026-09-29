@@ -85,8 +85,8 @@ export class AdminPaymentMethodsController {
     summary: 'Every payment method, enabled or not',
     description:
       'Includes disabled methods — turning them on and off is the point of the screen. Clients ' +
-      'see a narrower list: GET /payments/methods returns only what is enabled AND, for a ' +
-      'gateway, reachable from this deployment.',
+      'see a narrower list: GET /payments/methods returns only what is enabled AND whose ' +
+      'payment provider can take money — `availability` on each row says which.',
   })
   @ApiOkResponse({ type: AdminPaymentMethodDto, isArray: true })
   @NotClientScoped('Platform payment configuration; names no client and returns no client data.')
@@ -194,7 +194,7 @@ export class AdminPaymentMethodsController {
     summary: 'Delete a payment method that was never used',
     description:
       'Only a method NO transaction references (a typo, a test row) — 409 otherwise: its ' +
-      'deposits must keep naming it, so disable it instead. A gateway method is never deleted.',
+      'deposits must keep naming it, so disable it instead.',
   })
   @ApiOkResponse({ type: DeletedMethodDto })
   @NotClientScoped('Platform payment configuration; names no client and returns no client data.')

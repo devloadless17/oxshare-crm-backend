@@ -1,8 +1,10 @@
 import { Inject, Injectable } from '@nestjs/common';
+import { PaymentProviderRegistry } from './providers/payment-provider-registry';
 import { and, asc, eq, ne, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
-import { transactions, withdrawalPaymentMethods } from '../../database/schema';
+import { paymentProviders, transactions, withdrawalPaymentMethods } from '../../database/schema';
+import type { ProviderState } from './providers/provider-status';
 import { ConflictError, NotFoundError } from '../../common/errors/domain-errors';
 import { AdminAuditService } from '../admin/admin-audit.service';
 import type { Actor } from '../../common/security/actor';
@@ -20,13 +22,6 @@ import {
 } from './method-keys';
 
 type WithdrawalMethodRow = typeof withdrawalPaymentMethods.$inferSelect;
-
-/**
- * Rails the CODE depends on: the Rival payout flow selects withdrawals by
- * `provider = 'whish'` (`rival-withdrawals.service.ts`, `rival-poll.scheduler.ts`)
- * and the portal's payout field is keyed on it. Such a row is never deleted.
- */
-const BUILT_IN_WITHDRAWAL_KEYS: ReadonlySet<string> = new Set(['whish']);
 
 /** Does any withdrawal reference this method? Indexed (0161). */
 const methodInUse = sql<boolean>`exists (
@@ -59,6 +54,8 @@ export class WithdrawalMethodsService {
   constructor(
     @Inject(DRIZZLE_DB) private readonly db: Db,
     private readonly audit: AdminAuditService,
+    // Every route a payout method may take (0168).
+    private readonly providers: PaymentProviderRegistry,
   ) {}
 
   /** Every method, disabled ones included, in the order clients see them. */
@@ -67,7 +64,8 @@ export class WithdrawalMethodsService {
       .select({ row: withdrawalPaymentMethods, inUse: methodInUse })
       .from(withdrawalPaymentMethods)
       .orderBy(asc(withdrawalPaymentMethods.sortOrder), asc(withdrawalPaymentMethods.name));
-    return rows.map(({ row, inUse }) => this.adminView(row, inUse));
+    const providers = await this.providerStates();
+    return rows.map(({ row, inUse }) => this.adminView(row, inUse, providers));
   }
 
   /** One method as the console sees it. */
@@ -77,11 +75,28 @@ export class WithdrawalMethodsService {
       .from(withdrawalPaymentMethods)
       .where(eq(withdrawalPaymentMethods.key, this.normalise(key)))
       .limit(1);
-    return found ? this.adminView(found.row, found.inUse) : null;
+    return found ? this.adminView(found.row, found.inUse, await this.providerStates()) : null;
   }
 
-  private adminView(row: WithdrawalMethodRow, inUse: boolean): AdminWithdrawalMethodDto {
-    return { ...row, builtIn: BUILT_IN_WITHDRAWAL_KEYS.has(row.key), inUse };
+  /**
+   * `paidBy` is who pays a request on this method NOW (0168). A payout channel
+   * the provider automates is paid by the provider while it can take
+   * instructions; while it is off or not set up, the desk pays it by hand — as
+   * it always has — so an enabled payout method is never hidden for its
+   * provider's sake. The approve dialog says which.
+   */
+  private adminView(
+    row: WithdrawalMethodRow,
+    inUse: boolean,
+    providers: Map<string, ProviderState>,
+  ): AdminWithdrawalMethodDto {
+    const automated = this.providers.isAutomatedPayout(row);
+    const paidBy = automated && providers.get(row.providerCode)?.usable ? 'provider' : 'desk';
+    return { ...row, builtIn: false, inUse, paidBy };
+  }
+
+  private async providerStates(): Promise<Map<string, ProviderState>> {
+    return this.providers.states(await this.db.select().from(paymentProviders));
   }
 
   async findOne(key: string): Promise<WithdrawalMethodRow | null> {
@@ -94,10 +109,17 @@ export class WithdrawalMethodsService {
   }
 
   async create(dto: CreateWithdrawalMethodDto, actor: Actor): Promise<AdminWithdrawalMethodDto> {
-    // Generated unless a caller names a rail the code matches on (whish). Its
-    // provider IS its key, so a named one may not enter the `manual_` namespace.
+    // Generated unless a caller names one. A withdrawal's `provider` column is
+    // its method key, so a named one may not enter the `manual_` namespace.
     const key = dto.key !== undefined ? this.normalise(dto.key) : await this.freshKey();
     assertWithdrawalMethodKeyAllowed(key);
+    // The payout route, judged at SAVE (0168): a payout channel the provider
+    // declares and a method may bind.
+    const route = {
+      providerCode: dto.providerCode ?? 'manual',
+      channelCode: dto.channelCode ?? 'desk',
+    };
+    this.providers.assertBindable(route, 'payout', {});
     if (dto.key !== undefined && (await this.findOne(key))) {
       throw new ConflictError(`A withdrawal method with the key ${key} already exists.`);
     }
@@ -113,6 +135,8 @@ export class WithdrawalMethodsService {
         logoUrl: dto.logoUrl ?? null,
         enabled: dto.enabled ?? true,
         sortOrder: dto.sortOrder ?? (await this.nextSortOrder()),
+        providerCode: route.providerCode,
+        channelCode: route.channelCode,
       })
       .returning();
 
@@ -121,7 +145,7 @@ export class WithdrawalMethodsService {
       internalLabel: row.internalLabel,
       enabled: row.enabled,
     });
-    return this.adminView(row, false);
+    return this.adminView(row, false, await this.providerStates());
   }
 
   async update(
@@ -177,9 +201,6 @@ export class WithdrawalMethodsService {
   async remove(key: string, actor: Actor): Promise<{ key: string; deleted: true }> {
     const current = await this.findOneForAdmin(key);
     if (!current) throw new NotFoundError(`Unknown withdrawal method ${this.normalise(key)}.`);
-    if (current.builtIn) {
-      throw new ConflictError(`${current.name} is built into the platform and cannot be deleted.`);
-    }
     const inUse = new ConflictError(
       `${current.name} has been used by withdrawals and cannot be deleted. Disable it instead.`,
     );

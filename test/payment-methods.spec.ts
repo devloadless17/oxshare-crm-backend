@@ -14,7 +14,7 @@ import { emailStubAs } from './email-stub';
 import { notificationsStubAs } from './notifications-stub';
 import { transferExecutorStubAs, transfersStubAs } from './transfer-chain-stub';
 import { gatewayStub } from './gateway-stub';
-import type { PaymentGateways } from '../src/modules/payments/payment-gateways.service';
+import type { PaymentProviderRegistry } from '../src/modules/payments/providers/payment-provider-registry';
 import { PaymentIndeterminateError, ValidationError } from '../src/common/errors/domain-errors';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
 import { UNRESTRICTED } from '../src/common/security/client-scope';
@@ -63,7 +63,7 @@ beforeAll(async () => {
   const currencies = new CurrenciesService(ctx.db, auditStubAs());
   wallets = new WalletService(ctx.db);
   gateways = gatewayStub();
-  const asGateways = gateways as unknown as PaymentGateways;
+  const asGateways = gateways as unknown as PaymentProviderRegistry;
   methods = new PaymentMethodsService(ctx.db, currencies, auditStubAs(), asGateways);
   transactions = new TransactionsService(
     wallets,
@@ -143,7 +143,31 @@ describe('what the platform ships with', () => {
   });
 
   it('offers it to nobody while it is disabled', async () => {
-    // Seeded disabled. `enabled` is now the whole test — see `isConfigured`.
+    // Seeded disabled. `enabled` is now the whole test — see `rivalUsable`.
+    expect(await methods.listAvailable()).toEqual([]);
+  });
+
+  /*
+   * Enabled in the console while its provider cannot take money is the state
+   * that once hid every deposit method from clients with nothing saying why
+   * (0168). Switching one on is refused with the reason; a provider that goes
+   * off later leaves the method enabled and says so in `availability`.
+   */
+  it('refuses to switch it on while Rival cannot take money, and says why it is hidden', async () => {
+    await expect(methods.update('whish', { enabled: true }, ADMIN)).rejects.toThrow(
+      /Rival is not set up/,
+    );
+    expect((await methods.findOne('whish'))?.enabled).toBe(false);
+
+    gateways.rivalUsable.mockResolvedValue(true);
+    try {
+      expect((await methods.update('whish', { enabled: true }, ADMIN)).availability).toBe(
+        'offered',
+      );
+    } finally {
+      gateways.rivalUsable.mockResolvedValue(false);
+    }
+    expect((await methods.findOneForAdmin('whish'))?.availability).toBe('provider_not_configured');
     expect(await methods.listAvailable()).toEqual([]);
   });
 
@@ -320,7 +344,7 @@ describe('the amount must be expressible in the currency (D-77)', () => {
      * rounds to NEAREST rather than down, the CRM can credit MORE than was
      * collected, with the broker paying the difference on every such deposit.
      */
-    gateways.isConfigured.mockReturnValue(true);
+    gateways.rivalUsable.mockResolvedValue(true);
     await ctx.db.execute(sql`UPDATE payment_methods SET enabled = true WHERE key = 'whish'`);
     await ctx.db.execute(sql`UPDATE currencies SET decimals = 8 WHERE code = 'USD'`);
     try {
@@ -346,7 +370,7 @@ describe('the amount must be expressible in the currency (D-77)', () => {
       ).resolves.toBeDefined();
     } finally {
       await ctx.db.execute(sql`UPDATE currencies SET decimals = 2 WHERE code = 'USD'`);
-      gateways.isConfigured.mockReturnValue(false);
+      gateways.rivalUsable.mockResolvedValue(false);
     }
   });
 
@@ -430,13 +454,13 @@ describe('the amount must be expressible in the currency (D-77)', () => {
 describe('a gateway that will not start the payment', () => {
   beforeEach(() => {
     // Whish reachable and enabled, so the deposit gets as far as the provider.
-    gateways.isConfigured.mockReturnValue(true);
+    gateways.rivalUsable.mockResolvedValue(true);
   });
 
   afterEach(() => {
     // Back to the honest default for a test environment with no Whish keys —
     // every other test in this file depends on it.
-    gateways.isConfigured.mockReturnValue(false);
+    gateways.rivalUsable.mockResolvedValue(false);
     gateways.startPayment.mockReset();
     gateways.startPayment.mockResolvedValue({ paymentUrl: 'https://example.test/pay/stub' });
   });
@@ -759,7 +783,7 @@ describe('the desk’s label, the permanent key, and deleting (0161)', () => {
     ).rejects.toThrow(/reserved/);
   });
 
-  it('deletes a method nobody used, and refuses one with a deposit or the gateway', async () => {
+  it('deletes a method nobody used, and refuses one with a deposit', async () => {
     await configureManualMethod();
     await methods.create({ key: 'typo', name: 'Typo', currency: 'USD' }, ADMIN);
     await expect(methods.remove('typo', ADMIN)).resolves.toEqual({ key: 'typo', deleted: true });
@@ -770,7 +794,9 @@ describe('the desk’s label, the permanent key, and deleting (0161)', () => {
     await expect(methods.remove(MANUAL, ADMIN)).rejects.toThrow(/Disable it instead/);
     expect(await methods.findOne(MANUAL)).not.toBeNull();
 
-    await expect(methods.remove('whish', ADMIN)).rejects.toThrow(/built into the platform/);
+    // No method is built in since 0168: the code reads a method's ROUTE, so the
+    // Rival-bound `whish` is ordinary configuration — deletable while unused.
+    await expect(methods.remove('whish', ADMIN)).resolves.toEqual({ key: 'whish', deleted: true });
   });
 
   it('keeps the key permanent in the database itself: a referenced key cannot change', async () => {

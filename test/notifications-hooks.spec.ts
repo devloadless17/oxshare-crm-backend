@@ -12,7 +12,6 @@ import type { AdminsStore } from '../src/store/admins.store';
 import type { RolesStore } from '../src/store/roles.store';
 import type { AdminClientScopesStore } from '../src/store/admin-client-scopes.store';
 import type { ClientVisibilityService } from '../src/common/security/client-visibility.service';
-import type { PaymentGateways } from '../src/modules/payments/payment-gateways.service';
 import { AppSettingsStore } from '../src/store/app-settings.store';
 import { auditStubAs } from './audit-stub';
 import { AuditLogStore } from '../src/store/audit-log.store';
@@ -70,14 +69,9 @@ beforeAll(async () => {
   transactions = new TransactionsService(
     wallets,
     ctx.db,
-    new PaymentMethodsService(
-      ctx.db,
-      currencies,
-      auditStubAs(),
-      gateway as unknown as PaymentGateways,
-    ),
+    new PaymentMethodsService(ctx.db, currencies, auditStubAs(), gateway),
     currencies,
-    gateway as unknown as PaymentGateways,
+    gateway,
     new ConfigService(),
     emailStubAs(),
     dispatch,

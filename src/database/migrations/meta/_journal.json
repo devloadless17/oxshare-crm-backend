@@ -1177,6 +1177,13 @@
       "when": 1789140700750,
       "tag": "0167_scheduled_jobs",
       "breakpoints": true
+    },
+    {
+      "idx": 169,
+      "version": "7",
+      "when": 1789140701750,
+      "tag": "0168_payment_providers",
+      "breakpoints": true
     }
   ]
 }

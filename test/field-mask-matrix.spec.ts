@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { legacyRoute } from './support/payment-route';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ALL_PERMISSIONS } from './support/all-permissions';
@@ -230,6 +231,7 @@ beforeAll(async () => {
     amount: '10.00000000',
     currency: 'USD',
     provider: 'manual',
+    ...legacyRoute('manual', 'withdrawal'),
     destination: SENTINEL['client.payoutDestination'],
   });
   await db.insert(ibApplications).values({

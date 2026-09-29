@@ -584,6 +584,24 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
     label: 'Payments-platform (Rival) webhook key generated',
     group: 'Security',
   },
+  /*
+   * Payment providers (0168) — the Rival rows' stakes, for every provider: a
+   * base URL receives every payment and payout instruction, a secret can move
+   * money. Switching one on or off is its own action, because "who switched
+   * Rival off" is the question asked the moment deposits stop.
+   */
+  { action: 'payment_provider.update', label: 'Payment provider changed', group: 'Security' },
+  { action: 'payment_provider.enable', label: 'Payment provider switched on', group: 'Security' },
+  {
+    action: 'payment_provider.disable',
+    label: 'Payment provider switched off',
+    group: 'Security',
+  },
+  {
+    action: 'payment_provider.secret_rotate',
+    label: 'Payment provider secret generated',
+    group: 'Security',
+  },
 
   /*
    * The Rival withdrawal choreography. `withdrawal.rival.submit` is the row an

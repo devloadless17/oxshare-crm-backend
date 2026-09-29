@@ -96,9 +96,7 @@ export class AdminWithdrawalMethodsController {
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Delete a withdrawal method that was never used',
-    description:
-      'Only a method NO withdrawal references — 409 otherwise; disable it instead. `whish` is ' +
-      'never deleted.',
+    description: 'Only a method NO withdrawal references — 409 otherwise; disable it instead.',
   })
   @ApiOkResponse({ type: DeletedMethodDto })
   @NotClientScoped('Platform payment configuration; names no client and returns no client data.')

@@ -220,6 +220,11 @@ const PUBLIC_ROUTES: Record<string, string> = {
     'Rival delivers signed CRM events here (bearer + HMAC over raw bytes + replay nonce, ' +
     'verified before parsing). Response codes are shaped to its retry policy; settlement ' +
     'still re-reads Rival’s stored state.',
+  'POST /payments/providers/:code/webhook':
+    'Every payment provider’s events, one door (0168): routed by code to that provider’s ' +
+    'receiver, which verifies the raw bytes with the provider’s own signature before parsing ' +
+    '(Rival’s is the same handling as its own route). An unknown code is a 404 that reads ' +
+    'nothing.',
 
   'GET /payments/deposits/:reference/return/:outcome':
     'The payer’s browser lands here from the provider’s payment page, carrying no session ' +
@@ -701,6 +706,8 @@ describe('R-4.2 every route declares how it is protected', () => {
     const NOT_A_BROWSER_WRITE: Record<string, string> = {
       'POST /payments/rival/webhook':
         'Server-to-server: Rival calls it with an HMAC signature and carries no session cookie, so the token check never applies.',
+      'POST /payments/providers/:code/webhook':
+        'Server-to-server: a payment provider calls it with its own signature and carries no session cookie, so the token check never applies.',
       'POST /e2e/fixtures/client':
         'Development-only module, called by the Playwright harness, never by a browser page.',
       'POST /e2e/fixtures/review-pool':

@@ -51,6 +51,8 @@ beforeAll(async () => {
     internalLabel: 'OMT – details http',
     currency: 'USD',
     requiresProof: true,
+    providerCode: 'manual',
+    channelCode: 'offline',
     proofFields: [
       {
         id: PHONE,

@@ -1767,6 +1767,25 @@ export class WithdrawalRowDto {
   @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
   @ApiProperty()
   provider: string;
+  /*
+   * The route the withdrawal was filed on (0168) — which provider pays it, on
+   * which of its payout channels, in which environment. Fixed at filing.
+   */
+  @NotClientField(
+    'the route the money takes, a classification of the record, not client-owned data',
+  )
+  @ApiProperty({ example: 'rival', description: 'The payment provider that pays it.' })
+  providerCode: string;
+  @NotClientField(
+    'the route the money takes, a classification of the record, not client-owned data',
+  )
+  @ApiProperty({ example: 'whish', description: 'The provider’s payout channel.' })
+  channelCode: string;
+  @NotClientField(
+    'the route the money takes, a classification of the record, not client-owned data',
+  )
+  @ApiProperty({ enum: ['live', 'sandbox'], example: 'live' })
+  providerEnvironment: string;
   /**
    * What to CALL the payout rail on screen — 'Whish Money'.
    *

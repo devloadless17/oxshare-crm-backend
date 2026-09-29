@@ -73,6 +73,22 @@ export class WithdrawalMethodDto {
    */
   @ApiPropertyOptional({ type: String, nullable: true })
   logoUrl?: string | null;
+
+  /**
+   * What the client must give for the money to reach them, from the method's
+   * payout channel (0168): the portal renders exactly this field — a phone for
+   * Whish, an address for a crypto rail, nothing for cash.
+   */
+  @ApiProperty({ enum: ['none', 'phone', 'crypto_address', 'iban', 'text'], example: 'phone' })
+  destinationKind: 'none' | 'phone' | 'crypto_address' | 'iban' | 'text';
+
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    example: 'TRC20',
+    description: 'A crypto rail’s network: an address is valid on one only.',
+  })
+  destinationNetwork: string | null;
 }
 
 /*

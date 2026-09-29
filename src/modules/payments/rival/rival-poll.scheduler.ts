@@ -107,7 +107,9 @@ export class RivalPollScheduler {
       .from(transactions)
       .where(
         and(
-          eq(transactions.provider, 'whish'),
+          // Rival's hosted Whish deposits, by ROUTE (0168).
+          eq(transactions.providerCode, 'rival'),
+          eq(transactions.channelCode, 'whish'),
           eq(transactions.state, 'pending'),
           eq(transactions.direction, 'deposit'),
           lt(transactions.createdAt, quietBefore),

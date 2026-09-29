@@ -381,6 +381,20 @@
       }
     ]
   },
+  "paymentproviders": {
+    "moduleName": "Payment Providers",
+    "description": "The systems that move the money behind the methods: Rival, the desk itself, and each provider added after them. Their connection settings, secrets, environment (live or sandbox) and on/off switch, and what each last reported. Apart from `payments.*` on purpose: a provider's settings decide where every payment and payout instruction goes, and its secrets can move money, while a payment method only decides what clients are offered. `payments.providers.*` replaced the Rival tab's `settings.rival.*` and was granted to whoever held those (0168).",
+    "permissions": [
+      {
+        "key": "payments.providers.view",
+        "label": "View Payment Providers"
+      },
+      {
+        "key": "payments.providers.edit",
+        "label": "Change Payment Provider Connections"
+      }
+    ]
+  },
   "apikeys": {
     "moduleName": "API Keys",
     "description": "Machine credentials for the admin API. Grant create NARROWLY: a key is standing access with no login and no session lifetime, carrying whatever permissions its creator holds, so the power to issue one is close to the power to grant one.",

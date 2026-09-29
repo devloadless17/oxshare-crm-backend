@@ -2326,6 +2326,47 @@ export const tradingAccountStatusEnum = pgEnum('trading_account_status', [
 ]);
 
 /**
+ * A system that moves money — `manual` (built in: the desk), `rival`, and every
+ * provider after it (0168). The ADAPTER lives in code
+ * (`modules/payments/providers/`) and declares what the provider can do; this
+ * row is its configuration on THIS deployment: on/off, live or sandbox, the
+ * settings the adapter declares, encrypted secrets, and what the platform last
+ * heard from it.
+ *
+ * Secrets are `secret-box` ciphertexts keyed by name (`apiKey`, `webhookKey`),
+ * never plaintext, and never leave the API. `config` holds only non-secret
+ * declared fields (a base URL, a key's fingerprint).
+ */
+export const paymentProviders = pgTable(
+  'payment_providers',
+  {
+    code: varchar('code', { length: 40 }).primaryKey(),
+    enabled: boolean('enabled').notNull().default(false),
+    /** `live` or `sandbox`; a production deployment refuses `sandbox` (see the adapter). */
+    environment: varchar('environment', { length: 10 }).notNull().default('live'),
+    config: jsonb('config')
+      .$type<Record<string, string>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    secrets: jsonb('secrets')
+      .$type<Record<string, string>>()
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    lastEventAt: timestamp('last_event_at', { withTimezone: true }),
+    lastCheckAt: timestamp('last_check_at', { withTimezone: true }),
+    lastCheckOk: boolean('last_check_ok'),
+    lastCheckMessage: varchar('last_check_message', { length: 500 }),
+    updatedBy: uuid('updated_by'),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check('payment_providers_environment_ck', sql`${t.environment} IN ('live', 'sandbox')`),
+    check('payment_providers_config_object_ck', sql`jsonb_typeof(${t.config}) = 'object'`),
+    check('payment_providers_secrets_object_ck', sql`jsonb_typeof(${t.secrets}) = 'object'`),
+  ],
+);
+
+/**
  * A way a client can put money in.
  *
  * Rows, not a hardcoded list. The deleted deposit page carried a two-element
@@ -2439,6 +2480,15 @@ export const paymentMethods = pgTable(
       .$type<ProofField[]>()
       .notNull()
       .default(sql`'[]'::jsonb`),
+    /**
+     * The route this method takes (0168): which provider moves the money and on
+     * which of its declared channels. Fixed at creation — a trigger refuses any
+     * change — so every transaction filed through the method stays true.
+     */
+    providerCode: varchar('provider_code', { length: 40 })
+      .notNull()
+      .references(() => paymentProviders.code, { onDelete: 'restrict' }),
+    channelCode: varchar('channel_code', { length: 40 }).notNull(),
     enabled: boolean('enabled').notNull().default(true),
     sortOrder: integer('sort_order').notNull().default(0),
     updatedBy: uuid('updated_by'),
@@ -2494,6 +2544,11 @@ export const withdrawalPaymentMethods = pgTable(
      * while the fallback reads as a method without a logo.
      */
     logoUrl: varchar('logo_url', { length: 2048 }),
+    /** The payout route (0168): provider and channel, fixed at creation. */
+    providerCode: varchar('provider_code', { length: 40 })
+      .notNull()
+      .references(() => paymentProviders.code, { onDelete: 'restrict' }),
+    channelCode: varchar('channel_code', { length: 40 }).notNull(),
     enabled: boolean('enabled').notNull().default(true),
     sortOrder: integer('sort_order').notNull().default(0),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -3269,6 +3324,18 @@ export const transactions = pgTable(
     ),
     provider: varchar('provider', { length: 50 }).notNull(),
     /**
+     * The route this transaction was FILED on (0168) — provider, channel and the
+     * provider's environment — recorded once and never changed (trigger). Who
+     * actually moved the money, if that differs (the desk covering for a
+     * provider), is in `payment_provider_events`. `provider` above stays the
+     * idempotency namespace of UNIQUE(provider, provider_ref).
+     */
+    providerCode: varchar('provider_code', { length: 40 })
+      .notNull()
+      .references(() => paymentProviders.code, { onDelete: 'restrict' }),
+    channelCode: varchar('channel_code', { length: 40 }).notNull(),
+    providerEnvironment: varchar('provider_environment', { length: 10 }).notNull(),
+    /**
      * The provider's own reference — or, for a manual method, the one the
      * client transcribed from their transfer.
      *
@@ -3364,6 +3431,8 @@ export const transactions = pgTable(
     index('transactions_user_idx').on(t.userId),
     index('transactions_state_idx').on(t.state),
     index('transactions_created_at_idx').on(t.createdAt),
+    // The console filters and counts by route (0168).
+    index('transactions_route_idx').on(t.providerCode, t.channelCode, t.createdAt),
     // The console's "in use" flag and a delete's RESTRICT check look up by these (0161).
     index('transactions_method_key_idx').on(t.methodKey),
     index('transactions_withdrawal_method_key_idx').on(t.withdrawalMethodKey),
@@ -3386,6 +3455,44 @@ export const transactions = pgTable(
     index('transactions_rival_approved_idx')
       .on(t.state)
       .where(sql`${t.state} = 'approved' AND ${t.rivalSubmittedAt} IS NOT NULL`),
+  ],
+);
+
+/**
+ * Everything a payment provider told the platform, and what the platform did
+ * about it (0168): every webhook and poll result, normalised to one vocabulary
+ * (`payment.pending|succeeded|failed|reversed`,
+ * `payout.submitted|completed|rejected|cancelled`). A transaction's timeline and
+ * a provider's recent activity both read it; the same provider event delivered
+ * twice is one row, by constraint.
+ */
+export const paymentProviderEvents = pgTable(
+  'payment_provider_events',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    providerCode: varchar('provider_code', { length: 40 })
+      .notNull()
+      .references(() => paymentProviders.code, { onDelete: 'restrict' }),
+    /** The provider's own identity for the event, or one derived from it. */
+    eventKey: varchar('event_key', { length: 200 }).notNull(),
+    eventType: varchar('event_type', { length: 40 }).notNull(),
+    /** The provider's raw event name, for anybody tracing it on their side. */
+    providerType: varchar('provider_type', { length: 100 }),
+    source: varchar('source', { length: 10 }).notNull(),
+    transactionId: uuid('transaction_id').references(() => transactions.id, {
+      onDelete: 'cascade',
+    }),
+    outcome: varchar('outcome', { length: 10 }).notNull(),
+    reason: varchar('reason', { length: 500 }),
+    receivedAt: timestamp('received_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check('payment_provider_events_source_ck', sql`${t.source} IN ('webhook', 'poll', 'desk')`),
+    check(
+      'payment_provider_events_outcome_ck',
+      sql`${t.outcome} IN ('applied', 'ignored', 'rejected', 'failed')`,
+    ),
+    uniqueIndex('payment_provider_events_key_uq').on(t.providerCode, t.eventKey),
   ],
 );
 

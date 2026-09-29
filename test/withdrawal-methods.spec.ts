@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { gatewayStubAs } from './gateway-stub';
 import { sql } from 'drizzle-orm';
 import { WithdrawalMethodsService } from '../src/modules/payments/withdrawal-methods.service';
 import type { AdminAuditService } from '../src/modules/admin/admin-audit.service';
@@ -36,7 +37,11 @@ afterAll(async () => {
 
 beforeEach(async () => {
   audit = auditStub();
-  methods = new WithdrawalMethodsService(ctx.db, audit as unknown as AdminAuditService);
+  methods = new WithdrawalMethodsService(
+    ctx.db,
+    audit as unknown as AdminAuditService,
+    gatewayStubAs(),
+  );
   await ctx.db.execute(sql`DELETE FROM withdrawal_payment_methods WHERE key <> 'whish'`);
   await ctx.db.execute(
     sql`UPDATE withdrawal_payment_methods SET enabled = true, sort_order = 0 WHERE key = 'whish'`,
@@ -198,8 +203,11 @@ describe('the desk’s label, reserved keys and deleting (0161)', () => {
     ).rejects.toThrow(/reserved/);
   });
 
-  it('never deletes whish, and deletes a method nobody used', async () => {
-    await expect(methods.remove('whish', TEST_ACTOR)).rejects.toThrow(/built into/);
+  it('deletes a method nobody used, the Rival-bound one included (0168)', async () => {
+    await expect(methods.remove('whish', TEST_ACTOR)).resolves.toEqual({
+      key: 'whish',
+      deleted: true,
+    });
     await methods.create({ key: 'typo', name: 'Typo' }, TEST_ACTOR);
     await expect(methods.remove('typo', TEST_ACTOR)).resolves.toEqual({
       key: 'typo',

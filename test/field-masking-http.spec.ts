@@ -1,4 +1,5 @@
 import { ALL_PERMISSIONS } from './support/all-permissions';
+import { legacyRoute } from './support/payment-route';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { actingAs, startHttpTestApp, stopHttpTestApp, type HttpTestContext } from './http-setup';
 import { PasswordService } from '../src/common/security/password.service';
@@ -220,6 +221,7 @@ beforeAll(async () => {
     currency: 'USD',
     state: 'pending',
     provider: 'manual_test',
+    ...legacyRoute('manual_test', 'withdrawal'),
     destination: 'mask-test-destination',
   });
 });

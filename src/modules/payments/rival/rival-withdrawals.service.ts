@@ -1,4 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import { RIVAL_PAYOUT_METHODS } from '../providers/rival.provider';
 import Decimal from 'decimal.js';
 import { and, eq, isNull, lt, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../../database/database.module';
@@ -17,6 +18,12 @@ import { UsersStore } from '../../../store/users.store';
 import { TransactionsService } from '../transactions.service';
 import { RivalClient, type RivalWithdrawal } from './rival.client';
 import { RivalConfigService } from './rival-config.service';
+import {
+  PaymentProviderEventsStore,
+  type ProviderEventOutcome,
+  type ProviderEventSource,
+  type ProviderEventType,
+} from '../../../store/payment-provider-events.store';
 import { PaymentIndeterminateError, ValidationError } from '../../../common/errors/domain-errors';
 
 /**
@@ -71,8 +78,34 @@ const ADOPT_WINDOW_MS = 15 * 60_000;
 
 export type RivalWithdrawalEvent = 'pending' | 'completed' | 'rejected' | 'cancelled';
 
+/** Rival's payout event names, in the provider event log's vocabulary. */
+const RIVAL_PAYOUT_EVENT_TYPES: Record<
+  Exclude<RivalWithdrawalEvent, 'pending'>,
+  ProviderEventType
+> = {
+  completed: 'payout.completed',
+  rejected: 'payout.rejected',
+  cancelled: 'payout.cancelled',
+};
+
 export type RivalWithdrawalOutcome =
   'applied' | 'duplicate' | 'stale' | 'ignored' | 'not-ours' | 'needs-attention';
+
+/** How each outcome reads in the provider event log. */
+const PAYOUT_EVENT_OUTCOMES: Record<
+  RivalWithdrawalOutcome,
+  { outcome: ProviderEventOutcome; reason: string | null }
+> = {
+  applied: { outcome: 'applied', reason: null },
+  duplicate: { outcome: 'ignored', reason: 'Already recorded.' },
+  stale: { outcome: 'ignored', reason: 'Older than the state already recorded.' },
+  ignored: { outcome: 'ignored', reason: null },
+  'not-ours': { outcome: 'ignored', reason: 'No withdrawal here carries this Rival payout.' },
+  'needs-attention': {
+    outcome: 'rejected',
+    reason: 'Disagrees with the state recorded here; a person decides.',
+  },
+};
 
 @Injectable()
 export class RivalWithdrawalsService {
@@ -88,7 +121,13 @@ export class RivalWithdrawalsService {
     private readonly email: EmailService,
     @Inject(NOTIFICATION_DISPATCH) private readonly notifications: NotificationDispatchPort,
     private readonly resourceChanged: ResourceChangedPublisher,
-  ) {}
+  ) {
+    // A store over the same db, built here like `TransactionsService` builds it.
+    this.providerEvents = new PaymentProviderEventsStore(db);
+  }
+
+  /** What Rival reported about each payout and what was done about it (0168). */
+  private readonly providerEvents: PaymentProviderEventsStore;
 
   /**
    * Whether the AUTOMATED payout rail is switched on.
@@ -124,9 +163,14 @@ export class RivalWithdrawalsService {
    * construction (a pending row has never been submitted), and re-reading it would
    * imply this is safe to use as a general-purpose predicate, which it is not.
    */
-  async willPayOut(tx: { direction: string; provider: string }): Promise<boolean> {
+  async willPayOut(tx: {
+    direction: string;
+    providerCode: string;
+    channelCode: string;
+  }): Promise<boolean> {
     if (tx.direction !== 'withdrawal') return false;
-    if (tx.provider !== 'whish') return false;
+    // A Rival payout ROUTE (0168) whose channel Rival knows how to pay.
+    if (tx.providerCode !== 'rival' || !RIVAL_PAYOUT_METHODS[tx.channelCode]) return false;
     return await this.config.isEnabled();
   }
 
@@ -163,7 +207,7 @@ export class RivalWithdrawalsService {
           eq(transactions.id, txId),
           eq(transactions.state, 'approved'),
           eq(transactions.direction, 'withdrawal'),
-          eq(transactions.provider, 'whish'),
+          eq(transactions.providerCode, 'rival'),
           isNull(transactions.rivalSubmittedAt),
         ),
       )
@@ -177,10 +221,15 @@ export class RivalWithdrawalsService {
 
     try {
       // 2. CREATE — notes carry our id; that string is the orphan reconcile.
+      const payoutMethod = RIVAL_PAYOUT_METHODS[tx.channelCode];
+      if (!payoutMethod) {
+        throw new Error(`Rival has no payout type for the ${tx.channelCode} channel.`);
+      }
       const created = await this.rival.createWithdrawal({
         amount: tx.amount,
         currency: tx.currency,
         notes: `crm:${tx.id}`,
+        method: payoutMethod,
         recipientName,
         recipientPhone: tx.destination ?? '',
       });
@@ -306,6 +355,7 @@ export class RivalWithdrawalsService {
     rivalWithdrawalId: string,
     event: RivalWithdrawalEvent,
     payload: { externalReference?: string | null; adminNotes?: string | null },
+    source: ProviderEventSource = 'webhook',
   ): Promise<RivalWithdrawalOutcome> {
     if (event === 'pending') return 'ignored'; // the echo of our own create
 
@@ -320,8 +370,27 @@ export class RivalWithdrawalsService {
      * create/record race is also possible, so the reconciler's notes-match
      * covers the row this event may belong to. 200 either way.
      */
-    if (!tx) return 'not-ours';
+    const outcome = tx ? await this.applyTo(tx, rivalWithdrawalId, event, payload) : 'not-ours';
+    const logged = PAYOUT_EVENT_OUTCOMES[outcome];
+    await this.providerEvents.append({
+      providerCode: 'rival',
+      eventType: RIVAL_PAYOUT_EVENT_TYPES[event],
+      subjectId: rivalWithdrawalId,
+      providerType: `withdrawal.${event}`,
+      source,
+      transactionId: tx?.id ?? null,
+      outcome: logged.outcome,
+      reason: logged.reason,
+    });
+    return outcome;
+  }
 
+  private async applyTo(
+    tx: typeof transactions.$inferSelect,
+    rivalWithdrawalId: string,
+    event: Exclude<RivalWithdrawalEvent, 'pending'>,
+    payload: { externalReference?: string | null; adminNotes?: string | null },
+  ): Promise<RivalWithdrawalOutcome> {
     switch (event) {
       case 'completed': {
         if (tx.state === 'success') return 'duplicate';
@@ -341,8 +410,6 @@ export class RivalWithdrawalsService {
         await this.refundBySystem(tx.id, reason, event);
         return 'applied';
       }
-      default:
-        return 'ignored';
     }
   }
 
@@ -520,7 +587,7 @@ export class RivalWithdrawalsService {
       .where(
         and(
           eq(transactions.state, 'approved'),
-          eq(transactions.provider, 'whish'),
+          eq(transactions.providerCode, 'rival'),
           eq(transactions.direction, 'withdrawal'),
           isNull(transactions.rivalWithdrawalId),
           sql`${transactions.rivalSubmittedAt} IS NOT NULL`,
@@ -593,7 +660,7 @@ export class RivalWithdrawalsService {
       .where(
         and(
           eq(transactions.state, 'approved'),
-          eq(transactions.provider, 'whish'),
+          eq(transactions.providerCode, 'rival'),
           eq(transactions.direction, 'withdrawal'),
           sql`${transactions.rivalWithdrawalId} IS NOT NULL`,
           // Give the webhook first claim on fresh submissions.
@@ -606,16 +673,18 @@ export class RivalWithdrawalsService {
       try {
         const remote = await this.rival.getWithdrawal(row.rivalWithdrawalId ?? '');
         if (remote.status === 'COMPLETED') {
-          await this.applyEvent(remote.id, 'completed', {
-            externalReference: remote.externalReference,
-          });
+          await this.applyEvent(
+            remote.id,
+            'completed',
+            { externalReference: remote.externalReference },
+            'poll',
+          );
         } else if (remote.status === 'REJECTED' || remote.status === 'CANCELLED') {
           await this.applyEvent(
             remote.id,
             remote.status === 'REJECTED' ? 'rejected' : 'cancelled',
-            {
-              adminNotes: remote.adminNotes,
-            },
+            { adminNotes: remote.adminNotes },
+            'poll',
           );
         }
         // PENDING / PROCESSING / APPROVED: still Rival's move. Wait.
