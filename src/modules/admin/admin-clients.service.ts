@@ -1033,30 +1033,11 @@ export class AdminClientsService {
     // enumerating clients the actor was specifically denied.
     const user = await this.users.findForAdmin(userId, actor.clientScope);
     if (!user) throw new ClientNotFoundError();
-
-    /*
-     * ── ONE SUSPENSION, for the client AND their partnership (owner, 29 Sep 2026) ──
-     *
-     * A partner IS the client, so there is one "Suspend", not two: suspending
-     * the client stops their partnership too (no commission, and the chain
-     * above them breaks, as `ib-applications.service.ts` describes), and
-     * reactivating restores both. Written in ONE transaction, so the two can
-     * never disagree. A partnership left out of step by the old separate
-     * control is brought into line by the same action.
-     */
-    const partner = await this.ib.findAccount(userId);
-    const partnerActive = status === 'active';
-    const partnerChanges = partner !== undefined && partner.active !== partnerActive;
-    if (user.status === status && !partnerChanges) {
+    if (user.status === status) {
       throw new ValidationError(`Client is already ${status}.`);
     }
 
-    const updated = await this.ib.inTransaction(async (tx) => {
-      const row =
-        user.status === status ? user : (await this.users.update(userId, { status }, tx))!;
-      if (partnerChanges) await this.ib.updateAccount(userId, { active: partnerActive }, tx);
-      return row;
-    });
+    const updated = (await this.users.update(userId, { status }))!;
     // Suspension bites immediately: the JWT strategy re-checks status on every
     // request, and login/refresh refuse suspended accounts.
     /*
@@ -1091,18 +1072,8 @@ export class AdminClientsService {
         // is a different statement from "we changed a column", and the count is
         // what tells the two apart months later.
         ...(status === 'suspended' ? { sessionsRevoked } : {}),
-        ...(partnerChanges
-          ? { partnerActive: { before: !partnerActive, after: partnerActive } }
-          : {}),
       },
     );
-    // The partnership's own history shows the change too, as its old control did.
-    if (partnerChanges) {
-      this.audit.record(actor.id, 'ib.partners.suspend', 'ib_account', userId, {
-        active: partnerActive,
-        withClientStatus: status,
-      });
-    }
 
     /*
      * The shared account view, masked by the global interceptor because the
