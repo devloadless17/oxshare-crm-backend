@@ -417,7 +417,7 @@ export class PaymentsController {
         userId: req.user.id,
         amount: dto.amount,
         currency: dto.currency,
-        destination: dto.destination,
+        destination: dto.destination ?? '',
         methodKey: dto.methodKey,
       }),
     );

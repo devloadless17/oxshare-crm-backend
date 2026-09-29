@@ -1042,7 +1042,15 @@ export class TransactionsService {
      * they can fix it, instead of days later as a failed submission on an
      * approval the admin cannot explain.
      */
-    const destinationIssue = payoutChannel.destination?.validate?.(params.destination);
+    // What the channel needs from the client (0168): a cash pickup needs
+    // nothing; every other payout needs somewhere to send the money.
+    const destination = params.destination.trim();
+    const destinationKind = payoutChannel.destination?.kind ?? 'text';
+    if (destinationKind !== 'none' && destination === '') {
+      throw new ValidationError('Enter where the money should be sent.');
+    }
+    const destinationIssue =
+      destination === '' ? undefined : payoutChannel.destination?.validate?.(destination);
     if (destinationIssue) throw new ValidationError(destinationIssue);
 
     const db = this.db;
@@ -1134,7 +1142,7 @@ export class TransactionsService {
             providerCode: payoutRoute.providerCode,
             channelCode: payoutRoute.channelCode,
             providerEnvironment: await this.environmentOf(payoutRoute.providerCode, dbTx),
-            destination: params.destination,
+            destination: destination === '' ? null : destination,
           })
           .returning();
 
@@ -1347,6 +1355,9 @@ export class TransactionsService {
         rivalSubmittedAt: transactions.rivalSubmittedAt,
         rivalNeedsAttention: transactions.rivalNeedsAttention,
         rivalAttentionReason: transactions.rivalAttentionReason,
+        providerCode: transactions.providerCode,
+        channelCode: transactions.channelCode,
+        providerEnvironment: transactions.providerEnvironment,
         userId: transactions.userId,
         userPortalId: users.id,
         userEmail: users.email,
@@ -1460,12 +1471,24 @@ export class TransactionsService {
       sortKey,
     );
 
+    // Who pays each request NOW (0168): the provider for an automated payout
+    // it can take, the desk otherwise — what the approve dialog tells the desk.
+    const providerStates = await this.providers.states(
+      await this.db.select().from(paymentProviders),
+    );
     const items = paged.items.map((r) => ({
       id: r.id,
       amount: money(r.amount), // money crosses the boundary as a string
       currency: r.currency,
       state: r.state,
       provider: r.provider,
+      providerCode: r.providerCode,
+      channelCode: r.channelCode,
+      providerEnvironment: r.providerEnvironment,
+      paidBy:
+        this.providers.isAutomatedPayout(r) && providerStates.get(r.providerCode)?.usable
+          ? ('provider' as const)
+          : ('desk' as const),
       providerRef: r.providerRef,
       destination: r.destination,
       /*

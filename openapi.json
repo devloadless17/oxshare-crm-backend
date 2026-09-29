@@ -15585,7 +15585,6 @@
         "required": [
           "amount",
           "currency",
-          "destination",
           "methodKey"
         ]
       },
@@ -22789,6 +22788,13 @@
               "sandbox"
             ],
             "example": "live"
+          },
+          "paidBy": {
+            "type": "string",
+            "enum": [
+              "provider",
+              "desk"
+            ]
           },
           "methodName": {
             "type": "string",

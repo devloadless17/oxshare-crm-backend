@@ -1786,6 +1786,15 @@ export class WithdrawalRowDto {
   )
   @ApiProperty({ enum: ['live', 'sandbox'], example: 'live' })
   providerEnvironment: string;
+  /*
+   * Who pays it if approved NOW: the provider (an automated payout it can
+   * take) or the desk by hand. On the queue only; an action response omits it.
+   */
+  @NotClientField(
+    'the route the money takes, a classification of the record, not client-owned data',
+  )
+  @ApiPropertyOptional({ enum: ['provider', 'desk'] })
+  paidBy?: 'provider' | 'desk';
   /**
    * What to CALL the payout rail on screen — 'Whish Money'.
    *

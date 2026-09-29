@@ -111,6 +111,30 @@ beforeEach(async () => {
 });
 
 describe('requesting a withdrawal', () => {
+  /*
+   * What the client must give comes from the method's payout channel (0168):
+   * a cash pickup needs nothing, every other payout needs a destination.
+   */
+  it('needs a destination unless the method is a cash pickup', async () => {
+    const userId = await makeFundedClient('withdraw-destination@test.local');
+    await ctx.db.execute(sql`
+      INSERT INTO withdrawal_payment_methods (key, name, internal_label, enabled, provider_code, channel_code)
+      VALUES ('desk_bank', 'Bank', 'Bank (desk)', true, 'manual', 'desk'),
+             ('cash_pickup', 'Cash', 'Cash pickup', true, 'manual', 'cash')
+      ON CONFLICT (key) DO NOTHING`);
+    const ask = (methodKey: string) =>
+      transactions.requestWithdrawal({
+        userId,
+        currency: 'USD',
+        amount: '10',
+        destination: '  ',
+        methodKey,
+      });
+    await expect(ask('desk_bank')).rejects.toThrow(/where the money should be sent/);
+    const cash = await ask('cash_pickup');
+    expect(cash.destination).toBeNull();
+  });
+
   it('debits the balance immediately', async () => {
     const userId = await makeFundedClient('debit@test.local');
 
