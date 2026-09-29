@@ -326,6 +326,11 @@ export class IbStore {
 
   // ── accounts ───────────────────────────────────────────────────────────────
 
+  /** Run `work` in one transaction — for a write that spans a client and their partnership. */
+  async inTransaction<T>(work: (tx: Executor) => Promise<T>): Promise<T> {
+    return await this.db.transaction(work);
+  }
+
   async findAccount(userId: number): Promise<IbAccountRow | undefined> {
     const [row] = await this.db
       .select()
@@ -1004,8 +1009,10 @@ export class IbStore {
      * nothing on the live path writes it.
      */
     patch: Partial<Pick<IbAccountRow, 'level' | 'programId' | 'parentIbUserId' | 'active'>>,
+    /** A caller's transaction — the client suspension writes both rows in one. */
+    executor: Executor = this.db,
   ): Promise<IbAccountRow | undefined> {
-    const [row] = await this.db
+    const [row] = await executor
       .update(ibAccounts)
       .set({ ...patch, updatedAt: new Date() })
       .where(eq(ibAccounts.userId, userId))

@@ -9,7 +9,7 @@ import {
   type Session,
 } from './http-setup';
 import { PasswordService } from '../src/common/security/password.service';
-import { admins, auditLog, refreshTokens, roles, users } from '../src/database/schema';
+import { admins, auditLog, ibAccounts, refreshTokens, roles, users } from '../src/database/schema';
 
 /**
  * Suspending a CLIENT, over HTTP, through the real chain.
@@ -182,5 +182,65 @@ describe('suspending a client reaches their live session', () => {
 
     const details = row?.details as { sessionsRevoked?: number } | null;
     expect(details?.sessionsRevoked).toBeUndefined();
+  });
+});
+
+/*
+ * ONE SUSPENSION (owner, 29 Sep 2026): a partner IS the client, so suspending
+ * the client suspends the partnership, and reactivating restores both — one
+ * transaction, one menu item. The separate "Suspend partner" left the two able
+ * to disagree.
+ */
+describe('a partner’s suspension is the client’s', () => {
+  const partnerActive = async () =>
+    (await ctx.db.db.select().from(ibAccounts).where(eq(ibAccounts.userId, clientId)))[0]?.active;
+
+  beforeAll(async () => {
+    await ctx.db.db
+      .insert(ibAccounts)
+      .values({ userId: clientId, referralCode: 'SUSPEND-ONE-1', active: true })
+      .onConflictDoNothing();
+  });
+  beforeEach(async () => {
+    await ctx.db.db.update(ibAccounts).set({ active: true }).where(eq(ibAccounts.userId, clientId));
+  });
+
+  it('suspending the client stops the partnership; reactivating restores it', async () => {
+    await setStatus('suspended').expect(200);
+    expect(await partnerActive()).toBe(false);
+
+    await setStatus('active').expect(200);
+    expect(await partnerActive()).toBe(true);
+  });
+
+  it('brings a partnership left out of step back into line, instead of "already active"', async () => {
+    await ctx.db.db
+      .update(ibAccounts)
+      .set({ active: false })
+      .where(eq(ibAccounts.userId, clientId));
+    await setStatus('active').expect(200);
+    expect(await partnerActive()).toBe(true);
+    // Nothing left to change: now it IS already active.
+    await setStatus('active').expect(400);
+  });
+
+  it('records the partnership’s change on the client’s audit row and the partner’s', async () => {
+    await setStatus('suspended').expect(200);
+    const [row] = await ctx.db.db
+      .select()
+      .from(auditLog)
+      .where(and(eq(auditLog.subjectId, String(clientId)), eq(auditLog.action, 'client.suspend')))
+      .orderBy(desc(auditLog.createdAt))
+      .limit(1);
+    expect(row?.details).toMatchObject({ partnerActive: { before: true, after: false } });
+    const [partnerRow] = await ctx.db.db
+      .select()
+      .from(auditLog)
+      .where(
+        and(eq(auditLog.subjectId, String(clientId)), eq(auditLog.action, 'ib.partners.suspend')),
+      )
+      .orderBy(desc(auditLog.createdAt))
+      .limit(1);
+    expect(partnerRow?.details).toMatchObject({ active: false });
   });
 });
