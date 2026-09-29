@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Cron, CronExpression } from '@nestjs/schedule';
+import { ScheduledJob } from '../../common/scheduling/scheduled-job.decorator';
 import { ClientNotFoundError, NotFoundError } from '../../common/errors/domain-errors';
 import type { Executor } from '../../database/db';
 import type { NotificationSubjectKind } from '../../database/schema';
@@ -292,7 +292,7 @@ export class NotificationsService implements NotificationDispatchPort {
    * is not the point — and safe to run on every instance: DELETE by age is
    * naturally idempotent.
    */
-  @Cron(CronExpression.EVERY_DAY_AT_4AM, { name: 'notifications.prune' })
+  @ScheduledJob('notifications.prune')
   async prune(): Promise<void> {
     /*
      * ONE INSTANCE. Cheap and idempotent, so a duplicate run is harmless — but

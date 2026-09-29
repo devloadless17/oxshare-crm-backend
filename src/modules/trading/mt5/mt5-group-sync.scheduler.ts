@@ -1,13 +1,15 @@
-import { Injectable, Logger, type OnApplicationBootstrap } from '@nestjs/common';
-import { Cron, CronExpression } from '@nestjs/schedule';
+import { Injectable, Logger } from '@nestjs/common';
+import { ScheduledJob } from '../../../common/scheduling/scheduled-job.decorator';
 import { Mt5GroupSyncService } from './mt5-group-sync.service';
 import { pendingMigrationHint } from '../../../common/logging/pending-migration';
 import { JobLeaseService } from '../../../common/scheduling/job-lease.service';
 
 /**
- * Re-reads the MT5 group catalogue on a schedule, and once at boot.
+ * Re-reads the MT5 group catalogue on a schedule — its interval is set in
+ * Settings → Scheduled jobs (`mt5.syncGroups`, hourly by default; 0167), and
+ * `ScheduledJobsRunner` starts it.
  *
- * ## Hourly, because the thing it watches changes at human speed
+ * ## Hourly by default, because the thing it watches changes at human speed
  *
  * A broker adds or re-permissions a group during a working day, deliberately,
  * as a configuration change. There is no burst to keep up with and no race to
@@ -16,9 +18,10 @@ import { JobLeaseService } from '../../../common/scheduling/job-lease.service';
  * /groups` costs ~4.9s on the MT5 side, and this is the one caller that pays it
  * on a timer rather than because somebody is waiting.
  *
- * ## Once at boot, so a fresh deployment is not blind
+ * ## Soon after boot on a fresh deployment, so it is not blind
  *
- * Without it the mirror is empty until the first hour elapses, and the fallback
+ * A database that has never run it has no `last_started_at`, so the runner
+ * starts it on its first tick, seconds after boot. Without that the mirror is empty until the first hour elapses, and the fallback
  * it exists to provide — a group picker that still renders when MT5 is
  * unreachable — would be empty for exactly the window in which a new
  * deployment is most likely to have bridge problems. The run is fire-and-forget
@@ -27,7 +30,7 @@ import { JobLeaseService } from '../../../common/scheduling/job-lease.service';
  * caller of the mirror already handles it being empty.
  */
 @Injectable()
-export class Mt5GroupSyncScheduler implements OnApplicationBootstrap {
+export class Mt5GroupSyncScheduler {
   private readonly logger = new Logger(Mt5GroupSyncScheduler.name);
 
   constructor(
@@ -35,13 +38,7 @@ export class Mt5GroupSyncScheduler implements OnApplicationBootstrap {
     private readonly leases: JobLeaseService,
   ) {}
 
-  onApplicationBootstrap(): void {
-    void this.sync();
-  }
-
-  @Cron(process.env.MT5_GROUP_SYNC_CRON ?? CronExpression.EVERY_HOUR, {
-    name: 'mt5.syncGroups',
-  })
+  @ScheduledJob('mt5.syncGroups')
   async sync(): Promise<void> {
     /*
      * ONE INSTANCE. Cheap and idempotent, so a duplicate run is harmless — but

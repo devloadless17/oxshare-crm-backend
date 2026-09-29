@@ -211,6 +211,8 @@ const WRITES_DETAILS: readonly string[] = [
   'role.delete',
   'role.update',
   'security.denied',
+  'settings.jobs.run',
+  'settings.jobs.update',
   'settings.rival.update',
   'settings.rival.webhook_key.rotate',
   'settings.smtp.update',

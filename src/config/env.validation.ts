@@ -358,13 +358,13 @@ const envSchema = z
       .string()
       .regex(/^\d+$/, 'MT5_BRIDGE_READ_TIMEOUT_MS must be a whole number of milliseconds')
       .optional(),
-    MT5_GROUP_SYNC_CRON: z
-      .string()
-      .regex(
-        /^(\S+\s+){4,5}\S+$/,
-        'MT5_GROUP_SYNC_CRON must be a cron expression, e.g. "0 0 * * * *"',
-      )
-      .optional(),
+    /*
+     * `MT5_GROUP_SYNC_CRON` (and the undeclared `TRANSFER_RESUME_CRON` /
+     * `MT5_ACCOUNT_SYNC_CRON`) are NOT read any more (0167): every job's timing
+     * is set in Settings → Scheduled jobs. Not re-declared, for the reason the
+     * commission note above gives — a validated variable nothing reads says a
+     * schedule is in force that is not.
+     */
 
     /*
      * ── Whish Money, the first real payment GATEWAY ─────────────────────────

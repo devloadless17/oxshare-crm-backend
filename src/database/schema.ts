@@ -4987,3 +4987,37 @@ export const jobLeases = pgTable('job_leases', {
    */
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
 });
+
+/**
+ * ── scheduled_jobs — WHEN each background job runs, edited in Settings (0167) ──
+ *
+ * The owner (29 Sep 2026): every job's timing is set from the console, not from
+ * an environment file. One row per job (`common/scheduling/scheduled-jobs.catalog.ts`
+ * lists them): its interval, and what its last run did.
+ *
+ * `ScheduledJobsRunner` starts a job when `last_started_at + interval` has
+ * passed, CLAIMING the run with a conditional UPDATE of `last_started_at`, so
+ * on several instances exactly one starts each period. The job's own lease
+ * (`job_leases`) still stops a slow run overlapping the next.
+ *
+ * The two commission jobs keep their interval in `trading_settings`
+ * (`ib_commission_interval_seconds`, which is also the commission hold window)
+ * and their own loop; their rows here record runs only. `bridge.sweep` runs on
+ * the MT5 bridge, which reads its interval from the CRM once a minute
+ * (`external_read_at` says when it last did).
+ */
+export const scheduledJobs = pgTable('scheduled_jobs', {
+  key: varchar('key', { length: 64 }).primaryKey(),
+  intervalSeconds: integer('interval_seconds').notNull(),
+  /** Claimed by the instance that started the run; NULL asks for a run at the next tick ("Run now"). */
+  lastStartedAt: timestamp('last_started_at', { withTimezone: true }),
+  lastFinishedAt: timestamp('last_finished_at', { withTimezone: true }),
+  lastDurationMs: integer('last_duration_ms'),
+  /** The last run's failure, cleared by the next success. */
+  lastError: text('last_error'),
+  lastErrorAt: timestamp('last_error_at', { withTimezone: true }),
+  /** For a job another process runs (the bridge): when it last read its interval. */
+  externalReadAt: timestamp('external_read_at', { withTimezone: true }),
+  updatedBy: uuid('updated_by'),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});

@@ -794,6 +794,23 @@ minutes, 288 times a day. The MT5 calls are identical either way; only the peak 
 whole estate to the largest single account. `GetDealsAsync` remains, implemented on top of the
 stream, for the bounded callers (the diagnostic endpoint, the probe).
 
+## Job TIMINGS live in `scheduled_jobs`, edited in Settings → Scheduled jobs (0167)
+
+The owner (29 Sep 2026): no job timing in `.env`. There is **no `@Cron` left**; a job method carries
+`@ScheduledJob('<key>')` (`common/scheduling/`), its key is listed in `scheduled-jobs.catalog.ts`
+(default and safe bounds), and `ScheduledJobsRunner` starts it when `last_started_at + interval_seconds`
+has passed — claiming the run with one conditional UPDATE, so one instance starts each period and a
+changed interval applies within 15 s. It records each run (duration, error) for the settings screen.
+
+- **The commission pair keeps its own loop**: its interval is `trading_settings.ib_commission_interval_seconds`,
+  which is ALSO the hold window. The jobs screen edits that same value through `setTrading`.
+- **`bridge.sweep` runs on the bridge**, which reads `GET /webhooks/mt5/settings` once a minute
+  (`CrmSettingsPoller` → `SweepSchedule`, read by the deal sweep and the balance sync every round).
+- **A new job**: catalogue entry + `@ScheduledJob` + an admin label (`jobs.label.<key>`). Its row is
+  created with the default on first boot.
+- `SCHEDULED_JOBS=off` (set in `vitest.config.mts`) stops the runner: specs call jobs directly.
+- The jobs' own leases (below) still stop a slow run overlapping the next.
+
 ## Scheduled jobs: ONE INSTANCE RUNS EACH (migration 0098)
 
 `@Cron` fires on **every** instance. Correctness survives that and always has — every money job here

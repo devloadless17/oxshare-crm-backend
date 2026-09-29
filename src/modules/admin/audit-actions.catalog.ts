@@ -216,6 +216,12 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   { action: 'trading.account_link', label: 'Existing MT5 account linked', group: 'Compliance' },
   { action: 'trading.account_product', label: 'Trading account product set', group: 'Compliance' },
   { action: 'trading.accounts_sync', label: 'MT5 accounts synced', group: 'Compliance' },
+  {
+    action: 'settings.jobs.update',
+    label: 'Scheduled job interval changed',
+    group: 'Configuration',
+  },
+  { action: 'settings.jobs.run', label: 'Scheduled job run on demand', group: 'Configuration' },
   { action: 'trading.deposit', label: 'MT5 account credited', group: 'Compliance' },
   { action: 'trading.withdraw', label: 'MT5 account debited', group: 'Compliance' },
 

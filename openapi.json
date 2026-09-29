@@ -6044,6 +6044,118 @@
         ]
       }
     },
+    "/v1/admin/settings/scheduled-jobs": {
+      "get": {
+        "description": "The CRM jobs are started by ScheduledJobsRunner at these intervals; `bridge.sweep` is read by the MT5 bridge once a minute. The commission pair share the Trading settings interval.",
+        "operationId": "AdminSettingsController_listJobs",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScheduledJobListDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Background jobs: how often each runs, and its last run",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/settings/scheduled-jobs/{key}": {
+      "put": {
+        "description": "Within the job’s bounds (a 400 names them). Applies within 15 seconds (a minute for the bridge). For the commission jobs this is the Trading settings interval — also the hold.",
+        "operationId": "AdminSettingsController_setJobInterval",
+        "parameters": [
+          {
+            "name": "key",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateScheduledJobDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScheduledJobListDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Change how often a background job runs",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/settings/scheduled-jobs/{key}/run": {
+      "post": {
+        "description": "Started at the runner’s next tick (within 15 seconds). Not for the commission jobs or a bridge job (400).",
+        "operationId": "AdminSettingsController_runJobNow",
+        "parameters": [
+          {
+            "name": "key",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScheduledJobListDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Run a background job now",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/settings/smtp": {
       "get": {
         "description": "The stored password is never returned — `passwordSet` reports only whether one exists. `source` is \"environment\" until the first save, and the values shown are then the server’s own boot configuration rather than a blank form.",
@@ -18103,6 +18215,126 @@
           "maxDemoAccounts",
           "maxDemoDeposit",
           "ibCommissionIntervalSeconds"
+        ]
+      },
+      "ScheduledJobDto": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "example": "mt5.syncAccounts"
+          },
+          "group": {
+            "type": "string",
+            "enum": [
+              "mt5",
+              "commission",
+              "money",
+              "system"
+            ]
+          },
+          "runsOn": {
+            "type": "string",
+            "enum": [
+              "crm",
+              "bridge"
+            ],
+            "description": "`bridge`: the MT5 bridge runs it and picks up a change within a minute."
+          },
+          "intervalSeconds": {
+            "type": "number",
+            "example": 600
+          },
+          "defaultSeconds": {
+            "type": "number",
+            "example": 600
+          },
+          "minSeconds": {
+            "type": "number",
+            "example": 60
+          },
+          "maxSeconds": {
+            "type": "number",
+            "example": 86400
+          },
+          "sharedInterval": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "commission"
+            ],
+            "description": "`commission`: one interval for accruing and paying commission, which is also how long a commission is held before it is paid (the Trading settings value)."
+          },
+          "lastStartedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "lastFinishedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "lastDurationMs": {
+            "type": "number",
+            "nullable": true
+          },
+          "lastError": {
+            "type": "string",
+            "nullable": true
+          },
+          "lastErrorAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "externalReadAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "For a bridge job: when the bridge last read its interval."
+          },
+          "running": {
+            "type": "boolean",
+            "description": "Started and not yet finished."
+          }
+        },
+        "required": [
+          "key",
+          "group",
+          "runsOn",
+          "intervalSeconds",
+          "defaultSeconds",
+          "minSeconds",
+          "maxSeconds",
+          "running"
+        ]
+      },
+      "ScheduledJobListDto": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ScheduledJobDto"
+            }
+          }
+        },
+        "required": [
+          "items"
+        ]
+      },
+      "UpdateScheduledJobDto": {
+        "type": "object",
+        "properties": {
+          "intervalSeconds": {
+            "type": "number",
+            "example": 600,
+            "description": "Seconds between runs, within the job’s bounds."
+          }
+        },
+        "required": [
+          "intervalSeconds"
         ]
       },
       "SmtpSettingsDto": {

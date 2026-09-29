@@ -1,5 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { Cron, CronExpression } from '@nestjs/schedule';
+import { ScheduledJob } from '../scheduling/scheduled-job.decorator';
 import { lt } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
@@ -41,7 +41,7 @@ export class SecurityScheduler {
     private readonly leases: JobLeaseService,
   ) {}
 
-  @Cron(CronExpression.EVERY_HOUR, { name: 'security.sweep' })
+  @ScheduledJob('security.sweep')
   async sweep(): Promise<void> {
     /*
      * ONE INSTANCE. Cheap and idempotent, so a duplicate run is harmless — but

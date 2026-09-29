@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Cron, CronExpression } from '@nestjs/schedule';
+import { ScheduledJob } from '../../common/scheduling/scheduled-job.decorator';
 import { ReconciliationService } from './reconciliation.service';
 import { ALERT_KINDS, raiseAlert } from '../../common/logging/alerts';
 import { JobLeaseService } from '../../common/scheduling/job-lease.service';
@@ -28,7 +28,7 @@ export class ReconciliationScheduler {
     private readonly leases: JobLeaseService,
   ) {}
 
-  @Cron(CronExpression.EVERY_HOUR, { name: 'wallet.reconcile' })
+  @ScheduledJob('wallet.reconcile')
   async reconcile(): Promise<void> {
     /*
      * ONE INSTANCE. This job RAISES ALERTS, so duplicates are not merely wasted

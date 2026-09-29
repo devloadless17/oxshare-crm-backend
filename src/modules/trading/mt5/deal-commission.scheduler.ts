@@ -209,7 +209,34 @@ export class DealCommissionScheduler implements OnApplicationBootstrap, OnModule
      * first was still draining.
      */
     const budgetMs = (await this.intervalMs()) * BUDGET_FRACTION;
-    await this.leases.run('ib.accrueDeals', 2 * budgetMs, () => this.runOnce(budgetMs));
+    await this.leases.run('ib.accrueDeals', 2 * budgetMs, async () => {
+      // Recorded for Settings → Scheduled jobs (0167); never breaks the run.
+      const startedAt = new Date();
+      try {
+        await this.runOnce(budgetMs);
+        await this.recordRun(startedAt);
+      } catch (error) {
+        await this.recordRun(startedAt, error);
+        throw error;
+      }
+    });
+  }
+
+  /** The run's status line — a stub store in a spec has no such method, hence the guard. */
+  private async recordRun(startedAt: Date, error?: unknown): Promise<void> {
+    try {
+      await this.settings.recordJobRun(
+        'ib.accrueDeals',
+        startedAt,
+        error === undefined
+          ? undefined
+          : error instanceof Error
+            ? error.message
+            : JSON.stringify(error),
+      );
+    } catch {
+      /* a status line must not break the accrual it describes */
+    }
   }
 
   private async runOnce(budgetMs: number): Promise<void> {

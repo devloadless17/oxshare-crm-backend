@@ -48,6 +48,12 @@ export default defineConfig({
     env: {
       NODE_ENV: 'test',
       /*
+       * No background job starts on a clock in a suite (0167's runner): a spec
+       * calls the job it tests directly, and a clock-driven run in the middle of
+       * another spec's fixture is a flaky test nobody can reproduce.
+       */
+      SCHEDULED_JOBS: 'off',
+      /*
        * THE TWO ORIGINS THE ANTI-FORGERY GUARD COMPARES AGAINST.
        *
        * Same divergence as the secrets below, and it bites harder because it

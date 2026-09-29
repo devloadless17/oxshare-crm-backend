@@ -10,6 +10,9 @@ import {
   UsePipes,
   ValidationPipe,
 } from '@nestjs/common';
+import { AppSettingsStore } from '../../../store/app-settings.store';
+import { scheduledJob } from '../../../common/scheduling/scheduled-jobs.catalog';
+import { BridgeJobSettingsDto } from './dto/bridge-job-settings.dto';
 import {
   ApiExcludeController,
   ApiOkResponse,
@@ -149,7 +152,29 @@ export class Mt5WebhooksController {
     private readonly deals: Mt5DealsService,
     private readonly accounts: Mt5AccountSyncService,
     private readonly live: Mt5LiveService,
+    /** The job timings the bridge reads — Settings → Scheduled jobs (0167). Appended last. */
+    private readonly settings: AppSettingsStore,
   ) {}
+
+  /**
+   * The bridge's job timings, set in Settings → Scheduled jobs (owner, 29 Sep
+   * 2026) and read by the bridge once a minute (`CrmSettingsPoller`), so its
+   * sweep interval is edited in the console rather than in the bridge's config.
+   * Reading it stamps `external_read_at`, which the settings screen shows as
+   * "the bridge picked this up N ago".
+   */
+  @Get('settings')
+  @ApiOperation({ summary: 'The MT5 bridge job timings, as set in the CRM' })
+  @ApiOkResponse({ type: BridgeJobSettingsDto })
+  async bridgeSettings(): Promise<BridgeJobSettingsDto> {
+    const job = scheduledJob('bridge.sweep');
+    return {
+      sweepIntervalSeconds: await this.settings.readExternalJob(
+        'bridge.sweep',
+        job?.defaultSeconds ?? 300,
+      ),
+    };
+  }
 
   @Post('deals')
   @HttpCode(HttpStatus.OK)

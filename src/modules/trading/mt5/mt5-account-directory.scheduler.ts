@@ -1,5 +1,5 @@
-import { Injectable, Logger, type OnApplicationBootstrap } from '@nestjs/common';
-import { Cron, CronExpression } from '@nestjs/schedule';
+import { Injectable, Logger } from '@nestjs/common';
+import { ScheduledJob } from '../../../common/scheduling/scheduled-job.decorator';
 import { Mt5AccountDirectoryService, type DirectorySyncRun } from './mt5-account-directory.service';
 import { JobLeaseService } from '../../../common/scheduling/job-lease.service';
 import { pendingMigrationHint } from '../../../common/logging/pending-migration';
@@ -10,16 +10,17 @@ const LEASE = 'mt5.syncAccounts';
 const LEASE_TTL_MS = 8 * 60_000;
 
 /**
- * Brings every MT5 account into the CRM — every ten minutes, once at boot, and
- * on an operator's "Sync now" (see `Mt5AccountDirectoryService`).
+ * Brings every MT5 account into the CRM — at the interval set in Settings →
+ * Scheduled jobs (`mt5.syncAccounts`, ten minutes by default; 0167), and on an
+ * operator's "Sync now" (see `Mt5AccountDirectoryService`).
  *
- * Ten minutes because what it watches is accounts being OPENED outside the CRM,
+ * Ten minutes by default because what it watches is accounts being OPENED outside the CRM,
  * which happens at human speed; the balance of an account already recorded is
  * the bridge sweep's job, not this one's. Leased, so one instance runs it: two
  * would read the same new logins from the same single MT5 session.
  */
 @Injectable()
-export class Mt5AccountDirectoryScheduler implements OnApplicationBootstrap {
+export class Mt5AccountDirectoryScheduler {
   private readonly logger = new Logger(Mt5AccountDirectoryScheduler.name);
 
   constructor(
@@ -27,13 +28,7 @@ export class Mt5AccountDirectoryScheduler implements OnApplicationBootstrap {
     private readonly leases: JobLeaseService,
   ) {}
 
-  onApplicationBootstrap(): void {
-    void this.sync();
-  }
-
-  @Cron(process.env.MT5_ACCOUNT_SYNC_CRON ?? CronExpression.EVERY_10_MINUTES, {
-    name: LEASE,
-  })
+  @ScheduledJob('mt5.syncAccounts')
   async sync(): Promise<void> {
     try {
       await this.leases.run(LEASE, LEASE_TTL_MS, async () => {

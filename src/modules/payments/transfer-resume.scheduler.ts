@@ -1,5 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { Cron, CronExpression } from '@nestjs/schedule';
+import { ScheduledJob } from '../../common/scheduling/scheduled-job.decorator';
 import { and, count, eq, isNull, lt, lte, or, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
@@ -77,9 +77,7 @@ export class TransferResumeScheduler {
    * by the executor and the bridge's idempotency store, not by how often this
    * fires.
    */
-  @Cron(process.env.TRANSFER_RESUME_CRON ?? CronExpression.EVERY_MINUTE, {
-    name: 'payments.resumeTransfers',
-  })
+  @ScheduledJob('payments.resumeTransfers')
   async resume(): Promise<void> {
     /*
      * ONE INSTANCE. Safe either way — the bridge's idempotency key is the
