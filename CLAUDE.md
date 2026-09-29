@@ -1250,6 +1250,33 @@ live in `common/payments/proof-fields.ts` (pure).
 - Pinned by `test/offline-deposit-flow.spec.ts` (rules, immutability, search, the client view) and
   `test/offline-deposit-details-http.spec.ts` (the multipart `details[<id>]` parts, end to end).
 
+## The Financial list at any size (0165, 29 Sep 2026)
+
+`GET /admin/transactions` and the withdrawals desk read the money union (`movementsCte`). At 160,000
+movements a sort by status, a search, or a desk admin who also sees new clients cost 0.5–1 s a page,
+and every count grew with the book. Now each is 10–60 ms, and these rules keep it flat:
+
+- **Counts and sums come from STORED TOTALS**: `movement_daily_totals` (per UTC day) and
+  `movement_client_totals` (per client), fed by triggers as append-only deltas and folded every
+  minute (`MovementTotalsScheduler`). A read sums the totals plus the unfolded deltas in one statement,
+  so it is exact at every instant. `movementTotalsSource` picks the table: daily totals for a reader
+  who sees every client, per-client totals for a territory or one client, and the live rows for a
+  search, the attention flag, or a territory with dates. `test/movement-totals.spec.ts` pins every
+  path to the live rows. A new money table in the union needs its trigger in 0165's pattern.
+- **Every arm gives each column the SAME TYPE**, or Postgres cannot merge-append the arms and every
+  page sorts the whole history (`destination` text/varchar did exactly that). `state` is a
+  `transaction_state` on every arm. The transfer arm's CASE is indexed as that exact expression (0165),
+  and `admin-sort-indexes.spec.ts` asserts no Sort node. The status sort is the enum's LIFECYCLE
+  order, the same as the withdrawal queue's, and is no longer alphabetical.
+- **Conditions go INSIDE the arms** (`MovementArm`): scope, one client, and the search (`searched`
+  resolves the clients once; the payments arm also matches deposit evidence by id). Matched on the
+  union's output, a Portal ID search read every movement to find eight.
+- **Method names are looked up for the rows SHOWN** (`methodNamesOf`, after the page is cut), never
+  inside the union: there they ran for every row a search or sort discarded.
+- **"Tags + new clients" scope is ONE anti-join** (`NOT EXISTS` a tag with none of mine). The OR of two
+  subqueries could not become a join and cost 0.9 s a page on every scoped list.
+  `client-scope-twin.spec.ts` pins the equivalence.
+
 ## Validation
 
 The global `ValidationPipe` (`whitelist`, `transform`) only validates where a **DTO class**

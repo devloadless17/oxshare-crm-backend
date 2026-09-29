@@ -101,7 +101,7 @@ interface CombinedRow {
   destination: string | null;
   destination_trading_account_id: string | null;
   proof_filename: string | null;
-  /** The client's answers to an offline method's details (0162). */
+  /** The client's answers to an offline method's details (0163). */
   proof_details: ProofDetail[] | null;
   rejection_reason: string | null;
   reviewed_by: string | null;
@@ -113,9 +113,10 @@ interface CombinedRow {
   rival_needs_attention: boolean;
   rival_attention_reason: string | null;
   created_at: string;
+  /** Selected by `methodNamesOf`, for the rows a read shows. */
   method_name: string | null;
-  /** The desk's label, falling back to the name (0161). ADMIN mappings only. */
-  method_label: string | null;
+  /** The desk's label, falling back to the name (0161). ADMIN reads only. */
+  method_label?: string | null;
   kind: MovementKind;
   trading_account_id: string | null;
 }
@@ -172,6 +173,98 @@ export interface AdminMovementsFilter {
   attention?: boolean;
 }
 
+/**
+ * One table of the money union, as `movementsCte`'s `armWhere` sees it: the
+ * columns a caller's WHERE needs, named for THIS table, so every condition is
+ * written against the table's own indexed columns rather than the union's output
+ * (which no index can serve).
+ */
+interface MovementArm {
+  /** The client who owns the movement. */
+  owner: SQL;
+  /** The movement's own id. */
+  id: SQL;
+  /** True for `transactions` — the one table a deposit's evidence lives in. */
+  payments: boolean;
+}
+
+/**
+ * Which stored TOTALS (migration 0165) can answer this filter's counts and
+ * summary — or none, and the live rows must.
+ *
+ *  - `daily` — per UTC day × kind × direction × state × currency: a reader who
+ *    sees every client, whatever the tabs, currency and dates.
+ *  - `client` — per client × the same four: a desk admin's territory, or one
+ *    client, with any tabs and currency but no dates (these totals have no day).
+ *  - neither — a search (it matches MOVEMENTS, a deposit's evidence among them,
+ *    not only clients), the attention flag (a column no total keeps), or a
+ *    territory narrowed by dates. Each of those reads an index narrowed to its
+ *    own rows instead (see `adminMovements`).
+ */
+export function movementTotalsSource(filter: AdminMovementsFilter): 'daily' | 'client' | undefined {
+  if (filter.q?.trim() || filter.attention) return undefined;
+  if (filter.scope.unrestricted && filter.userId === undefined) return 'daily';
+  if (!filter.from && !filter.to) return 'client';
+  return undefined;
+}
+
+/**
+ * The facets and the summary, from the totals `movementTotalsSource` names: the
+ * compact table plus the deltas not yet folded into it, in ONE statement — so
+ * it reads one snapshot of both and is exact at every instant, folded or not
+ * (0165's header). A desk admin's territory is applied to the per-client totals
+ * by the same predicate every live read uses.
+ *
+ * `state` / `direction` return `{state|direction, value}` rows with that axis's
+ * own filter left out, exactly as the live facets do; `summary` returns the live
+ * summary's shape (`GROUPING SETS`), `value` a count and `total` a decimal STRING
+ * (§6.1). Buckets that net to nothing are dropped, as the live query never has them.
+ */
+export function movementTotalsQuery(
+  filter: AdminMovementsFilter,
+  shape: 'state' | 'direction' | 'summary',
+): SQL {
+  const totals = movementTotalsSource(filter);
+  if (!totals) throw new Error('movementTotalsQuery: no stored totals answer this filter');
+  const conditions: SQL[] = [];
+  if (filter.kind) conditions.push(sql`kind = ${filter.kind}`);
+  if (filter.currency) conditions.push(sql`currency = ${filter.currency}`);
+  if (shape !== 'direction' && filter.direction) {
+    conditions.push(sql`direction = ${filter.direction}`);
+  }
+  if (shape !== 'state' && filter.state) conditions.push(sql`state = ${filter.state}`);
+  if (totals === 'daily') {
+    if (filter.from) conditions.push(sql`day >= ${filter.from}::date`);
+    if (filter.to) conditions.push(sql`day <= ${filter.to}::date`);
+  } else {
+    const scoped = clientScopePredicate(filter.scope, sql`m.user_id`);
+    if (scoped) conditions.push(scoped);
+    if (filter.userId !== undefined) conditions.push(sql`m.user_id = ${filter.userId}::integer`);
+  }
+  const where = conditions.length ? sql` WHERE ${sql.join(conditions, sql` AND `)}` : sql``;
+  const key = totals === 'daily' ? sql`day` : sql`user_id`;
+  const table = totals === 'daily' ? sql`movement_daily_totals` : sql`movement_client_totals`;
+  const source = sql`
+    WITH m AS (
+      SELECT ${key}, kind, direction, state, currency, count, total FROM ${table}
+      UNION ALL
+      SELECT ${key}, kind, direction, state, currency, count, total FROM movement_total_deltas
+    )`;
+  if (shape === 'summary') {
+    return sql`${source}
+      SELECT direction, kind, state, currency,
+             sum(count)::int AS value, sum(total)::text AS total
+        FROM m${where}
+       GROUP BY GROUPING SETS ((direction, kind, state, currency), (direction, currency))
+      HAVING sum(count) <> 0
+       ORDER BY direction, kind NULLS LAST, state, currency`;
+  }
+  const axis = shape === 'state' ? sql`state` : sql`direction`;
+  return sql`${source}
+    SELECT ${axis}, sum(count)::int AS value FROM m${where}
+     GROUP BY ${axis} HAVING sum(count) <> 0`;
+}
+
 /** One row of the Financial CSV export — flattened, the amount a STRING. */
 export interface AdminTransactionExportRow {
   id: string;
@@ -186,7 +279,7 @@ export interface AdminTransactionExportRow {
   /** The payment platform's own id — see TransactionDto.rivalExternalId. */
   rivalExternalId: string | null;
   destination: string | null;
-  /** What the client gave to identify an offline payment (0162). */
+  /** What the client gave to identify an offline payment (0163). */
   proofDetails: ProofDetail[] | null;
   rejectionReason: string | null;
   userId: number;
@@ -232,6 +325,43 @@ const instantOrNull = (value: string | null): Date | null =>
   value === null ? null : instantOf(value);
 
 /**
+ * A movement's method NAME — looked up for the rows a read SHOWS, after the
+ * page is cut, never inside the union (29 Sep 2026).
+ *
+ * ONE name for both rails: a deposit names its method through `method_key`, a
+ * withdrawal through `withdrawal_method_key` into a DIFFERENT table — one row
+ * can never match both, so the coalesce is unambiguous rather than a guess
+ * about precedence. A rebate states its own (`arm_method_name`); a transfer has
+ * none.
+ *
+ * Inside the union the lookup ran for every movement a query touched: as joins
+ * it stopped each arm being read in index order (every page sorted the whole
+ * table), and as per-row subqueries it ran for every row a search or sort then
+ * discarded — ~0.9 s for a search matching every client, to show 26 rows. Here
+ * it runs once per row shown.
+ *
+ * `desk` adds the DESK's name (0161, `method_label`): admin reads select it,
+ * the client's never do.
+ */
+function methodNamesOf(row: 'page' | 'combined', desk: boolean): SQL {
+  const r = sql.raw(row);
+  const name = sql`COALESCE(
+      (SELECT pm.name FROM payment_methods pm WHERE pm.key = ${r}.method_key),
+      (SELECT wpm.name FROM withdrawal_payment_methods wpm
+        WHERE wpm.key = ${r}.withdrawal_method_key),
+      ${r}.arm_method_name
+    ) AS method_name`;
+  if (!desk) return name;
+  return sql`${name},
+    COALESCE(
+      (SELECT coalesce(pm.internal_label, pm.name) FROM payment_methods pm
+        WHERE pm.key = ${r}.method_key),
+      (SELECT coalesce(wpm.internal_label, wpm.name) FROM withdrawal_payment_methods wpm
+        WHERE wpm.key = ${r}.withdrawal_method_key)
+    ) AS method_label`;
+}
+
+/**
  * The scalar mappings the admin Financial list and its CSV export SHARE — one
  * definition, so the screen and the file cannot describe the same row
  * differently (a `methodName` fallback fixed in one copy and not the other is
@@ -239,7 +369,7 @@ const instantOrNull = (value: string | null): Date | null =>
  * under `user` on top of this; the export flattens the client beside it.
  */
 /**
- * The deposit desk's half of the admin search (0162): the details a client
+ * The deposit desk's half of the admin search (0163): the details a client
  * filed with an offline deposit — the phone it was sent from, a transfer code —
  * and the deposit's own `OX-` reference.
  *
@@ -256,15 +386,15 @@ function depositEvidenceSearch(q: string): SQL | undefined {
   if (folded.length >= 3) {
     // `folded` is [a-z0-9] only, so it carries no LIKE wildcard of its own.
     matches.push(sql`
-      SELECT t.id FROM transactions t
-      WHERE t.proof_details IS NOT NULL
-        AND deposit_details_search(t.proof_details) LIKE ${`%${folded}%`}`);
+      SELECT ev.id FROM transactions ev
+      WHERE ev.proof_details IS NOT NULL
+        AND deposit_details_search(ev.proof_details) LIKE ${`%${folded}%`}`);
   }
   if (/^ox-[0-9a-z]{6}$/i.test(q)) {
-    matches.push(sql`SELECT t.id FROM transactions t WHERE t.provider_ref = ${q.toUpperCase()}`);
+    matches.push(sql`SELECT ev.id FROM transactions ev WHERE ev.provider_ref = ${q.toUpperCase()}`);
   }
   if (matches.length === 0) return undefined;
-  return sql`combined.id IN (${sql.join(matches, sql` UNION `)})`;
+  return sql.join(matches, sql` UNION `);
 }
 
 function toMovementRow(row: AdminCombinedRow) {
@@ -465,12 +595,21 @@ export const DEFAULT_WITHDRAWAL_SORT: WithdrawalSortKey = 'createdAt';
  * exists to prevent. The cast name doubles as the cursor-value VALIDATOR's
  * dispatch key (see `cursorSeekValue`), which is what turns a tampered cursor
  * into a 400 instead of a Postgres cast error.
+ *
+ * `state` sorts in LIFECYCLE order — pending, approved, success, failure,
+ * rejected — the `transaction_state` enum's own, the order the withdrawal queue
+ * already used. It sorted alphabetically while the union carried state as text,
+ * which no index could serve: every status sort read the whole money history
+ * (~1 s at 160,000 rows). 0165 indexes each arm's state in that order.
  */
 export const ADMIN_TRANSACTION_SORT_COLUMNS = {
-  createdAt: { column: sql`combined.created_at`, cast: 'timestamptz' },
-  amount: { column: sql`combined.amount`, cast: 'numeric' },
-  state: { column: sql`combined.state`, cast: 'text' },
-} as const satisfies Record<string, { column: SQL; cast: 'timestamptz' | 'numeric' | 'text' }>;
+  createdAt: { column: sql`combined.created_at`, pageColumn: 'created_at', cast: 'timestamptz' },
+  amount: { column: sql`combined.amount`, pageColumn: 'amount', cast: 'numeric' },
+  state: { column: sql`combined.state`, pageColumn: 'state', cast: 'transaction_state' },
+} as const satisfies Record<
+  string,
+  { column: SQL; pageColumn: string; cast: 'timestamptz' | 'numeric' | 'transaction_state' }
+>;
 
 export type AdminTransactionSortKey = keyof typeof ADMIN_TRANSACTION_SORT_COLUMNS;
 
@@ -538,12 +677,18 @@ function cursorSeek(
   if (spec.cast === 'timestamptz' && Number.isNaN(Date.parse(cursor.value))) {
     throw new ValidationError(MALFORMED_CURSOR);
   }
+  if (
+    spec.cast === 'transaction_state' &&
+    !(transactionStateEnum.enumValues as readonly string[]).includes(cursor.value)
+  ) {
+    throw new ValidationError(MALFORMED_CURSOR);
+  }
   const cast =
     spec.cast === 'timestamptz'
       ? sql`${cursor.value}::timestamptz`
       : spec.cast === 'numeric'
         ? sql`${cursor.value}::numeric`
-        : sql`${cursor.value}::text`;
+        : sql`${cursor.value}::transaction_state`;
   return sql`(${spec.column}, combined.id) ${comparator} (${cast}, ${cursor.id}::uuid)`;
 }
 
@@ -1100,7 +1245,7 @@ export class TransactionsService {
     // `(col DESC, id DESC)` indexes serve both directions with no sort node.
     const orderBy = direction === 'asc' ? asc : desc;
 
-    const rows = await db
+    const rowsQuery = db
       .select({
         // The sort value at full precision, for the cursor — see the note at
         // `buildCursorPage` below. Stripped before the row becomes a response.
@@ -1164,70 +1309,53 @@ export class TransactionsService {
       .offset(usingCursor ? 0 : (page - 1) * limit);
 
     /*
-     * JOINED TO `users`, because `where` may reference their columns.
-     *
-     * The predicate is shared with the rows query above — that is the point of
-     * building it once — and the search matches on the client's name and email.
-     * Without the join this counts against a table that has no `users` in
-     * scope and Postgres rejects the whole statement.
-     */
-    const [{ value: total }] = await db
-      .select({ value: sql<number>`count(*)::int` })
-      .from(transactions)
-      .innerJoin(users, eq(transactions.userId, users.id))
-      .where(where);
-
-    /*
      * Per-state counts over the full set — deliberately ignoring the STATE
      * filter (the desk tabs must show every state's size regardless of the
      * active tab) but NEVER the SCOPE. This aggregated without the scope
      * predicate once, and the row a scoped admin could not see still moved
      * their nav badge and tab counts: aggregate intelligence about clients
      * outside their territory, found live by the 13 Aug scoped walk.
-     */
-    const countConditions = [eq(transactions.direction, 'withdrawal')];
-    if (scoped) countConditions.push(scoped);
-    /*
-     * The SEARCH narrows these; the STATE filter does not.
      *
-     * Two filters on different axes. The tabs exist to show how big each state
-     * is, so applying the active state to them would make every tab but one
-     * read zero. The search is the reader's current subject — if they are
-     * looking at one client, a Pending badge counting all 8,571 rows describes
-     * a queue they are not looking at, and they would act on it.
+     * The SEARCH narrows these; the STATE filter does not. Two filters on
+     * different axes: the tabs exist to show how big each state is, so applying
+     * the active state would make every tab but one read zero; the search is the
+     * reader's current subject — if they are looking at one client, a Pending
+     * badge counting all 8,571 rows describes a queue they are not looking at.
+     *
+     * Without a search they come from the STORED TOTALS (0165) — a withdrawal
+     * is a payment movement in the withdrawal direction — through the same
+     * territory predicate. Counting the rows here cost a scan of every
+     * withdrawal on every page, twice (a total and the tabs), growing with the
+     * book. There is no separate total any more: it is the active tab's count,
+     * the same rule the Financial list states — and, unlike the count it
+     * replaces, it no longer shrank as the desk paged past a cursor.
      */
-    if (q) {
-      countConditions.push(
-        /*
-         * The CONCATENATED expression, which is the one the trigram index is built
-         * on (`users_search_trgm_idx`, migration 0010).
-         *
-         * This was three separate `ILIKE`s OR-ed together, and
-         * `client-list-indexes.spec.ts` already PROVES that form cannot use the
-         * index — it asserts `not.toContain('users_search_trgm_idx')` for exactly
-         * this shape. So every search of this queue was a sequential scan while
-         * the index sat beside it, unused.
-         *
-         * It also searches BETTER: "jane smith" matches the concatenation and can
-         * never match any single column, which is what an operator typing a full
-         * name expects. `kyc.store.ts` already states the intent — both queues are
-         * review queues of people and "a search box that matched different fields
-         * on each would be a trap".
-         */
-        clientIdentitySearch(q),
-      );
-    }
-    const countRows = await db
-      .select({ state: transactions.state, value: sql<number>`count(*)::int` })
-      .from(transactions)
-      .innerJoin(users, eq(transactions.userId, users.id))
-      .where(and(...countConditions))
-      .groupBy(transactions.state);
+    const scope = filter.scope ?? UNRESTRICTED;
+    const countRowsOf = async (): Promise<{ state: string; value: number }[]> => {
+      if (!q) {
+        const totals = await db.execute(
+          movementTotalsQuery({ scope, kind: 'payment', direction: 'withdrawal' }, 'state'),
+        );
+        return totals.rows as unknown as { state: string; value: number }[];
+      }
+      const countConditions = [eq(transactions.direction, 'withdrawal')];
+      if (scoped) countConditions.push(scoped);
+      // The concatenated expression the trigram index is built on — see above.
+      countConditions.push(clientIdentitySearch(q));
+      return db
+        .select({ state: transactions.state, value: sql<number>`count(*)::int` })
+        .from(transactions)
+        .innerJoin(users, eq(transactions.userId, users.id))
+        .where(and(...countConditions))
+        .groupBy(transactions.state);
+    };
+    const [rows, countRows] = await Promise.all([rowsQuery, countRowsOf()]);
     const counts: Record<string, number> = { all: 0 };
     for (const row of countRows) {
       counts[row.state] = row.value;
       counts['all'] += row.value;
     }
+    const total = filter.state ? (counts[filter.state] ?? 0) : counts['all'];
 
     /*
      * `buildCursorPage` mints the cursor by reading `row[sort]`, so the row it
@@ -1429,12 +1557,12 @@ export class TransactionsService {
    *
    * ── The one parameter: WHO MAY BE SEEN, decided PER ARM ──────────────────
    *
-   * Each arm hands its own user-id column to `armWhere`, which returns that
-   * arm's whole WHERE clause — or an empty fragment for "no restriction".
+   * Each arm hands its own columns (`MovementArm`) to `armWhere`, which returns
+   * that arm's whole WHERE clause — or an empty fragment for "no restriction".
    * Per arm rather than on the outer SELECT, so each branch keeps its own
    * `user_idx` usable and Postgres prunes before the union rather than after:
-   * on the admin list the clause is the actor's client-scope predicate, an
-   * EXISTS that would otherwise run over every row the union produced.
+   * on the admin list the clause is the actor's client-scope predicate and the
+   * client search, which over the union's output read every movement there is.
    */
   /**
    * @param includeRebates whether the client's REBATE credits form a fourth arm.
@@ -1454,7 +1582,15 @@ export class TransactionsService {
    * screen exists for — and they are about to get noisier, since one payout run
    * now credits per wallet rather than per trade (0116).
    */
-  private movementsCte(armWhere: (userIdColumn: SQL) => SQL, includeRebates: boolean): SQL {
+  /**
+   * @param prelude further CTEs the arms' conditions read (the admin search's
+   * `searched`), placed before `combined` in the same WITH.
+   */
+  private movementsCte(
+    armWhere: (arm: MovementArm) => SQL,
+    includeRebates: boolean,
+    prelude?: SQL,
+  ): SQL {
     /*
      * THE REBATE ARM, conditional (0116).
      *
@@ -1518,7 +1654,7 @@ export class TransactionsService {
            * The append-only trigger means there is no pending state it could
            * be written in and later corrected out of.
            */
-          'success'::text,
+          'success'::transaction_state,
           NULL::varchar,                          -- method_key
           NULL::varchar,                          -- withdrawal_method_key
           /*
@@ -1529,7 +1665,7 @@ export class TransactionsService {
            */
           'rebate'::varchar,                      -- provider
           NULL::varchar,                          -- provider_ref
-          NULL::text,                             -- destination
+          NULL::varchar,                          -- destination
           NULL::uuid,                             -- destination_trading_account_id
           NULL::varchar,                          -- proof_filename
           NULL::jsonb,                            -- proof_details
@@ -1570,8 +1706,7 @@ export class TransactionsService {
             WHEN b.accrual_count > 1
               THEN 'Rebate · ' || b.accrual_count || ' trades'
             ELSE 'Rebate'
-          END::varchar                            AS method_name,
-          NULL::varchar                           AS method_label,
+          END::varchar                            AS arm_method_name,
           'rebate'::text                          AS kind,
           NULL::uuid                              AS trading_account_id
         /*
@@ -1602,12 +1737,22 @@ export class TransactionsService {
            * above warn. This comment had them and broke the parse.
            */
           ON b.id::text = le.reference_id AND le.reference_type = 'accrual_batch'
-        ${armWhere(sql`w.user_id`)}
+        ${armWhere({ owner: sql`w.user_id`, id: sql`le.id`, payments: false })}
       `
       : sql``;
 
+    /*
+     * ⚠️ EVERY ARM MUST GIVE EACH COLUMN THE SAME TYPE — `NULL::varchar`, never
+     * `NULL::text`, beside a varchar column (29 Sep 2026). A mismatch makes
+     * Postgres coerce the union's output, which stops it treating the arms as
+     * one appendable set: no Merge Append, so an ORDER BY … LIMIT could not read
+     * each arm's index in order and every Financial page sorted the whole
+     * money history. `destination` (varchar here, text in two arms) did exactly
+     * that; aligned, the first page reads 26 index entries per arm. `state` is a
+     * `transaction_state` on every arm for the same reason (0165).
+     */
     return sql`
-      WITH combined AS (
+      WITH ${prelude ? sql`${prelude},` : sql``} combined AS (
         SELECT
           t.id,
           t.user_id,
@@ -1615,7 +1760,7 @@ export class TransactionsService {
           t.direction::text                       AS direction,
           t.amount,
           t.currency,
-          t.state::text                           AS state,
+          t.state                                 AS state,
           t.method_key,
           t.withdrawal_method_key,
           t.provider,
@@ -1635,20 +1780,14 @@ export class TransactionsService {
           t.rival_attention_reason,
           t.created_at,
           /*
-           * ONE name for both rails. A deposit names its method through
-           * method_key, a withdrawal through withdrawal_method_key into a
-           * DIFFERENT table — one row can never match both, so the coalesce is
-           * unambiguous rather than a guess about precedence.
+           * The method's NAME is not looked up here: methodNamesOf names the
+           * rows a read SHOWS, from method_key and withdrawal_method_key above.
            */
-          COALESCE(pm.name, wpm.name)             AS method_name,
-          -- The DESK's name (0161): admin mappings read it, the client's never do.
-          COALESCE(pm.internal_label, pm.name, wpm.internal_label, wpm.name) AS method_label,
+          NULL::varchar                           AS arm_method_name,
           'payment'::text                         AS kind,
           NULL::uuid                              AS trading_account_id
         FROM transactions t
-        LEFT JOIN payment_methods pm ON pm.key = t.method_key
-        LEFT JOIN withdrawal_payment_methods wpm ON wpm.key = t.withdrawal_method_key
-        ${armWhere(sql`t.user_id`)}
+        ${armWhere({ owner: sql`t.user_id`, id: sql`t.id`, payments: true })}
 
         UNION ALL
 
@@ -1659,10 +1798,14 @@ export class TransactionsService {
           CASE WHEN tr.direction = 'account_to_wallet' THEN 'deposit' ELSE 'withdrawal' END,
           tr.amount,
           tr.currency,
+          /*
+           * IDENTICAL to the expression 0165 indexes on transfers — that is how
+           * the planner matches it, and a status tab or sort reads the index.
+           */
           CASE tr.state
-            WHEN 'settled' THEN 'success'
-            WHEN 'failed'  THEN 'failure'
-            ELSE 'pending'
+            WHEN 'settled' THEN 'success'::transaction_state
+            WHEN 'failed' THEN 'failure'::transaction_state
+            ELSE 'pending'::transaction_state
           END,
           NULL::varchar,                          -- method_key
           NULL::varchar,                          -- withdrawal_method_key
@@ -1675,7 +1818,7 @@ export class TransactionsService {
            */
           'transfer'::varchar,                    -- provider
           NULL::varchar,                          -- provider_ref
-          NULL::text,                             -- destination
+          NULL::varchar,                          -- destination
           NULL::uuid,                             -- destination_trading_account_id
           NULL::varchar,                          -- proof_filename
           NULL::jsonb,                            -- proof_details
@@ -1694,12 +1837,11 @@ export class TransactionsService {
           FALSE,                                  -- rival_needs_attention
           NULL::text,                             -- rival_attention_reason
           tr.created_at,
-          NULL::varchar                           AS method_name,
-          NULL::varchar                           AS method_label,
+          NULL::varchar                           AS arm_method_name,
           'transfer'::text                        AS kind,
           tr.trading_account_id
         FROM transfers tr
-        ${armWhere(sql`tr.user_id`)}
+        ${armWhere({ owner: sql`tr.user_id`, id: sql`tr.id`, payments: false })}
 
         UNION ALL
 
@@ -1738,7 +1880,7 @@ export class TransactionsService {
           'deposit'::text,
           iwt.amount,
           iwt.currency,
-          'success'::text,
+          'success'::transaction_state,
           NULL::varchar,                          -- method_key
           NULL::varchar,                          -- withdrawal_method_key
           /*
@@ -1749,7 +1891,7 @@ export class TransactionsService {
            */
           'commission'::varchar,                  -- provider
           NULL::varchar,                          -- provider_ref
-          NULL::text,                             -- destination
+          NULL::varchar,                          -- destination
           NULL::uuid,                             -- destination_trading_account_id
           NULL::varchar,                          -- proof_filename
           NULL::jsonb,                            -- proof_details
@@ -1763,12 +1905,11 @@ export class TransactionsService {
           FALSE,                                  -- rival_needs_attention
           NULL::text,                             -- rival_attention_reason
           iwt.created_at,
-          NULL::varchar                           AS method_name,
-          NULL::varchar                           AS method_label,
+          NULL::varchar                           AS arm_method_name,
           'commission_transfer'::text             AS kind,
           NULL::uuid                              AS trading_account_id
         FROM ib_wallet_transfers iwt
-        ${armWhere(sql`iwt.user_id`)}
+        ${armWhere({ owner: sql`iwt.user_id`, id: sql`iwt.id`, payments: false })}
 
         ${rebateArm}
       )
@@ -1817,8 +1958,8 @@ export class TransactionsService {
      * session and never from a parameter (R-4.4).
      */
     /* TRUE: this is the ONLY screen a client has for their rebates. */
-    const selection = sql`${this.movementsCte((owner) => sql` WHERE ${owner} = ${userId}`, true)}
-      SELECT * FROM combined
+    const selection = sql`${this.movementsCte(({ owner }) => sql` WHERE ${owner} = ${userId}`, true)}
+      SELECT combined.*, ${methodNamesOf('combined', false)} FROM combined
     `;
 
     /*
@@ -1991,7 +2132,7 @@ export class TransactionsService {
   ): Promise<
     { currency: string; direction: string; state: string; count: number; total: string }[]
   > {
-    const selection = sql`${this.movementsCte((owner) => sql` WHERE ${owner} = ${userId}`, true)}
+    const selection = sql`${this.movementsCte(({ owner }) => sql` WHERE ${owner} = ${userId}`, true)}
       SELECT * FROM combined
     `;
     const where = this.clientHistoryWhere(query);
@@ -2032,66 +2173,101 @@ export class TransactionsService {
     const whereOf = (conditions: SQL[]): SQL =>
       conditions.length ? sql` WHERE ${sql.join(conditions, sql` AND `)}` : sql``;
 
-    const cte = this.movementsCte((owner) => {
-      const conditions: SQL[] = [];
-      /*
-       * In the ARM's WHERE clause: an out-of-scope movement never enters the
-       * union, so it also cannot appear in the counts, the summary or the
-       * export computed from it — the same rule `listForAdmin` states for the
-       * withdrawal queue, applied one level deeper.
-       */
-      const scoped = clientScopePredicate(filter.scope, owner);
-      if (scoped) conditions.push(scoped);
-      // Validated as a UUID at the edge — an unvalidated value against a uuid
-      // column is the 500 common/query-params.ts documents.
-      if (filter.userId) conditions.push(sql`${owner} = ${filter.userId}::integer`);
-      return whereOf(conditions);
-      /*
-       * FALSE — no rebate arm on the admin Financial list.
-       *
-       * This screen is deposits, withdrawals and transfers: the movements an
-       * operator acts on or reconciles against a provider. A rebate is neither
-       * — it is an internal credit the commission engine produced — and at one
-       * payout per minute it buried the rows the page exists for.
-       *
-       * Not a loss of visibility: /commissions lists every accrual with the
-       * partner, the client, the rate and the rung, which is strictly more than
-       * a movement row can carry. The CLIENT's own history keeps the arm — see
-       * the parameter's note, and `listForUser` above.
-       */
-    }, false);
-
     /*
-     * The client columns, joined once for display, search and the export —
-     * INNER, because every movement's user_id is a NOT NULL FK onto users, so
-     * the join can drop nothing.
+     * The SEARCH: a Portal ID or a name/email (`clientIdentitySearch`, the one
+     * expression every client search shares), plus what identifies an offline
+     * deposit (`depositEvidenceSearch`). The matching clients are resolved ONCE
+     * per statement (`searched`, by the users indexes), and each arm below reads
+     * only their rows through its own `user_id` index — the deposits the evidence
+     * names through the primary key. Matched against the union's output instead,
+     * it read every movement there is to find one client's eight: ~0.8 s at
+     * 160,000 rows for an exact Portal ID (29 Sep 2026).
      */
-    const joined = sql`${cte}
-      SELECT
-        combined.*,
-        users.email      AS user_email,
-        users.first_name AS user_first_name,
-        users.last_name  AS user_last_name,
-        users.id  AS user_portal_id
-      FROM combined
-      JOIN users ON users.id = combined.user_id`;
-
-    // Escaped, so a literal % or _ in the search means itself — the same
-    // `escapeLike` the client and KYC queues adopted; an unescaped `_` turns
-    // "j_n@x.com" into a one-character wildcard and over-matches silently.
-    // A Portal ID or a name/email — see `clientIdentitySearch`. Joined as
-    // plain `users` (it was aliased `u`) so the shared expression applies here
-    // too, and this search cannot drift from the other six.
     const q = filter.q?.trim() || undefined;
+    const evidence = q ? depositEvidenceSearch(q) : undefined;
+    const searched = q
+      ? sql`searched AS MATERIALIZED (SELECT users.id FROM users WHERE ${clientIdentitySearch(q)})`
+      : undefined;
+
+    const cte = this.movementsCte(
+      ({ owner, id, payments }) => {
+        const conditions: SQL[] = [];
+        /*
+         * In the ARM's WHERE clause: an out-of-scope movement never enters the
+         * union, so it also cannot appear in the counts, the summary or the
+         * export computed from it — the same rule `listForAdmin` states for the
+         * withdrawal queue, applied one level deeper.
+         */
+        const scoped = clientScopePredicate(filter.scope, owner);
+        if (scoped) conditions.push(scoped);
+        // Validated as a Portal ID at the edge.
+        if (filter.userId) conditions.push(sql`${owner} = ${filter.userId}::integer`);
+        if (searched) {
+          const byClient = sql`${owner} = ANY(ARRAY(SELECT searched.id FROM searched))`;
+          conditions.push(
+            payments && evidence ? sql`(${byClient} OR ${id} = ANY(ARRAY(${evidence})))` : byClient,
+          );
+        }
+        return whereOf(conditions);
+        /*
+         * FALSE — no rebate arm on the admin Financial list.
+         *
+         * This screen is deposits, withdrawals and transfers: the movements an
+         * operator acts on or reconciles against a provider. A rebate is neither
+         * — it is an internal credit the commission engine produced — and at one
+         * payout per minute it buried the rows the page exists for.
+         *
+         * Not a loss of visibility: /commissions lists every accrual with the
+         * partner, the client, the rate and the rung, which is strictly more than
+         * a movement row can carry. The CLIENT's own history keeps the arm — see
+         * the parameter's note, and `listForUser` above.
+         */
+      },
+      false,
+      searched,
+    );
 
     /*
-     * The counts do not need the client columns unless the SEARCH references
-     * them — and Postgres cannot eliminate an inner join on its own. Counting
-     * over the bare union saves one `users` probe per movement row on every
-     * facet of every page render; the join is count-neutral either way (the
-     * FK is NOT NULL), so the numbers cannot differ.
+     * Every count and sum reads the bare union — the client columns are for
+     * display, and a join Postgres cannot eliminate would cost one `users`
+     * probe per movement for numbers it cannot change (the FK is NOT NULL).
      */
-    const countSource = q ? joined : sql`${cte} SELECT combined.* FROM combined`;
+    const countSource = sql`${cte} SELECT combined.* FROM combined`;
+
+    /*
+     * One PAGE of the union, then its clients (29 Sep 2026). Joined first, every
+     * movement was matched to its client and the whole union sorted to keep 26
+     * rows; chosen first, each arm reads its own index in order and the client is
+     * looked up for the page alone. INNER, because every movement's user_id is a
+     * NOT NULL FK onto users, so the join can drop nothing. `column` is a key of
+     * a closed map (`ADMIN_TRANSACTION_SORT_COLUMNS.pageColumn`, or the export's
+     * fixed `created_at`), never request text.
+     */
+    const page = (
+      conditions: SQL[],
+      order: { column: 'created_at' | 'amount' | 'state'; direction: SortOrder },
+      limit: number,
+      offset = 0,
+    ): SQL => {
+      const dir = order.direction === 'asc' ? sql`ASC` : sql`DESC`;
+      return sql`
+        ${cte},
+        page AS (
+          SELECT combined.* FROM combined${whereOf(conditions)}
+          ORDER BY ${sql.raw(`combined.${order.column}`)} ${dir}, combined.id ${dir}
+          LIMIT ${limit} OFFSET ${offset}
+        )
+        SELECT
+          page.*,
+          ${methodNamesOf('page', true)},
+          users.email      AS user_email,
+          users.first_name AS user_first_name,
+          users.last_name  AS user_last_name,
+          users.id         AS user_portal_id
+        FROM page
+        JOIN users ON users.id = page.user_id
+        ORDER BY ${sql.raw(`page.${order.column}`)} ${dir}, page.id ${dir}`;
+    };
 
     /*
      * `omit` is how the count facets stay honest — the same two-axis rule the
@@ -2099,8 +2275,12 @@ export class TransactionsService {
      * exactly ITS OWN axis (state tabs ignore the state filter, direction
      * tabs the direction filter) and honours every other filter, so the two
      * facet rows on one screen always describe the same filtered set. NOTHING
-     * may ever omit the scope — it lives in the CTE's arms, upstream of every
-     * caller of this builder.
+     * may ever omit the scope or the search — both live in the CTE's arms,
+     * upstream of every caller of this builder.
+     *
+     * Postgres pushes each of these into every arm, where 0165's indexes serve
+     * them: a status tab reads `(state, created_at, id)`, a currency its own,
+     * "needs attention" a partial index of the few flagged rows.
      */
     const conditionsFor = (omit: { state?: boolean; direction?: boolean } = {}): SQL[] => {
       const conditions: SQL[] = [];
@@ -2117,30 +2297,24 @@ export class TransactionsService {
        * every row's column in a cast no b-tree can serve, so the one filter
        * that should shrink the scan most shrank it not at all; `created_at >=
        * x::date` and `< to + 1 day` are the same inclusive-by-date-part
-       * semantics (both sides resolve in the session timezone) with the
-       * column left bare for the 0094 indexes to range-scan.
+       * semantics with the column left bare for the 0094 indexes to range-scan.
        */
-      if (filter.from) conditions.push(sql`combined.created_at >= ${filter.from}::date`);
-      if (filter.to) {
-        conditions.push(sql`combined.created_at < ${filter.to}::date + interval '1 day'`);
+      // UTC days, stated rather than left to the session's time zone: the daily
+      // totals (0165) are UTC days, and both paths must mean the same day.
+      if (filter.from) {
+        conditions.push(
+          sql`combined.created_at >= (${filter.from}::date)::timestamp AT TIME ZONE 'UTC'`,
+        );
       }
-      // The same three columns every admin queue searches (see `listForAdmin`),
-      // plus what identifies an offline deposit (see `depositEvidenceSearch`).
-      if (q) {
-        /*
-         * The same concatenation as the drizzle queues above, spelled in raw
-         * SQL because this list is assembled as text. Three OR-ed ILIKEs
-         * cannot use `users_search_trgm_idx`; the concatenation is the
-         * expression the index was built on.
-         */
-        const identity = clientIdentitySearch(q);
-        const evidence = depositEvidenceSearch(q);
-        conditions.push(evidence ? sql`(${identity} OR ${evidence})` : identity);
+      if (filter.to) {
+        conditions.push(
+          sql`combined.created_at < (${filter.to}::date + 1)::timestamp AT TIME ZONE 'UTC'`,
+        );
       }
       return conditions;
     };
 
-    return { joined, countSource, conditionsFor, whereOf };
+    return { countSource, page, conditionsFor, whereOf };
   }
 
   /**
@@ -2168,7 +2342,7 @@ export class TransactionsService {
     const direction = filter.order ?? 'desc';
     const sortSpec = ADMIN_TRANSACTION_SORT_COLUMNS[sortKey];
 
-    const { joined, countSource, conditionsFor, whereOf } = this.adminMovements(filter);
+    const { countSource, page: pageOf, conditionsFor, whereOf } = this.adminMovements(filter);
 
     /*
      * Keyset seek — R-2.4, the same tuple comparison `listForAdmin` documents.
@@ -2181,7 +2355,6 @@ export class TransactionsService {
       pageConditions.push(cursorSeek(sortSpec, filter.cursor, comparator));
     }
 
-    const orderDir = direction === 'asc' ? sql`ASC` : sql`DESC`;
     const usingCursor = Boolean(filter.cursor) || page <= 1;
 
     /*
@@ -2193,21 +2366,34 @@ export class TransactionsService {
      * the fully-filtered total is its own state's bucket (or `all` when no
      * state is filtered) — a fourth scan of the union would recompute a
      * number this response already carries.
+     *
+     * The facets come from STORED TOTALS (0165) whenever the filter is one they
+     * can answer (`movementTotalsSource`). Counting the union here cost ~200 ms
+     * at 160,000 rows and grew with every deposit; the totals grow with days
+     * and clients, not movements, and are exact (see `movementTotalsQuery`).
      */
+    const totals = movementTotalsSource(filter) !== undefined;
     const [rows, stateRows, directionRows] = await Promise.all([
-      this.db.execute(sql`
-        ${joined}${whereOf(pageConditions)}
-        ORDER BY ${sortSpec.column} ${orderDir}, combined.id ${orderDir}
-        LIMIT ${limit + 1} OFFSET ${usingCursor ? 0 : (page - 1) * limit}
-      `),
-      this.db.execute(sql`
-        WITH counted AS (${countSource}${whereOf(conditionsFor({ state: true }))})
-        SELECT state, count(*)::int AS value FROM counted GROUP BY state
-      `),
-      this.db.execute(sql`
-        WITH counted AS (${countSource}${whereOf(conditionsFor({ direction: true }))})
-        SELECT direction, count(*)::int AS value FROM counted GROUP BY direction
-      `),
+      this.db.execute(
+        pageOf(
+          pageConditions,
+          { column: sortSpec.pageColumn, direction },
+          limit + 1,
+          usingCursor ? 0 : (page - 1) * limit,
+        ),
+      ),
+      totals
+        ? this.db.execute(movementTotalsQuery(filter, 'state'))
+        : this.db.execute(sql`
+            WITH counted AS (${countSource}${whereOf(conditionsFor({ state: true }))})
+            SELECT state, count(*)::int AS value FROM counted GROUP BY state
+          `),
+      totals
+        ? this.db.execute(movementTotalsQuery(filter, 'direction'))
+        : this.db.execute(sql`
+            WITH counted AS (${countSource}${whereOf(conditionsFor({ direction: true }))})
+            SELECT direction, count(*)::int AS value FROM counted GROUP BY direction
+          `),
     ]);
 
     const counts: Record<string, number> = { all: 0 };
@@ -2297,7 +2483,7 @@ export class TransactionsService {
       after?: { createdAt: string; id: string };
     },
   ): Promise<AdminTransactionExportRow[]> {
-    const { joined, conditionsFor, whereOf } = this.adminMovements(filter);
+    const { page, conditionsFor } = this.adminMovements(filter);
 
     const conditions = conditionsFor();
     conditions.push(sql`combined.created_at <= ${filter.startedAt.toISOString()}::timestamptz`);
@@ -2307,11 +2493,9 @@ export class TransactionsService {
       );
     }
 
-    const rows = await this.db.execute(sql`
-      ${joined}${whereOf(conditions)}
-      ORDER BY combined.created_at DESC, combined.id DESC
-      LIMIT ${filter.limit}
-    `);
+    const rows = await this.db.execute(
+      page(conditions, { column: 'created_at', direction: 'desc' }, filter.limit),
+    );
 
     return (rows.rows as unknown as AdminCombinedRow[]).map((row) => ({
       // The shared mapper — the CSV must describe a row exactly as the screen
@@ -2357,7 +2541,10 @@ export class TransactionsService {
      * derived from the same rows. The coarse set leaves `kind`/`state` NULL,
      * which is unambiguous because both are NOT NULL on every real row.
      */
-    const grouped = await this.db.execute(sql`
+    // The stored totals (0165) answer every filter they can — see `movementTotalsSource`.
+    const grouped = movementTotalsSource(filter)
+      ? await this.db.execute(movementTotalsQuery(filter, 'summary'))
+      : await this.db.execute(sql`
       WITH counted AS (${countSource}${whereOf(conditionsFor())})
       SELECT
         direction,
@@ -2784,7 +2971,7 @@ export class TransactionsService {
      */
     proofFilename?: string;
     /*
-     * The client's answers to the method's `proofFields` (0162), as submitted —
+     * The client's answers to the method's `proofFields` (0163), as submitted —
      * `details[<fieldId>]` parts of the offline form. Judged here against the
      * fields the method asks NOW; see `readProofDetails`.
      */
@@ -3014,7 +3201,7 @@ export class TransactionsService {
         providerRef: reference,
         // The receipt, or null on every method that does not ask for one.
         proofFilename: params.proofFilename ?? null,
-        // Each answer with its label AS ASKED; immutable from here (0162 trigger).
+        // Each answer with its label AS ASKED; immutable from here (0163 trigger).
         proofDetails: proofDetails.length > 0 ? proofDetails : null,
       })
       .returning();

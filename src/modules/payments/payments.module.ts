@@ -9,6 +9,7 @@ import { TransactionsService } from './transactions.service';
 import { TransfersService } from './transfers.service';
 import { TransferExecutor } from './transfer-executor.service';
 import { TransferResumeScheduler } from './transfer-resume.scheduler';
+import { MovementTotalsScheduler } from './movement-totals.scheduler';
 import { PaymentMethodsService } from './payment-methods.service';
 import { WalletModule } from '../wallet/wallet.module';
 import { TradingModule } from '../trading/trading.module';
@@ -85,6 +86,7 @@ import { RivalPollScheduler } from './rival/rival-poll.scheduler';
     TransferExecutor,
     // Finishes transfers the executor deliberately left pending — see its note.
     TransferResumeScheduler,
+    MovementTotalsScheduler,
     // `WithdrawalOtpService` and `SecuritySettingsService` are gone with the
     // withdrawal confirmation code (D-67).
     AdminAuditService,

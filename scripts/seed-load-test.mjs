@@ -146,6 +146,8 @@ async function purge() {
       'client_tag_assignments',
       `user_id IN (SELECT id FROM users WHERE email LIKE '%@${SEED_DOMAIN}')`,
     ],
+    // After the ledger, before the accounts and wallets both of its keys point at.
+    ['transfers', `user_id IN (SELECT id FROM users WHERE email LIKE '%@${SEED_DOMAIN}')`],
     ['trading_accounts', `login LIKE 'SEED-%'`],
     ['wallets', `user_id IN (SELECT id FROM users WHERE email LIKE '%@${SEED_DOMAIN}')`],
     ['users', `email LIKE '%@${SEED_DOMAIN}'`],
@@ -571,6 +573,39 @@ async function main() {
       { onConflict: 'ON CONFLICT DO NOTHING' },
     ),
   );
+
+  /*
+   * ── Wallet ⇄ account transfers — the Financial list's second table ───────
+   *
+   * Five per seeded account in its own currency, spread over two years, most
+   * settled, some failed, a few still pending: the shape a real book has, and
+   * enough rows that a status tab or sort over the transfer arm is measured
+   * rather than assumed (it read no index until 0165).
+   */
+  await step('transfers', async () => {
+    const { rowCount } = await db.query(`
+      INSERT INTO transfers
+        (user_id, wallet_id, trading_account_id, direction, amount, currency, state,
+         failure_reason, settled_at, resume_attempts, created_at)
+      SELECT ta.user_id, w.id, ta.id,
+             (CASE WHEN g % 2 = 0 THEN 'wallet_to_account' ELSE 'account_to_wallet' END)::transfer_direction,
+             (10 + (hashtext(ta.id::text || g) & 4095))::numeric(28,8),
+             ta.currency,
+             s.state::transfer_state,
+             CASE WHEN s.state = 'failed' THEN 'Seeded failure' END,
+             CASE WHEN s.state = 'settled' THEN at END,
+             0,
+             at
+        FROM trading_accounts ta
+        JOIN wallets w ON w.user_id = ta.user_id AND w.kind = 'main' AND w.currency = ta.currency
+        CROSS JOIN generate_series(1, 5) g
+        CROSS JOIN LATERAL (SELECT ta.created_at + (g * 29 || ' days')::interval AS at) t
+        CROSS JOIN LATERAL (SELECT CASE WHEN (hashtext(ta.id::text || g) & 63) = 0 THEN 'pending'
+                                        WHEN (hashtext(ta.id::text || g) & 15) = 1 THEN 'failed'
+                                        ELSE 'settled' END AS state) s
+       WHERE ta.login LIKE 'SEED-%'`);
+    return rowCount;
+  });
 
   // ── The two review queues ────────────────────────────────────────────────
   await step('KYC submissions', async () => {
