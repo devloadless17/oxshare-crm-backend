@@ -79,7 +79,7 @@ export interface KycReviewLayout {
    * them), so the client can answer it if it is returned; `required` — as placed.
    */
   identity: { key: ProfileKey; label: string; required: boolean; asked: boolean }[];
-  identityDocument: KycReviewDocument;
+  identityDocument: KycReviewDocument & { asked: boolean };
   proofOfAddress: KycReviewDocument & { asked: boolean };
   selfie: { asked: boolean; label: string };
   additional: KycReviewSection[];
@@ -136,7 +136,10 @@ export function reviewLayout(
       required: placed.get(field.name) ?? false,
       asked: placed.has(field.name),
     })),
-    identityDocument: documentOf(submission.document?.docType, 'identity', 'Identity document'),
+    identityDocument: {
+      asked: asked('document'),
+      ...documentOf(submission.document?.docType, 'identity', 'Identity document'),
+    },
     proofOfAddress: {
       asked: asked('address'),
       ...documentOf(submission.addressProof?.docType, 'address', 'Proof of address'),
@@ -308,7 +311,9 @@ export function returnableItems(
       ?.fields.find((f) => document.type !== null && f.type === `doc:${document.type}`);
     if (field && pages.length > 0) items.add(field.name);
   };
-  documentOnFile('document', layout.identityDocument);
+  // A page of a step the form has switched off cannot be replaced — the upload
+  // route refuses it — so returning one would strand the client.
+  if (layout.identityDocument.asked) documentOnFile('document', layout.identityDocument);
   if (layout.proofOfAddress.asked) documentOnFile('address', layout.proofOfAddress);
   if (layout.selfie.asked && submission.selfie?.filePath) items.add('selfie');
   for (const section of layout.additional) {

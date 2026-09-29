@@ -19245,31 +19245,6 @@
           "required"
         ]
       },
-      "KycReviewDocumentDto": {
-        "type": "object",
-        "properties": {
-          "type": {
-            "type": "string",
-            "nullable": true,
-            "example": "national_id"
-          },
-          "label": {
-            "type": "string",
-            "example": "National ID"
-          },
-          "pages": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/KycReviewPageDto"
-            }
-          }
-        },
-        "required": [
-          "type",
-          "label",
-          "pages"
-        ]
-      },
       "KycReviewAddressDto": {
         "type": "object",
         "properties": {
@@ -19290,7 +19265,7 @@
           },
           "asked": {
             "type": "boolean",
-            "description": "Whether the form asks for a proof of address at all."
+            "description": "Whether the form asks for this document now. When it does not, its pages on file are shown but cannot be returned: the client has no step to replace them on."
           }
         },
         "required": [
@@ -19396,7 +19371,7 @@
             }
           },
           "identityDocument": {
-            "$ref": "#/components/schemas/KycReviewDocumentDto"
+            "$ref": "#/components/schemas/KycReviewAddressDto"
           },
           "proofOfAddress": {
             "$ref": "#/components/schemas/KycReviewAddressDto"

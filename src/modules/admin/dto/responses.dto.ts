@@ -282,7 +282,11 @@ export class KycReviewDocumentDto {
 
 @NoClientFields(LAYOUT_ONLY)
 export class KycReviewAddressDto extends KycReviewDocumentDto {
-  @ApiProperty({ description: 'Whether the form asks for a proof of address at all.' })
+  @ApiProperty({
+    description:
+      'Whether the form asks for this document now. When it does not, its pages on file are ' +
+      'shown but cannot be returned: the client has no step to replace them on.',
+  })
   asked: boolean;
 }
 
@@ -351,8 +355,8 @@ export class KycReviewLayoutDto {
   @ApiProperty({ type: [KycReviewIdentityFieldDto] })
   identity: KycReviewIdentityFieldDto[];
   @NotClientField(LAYOUT_ONLY)
-  @ApiProperty({ type: KycReviewDocumentDto })
-  identityDocument: KycReviewDocumentDto;
+  @ApiProperty({ type: KycReviewAddressDto })
+  identityDocument: KycReviewAddressDto;
   @NotClientField(LAYOUT_ONLY)
   @ApiProperty({ type: KycReviewAddressDto })
   proofOfAddress: KycReviewAddressDto;
