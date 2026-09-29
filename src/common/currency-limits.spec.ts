@@ -11,8 +11,6 @@ const USD = {
   maxDeposit: '250000',
   minWithdrawal: '10',
   maxWithdrawal: '50000',
-  maxWithdrawalDaily: '100000',
-  maxAdminCredit: '50000',
 };
 
 describe('currencyLimitProblems', () => {
@@ -24,8 +22,6 @@ describe('currencyLimitProblems', () => {
         maxDeposit: '5000000000',
         minWithdrawal: '1000000',
         maxWithdrawal: '500000000',
-        maxWithdrawalDaily: '1000000000',
-        maxAdminCredit: '100000000',
       }),
     ).toEqual({});
   });
@@ -36,18 +32,10 @@ describe('currencyLimitProblems', () => {
 
   it('names each broken field', () => {
     expect(
-      currencyLimitProblems({ ...USD, minDeposit: '0', maxWithdrawal: '5', maxAdminCredit: '0' }),
+      currencyLimitProblems({ ...USD, minDeposit: '0', maxWithdrawal: '5', minWithdrawal: '0' }),
     ).toEqual({
       minDeposit: 'The minimum deposit must be above zero.',
-      maxWithdrawal: 'The maximum withdrawal cannot be below the minimum withdrawal (10).',
-      maxAdminCredit: 'The maximum admin credit must be above zero.',
-    });
-  });
-
-  it('refuses a day smaller than one withdrawal', () => {
-    expect(currencyLimitProblems({ ...USD, maxWithdrawalDaily: '49999.99999999' })).toEqual({
-      maxWithdrawalDaily:
-        'The daily withdrawal limit cannot be below the maximum withdrawal (50000).',
+      minWithdrawal: 'The minimum withdrawal must be above zero.',
     });
   });
 

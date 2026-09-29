@@ -28,8 +28,6 @@ export const CURRENCY_LIMIT_FIELDS = [
   'maxDeposit',
   'minWithdrawal',
   'maxWithdrawal',
-  'maxWithdrawalDaily',
-  'maxAdminCredit',
 ] as const;
 export type CurrencyLimitField = (typeof CURRENCY_LIMIT_FIELDS)[number];
 export type CurrencyLimits = Record<CurrencyLimitField, string>;
@@ -40,8 +38,6 @@ const LABEL: Record<CurrencyLimitField, string> = {
   maxDeposit: 'maximum deposit',
   minWithdrawal: 'minimum withdrawal',
   maxWithdrawal: 'maximum withdrawal',
-  maxWithdrawalDaily: 'daily withdrawal limit',
-  maxAdminCredit: 'maximum admin credit',
 };
 
 /**
@@ -64,8 +60,11 @@ export function currencyLimitProblems(limits: CurrencyLimits): Record<string, st
   };
   atLeast('maxDeposit', 'minDeposit');
   atLeast('maxWithdrawal', 'minWithdrawal');
-  // A day that allows less than one withdrawal would refuse the maximum outright.
-  atLeast('maxWithdrawalDaily', 'maxWithdrawal');
+  /*
+   * FOUR limits and no more (owner, 29 Sep 2026): the deposit and withdrawal
+   * ranges. The daily withdrawal cap and the admin credit ceiling were removed —
+   * `max_withdrawal_daily` and `max_admin_credit` are dead columns (0169).
+   */
   return problems;
 }
 

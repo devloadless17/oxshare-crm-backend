@@ -2,19 +2,7 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { readProofDetails, type ProofDetail } from '../../common/payments/proof-fields';
 import Decimal from 'decimal.js';
 import { randomBytes } from 'crypto';
-import {
-  and,
-  asc,
-  desc,
-  eq,
-  gte,
-  isNull,
-  ne,
-  sql,
-  type SQL,
-  type SQLWrapper,
-  lte,
-} from 'drizzle-orm';
+import { and, asc, desc, eq, isNull, sql, type SQL, type SQLWrapper, lte } from 'drizzle-orm';
 import {
   paymentProviders,
   tradingAccounts,
@@ -1062,33 +1050,9 @@ export class TransactionsService {
     }
 
     /*
-     * A rolling 24-hour cap, on top of the per-request one.
-     *
-     * A per-request limit alone is trivially defeated by making N requests, so
-     * it caps the paperwork rather than the exposure. Counted over everything
-     * not rejected — a pending withdrawal is money already on its way out.
+     * NO DAILY CAP (owner, 29 Sep 2026): the rolling 24-hour withdrawal limit
+     * was removed; a withdrawal is bounded by the per-request range above.
      */
-    const dayCap = toDecimal(limits.maxWithdrawalDaily);
-    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    const recent = await db
-      .select({ amount: transactions.amount })
-      .from(transactions)
-      .where(
-        and(
-          eq(transactions.userId, params.userId),
-          eq(transactions.direction, 'withdrawal'),
-          eq(transactions.currency, currency),
-          gte(transactions.createdAt, since),
-          ne(transactions.state, 'rejected'),
-        ),
-      );
-    const already = recent.reduce((sum, row) => sum.plus(toDecimal(row.amount)), toDecimal('0'));
-    if (already.plus(amount).greaterThan(dayCap)) {
-      throw new ValidationError(
-        `This would exceed the ${formatLimit(dayCap)} ${currency} rolling 24-hour ` +
-          `withdrawal limit — ${formatLimit(already)} has already been requested in that window.`,
-      );
-    }
 
     /*
      * DEBIT ON REQUEST, not a hold. Changed from the version this restores.

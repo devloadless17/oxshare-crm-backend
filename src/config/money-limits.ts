@@ -64,9 +64,9 @@ export class MoneyLimits {
    * They were (`WITHDRAWAL_MIN/MAX/DAILY_MAX`, `DEPOSIT_MIN/MAX`,
    * `ADMIN_CREDIT_MAX`), one number each for every currency — so a client could
    * not withdraw more than 50,000 LBP, about fifty cents. A limit is an amount
-   * OF a currency, so since 0162 each currency carries its own six, in its own
-   * units, set on the admin Currencies screen (`currencies.min_deposit` …
-   * `max_admin_credit`, `common/currency-limits.ts`). What stays here are the
+   * OF a currency, so each currency carries its own, in its own units, set on
+   * the admin Currencies screen: since 0169 exactly four — the deposit and the
+   * withdrawal range (`common/currency-limits.ts`). What stays here are the
    * commission backstops, which are ratios and per-deal ceilings, not amounts a
    * client moves.
    */

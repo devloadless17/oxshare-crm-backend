@@ -487,28 +487,11 @@ describe('limits', () => {
     await expect(request(userId, '50.10000000')).resolves.toBeDefined();
   });
 
-  it('caps a rolling 24 hours, not just one request', async () => {
+  it('has no rolling-day cap (owner, 29 Sep 2026) — each request is held to the range only', async () => {
     const userId = await makeFundedClient('daycap@test.local', '250000');
-
-    /*
-     * A per-request limit alone is trivially defeated by making N requests, so
-     * it caps the paperwork rather than the exposure. Counted over everything
-     * not rejected — a pending withdrawal is money already on its way out.
-     */
     await request(userId, '50000');
     await request(userId, '50000');
-    await expect(request(userId, '50000')).rejects.toThrow(/24-hour/i);
-  });
-
-  it('does not count a REJECTED withdrawal against the daily cap', async () => {
-    const userId = await makeFundedClient('rejected-cap@test.local', '250000');
-    const first = await request(userId, '50000');
-    await transactions.reject(first.id, ADMIN, 'Not this one');
-
-    // It never left, so it should not consume the client's allowance.
-    await request(userId, '50000');
-    await request(userId, '50000');
-    await expect(request(userId, '10')).rejects.toThrow(/24-hour/i);
+    await expect(request(userId, '50000')).resolves.toBeDefined();
   });
 });
 

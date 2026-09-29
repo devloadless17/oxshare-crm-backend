@@ -1704,8 +1704,8 @@ export const currencies = pgTable(
      * client could not withdraw more than 50,000 LBP — about fifty cents. A limit
      * is an amount OF a currency; without an FX source (and there is none) it
      * can only be stated per currency. `currencies_money_limits_ck` holds the
-     * shape: every floor positive, every ceiling at least its floor, the day at
-     * least one withdrawal. A deposit method may narrow the deposit pair
+     * shape: every floor positive, every ceiling at least its floor (no daily
+     * term since 0169). A deposit method may narrow the deposit pair
      * (`payment_methods.min_amount` / `max_amount`), never widen it.
      */
     /** The smallest deposit a client may declare. */
@@ -1718,7 +1718,11 @@ export const currencies = pgTable(
     maxWithdrawal: numeric('max_withdrawal', { precision: 28, scale: 8 })
       .notNull()
       .default('50000'),
-    /** Per client, rolling 24 hours, counting every withdrawal not rejected. */
+    /**
+     * ⚠️ DEAD (0169, owner 29 Sep 2026): the daily withdrawal limit was removed —
+     * nothing reads or writes this. Kept, not dropped, so an older build during a
+     * rollback still finds it; its CHECK term went with the rule.
+     */
     maxWithdrawalDaily: numeric('max_withdrawal_daily', { precision: 28, scale: 8 })
       .notNull()
       .default('100000'),
@@ -1726,6 +1730,7 @@ export const currencies = pgTable(
      * The most an operator may credit or fund in one action — the only paths
      * that create balance from nothing, so a mistyped zero is caught here.
      */
+    // ⚠️ DEAD (0169, owner 29 Sep 2026): the admin credit ceiling was removed. Kept for rollbacks.
     maxAdminCredit: numeric('max_admin_credit', { precision: 28, scale: 8 })
       .notNull()
       .default('50000'),

@@ -24,7 +24,7 @@ import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './mone
  *
  *  - every currency that existed is backfilled with the numbers it had, so
  *    nothing moves the day this ships;
- *  - a withdrawal is held to ITS currency's minimum, maximum and rolling day;
+ *  - a withdrawal is held to ITS currency's minimum and maximum (no daily cap);
  *  - a deposit method's range is its currency's, narrowed by the method's own
  *    optional range and never widened, and the deposit path enforces it;
  *  - a nonsensical set of limits is refused field by field, merged on update,
@@ -44,8 +44,6 @@ const LBP_LIMITS = {
   maxDeposit: '5000000000',
   minWithdrawal: '1000000',
   maxWithdrawal: '500000000',
-  maxWithdrawalDaily: '1000000000',
-  maxAdminCredit: '100000000',
 };
 
 beforeAll(async () => {
@@ -129,8 +127,6 @@ describe('the day it ships', () => {
       maxDeposit: '250000.00000000',
       minWithdrawal: '10.00000000',
       maxWithdrawal: '50000.00000000',
-      maxWithdrawalDaily: '100000.00000000',
-      maxAdminCredit: '50000.00000000',
     });
   });
 });
@@ -165,15 +161,11 @@ describe('a withdrawal is held to its CURRENCY', () => {
     await expect(withdraw(userId, 'USD', '9')).rejects.toThrow('The minimum withdrawal is 10 USD.');
   });
 
-  it("counts the rolling day against the currency's own daily limit", async () => {
-    await currencies.update('LBP', { maxWithdrawalDaily: '600000000' }, ADMIN);
+  it('has no rolling-day cap any more (owner, 29 Sep 2026) — only the per-request range', async () => {
     const userId = await fundedClient('lbp-day@test.local', 'LBP', '2000000000');
     await withdraw(userId, 'LBP', '500000000');
-    await expect(withdraw(userId, 'LBP', '100000001')).rejects.toThrow(
-      /exceed the 600000000 LBP rolling 24-hour withdrawal limit — 500000000 has already/,
-    );
-    // Up to the line is fine.
-    await withdraw(userId, 'LBP', '100000000');
+    await withdraw(userId, 'LBP', '500000000');
+    await withdraw(userId, 'LBP', '500000000');
   });
 
   it('follows a change to the limits at once — no restart, no deploy', async () => {
@@ -302,12 +294,9 @@ describe('the limits themselves', () => {
     expect((await currencies.findOne('LBP'))?.minWithdrawal).toBe('1000000.00000000');
   });
 
-  it('refuse a day smaller than one withdrawal, and a zero', async () => {
-    await expect(
-      currencies.update('LBP', { maxWithdrawalDaily: '400000000' }, ADMIN),
-    ).rejects.toMatchObject({ fields: { maxWithdrawalDaily: expect.any(String) } });
-    await expect(currencies.update('LBP', { maxAdminCredit: '0' }, ADMIN)).rejects.toMatchObject({
-      fields: { maxAdminCredit: 'The maximum admin credit must be above zero.' },
+  it('refuse a zero', async () => {
+    await expect(currencies.update('LBP', { minDeposit: '0' }, ADMIN)).rejects.toMatchObject({
+      fields: { minDeposit: 'The minimum deposit must be above zero.' },
     });
   });
 
