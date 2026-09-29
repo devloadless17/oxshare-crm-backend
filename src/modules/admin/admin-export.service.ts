@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { formatProofDetails } from '../../common/payments/proof-fields';
 import { maskAuditRow } from '../../common/security/audit-detail-fields';
 import { UsersStore, clientSortKey, clientSortOrder } from '../../store/users.store';
 import { ClientTagsStore } from '../../store/client-tags.store';
@@ -344,6 +345,8 @@ export class AdminExportService {
     { header: 'Provider', value: (r) => r.provider },
     { header: 'Provider reference', value: (r) => r.providerRef },
     { header: 'Destination', value: (r) => r.destination },
+    // What the client gave to identify an offline payment (0163): `Label: value; …`.
+    { header: 'Deposit details', value: (r) => formatProofDetails(r.proofDetails) },
     { header: 'Rejection / failure reason', value: (r) => r.rejectionReason },
     { header: 'Created at', value: (r) => r.createdAt },
     { header: 'Settled at', value: (r) => r.settledAt },

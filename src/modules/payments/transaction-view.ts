@@ -31,6 +31,7 @@ export type TransactionView = Pick<
   | 'rivalExternalId'
   | 'destination'
   | 'proofFilename'
+  | 'proofDetails'
   | 'rejectionReason'
   | 'reviewedBy'
   | 'reviewedAt'
@@ -53,6 +54,7 @@ export function transactionView(row: TransactionRow): TransactionView {
     rivalExternalId: row.rivalExternalId,
     destination: row.destination,
     proofFilename: row.proofFilename,
+    proofDetails: row.proofDetails,
     rejectionReason: row.rejectionReason,
     reviewedBy: row.reviewedBy,
     reviewedAt: row.reviewedAt,

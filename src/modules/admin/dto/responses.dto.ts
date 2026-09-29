@@ -14,6 +14,7 @@ import { TRANSACTION_KINDS } from '../../payments/transactions.service';
 import type { RejectionContext } from '../../../store/rejection-reasons.store';
 import { PROFILE_FIELD_KEYS } from '../../../common/profile/client-profile';
 import { TransactionDto } from '../../payments/dto/withdrawal.dto';
+import { ProofDetailDto } from '../../payments/dto/deposit.dto';
 import { TransferDto } from '../../payments/dto/transfer.dto';
 
 // Response DTOs so /api/docs-json carries response schemas (API-CONTRACTS
@@ -2085,6 +2086,19 @@ export class AdminTransactionRowDto {
     'a file the CLIENT uploaded about a payment, addressing the record rather than describing the person',
   )
   proofFilename?: string | null;
+  @ApiPropertyOptional({
+    type: ProofDetailDto,
+    isArray: true,
+    nullable: true,
+    description:
+      'What the client gave with an OFFLINE deposit to identify the payment — the phone it was ' +
+      'sent from, a transfer code — each with the question as asked (0163). Null otherwise. ' +
+      'Never masked: it is the proof the desk approves the deposit on, like the receipt.',
+  })
+  @NotClientField(
+    'proof of a payment the CLIENT filed with the receipt; the desk must always see it to approve',
+  )
+  proofDetails?: ProofDetailDto[] | null;
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty()
   walletId: string;

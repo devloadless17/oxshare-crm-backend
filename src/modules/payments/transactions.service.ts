@@ -1,4 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import { readProofDetails, type ProofDetail } from '../../common/payments/proof-fields';
 import Decimal from 'decimal.js';
 import { randomBytes } from 'crypto';
 import {
@@ -100,6 +101,8 @@ interface CombinedRow {
   destination: string | null;
   destination_trading_account_id: string | null;
   proof_filename: string | null;
+  /** The client's answers to an offline method's details (0162). */
+  proof_details: ProofDetail[] | null;
   rejection_reason: string | null;
   reviewed_by: string | null;
   reviewed_at: string | null;
@@ -183,6 +186,8 @@ export interface AdminTransactionExportRow {
   /** The payment platform's own id — see TransactionDto.rivalExternalId. */
   rivalExternalId: string | null;
   destination: string | null;
+  /** What the client gave to identify an offline payment (0162). */
+  proofDetails: ProofDetail[] | null;
   rejectionReason: string | null;
   userId: number;
   userPortalId: number;
@@ -233,6 +238,35 @@ const instantOrNull = (value: string | null): Date | null =>
  * the discrepancy a reconciling auditor escalates). The list nests the client
  * under `user` on top of this; the export flattens the client beside it.
  */
+/**
+ * The deposit desk's half of the admin search (0162): the details a client
+ * filed with an offline deposit — the phone it was sent from, a transfer code —
+ * and the deposit's own `OX-` reference.
+ *
+ * Folded to lower-case letters and digits on both sides, so "70 123 456" finds
+ * +96170123456 and "ab-12" finds AB12, through the partial trigram index on
+ * `deposit_details_search(proof_details)`. Matched as a set of transaction ids
+ * rather than a column of the union, so each half keeps its own index and the
+ * identity search beside it is unchanged. `undefined` when the query cannot
+ * name either (under three letters or digits, and not a reference).
+ */
+function depositEvidenceSearch(q: string): SQL | undefined {
+  const folded = q.toLowerCase().replace(/[^a-z0-9]/g, '');
+  const matches: SQL[] = [];
+  if (folded.length >= 3) {
+    // `folded` is [a-z0-9] only, so it carries no LIKE wildcard of its own.
+    matches.push(sql`
+      SELECT t.id FROM transactions t
+      WHERE t.proof_details IS NOT NULL
+        AND deposit_details_search(t.proof_details) LIKE ${`%${folded}%`}`);
+  }
+  if (/^ox-[0-9a-z]{6}$/i.test(q)) {
+    matches.push(sql`SELECT t.id FROM transactions t WHERE t.provider_ref = ${q.toUpperCase()}`);
+  }
+  if (matches.length === 0) return undefined;
+  return sql`combined.id IN (${sql.join(matches, sql` UNION `)})`;
+}
+
 function toMovementRow(row: AdminCombinedRow) {
   return {
     id: row.id,
@@ -256,6 +290,7 @@ function toMovementRow(row: AdminCombinedRow) {
     // The receipt on an offline deposit, so the desk can show the image beside
     // the row it is deciding on. Null on every other movement.
     proofFilename: row.proof_filename,
+    proofDetails: row.proof_details,
     createdAt: instantOf(row.created_at),
     settledAt: instantOrNull(row.settled_at),
     reviewedAt: instantOrNull(row.reviewed_at),
@@ -1497,6 +1532,7 @@ export class TransactionsService {
           NULL::text,                             -- destination
           NULL::uuid,                             -- destination_trading_account_id
           NULL::varchar,                          -- proof_filename
+          NULL::jsonb,                            -- proof_details
           NULL::text,                             -- rejection_reason: it cannot fail
           NULL::uuid,                             -- reviewed_by
           NULL::timestamptz,                      -- reviewed_at
@@ -1587,6 +1623,7 @@ export class TransactionsService {
           t.destination,
           t.destination_trading_account_id,
           t.proof_filename,
+          t.proof_details,
           t.rejection_reason,
           t.reviewed_by,
           t.reviewed_at,
@@ -1641,6 +1678,7 @@ export class TransactionsService {
           NULL::text,                             -- destination
           NULL::uuid,                             -- destination_trading_account_id
           NULL::varchar,                          -- proof_filename
+          NULL::jsonb,                            -- proof_details
           /*
            * The transfer's failure reason lands in rejection_reason: both
            * answer "why did this not happen", and giving them one column means a
@@ -1714,6 +1752,7 @@ export class TransactionsService {
           NULL::text,                             -- destination
           NULL::uuid,                             -- destination_trading_account_id
           NULL::varchar,                          -- proof_filename
+          NULL::jsonb,                            -- proof_details
           NULL::text,                             -- rejection_reason: it cannot fail
           NULL::uuid,                             -- reviewed_by
           NULL::timestamptz,                      -- reviewed_at
@@ -1882,6 +1921,7 @@ export class TransactionsService {
         providerRef: row.provider_ref,
         destination: row.destination,
         proofFilename: row.proof_filename,
+        proofDetails: row.proof_details,
         rejectionReason: row.rejection_reason,
         reviewedBy: row.reviewed_by,
         reviewedAt: instantOrNull(row.reviewed_at),
@@ -2084,17 +2124,18 @@ export class TransactionsService {
       if (filter.to) {
         conditions.push(sql`combined.created_at < ${filter.to}::date + interval '1 day'`);
       }
-      // The same three columns every admin queue searches (see `listForAdmin`).
+      // The same three columns every admin queue searches (see `listForAdmin`),
+      // plus what identifies an offline deposit (see `depositEvidenceSearch`).
       if (q) {
-        conditions.push(
-          /*
-           * The same concatenation as the drizzle queues above, spelled in raw
-           * SQL because this list is assembled as text. Three OR-ed ILIKEs
-           * cannot use `users_search_trgm_idx`; the concatenation is the
-           * expression the index was built on.
-           */
-          clientIdentitySearch(q),
-        );
+        /*
+         * The same concatenation as the drizzle queues above, spelled in raw
+         * SQL because this list is assembled as text. Three OR-ed ILIKEs
+         * cannot use `users_search_trgm_idx`; the concatenation is the
+         * expression the index was built on.
+         */
+        const identity = clientIdentitySearch(q);
+        const evidence = depositEvidenceSearch(q);
+        conditions.push(evidence ? sql`(${identity} OR ${evidence})` : identity);
       }
       return conditions;
     };
@@ -2742,6 +2783,12 @@ export class TransactionsService {
      * object it just wrote is removed.
      */
     proofFilename?: string;
+    /*
+     * The client's answers to the method's `proofFields` (0162), as submitted —
+     * `details[<fieldId>]` parts of the offline form. Judged here against the
+     * fields the method asks NOW; see `readProofDetails`.
+     */
+    details?: unknown;
   }) {
     const amount = toDecimal(params.amount);
     // `lessThanOrEqualTo(0)`, NOT `!isPositive()` — see the withdrawal guard
@@ -2829,6 +2876,15 @@ export class TransactionsService {
     if (!paymentMethod.requiresProof && params.proofFilename) {
       throw new ValidationError(`Payment method "${paymentMethod.key}" does not take a receipt.`);
     }
+    /*
+     * The details that identify the payment — the phone it was sent from, a
+     * transfer code — judged before anything is written, so a refusal leaves
+     * nothing behind (the controller removes the receipt it stored). Only an
+     * offline method asks; a gateway deposit never carries any.
+     */
+    const proofDetails = paymentMethod.requiresProof
+      ? readProofDetails(paymentMethod.proofFields, true, params.details)
+      : [];
 
     // Per-method bounds AND the platform's own, because neither is derivable
     // from the other — a provider may refuse under $20 while the platform's
@@ -2958,6 +3014,8 @@ export class TransactionsService {
         providerRef: reference,
         // The receipt, or null on every method that does not ask for one.
         proofFilename: params.proofFilename ?? null,
+        // Each answer with its label AS ASKED; immutable from here (0162 trigger).
+        proofDetails: proofDetails.length > 0 ? proofDetails : null,
       })
       .returning();
 

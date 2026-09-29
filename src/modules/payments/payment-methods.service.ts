@@ -22,6 +22,7 @@ import { AdminAuditService } from '../admin/admin-audit.service';
 import type { Actor } from '../../common/security/actor';
 import type { CreatePaymentMethodDto, UpdatePaymentMethodDto } from './dto/payment-method.dto';
 import { PaymentGateways } from './payment-gateways.service';
+import { normaliseProofFields } from '../../common/payments/proof-fields';
 import {
   assertDepositMethodKeyAllowed,
   generateMethodKey,
@@ -417,6 +418,7 @@ export class PaymentMethodsService {
         requiresProof: dto.requiresProof ?? false,
         ownMinAmount,
         ownMaxAmount,
+        proofFields: normaliseProofFields(dto.proofFields ?? []),
         updatedBy: adminId,
       })
       .returning();
@@ -437,6 +439,7 @@ export class PaymentMethodsService {
       requiresProof: row.requiresProof,
       ownMinAmount: row.ownMinAmount,
       ownMaxAmount: row.ownMaxAmount,
+      proofFields: row.proofFields,
     });
     return row;
   }
@@ -474,6 +477,8 @@ export class PaymentMethodsService {
     ) {
       await this.assertOwnRange(currency ?? current.currency, ownMinAmount, ownMaxAmount);
     }
+    const proofFields =
+      dto.proofFields !== undefined ? normaliseProofFields(dto.proofFields) : undefined;
     const [row] = await this.db
       .update(paymentMethods)
       .set({
@@ -486,6 +491,7 @@ export class PaymentMethodsService {
         ...(dto.requiresProof !== undefined ? { requiresProof: dto.requiresProof } : {}),
         ...(dto.ownMinAmount !== undefined ? { ownMinAmount: dto.ownMinAmount } : {}),
         ...(dto.ownMaxAmount !== undefined ? { ownMaxAmount: dto.ownMaxAmount } : {}),
+        ...(proofFields !== undefined ? { proofFields } : {}),
         updatedBy: adminId,
         updatedAt: new Date(),
       })
@@ -516,6 +522,10 @@ export class PaymentMethodsService {
     ] as const) {
       if (current[field] !== row[field])
         changed[field] = { before: current[field], after: row[field] };
+    }
+    // The questions clients are asked: a list, compared as a whole.
+    if (JSON.stringify(current.proofFields) !== JSON.stringify(row.proofFields)) {
+      changed['proofFields'] = { before: current.proofFields, after: row.proofFields };
     }
     this.audit.record(actor.id, 'payment_method.update', 'payment_method', row.key, { changed });
     const updated = await this.findOneForAdmin(row.key);
