@@ -20,8 +20,10 @@ describe('AdminIbController approve mapping', () => {
 
   function harness() {
     const approve = vi.fn().mockResolvedValue({});
+    // The account as the reader may see it (802bf3a) — not what this spec is about.
+    const accountViewFor = vi.fn().mockResolvedValue({});
     const controller = new AdminIbController(
-      { approve } as unknown as IbApplicationsService,
+      { approve, accountViewFor } as unknown as IbApplicationsService,
       undefined as never,
       undefined as never,
       undefined as never,
