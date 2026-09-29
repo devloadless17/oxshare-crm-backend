@@ -10,7 +10,6 @@ import type { CommissionTypeTerms } from '../src/modules/ib/commission';
 import { UNRESTRICTED, scopeOf } from '../src/common/security/client-scope';
 import { ClientVisibilityService } from '../src/common/security/client-visibility.service';
 import { UsersStore } from '../src/store/users.store';
-import { ClientNotFoundError } from '../src/common/errors/domain-errors';
 
 /**
  * Taking an accrual back — against real Postgres, because every guarantee here
@@ -442,7 +441,8 @@ describe('the reversal obeys the reader’s TERRITORY, on the column it actually
         'out of territory',
         scopeOf([partnerOnlyTagId], false, false),
       ),
-    ).rejects.toBeInstanceOf(ClientNotFoundError);
+      // Exactly a missing accrual's answer — code and message — never "not your client".
+    ).rejects.toMatchObject({ code: 'NOT_FOUND', message: 'Accrual not found.' });
 
     // And nothing moved: the row is untouched, not half-reversed.
     const after = (await accrualRows()).find((r) => r.kind === 'rebate')!;
@@ -489,6 +489,7 @@ describe('the reversal obeys the reader’s TERRITORY, on the column it actually
         'probe',
         scopeOf([partnerOnlyTagId], false, false),
       ),
-    ).rejects.toBeInstanceOf(ClientNotFoundError);
+      // Exactly a missing accrual's answer — code and message — never "not your client".
+    ).rejects.toMatchObject({ code: 'NOT_FOUND', message: 'Accrual not found.' });
   });
 });

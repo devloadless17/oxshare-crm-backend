@@ -1203,6 +1203,7 @@ export class CommissionService implements CommissionAccrualPort {
       await this.visibility.assertVisible(
         accrual.kind === 'rebate' ? accrual.clientUserId : accrual.ibUserId,
         scope,
+        () => new NotFoundError('Accrual not found.'),
       );
 
       /*

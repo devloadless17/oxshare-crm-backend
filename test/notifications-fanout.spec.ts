@@ -62,7 +62,7 @@ function build(opts: {
     {
       scopeFor: vi
         .fn()
-        .mockImplementation((adminId: string) =>
+        .mockImplementation(({ id: adminId }: { id: string }) =>
           Promise.resolve(
             (opts.scopeTags?.[adminId] ?? []).length > 0
               ? scopeOf(
@@ -158,7 +158,9 @@ describe('notifyAdmins', () => {
           ),
       } as unknown as RolesStore,
       {
-        scopeFor: vi.fn().mockImplementation((adminId: string) => {
+        // Takes the admin ROW since 0154 — matching on an id string made every admin
+        // unrestricted here, and the refusal this case proves went unobserved.
+        scopeFor: vi.fn().mockImplementation(({ id: adminId }: { id: string }) => {
           if (adminId === 'in-territory') return Promise.resolve(scopeOf(['north'], false, false));
           if (adminId === 'out-of-territory')
             return Promise.resolve(scopeOf(['south'], false, false));

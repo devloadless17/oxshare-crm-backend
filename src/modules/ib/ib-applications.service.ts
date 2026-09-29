@@ -649,9 +649,15 @@ export class IbApplicationsService {
      * a route that names an application in its PATH has nowhere for that
      * predicate to live, so the question is asked first. It 404s rather than
      * 403s — a 403 would confirm the id names a real application, which is an
-     * enumeration oracle for the exact clients this admin was denied.
+     * enumeration oracle for the exact clients this admin was denied. And the
+     * SAME 404 as a missing application — code and message — or the difference
+     * is the oracle instead.
      */
-    await this.visibility.assertVisible(application.userId, scope);
+    await this.visibility.assertVisible(
+      application.userId,
+      scope,
+      () => new NotFoundError('Application not found.'),
+    );
     if (application.status !== 'pending') {
       throw new ConflictError(
         `Only a pending application can be approved; this one is ${application.status}.`,
@@ -946,7 +952,11 @@ export class IbApplicationsService {
 
     const application = await this.ib.findById(applicationId);
     if (!application) throw new NotFoundError('Application not found.');
-    await this.visibility.assertVisible(application.userId, scope);
+    await this.visibility.assertVisible(
+      application.userId,
+      scope,
+      () => new NotFoundError('Application not found.'),
+    );
     if (application.status !== 'pending') {
       throw new ConflictError(
         `Only a pending application can be rejected; this one is ${application.status}.`,
