@@ -11,7 +11,11 @@ import { Controller, Get, Param, Query, Req, Res, UseGuards } from '@nestjs/comm
 import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { Request, Response } from 'express';
 import { AdminHoldingsService } from './admin-holdings.service';
-import { TRADING_ACCOUNT_SORT_COLUMNS, WALLET_SORT_COLUMNS } from './admin-holdings.service';
+import {
+  TRADING_ACCOUNT_CLIENT_FILTERS,
+  TRADING_ACCOUNT_SORT_COLUMNS,
+  WALLET_SORT_COLUMNS,
+} from './admin-holdings.service';
 import { AdminExportService } from './admin-export.service';
 import { AdminAuditService } from './admin-audit.service';
 import { exportFormat, streamCsv, EXPORT_RATE_LIMIT } from '../../common/export/export-response';
@@ -285,6 +289,14 @@ export class AdminHoldingsController {
   @ApiQuery({ name: 'userId', required: false, description: 'Accounts of one client.' })
   @ApiQuery({ name: 'environment', required: false, enum: tradingEnvironmentEnum.enumValues })
   @ApiQuery({ name: 'status', required: false, enum: tradingAccountStatusEnum.enumValues })
+  @ApiQuery({
+    name: 'client',
+    required: false,
+    enum: TRADING_ACCOUNT_CLIENT_FILTERS,
+    description:
+      '`unassigned`: accounts the MT5 sync found that no client owns yet (shown only to a ' +
+      'reader who sees every client); `assigned`: the rest.',
+  })
   @ScopedToClients(
     'AdminExportService.tradingAccountBatch → AdminHoldingsService.tradingAccountExportBatch, the same clientScopePredicate on trading_accounts.user_id the list applies.',
   )
@@ -296,6 +308,7 @@ export class AdminHoldingsController {
     @Query('userId', ClientRefPipe) userId?: number,
     @Query('environment') environment?: string,
     @Query('status') status?: string,
+    @Query('client') client?: string,
   ) {
     const chosen = exportFormat(format);
     // Validated identically to the list route, so an unrecognised value is the
@@ -304,6 +317,7 @@ export class AdminHoldingsController {
       userId: userId,
       environment: enumQuery(environment, tradingEnvironmentEnum.enumValues, 'environment'),
       status: enumQuery(status, tradingAccountStatusEnum.enumValues, 'status'),
+      client: enumQuery(client, TRADING_ACCOUNT_CLIENT_FILTERS, 'client'),
     };
 
     this.audit.record(
@@ -356,6 +370,14 @@ export class AdminHoldingsController {
   })
   @ApiQuery({ name: 'environment', required: false, enum: tradingEnvironmentEnum.enumValues })
   @ApiQuery({ name: 'status', required: false, enum: tradingAccountStatusEnum.enumValues })
+  @ApiQuery({
+    name: 'client',
+    required: false,
+    enum: TRADING_ACCOUNT_CLIENT_FILTERS,
+    description:
+      '`unassigned`: accounts the MT5 sync found that no client owns yet (shown only to a ' +
+      'reader who sees every client); `assigned`: the rest.',
+  })
   @ApiQuery({ name: 'page', required: false, description: 'Legacy offset paging. Prefer cursor.' })
   @ApiQuery({ name: 'limit', required: false })
   @ApiQuery({ name: 'cursor', required: false, description: 'Opaque keyset cursor (R-2.4).' })
@@ -377,6 +399,7 @@ export class AdminHoldingsController {
     @Query('q') q?: string,
     @Query('environment') environment?: string,
     @Query('status') status?: string,
+    @Query('client') client?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('cursor') cursor?: string,
@@ -403,6 +426,7 @@ export class AdminHoldingsController {
         // where the schema enums are already imported.
         environment,
         status,
+        client,
         page,
         limit,
         cursor,

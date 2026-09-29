@@ -1,7 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import Decimal from 'decimal.js';
-import { and, eq, isNull, ne, sql } from 'drizzle-orm';
+import { and, eq, isNotNull, isNull, ne, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../../database/database.module';
 import type { Db } from '../../../database/db';
 import { currencies, mt5Deals, tradingAccounts, users } from '../../../database/schema';
@@ -1223,7 +1223,8 @@ export class Mt5AccountsService {
     const hidesEmails = actor.fieldMask.includes('client.email');
 
     let owner: { portalId?: number; name?: string; outsideTerritory: boolean } | null = null;
-    if (owned) {
+    // A row with no client is the MT5 sync's record of it (0166) — free to assign.
+    if (owned && owned.userId !== null) {
       const [visible] = await this.db
         .select({ id: users.id, firstName: users.firstName, lastName: users.lastName })
         .from(users)
@@ -1295,11 +1296,11 @@ export class Mt5AccountsService {
     this.assertBridge();
 
     const [owned] = await this.db
-      .select({ id: tradingAccounts.id })
+      .select({ id: tradingAccounts.id, userId: tradingAccounts.userId })
       .from(tradingAccounts)
       .where(eq(tradingAccounts.login, login))
       .limit(1);
-    if (owned) {
+    if (owned && owned.userId !== null) {
       throw new ConflictError(
         `MT5 account ${login} is already linked to a client. Moving an account between clients ` +
           're-attributes its commission and is not done from here.',
@@ -1325,6 +1326,53 @@ export class Mt5AccountsService {
 
     const productId = await this.productForGroup(snapshot.group, input.productId);
     const environment = (await this.products.environmentForGroup(snapshot.group)) ?? 'live';
+
+    /*
+     * The MT5 sync may already hold the login as an account with NO client
+     * (0166). Assigning it is an UPDATE of that row — guarded on `user_id IS
+     * NULL`, so two operators assigning it at once cannot both win. Otherwise the
+     * login is new to the CRM and is inserted, as before.
+     */
+    if (owned) {
+      const [assigned] = await this.db
+        .update(tradingAccounts)
+        .set({
+          userId: client.id,
+          mt5Group: snapshot.group,
+          productId,
+          environment,
+          currency: snapshot.currency,
+          leverage: snapshot.leverage,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(tradingAccounts.id, owned.id), isNull(tradingAccounts.userId)))
+        .returning({ id: tradingAccounts.id });
+      if (!assigned) {
+        throw new ConflictError(`MT5 account ${login} was just assigned by someone else.`);
+      }
+      /*
+       * The balance only when this read is newer than the mirror's — the rule
+       * every writer of it follows (the sweep may have read it after us).
+       */
+      await this.db
+        .update(tradingAccounts)
+        .set({ balance: snapshot.balance, credit: snapshot.credit, balanceSyncedAt: readAt })
+        .where(
+          and(
+            eq(tradingAccounts.id, owned.id),
+            sql`(${tradingAccounts.balanceSyncedAt} IS NULL OR ${tradingAccounts.balanceSyncedAt} < ${readAt})`,
+          ),
+        );
+      return await this.linked(actor, {
+        id: assigned.id,
+        login,
+        snapshot,
+        productId,
+        environment,
+        clientId: client.id,
+        assigned: true,
+      });
+    }
 
     let row: typeof tradingAccounts.$inferSelect;
     try {
@@ -1359,24 +1407,50 @@ export class Mt5AccountsService {
       throw error;
     }
 
-    const waitingDeals = await this.waitingDeals(login);
-    this.audit.record(actor.id, 'trading.account_link', 'trading_account', row.id, {
+    return await this.linked(actor, {
+      id: row.id,
       login,
-      group: snapshot.group,
-      environment,
+      snapshot,
       productId,
+      environment,
       clientId: client.id,
+      assigned: false,
+    });
+  }
+
+  /** The audit row and the answer, for both kinds of link. */
+  private async linked(
+    actor: AuthenticatedAdmin,
+    link: {
+      id: string;
+      login: string;
+      snapshot: { group: string; currency: string; balance: string };
+      productId: string | null;
+      environment: 'live' | 'demo';
+      clientId: number;
+      /** True when the MT5 sync already held it with no client (0166). */
+      assigned: boolean;
+    },
+  ) {
+    const waitingDeals = await this.waitingDeals(link.login);
+    this.audit.record(actor.id, 'trading.account_link', 'trading_account', link.id, {
+      login: link.login,
+      group: link.snapshot.group,
+      environment: link.environment,
+      productId: link.productId,
+      clientId: link.clientId,
       waitingDeals,
+      fromUnassigned: link.assigned,
     });
 
     return {
-      id: row.id,
-      login,
-      group: snapshot.group,
-      productId,
-      environment,
-      currency: snapshot.currency,
-      balance: snapshot.balance,
+      id: link.id,
+      login: link.login,
+      group: link.snapshot.group,
+      productId: link.productId,
+      environment: link.environment,
+      currency: link.snapshot.currency,
+      balance: link.snapshot.balance,
       waitingDeals,
     };
   }
@@ -1398,10 +1472,7 @@ export class Mt5AccountsService {
         userId: tradingAccounts.userId,
       })
       .from(tradingAccounts)
-      .innerJoin(users, eq(users.id, tradingAccounts.userId))
-      .where(
-        and(eq(tradingAccounts.id, accountId), clientScopePredicate(actor.clientScope, users.id)),
-      )
+      .where(and(eq(tradingAccounts.id, accountId), accountInScope(actor)))
       .limit(1);
     if (!account) throw new NotFoundError('Trading account not found.');
 
@@ -1449,6 +1520,16 @@ export class Mt5AccountsService {
       );
     }
   }
+}
+
+/**
+ * The accounts a reader may act on: their territory's clients' — and, for a
+ * reader who sees every client, the ones with no client yet (0166). The NULL
+ * test is explicit because the predicate's intake branch is true for a NULL.
+ */
+function accountInScope(actor: AuthenticatedAdmin) {
+  const scoped = clientScopePredicate(actor.clientScope, tradingAccounts.userId);
+  return scoped ? and(isNotNull(tradingAccounts.userId), scoped) : undefined;
 }
 
 /** An MT5 login as digits, or a 400 naming the problem. */

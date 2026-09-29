@@ -1,7 +1,26 @@
 import { Inject, Injectable } from '@nestjs/common';
 import Decimal from 'decimal.js';
-import { and, asc, desc, eq, inArray, sql, type SQL, type SQLWrapper, lte } from 'drizzle-orm';
-import { clientIdByPortalId, clientIdentitySearch, parsePortalId } from '../../store/users.store';
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  or,
+  sql,
+  type SQL,
+  type SQLWrapper,
+  lte,
+} from 'drizzle-orm';
+import {
+  clientIdByPortalId,
+  clientIdentitySearch,
+  escapeLike,
+  parsePortalId,
+} from '../../store/users.store';
+import { currentFieldMask } from '../../common/logging/request-context';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
 import {
@@ -184,13 +203,34 @@ const MT5_LOGIN = /^\d{3,20}$/;
  * BitmapOr them — the join the rule above forbids never enters it.
  */
 export function tradingAccountSearch(term: string): SQL {
-  if (!MT5_LOGIN.test(term)) return clientIdentitySearch(term);
+  if (!MT5_LOGIN.test(term)) {
+    /*
+     * An account no client owns yet (0166) is found by MT5's HOLDER name or
+     * email — what the operator is matching it on. Only while neither is hidden
+     * from the reader: a fragment matched against a hidden column reveals it a
+     * keystroke at a time (the rule `clientIdentitySearch` states).
+     */
+    const mask = currentFieldMask();
+    const holderHidden =
+      mask.includes('client.email') ||
+      mask.includes('client.firstName') ||
+      mask.includes('client.lastName');
+    if (holderHidden) return clientIdentitySearch(term);
+    const fragment = `%${escapeLike(term)}%`;
+    return or(
+      clientIdentitySearch(term),
+      sql`(coalesce(${tradingAccounts.mt5HolderEmail}, '') || ' ' || coalesce(${tradingAccounts.mt5HolderName}, '')) ILIKE ${fragment}`,
+    ) as SQL;
+  }
   const portalId = parsePortalId(term);
   if (portalId === undefined) return eq(tradingAccounts.login, term);
   return sql`(${tradingAccounts.login} = ${term} OR ${tradingAccounts.userId} = ${clientIdByPortalId(portalId)})`;
 }
 
 export const DEFAULT_TRADING_ACCOUNT_SORT: TradingAccountSortKey = 'createdAt';
+
+/** `?client=` on the trading-account list and export: owned, or found on MT5 unowned (0166). */
+export const TRADING_ACCOUNT_CLIENT_FILTERS = ['assigned', 'unassigned'] as const;
 
 /** The one sort key whose column is nullable, so the query must pin its nulls. */
 const NULLABLE_TRADING_ACCOUNT_SORT: TradingAccountSortKey = 'login';
@@ -675,6 +715,7 @@ export class AdminHoldingsService {
       referredBy?: number;
       environment?: string;
       status?: string;
+      client?: string;
       q?: string;
       page?: string;
       limit?: string;
@@ -731,6 +772,7 @@ export class AdminHoldingsService {
       // database error; R-2.5 wants a 400 naming what IS allowed.
       environment: enumQuery(query.environment, tradingEnvironmentEnum.enumValues, 'environment'),
       status: enumQuery(query.status, tradingAccountStatusEnum.enumValues, 'status'),
+      client: enumQuery(query.client, TRADING_ACCOUNT_CLIENT_FILTERS, 'client'),
       page: Math.max(1, Number.parseInt(query.page ?? '1', 10) || 1),
       limit: pageSize(query.limit),
       cursor,
@@ -739,9 +781,23 @@ export class AdminHoldingsService {
       order,
       scope: actor.clientScope,
     });
+    /*
+     * MT5's holder is a person: a role that may not read a client's first name,
+     * last name or email reads no holder name / email either (the shape marks
+     * cover one key per field; a full name spans two).
+     */
+    const hideName =
+      actor.fieldMask.includes('client.firstName') || actor.fieldMask.includes('client.lastName');
+    const hideEmail = actor.fieldMask.includes('client.email');
     return {
       ...page,
-      items: page.items,
+      items: page.items.map((item) => ({
+        ...item,
+        mt5Holder: item.mt5Holder && {
+          name: hideName ? null : item.mt5Holder.name,
+          email: hideEmail ? null : item.mt5Holder.email,
+        },
+      })),
       maskedFields: maskedFieldsFor('tradingAccount', actor.fieldMask),
     };
   }
@@ -751,10 +807,17 @@ export class AdminHoldingsService {
     referredBy?: number;
     environment?: string;
     status?: string;
+    client?: string;
     q?: string;
     scope?: ClientScope;
   }): SQL[] {
     const conditions: SQL[] = [];
+    /*
+     * Accounts the MT5 sync found that no client owns (0166, `user_id` NULL).
+     * `unassigned` is the operator's queue of accounts to assign.
+     */
+    if (filter.client === 'unassigned') conditions.push(isNull(tradingAccounts.userId));
+    if (filter.client === 'assigned') conditions.push(isNotNull(tradingAccounts.userId));
     if (filter.userId) conditions.push(eq(tradingAccounts.userId, filter.userId));
     /*
      * The accounts of every client ONE PARTNER introduced — the partner
@@ -791,7 +854,17 @@ export class AdminHoldingsService {
     }
 
     const scoped = clientScopePredicate(filter.scope ?? UNRESTRICTED, tradingAccounts.userId);
-    if (scoped) conditions.push(scoped);
+    if (scoped) {
+      /*
+       * An account with NO client is outside every territory: it is shown only
+       * to a reader who sees every client. Stated rather than left to the
+       * predicate — its intake branch is `NOT EXISTS (a tag on this client)`,
+       * which is TRUE for a NULL client and would hand every unowned account
+       * on the broker's server to each desk admin who sees new clients.
+       */
+      conditions.push(isNotNull(tradingAccounts.userId));
+      conditions.push(scoped);
+    }
 
     return conditions;
   }
@@ -802,6 +875,7 @@ export class AdminHoldingsService {
     q?: string;
     environment?: string;
     status?: string;
+    client?: string;
     page: number;
     limit: number;
     cursor?: CursorPosition;
@@ -875,9 +949,12 @@ export class AdminHoldingsService {
         userEmail: users.email,
         userFirstName: users.firstName,
         userLastName: users.lastName,
+        mt5HolderName: tradingAccounts.mt5HolderName,
+        mt5HolderEmail: tradingAccounts.mt5HolderEmail,
       })
       .from(tradingAccounts)
-      .innerJoin(users, eq(tradingAccounts.userId, users.id))
+      // LEFT: an account the MT5 sync found with no client yet is listed too (0166).
+      .leftJoin(users, eq(tradingAccounts.userId, users.id))
       // Recorded product first, derived second — see `common/account-product`.
       .leftJoin(PRODUCT_BY_ID, eq(PRODUCT_BY_ID.id, tradingAccounts.productId))
       .leftJoin(tradingProductGroups, PRODUCT_GROUP_JOIN_ON)
@@ -892,7 +969,7 @@ export class AdminHoldingsService {
       const [countRow] = await db
         .select({ value: sql<number>`count(*)::int` })
         .from(tradingAccounts)
-        .innerJoin(users, eq(tradingAccounts.userId, users.id))
+        .leftJoin(users, eq(tradingAccounts.userId, users.id))
         .where(where);
       total = countRow.value;
     }
@@ -913,13 +990,21 @@ export class AdminHoldingsService {
         status: r.status,
         createdAt: r.createdAt,
         updatedAt: r.updatedAt,
-        user: {
-          id: r.userId,
-          portalId: r.userPortalId,
-          email: r.userEmail,
-          firstName: r.userFirstName,
-          lastName: r.userLastName,
-        },
+        // NULL: no client owns it yet — the screen offers "Assign" (0166).
+        user:
+          r.userId === null || r.userPortalId === null
+            ? null
+            : {
+                id: r.userId,
+                portalId: r.userPortalId,
+                email: r.userEmail ?? '',
+                firstName: r.userFirstName ?? '',
+                lastName: r.userLastName ?? '',
+              },
+        mt5Holder:
+          r.mt5HolderName || r.mt5HolderEmail
+            ? { name: r.mt5HolderName, email: r.mt5HolderEmail }
+            : null,
       })),
       nextCursor: paged.nextCursor,
       total: total ?? 0,
@@ -930,7 +1015,7 @@ export class AdminHoldingsService {
 
   /** One batch of trading accounts for a CSV export — see `walletExportBatch`. */
   async tradingAccountExportBatch(
-    query: { userId?: number; environment?: string; status?: string },
+    query: { userId?: number; environment?: string; status?: string; client?: string },
     actor: AuthenticatedAdmin,
     offset: number,
     limit: number,
@@ -979,9 +1064,12 @@ export class AdminHoldingsService {
           userEmail: users.email,
           userFirstName: users.firstName,
           userLastName: users.lastName,
+          mt5HolderName: tradingAccounts.mt5HolderName,
+          mt5HolderEmail: tradingAccounts.mt5HolderEmail,
         })
         .from(tradingAccounts)
-        .innerJoin(users, eq(tradingAccounts.userId, users.id))
+        // LEFT, like the list: an account with no client exports with blank owner columns.
+        .leftJoin(users, eq(tradingAccounts.userId, users.id))
         // Recorded product first, derived second — see `common/account-product`.
         .leftJoin(PRODUCT_BY_ID, eq(PRODUCT_BY_ID.id, tradingAccounts.productId))
         .leftJoin(tradingProductGroups, PRODUCT_GROUP_JOIN_ON)

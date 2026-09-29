@@ -9,6 +9,7 @@ import {
   LinkedMt5AccountDto,
   LinkMt5AccountDto,
   Mt5AccountLookupDto,
+  Mt5AccountsSyncRunDto,
   SetTradingAccountProductDto,
   TradingAccountProductDto,
 } from './dto/mt5-account.dto';
@@ -19,6 +20,8 @@ import {
 } from '../../admin/guards/admin.guard';
 import { NotClientScoped, ScopedToClients } from '../../admin/guards/client-scope.decorator';
 import { Audited } from '../../admin/guards/audited.decorator';
+import { Mt5AccountDirectoryScheduler } from './mt5-account-directory.scheduler';
+import { AdminAuditService } from '../../admin/admin-audit.service';
 
 /**
  * The back office's write surface onto MT5: open an account, move its balance.
@@ -42,7 +45,11 @@ import { Audited } from '../../admin/guards/audited.decorator';
 @ApiTags('admin')
 @Controller('admin')
 export class Mt5AccountsController {
-  constructor(private readonly accounts: Mt5AccountsService) {}
+  constructor(
+    private readonly accounts: Mt5AccountsService,
+    private readonly directory: Mt5AccountDirectoryScheduler,
+    private readonly audit: AdminAuditService,
+  ) {}
 
   /**
    * The groups an account may be opened in.
@@ -151,6 +158,39 @@ export class Mt5AccountsController {
       { userId: dto.userId, login: dto.login, productId: dto.productId },
       req.admin,
     );
+  }
+
+  /**
+   * "Sync now": bring MT5's accounts into the CRM (owner, 29 Sep 2026). A login
+   * the CRM has no account for is recorded with NO client, for an operator to
+   * assign. A batch of 50 inside half a minute; the scheduled runs, every ten
+   * minutes, take the rest.
+   */
+  @Post('trading-accounts/sync')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('trading.create')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: "Sync MT5's accounts into the CRM",
+    description:
+      'Records every MT5 login the CRM has no account for, with no client; they list under ' +
+      'GET /admin/trading-accounts?client=unassigned. 409 while another sync runs.',
+  })
+  @NotClientScoped(
+    'Reads the MT5 login list and records accounts with NO client; nothing is read or written ' +
+      'about any existing client. The rows it writes are listed only to readers who see every client.',
+  )
+  @Audited('trading.accounts_sync')
+  @ApiOkResponse({ type: Mt5AccountsSyncRunDto })
+  async syncAccounts(@Req() req: Request & { admin: AuthenticatedAdmin }) {
+    const run = await this.directory.syncNow();
+    this.audit.record(req.admin.id, 'trading.accounts_sync', 'trading_account_list', req.admin.id, {
+      onServer: run.onServer,
+      added: run.added,
+      remaining: run.remaining,
+      removed: run.removed,
+    });
+    return run;
   }
 
   /** Set, change or clear the product a trading account's trades pay under. */

@@ -323,3 +323,25 @@ export class LinkedMt5AccountDto {
   @ApiProperty({ type: 'integer', description: 'Deals now waiting to accrue on the next run.' })
   waitingDeals: number;
 }
+
+/** What a "Sync now" of MT5's accounts into the CRM did. */
+@NoClientFields('counts and currency codes describing a sync run; no client is named')
+export class Mt5AccountsSyncRunDto {
+  @ApiProperty({ description: 'Logins MT5 reported, in every group the bridge watches.' })
+  onServer: number;
+  @ApiProperty({ description: 'Of those, logins the CRM had no account for before this run.' })
+  newOnServer: number;
+  @ApiProperty({ description: 'Accounts this run recorded, with no client, ready to assign.' })
+  added: number;
+  @ApiProperty({ description: 'New logins left for the scheduled runs, every ten minutes.' })
+  remaining: number;
+  @ApiProperty({
+    type: [String],
+    description: 'Currencies MT5 holds accounts in that this platform does not; those are skipped.',
+  })
+  unknownCurrency: string[];
+  @ApiProperty({ description: 'Unowned accounts MT5 confirmed it no longer has, removed.' })
+  removed: number;
+  @ApiPropertyOptional({ description: 'Why the run stopped early, when it did.' })
+  stoppedEarly?: string;
+}

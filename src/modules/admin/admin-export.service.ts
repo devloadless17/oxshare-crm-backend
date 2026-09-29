@@ -509,12 +509,14 @@ export class AdminExportService {
     { header: 'Client email', value: (r) => r.userEmail },
     { header: 'Client first name', value: (r) => r.userFirstName },
     { header: 'Client last name', value: (r) => r.userLastName },
+    { header: 'MT5 holder name', value: (r) => r.mt5HolderName },
+    { header: 'MT5 holder email', value: (r) => r.mt5HolderEmail },
     { header: 'Opened at', value: (r) => r.createdAt },
     { header: 'Updated at', value: (r) => r.updatedAt },
   ];
 
   async tradingAccountBatch(
-    query: { userId?: number; environment?: string; status?: string },
+    query: { userId?: number; environment?: string; status?: string; client?: string },
     actor: AuthenticatedAdmin,
     offset: number,
     limit: number,
@@ -544,7 +546,14 @@ export class AdminExportService {
       limit,
       startedAt,
     );
-    return maskForExport(TradingAccountExportRowDto, rows, actor.fieldMask);
+    // A holder's full name spans two keys; either hidden hides it (see the list).
+    const hideName =
+      actor.fieldMask.includes('client.firstName') || actor.fieldMask.includes('client.lastName');
+    return maskForExport(
+      TradingAccountExportRowDto,
+      rows.map((row) => (hideName ? { ...row, mt5HolderName: null } : row)),
+      actor.fieldMask,
+    );
   }
 
   // ── KYC ───────────────────────────────────────────────────────────────────
@@ -954,11 +963,15 @@ export interface TradingAccountExportRow {
   status: string;
   createdAt: Date;
   updatedAt: Date;
-  userId: number;
-  userPortalId: number;
-  userEmail: string;
-  userFirstName: string;
-  userLastName: string;
+  /** NULL on an account the MT5 sync found with no client yet (0166). */
+  userId: number | null;
+  userPortalId: number | null;
+  userEmail: string | null;
+  userFirstName: string | null;
+  userLastName: string | null;
+  /** MT5's holder, recorded by the sync — how an unowned account is matched to a client. */
+  mt5HolderName: string | null;
+  mt5HolderEmail: string | null;
 }
 
 export interface KycExportRow {

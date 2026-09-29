@@ -5346,6 +5346,19 @@
             }
           },
           {
+            "name": "client",
+            "required": false,
+            "in": "query",
+            "description": "`unassigned`: accounts the MT5 sync found that no client owns yet (shown only to a reader who sees every client); `assigned`: the rest.",
+            "schema": {
+              "enum": [
+                "assigned",
+                "unassigned"
+              ],
+              "type": "string"
+            }
+          },
+          {
             "name": "page",
             "required": false,
             "in": "query",
@@ -5505,6 +5518,34 @@
           }
         ],
         "summary": "Link an existing MT5 account to a client",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/trading-accounts/sync": {
+      "post": {
+        "description": "Records every MT5 login the CRM has no account for, with no client; they list under GET /admin/trading-accounts?client=unassigned. 409 while another sync runs.",
+        "operationId": "Mt5AccountsController_syncAccounts",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Mt5AccountsSyncRunDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Sync MT5's accounts into the CRM",
         "tags": [
           "admin"
         ]
@@ -11780,6 +11821,19 @@
               ],
               "type": "string"
             }
+          },
+          {
+            "name": "client",
+            "required": false,
+            "in": "query",
+            "description": "`unassigned`: accounts the MT5 sync found that no client owns yet (shown only to a reader who sees every client); `assigned`: the rest.",
+            "schema": {
+              "enum": [
+                "assigned",
+                "unassigned"
+              ],
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -17255,6 +17309,50 @@
           "currency",
           "balance",
           "waitingDeals"
+        ]
+      },
+      "Mt5AccountsSyncRunDto": {
+        "type": "object",
+        "properties": {
+          "onServer": {
+            "type": "number",
+            "description": "Logins MT5 reported, in every group the bridge watches."
+          },
+          "newOnServer": {
+            "type": "number",
+            "description": "Of those, logins the CRM had no account for before this run."
+          },
+          "added": {
+            "type": "number",
+            "description": "Accounts this run recorded, with no client, ready to assign."
+          },
+          "remaining": {
+            "type": "number",
+            "description": "New logins left for the scheduled runs, every ten minutes."
+          },
+          "unknownCurrency": {
+            "description": "Currencies MT5 holds accounts in that this platform does not; those are skipped.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "removed": {
+            "type": "number",
+            "description": "Unowned accounts MT5 confirmed it no longer has, removed."
+          },
+          "stoppedEarly": {
+            "type": "string",
+            "description": "Why the run stopped early, when it did."
+          }
+        },
+        "required": [
+          "onServer",
+          "newOnServer",
+          "added",
+          "remaining",
+          "unknownCurrency",
+          "removed"
         ]
       },
       "SetTradingAccountProductDto": {
@@ -22932,6 +23030,19 @@
           "limit"
         ]
       },
+      "Mt5HolderDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "nullable": true
+          },
+          "email": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
       "TradingAccountRowDto": {
         "type": "object",
         "properties": {
@@ -22993,7 +23104,22 @@
             "type": "string"
           },
           "user": {
-            "$ref": "#/components/schemas/HoldingOwnerDto"
+            "nullable": true,
+            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/HoldingOwnerDto"
+              }
+            ]
+          },
+          "mt5Holder": {
+            "nullable": true,
+            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Mt5HolderDto"
+              }
+            ]
           }
         },
         "required": [

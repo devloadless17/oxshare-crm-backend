@@ -218,6 +218,7 @@ const WRITES_DETAILS: readonly string[] = [
   'trading.account_create',
   'trading.account_link',
   'trading.account_product',
+  'trading.accounts_sync',
   'trading.deposit',
   'trading.withdraw',
   'transfer.abandon',

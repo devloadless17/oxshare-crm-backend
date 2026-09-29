@@ -16,6 +16,12 @@ import { UNRESTRICTED } from '../src/common/security/client-scope';
 import { EMPTY_MASK } from '../src/common/security/field-mask';
 import { ConflictError, NotFoundError, ValidationError } from '../src/common/errors/domain-errors';
 import { auditStubAs } from './audit-stub';
+import { Mt5AccountDirectoryService } from '../src/modules/trading/mt5/mt5-account-directory.service';
+import { AdminHoldingsService } from '../src/modules/admin/admin-holdings.service';
+import { ClientVisibilityService } from '../src/common/security/client-visibility.service';
+import { UsersStore } from '../src/store/users.store';
+import { DealCommissionService } from '../src/modules/trading/mt5/deal-commission.service';
+import type { CommissionAccrualPort } from '../src/common/provisioning/commission-accrual.port';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
 
 /**
@@ -37,6 +43,11 @@ import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './mone
  */
 let ctx: MoneyTestContext;
 let accounts: Mt5AccountsService;
+let directory: Mt5AccountDirectoryService;
+let holdings: AdminHoldingsService;
+let commission: DealCommissionService;
+/** Logins MT5 still has but its LIST leaves out — a group the manager account cannot read. */
+const UNLISTED = new Set<string>();
 let clientId: number;
 let otherClientId: number;
 let standardId: string;
@@ -129,6 +140,7 @@ beforeAll(async () => {
 
   const bridge = {
     isConfigured: true,
+    listLogins: vi.fn(() => Promise.resolve(Object.keys(MT5).filter((l) => !UNLISTED.has(l)))),
     getAccount: vi.fn((login: string) => Promise.resolve(MT5[login] ?? null)),
     getAccountHolder: vi.fn((login: string) => Promise.resolve(HOLDERS[login] ?? null)),
   } as unknown as Mt5BridgeClient;
@@ -142,6 +154,9 @@ beforeAll(async () => {
     new ProductsStore(ctx.db),
     {} as Mt5AccountSyncService,
   );
+  directory = new Mt5AccountDirectoryService(ctx.db, bridge, new ProductsStore(ctx.db));
+  holdings = new AdminHoldingsService(ctx.db, new ClientVisibilityService(new UsersStore(ctx.db)));
+  commission = new DealCommissionService(ctx.db, {} as CommissionAccrualPort);
 }, 180_000);
 
 afterAll(async () => {
@@ -305,5 +320,112 @@ describe('setting the product later', () => {
     await expect(accounts.setAccountProduct(linked.id, ecnId, NOBODYS_DESK)).rejects.toBeInstanceOf(
       NotFoundError,
     );
+  });
+});
+
+/*
+ * EVERY MT5 ACCOUNT IN THE CRM (owner, 29 Sep 2026): the sync records each login
+ * the CRM has no account for in `trading_accounts` with NO client (0166); the
+ * screen lists them as "No client", and assigning one is the link above.
+ */
+describe('syncing MT5’s accounts into the CRM', () => {
+  const VIEWER = {
+    ...ADMIN,
+    permissions: ['trading.view', 'trading.create'],
+  };
+  /** A desk admin who sees NEW clients — the predicate's intake branch, true for a NULL client. */
+  const INTAKE_DESK = {
+    ...VIEWER,
+    clientScope: { unrestricted: false, tagIds: [], includesUntriaged: true },
+  } as unknown as AuthenticatedAdmin;
+
+  it('records every login the CRM lacks, with no client, MT5’s figures and holder', async () => {
+    await accounts.linkMt5Account({ userId: clientId, login: '7000002' }, ADMIN);
+    const run = await directory.sync();
+
+    expect(run).toMatchObject({ added: 2, remaining: 0, unknownCurrency: ['XYZ'] });
+    expect(await rowFor(7000001)).toMatchObject({
+      userId: null,
+      mt5Group: 'real\\LinkShared',
+      productId: null, // two products sell it: chosen on assigning
+      currency: 'USD',
+      balance: '1250.00000000',
+      mt5HolderName: 'Rana Existing',
+      mt5HolderEmail: 'rana@old-platform.test',
+      status: 'active',
+    });
+    expect((await rowFor(7000003)).userId).toBeNull();
+    // The client's own account is untouched; the unheld currency is skipped.
+    expect((await rowFor(7000002)).userId).toBe(clientId);
+    expect(await rowFor(7000004)).toBeUndefined();
+
+    // A second run finds nothing new.
+    expect(await directory.sync()).toMatchObject({ added: 0, newOnServer: 1 });
+  });
+
+  it('keeps their trades orphaned until the account is assigned — then they accrue', async () => {
+    await directory.sync();
+    const whileUnowned = await commission.orphanBacklog();
+    const assigned = await accounts.linkMt5Account(
+      { userId: clientId, login: '7000001', productId: premiumId },
+      ADMIN,
+    );
+    // The same row, now the client's, with the two waiting deals free to accrue.
+    expect(assigned.id).toBe((await rowFor(7000001)).id);
+    expect(await rowFor(7000001)).toMatchObject({ userId: clientId, productId: premiumId });
+    expect(assigned.waitingDeals).toBe(2);
+    expect(await commission.orphanBacklog()).toBe(whileUnowned - 2);
+  });
+
+  it('refuses to assign an account a client already holds', async () => {
+    await directory.sync();
+    await accounts.linkMt5Account({ userId: clientId, login: '7000003' }, ADMIN);
+    await expect(
+      accounts.linkMt5Account({ userId: otherClientId, login: '7000003' }, ADMIN),
+    ).rejects.toBeInstanceOf(ConflictError);
+  });
+
+  it('lists them as no client — only to a reader who sees every client', async () => {
+    await directory.sync();
+    const page = await holdings.listTradingAccounts({ client: 'unassigned', q: '7000001' }, VIEWER);
+    expect(page.items).toHaveLength(1);
+    expect(page.items[0]).toMatchObject({
+      login: '7000001',
+      user: null,
+      mt5Holder: { name: 'Rana Existing', email: 'rana@old-platform.test' },
+    });
+    // Found by MT5's holder, too.
+    const byHolder = await holdings.listTradingAccounts(
+      { client: 'unassigned', q: 'old-platform' },
+      VIEWER,
+    );
+    expect(byHolder.items.map((i) => i.login).sort()).toEqual(['7000001', '7000002', '7000003']);
+
+    expect(
+      (await holdings.listTradingAccounts({ client: 'unassigned' }, INTAKE_DESK)).items,
+    ).toHaveLength(0);
+    // A masked role reads no holder.
+    const masked = { ...VIEWER, fieldMask: ['client.lastName'] } as unknown as AuthenticatedAdmin;
+    const hidden = await holdings.listTradingAccounts(
+      { client: 'unassigned', q: '7000001' },
+      masked,
+    );
+    expect(hidden.items[0].mt5Holder?.name).toBeNull();
+  });
+
+  it('removes an unowned account only once MT5 confirms it is gone', async () => {
+    await directory.sync();
+    const gone = MT5['7000003'];
+    delete MT5['7000003'];
+    UNLISTED.add('7000001'); // left out of the list, but MT5 still has it
+    try {
+      expect(await directory.sync()).toMatchObject({ removed: 1 });
+      expect(await rowFor(7000003)).toBeUndefined();
+      // Listed-missing but still answering on MT5: kept.
+      expect(await rowFor(7000001)).toBeDefined();
+    } finally {
+      MT5['7000003'] = gone;
+      UNLISTED.clear();
+    }
   });
 });

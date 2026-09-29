@@ -2718,9 +2718,27 @@ export const tradingAccounts = pgTable(
   'trading_accounts',
   {
     id: uuid('id').defaultRandom().primaryKey(),
-    userId: integer('user_id')
-      .notNull()
-      .references(() => users.id, { onDelete: 'restrict' }),
+    /**
+     * The client who owns the account — NULL for an account the MT5 sync found
+     * on the broker's server that no client owns yet (0166, owner 29 Sep 2026:
+     * every MT5 account in the CRM, the unowned ones shown as "no client" until
+     * an operator assigns them).
+     *
+     * ⚠️ NULL is a real state every reader must treat as "no client": an inner
+     * join to `users` drops the row (right for anything about a client), a
+     * commission read must require it (`deal-commission.service.ts` — an
+     * unowned account's trades stay orphaned until it is assigned), and the
+     * territory predicate must never let a restricted admin see it.
+     */
+    userId: integer('user_id').references(() => users.id, { onDelete: 'restrict' }),
+    /**
+     * MT5's HOLDER name and email for an account the sync found unowned — what
+     * the operator matches against a client before assigning it. Read by the
+     * sync, a person's data: masked like a client's name and email on read.
+     * NULL on accounts the CRM opened (the client's own profile is the truth).
+     */
+    mt5HolderName: varchar('mt5_holder_name', { length: 256 }),
+    mt5HolderEmail: varchar('mt5_holder_email', { length: 320 }),
     /**
      * The MT5 login, once there is an MT5 to issue one.
      *
@@ -2892,6 +2910,10 @@ export const tradingAccounts = pgTable(
   },
   (t) => [
     index('trading_accounts_user_idx').on(t.userId),
+    /* The "No client" queue (0166): accounts the MT5 sync found unowned, newest first. */
+    index('trading_accounts_unassigned_idx')
+      .on(t.createdAt.desc(), t.id.desc())
+      .where(sql`${t.userId} IS NULL`),
     /* "Every account on this product" — what an operator asks before retiring
        one, and what the FK's SET NULL sweeps on a delete. */
     index('trading_accounts_product_idx').on(t.productId),

@@ -2399,6 +2399,16 @@ export class WalletListResponseDto {
   maskedFields?: string[];
 }
 
+/** MT5's account holder, as the account sync read it (0166) — a person, masked as one. */
+export class Mt5HolderDto {
+  @ClientField('client.lastName')
+  @ApiPropertyOptional({ type: String, nullable: true })
+  name?: string | null;
+  @ClientField('client.email')
+  @ApiPropertyOptional({ type: String, nullable: true })
+  email?: string | null;
+}
+
 export class TradingAccountRowDto {
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty()
@@ -2483,8 +2493,16 @@ export class TradingAccountRowDto {
   @NotClientField(
     'the nested person, whose own shape carries the marks \u2014 masked there, not here',
   )
-  @ApiProperty({ type: HoldingOwnerDto })
-  user: HoldingOwnerDto;
+  @ApiProperty({ type: HoldingOwnerDto, nullable: true })
+  user: HoldingOwnerDto | null;
+  /**
+   * MT5's holder name and email, as the sync read them: how an operator matches an
+   * account with no client (0166, `user` NULL) to a client. NULL on accounts the
+   * CRM opened, and when the reader's role hides client names / emails.
+   */
+  @NotClientField('the nested person, whose own shape carries the marks — masked there, not here')
+  @ApiPropertyOptional({ type: () => Mt5HolderDto, nullable: true })
+  mt5Holder?: Mt5HolderDto | null;
 }
 
 @NoClientFields(

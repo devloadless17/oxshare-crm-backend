@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull } from 'drizzle-orm';
 import { getDb } from '../../../database/db';
 import { mt5Deals, tradingAccounts } from '../../../database/schema';
 import type { Mt5DealDto } from './dto/mt5-deal.dto';
@@ -91,10 +91,11 @@ export class Mt5DealsService {
       return { ingested: false, orphaned: false };
     }
 
+    // Linked means a CLIENT owns it: an account the MT5 sync found unowned (0166) is not.
     const [account] = await db
       .select({ id: tradingAccounts.id })
       .from(tradingAccounts)
-      .where(eq(tradingAccounts.login, deal.login))
+      .where(and(eq(tradingAccounts.login, deal.login), isNotNull(tradingAccounts.userId)))
       .limit(1);
 
     if (!account) {
@@ -204,7 +205,7 @@ export class Mt5DealsService {
     const known = await db
       .select({ login: tradingAccounts.login })
       .from(tradingAccounts)
-      .where(inArray(tradingAccounts.login, logins));
+      .where(and(inArray(tradingAccounts.login, logins), isNotNull(tradingAccounts.userId)));
     const linked = new Set(known.map((row) => row.login));
 
     const orphanLogins = new Set<string>();

@@ -307,6 +307,24 @@ export class Mt5BridgeClient {
     }
   }
 
+  /**
+   * Every login the bridge watches — one MT5 call per GROUP, so cheap at any book
+   * size. For the unassigned-accounts sync, which keeps the ones no client owns.
+   */
+  async listLogins(): Promise<string[]> {
+    /*
+     * Its own budget: one MT5 call per group, so a broker with a few hundred
+     * groups takes longer than the ten seconds a single-account read is given.
+     */
+    const logins = await this.request<(number | string)[]>(
+      'GET',
+      '/logins',
+      undefined,
+      Number(this.config.get('MT5_BRIDGE_LIST_TIMEOUT_MS') ?? 120_000),
+    );
+    return logins.map(String);
+  }
+
   async getAccount(login: string): Promise<Mt5AccountSnapshot | null> {
     try {
       return await this.request<Mt5AccountSnapshot>('GET', `/accounts/${login}`);
@@ -467,7 +485,12 @@ export class Mt5BridgeClient {
     });
   }
 
-  private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  private async request<T>(
+    method: string,
+    path: string,
+    body?: unknown,
+    timeoutMs?: number,
+  ): Promise<T> {
     const baseUrl = this.config.get<string>('MT5_BRIDGE_URL');
     const apiKey = this.config.get<string>('MT5_BRIDGE_API_KEY');
 
@@ -530,9 +553,11 @@ export class Mt5BridgeClient {
      * throughput off the 2.5s figure — `GET /admin/live` on the bridge reports
      * the real per-read cost continuously.
      */
-    const timeout = safe
-      ? Number(this.config.get('MT5_BRIDGE_READ_TIMEOUT_MS') ?? 10_000)
-      : Number(this.config.get('MT5_BRIDGE_TIMEOUT_MS') ?? 30_000);
+    const timeout =
+      timeoutMs ??
+      (safe
+        ? Number(this.config.get('MT5_BRIDGE_READ_TIMEOUT_MS') ?? 10_000)
+        : Number(this.config.get('MT5_BRIDGE_TIMEOUT_MS') ?? 30_000));
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeout);
