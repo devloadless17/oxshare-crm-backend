@@ -321,8 +321,8 @@ describe('handing a claim back', () => {
      * refused before any release is recorded.
      */
     const master = await actingAs(ctx, 'admin', MASTER);
-    await claim(reviewer);
-    await release(master);
+    expect((await claim(reviewer)).status).toBe(200);
+    expect((await release(master)).status).toBe(200);
 
     /*
      * POLLED, because the write is fire-and-forget.
@@ -335,7 +335,9 @@ describe('handing a claim back', () => {
      */
     const freshRows = async () =>
       (await ctx.db.db.select().from(auditLog).where(eq(auditLog.action, 'kyc.release'))).filter(
-        (r) => r.subjectId === subjectId && !before.has(r.id),
+        // By WHO released it too: an earlier case's own fire-and-forget release
+        // row can land after `before` was read, and it names the same subject.
+        (r) => r.subjectId === subjectId && !before.has(r.id) && r.actorEmail === MASTER.email,
       );
     const deadline = Date.now() + 5_000;
     let fresh = await freshRows();
