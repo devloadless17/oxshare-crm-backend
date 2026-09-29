@@ -55,8 +55,7 @@ async function draft(slot: string, docType: string | null = 'passport'): Promise
 
 async function page(documentId: string, part = 0, key = `uploads/kyc/${documentId}-${part}.png`) {
   await q(
-    `INSERT INTO client_document_pages (document_id, part, storage_key, file_name)
-     VALUES ($1, $2, $3, 'page.png')`,
+    `INSERT INTO client_document_pages (document_id, part, storage_key) VALUES ($1, $2, $3)`,
     [documentId, part, key],
   );
 }
