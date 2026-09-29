@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { inArray } from 'drizzle-orm';
 import { ALL_PERMISSIONS } from './support/all-permissions';
 import { actingAs, startHttpTestApp, stopHttpTestApp, type HttpTestContext } from './http-setup';
 import { PasswordService } from '../src/common/security/password.service';
@@ -515,6 +516,55 @@ describe("a partner's SUB-PARTNERS follow the reader's territory too", () => {
     const master = (await detailFor(MASTER, partnerId)) as unknown as Record<string, unknown>;
     expect(master['directPartnersOutsideScope']).toBe(0);
     expect(master['referredClientsOutsideScope']).toBe(0);
+  });
+
+  it("carries each sub-partner's OWN line — clients, partners, agency (owner, 29 Sep 2026)", async () => {
+    /*
+     * Counts, never who: the owner's R2 ruling allows a number across a
+     * territory line. Two clients and one partner beneath SubMine; nothing
+     * beneath SubTheirs. The counts are correlated subqueries, and a bare
+     * column there once resolved to the INNER table — so this pins the values,
+     * not only the keys.
+     */
+    const db = ctx.db.db;
+    const [c1, c2, child] = await db
+      .insert(users)
+      .values(
+        ['line-c1', 'line-c2', 'line-child'].map((name) => ({
+          email: `ref-scope-${name}@oxshare-e2e.test`,
+          passwordHash: 'x',
+          firstName: name,
+          lastName: 'Line',
+        })),
+      )
+      .returning();
+    await db
+      .update(users)
+      .set({ referredByIbUserId: subMineId })
+      .where(inArray(users.id, [c1.id, c2.id]));
+    await db.insert(ibAccounts).values({
+      userId: child.id,
+      level: 3,
+      active: true,
+      referralCode: 'REFLINE1',
+      parentIbUserId: subMineId,
+    });
+
+    const body = (await detailFor(MASTER, partnerId)) as unknown as {
+      directPartners: {
+        userId: number;
+        clientCount: number;
+        subPartnerCount: number;
+        agencyName: string | null;
+      }[];
+    };
+    const line = new Map(body.directPartners.map((p) => [p.userId, p]));
+    expect(line.get(subMineId)).toMatchObject({
+      clientCount: 2,
+      subPartnerCount: 1,
+      agencyName: null,
+    });
+    expect(line.get(subTheirsId)).toMatchObject({ clientCount: 0, subPartnerCount: 0 });
   });
 
   it('leaks NOTHING about the sub-partner outside the territory — not even the id', async () => {

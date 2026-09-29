@@ -14313,6 +14313,19 @@
           "approvedAt": {
             "format": "date-time",
             "type": "string"
+          },
+          "clientCount": {
+            "type": "number",
+            "description": "How many clients THIS sub-partner introduced — a count, never who (R2), so it spans territories, unlike the partner's own referredClientCount, which is scoped."
+          },
+          "subPartnerCount": {
+            "type": "number",
+            "description": "How many partners sit directly beneath THIS sub-partner."
+          },
+          "agencyName": {
+            "type": "string",
+            "nullable": true,
+            "description": "The agency they sell under; null offers their clients the full catalogue."
           }
         },
         "required": [
@@ -14325,7 +14338,10 @@
           "levelName",
           "referralCode",
           "active",
-          "approvedAt"
+          "approvedAt",
+          "clientCount",
+          "subPartnerCount",
+          "agencyName"
         ]
       },
       "IbPartnerDetailDto": {

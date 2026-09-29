@@ -494,6 +494,23 @@ export class IbSubPartnerRowDto extends IbPartnerPersonDto {
   @NotClientField('a timestamp the system recorded, describing the record rather than the client')
   @ApiProperty()
   approvedAt: Date;
+  @NotClientField('an aggregate count describing the partner record, not a client attribute')
+  @ApiProperty({
+    description:
+      'How many clients THIS sub-partner introduced — a count, never who (R2), so it spans ' +
+      "territories, unlike the partner's own referredClientCount, which is scoped.",
+  })
+  clientCount: number;
+  @NotClientField('an aggregate count describing the partner record, not a client attribute')
+  @ApiProperty({ description: 'How many partners sit directly beneath THIS sub-partner.' })
+  subPartnerCount: number;
+  @NotClientField('an agency is operator configuration, not a client attribute')
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    description: 'The agency they sell under; null offers their clients the full catalogue.',
+  })
+  agencyName: string | null;
 }
 
 /**
