@@ -43,11 +43,14 @@ const PORTAL_REFRESH = '/v1/auth/refresh';
 
 let ctx: HttpTestContext;
 let master: Session;
-let clientId: string;
+let clientId: number;
 
 const liveTokens = async () =>
   (
-    await ctx.db.db.select().from(refreshTokens).where(eq(refreshTokens.subjectId, clientId))
+    await ctx.db.db
+      .select()
+      .from(refreshTokens)
+      .where(eq(refreshTokens.subjectId, String(clientId)))
   ).filter((t) => t.revokedAt === null);
 
 const setStatus = (status: 'active' | 'suspended') =>
@@ -100,7 +103,7 @@ beforeEach(async () => {
    * unauthenticated. `audit_log` is not cleared: the append-only trigger
    * refuses DELETE, so assertions filter by subject instead.
    */
-  await ctx.db.db.delete(refreshTokens).where(eq(refreshTokens.subjectId, clientId));
+  await ctx.db.db.delete(refreshTokens).where(eq(refreshTokens.subjectId, String(clientId)));
 });
 
 describe('suspending a client reaches their live session', () => {
@@ -154,7 +157,7 @@ describe('suspending a client reaches their live session', () => {
     const [row] = await ctx.db.db
       .select()
       .from(auditLog)
-      .where(and(eq(auditLog.subjectId, clientId), eq(auditLog.action, 'client.suspend')))
+      .where(and(eq(auditLog.subjectId, String(clientId)), eq(auditLog.action, 'client.suspend')))
       .orderBy(desc(auditLog.createdAt))
       .limit(1);
 
@@ -173,7 +176,7 @@ describe('suspending a client reaches their live session', () => {
     const [row] = await ctx.db.db
       .select()
       .from(auditLog)
-      .where(and(eq(auditLog.subjectId, clientId), eq(auditLog.action, 'client.activate')))
+      .where(and(eq(auditLog.subjectId, String(clientId)), eq(auditLog.action, 'client.activate')))
       .orderBy(desc(auditLog.createdAt))
       .limit(1);
 

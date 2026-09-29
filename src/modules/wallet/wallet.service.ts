@@ -96,7 +96,7 @@ export type WalletKind = (typeof walletKindEnum.enumValues)[number];
 const DEFAULT_KIND: WalletKind = 'main';
 
 export interface PostParams {
-  userId: string;
+  userId: number;
   currency: Currency;
   /** Which wallet in that currency. Defaults to `main` — see DEFAULT_KIND. */
   kind?: WalletKind;
@@ -150,7 +150,7 @@ export class WalletService {
    *  exactly the one you want the compiler to make you look at when its meaning
    *  changes. */
   async getOrCreateWallet(
-    userId: string,
+    userId: number,
     currency: Currency,
     kind: WalletKind = DEFAULT_KIND,
     executor?: Executor,
@@ -279,7 +279,7 @@ export class WalletService {
    */
   private async lockWallet(
     tx: Executor,
-    userId: string,
+    userId: number,
     currency: Currency,
     kind: WalletKind = DEFAULT_KIND,
   ) {
@@ -329,7 +329,7 @@ export class WalletService {
    * on_hold is not a balance change, so it writes no ledger entry — the debit
    * is posted only when the provider confirms.
    */
-  async hold(userId: string, currency: Currency, amount: MoneyInput, executor?: Executor) {
+  async hold(userId: number, currency: Currency, amount: MoneyInput, executor?: Executor) {
     const value = toDecimal(amount);
     /*
      * `lessThanOrEqualTo(0)`, NOT `!isPositive()` — this guard read correctly
@@ -347,7 +347,7 @@ export class WalletService {
     return this.db.transaction((tx) => this.holdWithin(tx, userId, currency, value));
   }
 
-  private async holdWithin(tx: Executor, userId: string, currency: Currency, value: Decimal) {
+  private async holdWithin(tx: Executor, userId: number, currency: Currency, value: Decimal) {
     {
       const wallet = await this.lockWallet(tx, userId, currency);
 
@@ -393,7 +393,7 @@ export class WalletService {
    * releasing nothing is a caller that has computed the wrong amount, and the
    * two halves of one pairing should not disagree about what a valid amount is.
    */
-  async release(userId: string, currency: Currency, amount: MoneyInput, executor?: Executor) {
+  async release(userId: number, currency: Currency, amount: MoneyInput, executor?: Executor) {
     const value = toDecimal(amount);
     // `lessThanOrEqualTo(0)`, for the decimal.js reason documented on `hold`.
     if (value.lessThanOrEqualTo(0)) throw new ValidationError('Release amount must be positive.');
@@ -401,7 +401,7 @@ export class WalletService {
     return this.db.transaction((tx) => this.releaseWithin(tx, userId, currency, value));
   }
 
-  private async releaseWithin(tx: Executor, userId: string, currency: Currency, value: Decimal) {
+  private async releaseWithin(tx: Executor, userId: number, currency: Currency, value: Decimal) {
     {
       const wallet = await this.lockWallet(tx, userId, currency);
 
@@ -427,7 +427,7 @@ export class WalletService {
    * to remember it; making it the shape of the response means they cannot get
    * it wrong.
    */
-  async listWallets(userId: string, kind: WalletKind = DEFAULT_KIND) {
+  async listWallets(userId: number, kind: WalletKind = DEFAULT_KIND) {
     const rows = await this.db
       .select({ wallet: wallets })
       .from(wallets)
@@ -479,7 +479,7 @@ export class WalletService {
    * that wallet unchanged. `getOrCreateWallet` never touches an existing
    * balance.
    */
-  async openOwnWallet(userId: string, code: string, kind: WalletKind = DEFAULT_KIND) {
+  async openOwnWallet(userId: number, code: string, kind: WalletKind = DEFAULT_KIND) {
     const currency = code.trim().toUpperCase();
     const [offered] = await this.db
       .select({ enabled: currencies.enabled })
@@ -567,7 +567,7 @@ export class WalletService {
   /** ADM-13 ledger view — filterable for reconciliation. */
   async listEntries(filter: {
     walletId?: string;
-    userId?: string;
+    userId?: number;
     q?: string;
     entryType?: LedgerEntryType;
     /** Row-level visibility. Admin callers pass the actor's; defaults to open. */
@@ -696,7 +696,7 @@ export class WalletService {
         userLastName: users.lastName,
         userEmail: users.email,
         // The identifier a masked reader still gets — see `users.portal_id`.
-        userPortalId: users.portalId,
+        userPortalId: users.id,
       })
       .from(ledgerEntries)
       .innerJoin(wallets, eq(ledgerEntries.walletId, wallets.id))

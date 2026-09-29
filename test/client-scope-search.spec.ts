@@ -73,9 +73,9 @@ const MY_LOGIN = '80000001';
 let ctx: HttpTestContext;
 let scoped: Session;
 let master: Session;
-let mineId: string;
-let theirsId: string;
-let untriagedId: string;
+let mineId: number;
+let theirsId: number;
+let untriagedId: number;
 let theirWalletNumber: string;
 
 const items = (body: unknown) => (body as { items?: unknown[] }).items ?? [];
@@ -179,7 +179,7 @@ beforeAll(async () => {
    * THE OTHER SIDE OF THE BOUNDARY IS FULLY POPULATED. Every row below exists
    * only so that a leak would have something to leak.
    */
-  const { rows: wallets } = await db.execute<{ user_id: string; wallet_number: string }>(sql`
+  const { rows: wallets } = await db.execute<{ user_id: number; wallet_number: string }>(sql`
     INSERT INTO wallets (user_id, currency, kind, balance) VALUES
       (${mineId}, 'USD', 'main', '100'),
       (${theirsId}, 'USD', 'main', '900')
@@ -202,8 +202,8 @@ beforeAll(async () => {
   await db.execute(sql`
     INSERT INTO audit_log (actor_id, actor_email, actor_kind, action, subject_type, subject_id)
     VALUES
-      (${theirsId}, 'someone@oxshare.com', 'admin', 'client.suspend', 'user', ${theirsId}),
-      (${mineId}, 'someone@oxshare.com', 'admin', 'client.suspend', 'user', ${mineId})
+      (${String(theirsId)}, 'someone@oxshare.com', 'admin', 'client.suspend', 'user', ${String(theirsId)}),
+      (${String(mineId)}, 'someone@oxshare.com', 'admin', 'client.suspend', 'user', ${String(mineId)})
   `);
 
   scoped = await actingAs(ctx, 'admin', SCOPED);
@@ -360,7 +360,7 @@ describe('the INTAKE POOL — an untriaged client, and the flag that decides', (
   it('a scoped admin WITH the intake grant sees a client nobody has triaged', async () => {
     const res = await scoped.get(`/v1/admin/clients?q=${UNTRIAGED.first}&limit=100`);
     expect(res.status).toBe(200);
-    const found = items(res.body) as { id: string }[];
+    const found = items(res.body) as { id: number }[];
     expect(found, 'the intake pool is not reaching the desk that triages it').toHaveLength(1);
     // The right person, not merely a person — the search term is distinctive,
     // so a filter matching everything would pass the length check alone.

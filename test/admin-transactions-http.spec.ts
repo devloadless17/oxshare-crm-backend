@@ -62,9 +62,9 @@ const MASKED = { email: 'fin-masked@oxshare.com', password: 'admin-password-123'
 let ctx: HttpTestContext;
 
 /** The union client: one movement of every kind, seeded in beforeAll. */
-let unionClientId: string;
+let unionClientId: number;
 /** The out-of-territory client whose movement must never reach SCOPED. */
-let outsiderId: string;
+let outsiderId: number;
 
 async function seedClient(email: string, firstName: string, lastName: string) {
   const [client] = await ctx.db.db
@@ -290,7 +290,7 @@ type ListBody = {
     amount: string;
     currency: string;
     methodName: string;
-    user: { id: string; email: string; firstName: string; lastName: string };
+    user: { id: number; email: string; firstName: string; lastName: string };
   }>;
   nextCursor: string | null;
   total: number;
@@ -634,7 +634,7 @@ describe('THE LEAK TEST: territory holds on every surface', () => {
     expect(res.headers['content-type']).toContain('text/csv');
     expect(res.text).toContain('fin-mine@oxshare-e2e.test');
     expect(res.text).not.toContain('fin-outside@oxshare-e2e.test');
-    expect(res.text).not.toContain(outsiderId);
+    expect(res.text).not.toContain(String(outsiderId));
   });
 
   it('a MASTER admin exporting the same list sees both, amounts verbatim', async () => {

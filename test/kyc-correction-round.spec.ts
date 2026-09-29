@@ -52,7 +52,7 @@ const PNG = Buffer.concat([
 let ctx: HttpTestContext;
 let passwordHash: string;
 
-async function newClient(tag: string): Promise<{ id: string; session: Session }> {
+async function newClient(tag: string): Promise<{ id: number; session: Session }> {
   const email = `kyc-round-${tag}-${Date.now()}@oxshare-e2e.test`;
   const [user] = await ctx.db.db
     .insert(users)
@@ -67,7 +67,7 @@ function upload(session: Session, field: string, docType?: string) {
   return req.attach('file', PNG, { filename: `${field}.png`, contentType: 'image/png' });
 }
 
-async function stored(userId: string) {
+async function stored(userId: number) {
   const [row] = await ctx.db.db
     .select()
     .from(kycSubmissions)

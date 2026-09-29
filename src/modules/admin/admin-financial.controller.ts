@@ -31,7 +31,7 @@ import {
   RequirePermissions,
   type AuthenticatedAdmin,
 } from './guards/admin.guard';
-import { dateQuery, enumQuery, searchQuery, uuidQuery } from '../../common/query-params';
+import { dateQuery, enumQuery, searchQuery } from '../../common/query-params';
 import { ClientRefPipe } from '../../common/client-ref.pipe';
 import { transactionDirectionEnum, transactionStateEnum } from '../../database/schema';
 import { ScopedToClients } from './guards/client-scope.decorator';
@@ -87,7 +87,7 @@ interface RawFilterParams {
   direction?: string;
   kind?: string;
   state?: string;
-  userId?: string;
+  userId?: number;
   currency?: string;
   q?: string;
   from?: string;
@@ -152,7 +152,7 @@ export class AdminFinancialController {
       direction: enumQuery(raw.direction, transactionDirectionEnum.enumValues, 'direction'),
       kind: enumQuery(raw.kind, TRANSACTION_KINDS, 'kind'),
       state: enumQuery(raw.state, transactionStateEnum.enumValues, 'state'),
-      userId: uuidQuery(raw.userId, 'userId'),
+      userId: raw.userId,
       currency,
       q: searchQuery(raw.q),
       from: dateQuery(raw.from, 'from'),
@@ -215,7 +215,7 @@ export class AdminFinancialController {
     @Query('direction') direction?: string,
     @Query('kind') kind?: string,
     @Query('state') state?: string,
-    @Query('userId', ClientRefPipe) userId?: string,
+    @Query('userId', ClientRefPipe) userId?: number,
     @Query('currency') currency?: string,
     @Query('q') q?: string,
     @Query('from') from?: string,
@@ -285,7 +285,7 @@ export class AdminFinancialController {
     @Query('direction') direction?: string,
     @Query('kind') kind?: string,
     @Query('state') state?: string,
-    @Query('userId', ClientRefPipe) userId?: string,
+    @Query('userId', ClientRefPipe) userId?: number,
     @Query('currency') currency?: string,
     @Query('q') q?: string,
     @Query('from') from?: string,
@@ -334,7 +334,7 @@ export class AdminFinancialController {
     @Query('direction') direction?: string,
     @Query('kind') kind?: string,
     @Query('state') state?: string,
-    @Query('userId', ClientRefPipe) userId?: string,
+    @Query('userId', ClientRefPipe) userId?: number,
     @Query('currency') currency?: string,
     @Query('q') q?: string,
     @Query('from') from?: string,

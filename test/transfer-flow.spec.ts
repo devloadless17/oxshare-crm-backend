@@ -52,8 +52,8 @@ afterAll(async () => {
   await stopMoneyTestDb(ctx);
 });
 
-async function makeClient(email: string, balance = '1000'): Promise<string> {
-  const { rows } = await ctx.db.execute<{ id: string }>(sql`
+async function makeClient(email: string, balance = '1000'): Promise<number> {
+  const { rows } = await ctx.db.execute<{ id: number }>(sql`
     INSERT INTO users (email, password_hash, first_name, last_name, verification_level, email_verified)
     VALUES (${email}, 'x', 'Test', 'Client', 1, true)
     RETURNING id
@@ -71,7 +71,7 @@ async function makeClient(email: string, balance = '1000'): Promise<string> {
 }
 
 async function makeAccount(
-  userId: string,
+  userId: number,
   options: { environment?: string; currency?: string; balance?: string; status?: string } = {},
 ): Promise<string> {
   const { environment = 'live', currency = 'USD', balance = '0', status = 'active' } = options;
@@ -84,7 +84,7 @@ async function makeAccount(
   return rows[0].id;
 }
 
-async function walletOf(userId: string): Promise<{ balance: string; onHold: string }> {
+async function walletOf(userId: number): Promise<{ balance: string; onHold: string }> {
   const { rows } = await ctx.db.execute<{ balance: string; on_hold: string }>(
     sql`SELECT balance, on_hold FROM wallets WHERE user_id = ${userId} AND currency = 'USD'`,
   );
@@ -430,7 +430,7 @@ describe('what a transfer refuses', () => {
   });
 
   it('refuses an unverified client', async () => {
-    const { rows } = await ctx.db.execute<{ id: string }>(sql`
+    const { rows } = await ctx.db.execute<{ id: number }>(sql`
       INSERT INTO users (email, password_hash, first_name, last_name, verification_level)
       VALUES ('unverified-tx@test.local', 'x', 'Test', 'Client', 0)
       RETURNING id

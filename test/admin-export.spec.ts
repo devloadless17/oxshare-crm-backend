@@ -80,8 +80,8 @@ const EXACT_AMOUNT = '12345678901234567.89012345';
 const HOSTILE_NAME = '=HYPERLINK("http://evil","x"),Robert';
 
 let ctx: HttpTestContext;
-let mineId: string;
-let theirsId: string;
+let mineId: number;
+let theirsId: number;
 /*
  * The same two clients by PORTAL ID — what every export identifies a client by
  * now. The uuid is in no file any more, so a `not.toContain(uuid)` would pass
@@ -230,8 +230,9 @@ beforeAll(async () => {
     .returning();
   mineId = mine.id;
   theirsId = theirs.id;
-  minePortalId = mine.portalId;
-  theirsPortalId = theirs.portalId;
+  // The Portal ID IS the id now (0159) — there is no separate column any more.
+  minePortalId = mine.id;
+  theirsPortalId = theirs.id;
 
   await db.insert(clientTagAssignments).values({ userId: mineId, tagId: mineTag.id });
   // A submission for the in-scope client, so the KYC export has a row whose
@@ -581,12 +582,12 @@ describe('the mask reaches the FILE — an export is not a bypass', () => {
       {
         // A client acting on their own record — the row shape the DTO's
         // "an administrator" sentence denied could exist.
-        actorId: mineId,
+        actorId: String(mineId),
         actorEmail: 'export-mine@oxshare-e2e.test',
         actorKind: 'client',
         action: ACTION,
         subjectType: 'client',
-        subjectId: mineId,
+        subjectId: String(mineId),
       },
       {
         actorId: masterAdmin.id,
@@ -594,7 +595,7 @@ describe('the mask reaches the FILE — an export is not a bypass', () => {
         actorKind: 'admin',
         action: ACTION,
         subjectType: 'client',
-        subjectId: mineId,
+        subjectId: String(mineId),
       },
     ]);
 

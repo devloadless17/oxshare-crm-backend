@@ -104,8 +104,8 @@ const REVIEWER: Actor = {
 const AGENCY = { id: '' };
 
 /** Verified by default — the unverified case is a test of its own. */
-async function makeClient(email: string, verificationLevel = 1): Promise<string> {
-  const { rows } = await ctx.db.execute<{ id: string }>(sql`
+async function makeClient(email: string, verificationLevel = 1): Promise<number> {
+  const { rows } = await ctx.db.execute<{ id: number }>(sql`
     INSERT INTO users (email, password_hash, first_name, last_name, verification_level, email_verified)
     VALUES (${email}, 'x', 'Test', 'Client', ${verificationLevel}, true)
     RETURNING id
@@ -124,7 +124,7 @@ async function makeClient(email: string, verificationLevel = 1): Promise<string>
 async function twoRungChain(
   prefix: string,
   bottomVerification = 1,
-): Promise<{ top: string; middle: string; client: string }> {
+): Promise<{ top: number; middle: number; client: number }> {
   const top = await makeClient(`${prefix}-top@test.local`);
   const topAccount = await service.approve(
     (await service.apply(top, { agencyId: AGENCY.id })).id,
@@ -279,7 +279,7 @@ beforeEach(async () => {
  */
 describe('approving a partner who is already under one', () => {
   /** A parent partner already appointed, and a client they introduced. */
-  async function parentAndClient(): Promise<{ parent: string; client: string }> {
+  async function parentAndClient(): Promise<{ parent: number; client: number }> {
     const parent = await makeClient('sub-parent@test.local');
     const parentApp = await service.apply(parent, { agencyId: AGENCY.id });
     await service.approve(parentApp.id, REVIEWER, UNRESTRICTED);
@@ -826,7 +826,7 @@ describe('approval', () => {
     async function partnerWithClient(
       agencyId: string,
       emails: [string, string],
-    ): Promise<{ partner: string; client: string }> {
+    ): Promise<{ partner: number; client: number }> {
       const partner = await makeClient(emails[0]);
       const application = await service.apply(partner, { agencyId });
       await service.approve(application.id, REVIEWER, UNRESTRICTED);
@@ -1156,7 +1156,7 @@ describe('rejection', () => {
 
 describe('the cycle guard', () => {
   /** A → B → C, returned top-down. */
-  async function makeChain(): Promise<[string, string, string]> {
+  async function makeChain(): Promise<[number, number, number]> {
     const a = await makeClient('chain-a@test.local');
     const b = await makeClient('chain-b@test.local');
     const c = await makeClient('chain-c@test.local');
@@ -1279,7 +1279,7 @@ describe('the decision email', () => {
 
 describe('managing a live partner', () => {
   /** A → B, both real partners. Returns [parent, child]. */
-  async function makePair(): Promise<[string, string]> {
+  async function makePair(): Promise<[number, number]> {
     const parent = await makeClient('mgmt-parent@test.local');
     const child = await makeClient('mgmt-child@test.local');
     await store.createAccount({
@@ -1546,7 +1546,7 @@ describe('who a new partner sits under', () => {
   async function recruitedBy(
     parentEmail: string,
     childEmail: string,
-  ): Promise<{ parent: string; child: string }> {
+  ): Promise<{ parent: number; child: number }> {
     const parent = await makeClient(parentEmail);
     const parentApp = await service.apply(parent, { agencyId: AGENCY.id });
     await service.approve(parentApp.id, REVIEWER, UNRESTRICTED, {});

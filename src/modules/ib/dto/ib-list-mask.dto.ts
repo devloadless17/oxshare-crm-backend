@@ -52,7 +52,7 @@ import { ClientField, NotClientField } from '../../../common/security/client-fie
 class IbListPerson {
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty()
-  id!: string;
+  id!: number;
 
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty({ type: 'integer', nullable: true })

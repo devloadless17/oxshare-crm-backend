@@ -86,7 +86,7 @@ export class WalletProvisioningService {
    * cannot be deleted once it has a ledger entry. A log line an operator can
    * act on beats a permanent wrong row.
    */
-  async openDefaultWallet(userId: string, executor?: Executor): Promise<void> {
+  async openDefaultWallet(userId: number, executor?: Executor): Promise<void> {
     try {
       const currency = await this.currencies.getDefault();
       if (!currency) {
@@ -120,7 +120,7 @@ export class WalletProvisioningService {
    * (user_id, currency), so re-approving, or approving a client who already
    * holds some of these, adds only what is missing.
    */
-  async openAllEnabledWallets(userId: string, executor?: Executor): Promise<void> {
+  async openAllEnabledWallets(userId: number, executor?: Executor): Promise<void> {
     try {
       const enabled = await this.currencies.listEnabled();
       if (enabled.length === 0) {
@@ -179,7 +179,7 @@ export class WalletProvisioningService {
    * credit anything, and it must not — a balance nobody earned is the one thing
    * the whole commission separation exists to make impossible.
    */
-  async openCommissionWallet(userId: string, executor?: Executor): Promise<void> {
+  async openCommissionWallet(userId: number, executor?: Executor): Promise<void> {
     try {
       const currency = await this.currencies.getDefault();
       if (!currency) {

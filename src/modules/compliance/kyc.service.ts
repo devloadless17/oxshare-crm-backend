@@ -359,7 +359,7 @@ export class KycService {
    * decided (a returned row from before attempts were archived).
    */
   private async lastPresented(
-    userId: string,
+    userId: number,
   ): Promise<
     | Pick<
         KycSubmission,
@@ -381,7 +381,7 @@ export class KycService {
   }
 
   // ─── Get status ────────────────────────────────────────────────────────────
-  async getStatus(userId: string) {
+  async getStatus(userId: number) {
     const submission = await this.kycStore.getOrCreate(userId);
     return this.statusView(userId, submission, await this.kycConfig.getSteps());
   }
@@ -392,7 +392,7 @@ export class KycService {
    * than re-deriving one (`kyc-step-state.ts`).
    */
   private async statusView(
-    userId: string,
+    userId: number,
     submission: KycSubmission,
     steps: readonly KycStepConfig[],
     chosen?: ChosenDocument,
@@ -428,7 +428,7 @@ export class KycService {
   }
 
   // ─── Save step data ────────────────────────────────────────────────────────
-  async saveStep(userId: string, step: string, data: Record<string, unknown>) {
+  async saveStep(userId: number, step: string, data: Record<string, unknown>) {
     const submission = await this.kycStore.getOrCreate(userId);
     // The early answer; the deciding one is re-asked under the lock below.
     assertOpenForAnswers(submission);
@@ -638,7 +638,7 @@ export class KycService {
 
   // ─── Attach uploaded file to a step ────────────────────────────────────────
   async attachFile(
-    userId: string,
+    userId: number,
     field: string,
     filePath: string,
     fileName: string,
@@ -857,7 +857,7 @@ export class KycService {
   }
 
   // ─── Submit KYC ────────────────────────────────────────────────────────────
-  async submit(userId: string) {
+  async submit(userId: number) {
     /*
      * The personal step is judged on the PROFILE's values (0139). This used to
      * copy the account's name INTO `personal_info` when the blob was empty — one
@@ -1036,7 +1036,7 @@ export class KycService {
       kind: wasRejected ? 'admin.kyc.resubmitted' : 'admin.kyc.submitted',
       params: { userId },
       // The submission is keyed on its client, so the item IS the client.
-      subject: { id: userId, clientId: userId },
+      subject: { id: String(userId), clientId: userId },
     });
 
     return submitted;
@@ -1078,7 +1078,7 @@ export class KycService {
   }
 
   // ─── Admin: get one ────────────────────────────────────────────────────────
-  async getByUserId(userId: string) {
+  async getByUserId(userId: number) {
     const submission = await this.kycStore.findByUserId(userId);
     if (!submission) throw new NotFoundError('KYC submission not found.');
     const [user, steps] = await Promise.all([
@@ -1105,7 +1105,7 @@ export class KycService {
   }
 
   // ─── Admin: approve ────────────────────────────────────────────────────────
-  async approve(userId: string, adminId: string) {
+  async approve(userId: number, adminId: string) {
     const submission = await this.kycStore.findByUserId(userId);
     if (!submission) throw new NotFoundError('KYC submission not found.');
 
@@ -1268,7 +1268,7 @@ export class KycService {
    * verification is `reject`'s job, with a reason attached, not a silent
    * reversal that leaves no trace of what was decided or why.
    */
-  async release(userId: string, adminId: string, mayOverride = false) {
+  async release(userId: number, adminId: string, mayOverride = false) {
     const submission = await this.kycStore.findByUserId(userId);
     if (!submission) throw new NotFoundError('KYC submission not found.');
     if (submission.status !== 'under_review') {
@@ -1335,7 +1335,7 @@ export class KycService {
     return this.getByUserId(userId);
   }
 
-  async claim(userId: string, adminId: string) {
+  async claim(userId: number, adminId: string) {
     const submission = await this.kycStore.findByUserId(userId);
     if (!submission) throw new NotFoundError('KYC submission not found.');
     if (submission.status !== 'submitted') {
@@ -1435,7 +1435,7 @@ export class KycService {
    * transaction rather than after it.
    */
   async correctIdentity(
-    userId: string,
+    userId: number,
     patch: Record<string, unknown>,
     actor: ProfileActor,
     /** Why the verified record changes — on the audit row, beside both values. */
@@ -1500,7 +1500,7 @@ export class KycService {
    * the reason and the items; their resubmission reaches the queue as a
    * resubmission, like any returned one. Approval clears the stamp.
    */
-  async requestReverification(userId: string, adminId: string, reason: string, items: string[]) {
+  async requestReverification(userId: number, adminId: string, reason: string, items: string[]) {
     const submission = await this.kycStore.findByUserId(userId);
     if (!submission) throw new NotFoundError('KYC submission not found.');
     if (submission.status !== 'approved') {
@@ -1618,7 +1618,7 @@ export class KycService {
 
   // ─── Admin: reject ─────────────────────────────────────────────────────────
   async reject(
-    userId: string,
+    userId: number,
     adminId: string,
     reason: string,
     rejectedFields: string[] = [],
@@ -1776,7 +1776,7 @@ export class KycService {
    * is the same problem in a smaller form: the reviewer's screen empties and the
    * queue entry vanishes under them.
    */
-  async resetKyc(userId: string) {
+  async resetKyc(userId: number) {
     const submission = await this.kycStore.findByUserId(userId);
     if (!submission) return { message: 'KYC data reset successfully.' };
 
@@ -1844,7 +1844,7 @@ export class KycService {
   }
 
   /** A client's decided attempts, oldest first — the admin history view. */
-  async getHistory(userId: string) {
+  async getHistory(userId: number) {
     const [attempts, steps] = await Promise.all([
       this.kycStore.listAttempts(userId),
       this.kycConfig.getSteps(),

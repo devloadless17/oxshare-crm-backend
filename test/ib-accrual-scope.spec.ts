@@ -19,13 +19,13 @@ import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './mone
 
 let ctx: MoneyTestContext;
 let store: IbStore;
-let partnerId: string;
-let inScopeClientId: string;
-let outScopeClientId: string;
+let partnerId: number;
+let inScopeClientId: number;
+let outScopeClientId: number;
 let tagId: string;
 
-async function makeUser(email: string): Promise<string> {
-  const { rows } = await ctx.db.execute<{ id: string }>(sql`
+async function makeUser(email: string): Promise<number> {
+  const { rows } = await ctx.db.execute<{ id: number }>(sql`
     INSERT INTO users (email, password_hash, first_name, last_name)
     VALUES (${email}, 'x', ${email.split('@')[0]}, 'Person')
     RETURNING id
@@ -33,7 +33,7 @@ async function makeUser(email: string): Promise<string> {
   return rows[0].id;
 }
 
-async function accrue(clientId: string, sourceId: string) {
+async function accrue(clientId: number, sourceId: string) {
   await ctx.db.execute(sql`
     INSERT INTO ib_accruals
       (ib_user_id, client_user_id, source_type, source_id, depth, rate_value,
@@ -73,8 +73,13 @@ afterAll(async () => {
 });
 
 interface AccrualRow {
-  accrual: { clientUserId: string; amount: string };
-  client: { id: string; email: string | null; firstName: string | null; lastName: string | null };
+  accrual: { clientUserId: number; amount: string };
+  client: {
+    id: number | null;
+    email: string | null;
+    firstName: string | null;
+    lastName: string | null;
+  };
   clientMasked: boolean;
 }
 

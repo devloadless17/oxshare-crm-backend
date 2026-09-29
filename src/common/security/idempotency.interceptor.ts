@@ -82,7 +82,7 @@ export class IdempotencyInterceptor implements NestInterceptor {
     ]);
     if (!required) return next.handle();
 
-    const req = context.switchToHttp().getRequest<Request & { user?: { id: string } }>();
+    const req = context.switchToHttp().getRequest<Request & { user?: { id: number } }>();
     const res = context.switchToHttp().getResponse<Response>();
 
     const key = req.get(IDEMPOTENCY_HEADER);
@@ -300,7 +300,9 @@ export class IdempotencyInterceptor implements NestInterceptor {
    * unauthenticated caller cannot reach these routes; the fallback exists so
    * this never throws before the auth guard has spoken.
    */
-  private actorOf(req: Request & { user?: { id: string }; admin?: { id: string } }): string {
-    return req.user?.id ?? req.admin?.id ?? '00000000-0000-0000-0000-000000000000';
+  private actorOf(req: Request & { user?: { id: number }; admin?: { id: string } }): string {
+    // A client by Portal ID, an admin by uuid — the column is text (0159).
+    const id = req.user?.id ?? req.admin?.id;
+    return id === undefined ? 'anonymous' : String(id);
   }
 }

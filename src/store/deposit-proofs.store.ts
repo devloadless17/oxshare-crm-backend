@@ -28,7 +28,7 @@ export class DepositProofsStore {
   constructor(@Inject(DRIZZLE_DB) private readonly db: Db) {}
 
   /** The client whose deposit carries this receipt, or null if none does. */
-  async ownerOfProof(filename: string): Promise<string | null> {
+  async ownerOfProof(filename: string): Promise<number | null> {
     const [row] = await this.db
       .select({ userId: transactions.userId })
       .from(transactions)

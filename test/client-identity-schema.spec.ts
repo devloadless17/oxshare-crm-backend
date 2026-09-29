@@ -29,7 +29,7 @@ const SQL = readFileSync(
 );
 
 let ctx: MoneyTestContext;
-let userId: string;
+let userId: number;
 
 async function q<T = Record<string, unknown>>(text: string, values: unknown[] = []): Promise<T[]> {
   return (await ctx.pool.query(text, values)).rows as T[];
@@ -66,7 +66,7 @@ const freeze = (id: string) =>
 
 beforeAll(async () => {
   ctx = await startMoneyTestDb();
-  const [row] = await q<{ id: string }>(
+  const [row] = await q<{ id: number }>(
     `INSERT INTO users (email, password_hash, first_name, last_name, email_verified)
      VALUES ('identity-schema@oxshare-e2e.test', 'x', 'Layla', 'Haddad', true) RETURNING id`,
   );

@@ -38,13 +38,13 @@ export interface IdentityReviewPort {
    * Taken FIRST — before the client's own row — which is the order approval
    * takes them in, so no two writers can deadlock by taking them the other way.
    */
-  lockForChange(userId: string, executor: Executor): Promise<IdentityReviewState | undefined>;
+  lockForChange(userId: number, executor: Executor): Promise<IdentityReviewState | undefined>;
 
   /** A change answered some returned items: keep only these. */
-  keepReturned(userId: string, remaining: string[], executor: Executor): Promise<void>;
+  keepReturned(userId: number, remaining: string[], executor: Executor): Promise<void>;
 
   /** Where the review stands, read without a lock — only to CHOOSE a refusal. */
-  standingOf(userId: string): Promise<IdentityReviewStanding>;
+  standingOf(userId: number): Promise<IdentityReviewStanding>;
 }
 
 export const IDENTITY_REVIEW = Symbol('IDENTITY_REVIEW');

@@ -30,7 +30,7 @@ const PNG = Buffer.from(
 /** The fake driver VERIFIES this, exactly as R2 does — see FakeStorageDriver.put. */
 const PNG_SHA256 = createHash('sha256').update(PNG).digest('hex');
 
-const CLIENT = '11111111-1111-4111-8111-111111111111';
+const CLIENT = 1000001;
 const clientUploader = { id: CLIENT, kind: 'client' as const, ownerUserId: CLIENT };
 
 describe('the storage quota', () => {

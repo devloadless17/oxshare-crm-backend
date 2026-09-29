@@ -54,8 +54,8 @@ const COMPLETE_PROFILE = {
 };
 
 let ctx: HttpTestContext;
-let clientId: string;
-let otherId: string;
+let clientId: number;
+let otherId: number;
 
 beforeAll(async () => {
   ctx = await startHttpTestApp();

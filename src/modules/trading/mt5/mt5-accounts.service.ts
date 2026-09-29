@@ -295,7 +295,7 @@ export class Mt5AccountsService {
    */
   async createAccount(
     input: {
-      userId: string;
+      userId: number;
       group: string;
       /** Required only when the group is sold by more than one product (0142). */
       productId?: string;
@@ -349,7 +349,7 @@ export class Mt5AccountsService {
       leverage: input.leverage,
       // Our id in MT5's comment field, so a row on either side resolves to the
       // other. MT5 has no foreign keys and no custom columns.
-      externalId: client.id,
+      externalId: String(client.id),
     });
 
     const [row] = await this.db
@@ -508,7 +508,7 @@ export class Mt5AccountsService {
    * the paperwork before the reason to do it.
    */
   async createOwnAccount(input: {
-    userId: string;
+    userId: number;
     environment: 'live' | 'demo';
     group: string;
     /**
@@ -625,7 +625,7 @@ export class Mt5AccountsService {
       country: client.country ?? undefined,
       phone: client.phone ?? undefined,
       leverage: input.leverage,
-      externalId: client.id,
+      externalId: String(client.id),
     });
 
     /*
@@ -779,7 +779,7 @@ export class Mt5AccountsService {
    * somebody's, which is a membership oracle for anyone enumerating ids, and the
    * client has neither a way nor a reason to tell the two apart.
    */
-  private async ownAccount(userId: string, accountId: string) {
+  private async ownAccount(userId: number, accountId: string) {
     const [row] = await this.db
       .select({
         id: tradingAccounts.id,
@@ -834,7 +834,7 @@ export class Mt5AccountsService {
    * put it right. Raising an error to the client instead would claim a rollback
    * that did not happen.
    */
-  async resetOwnAccountPassword(input: { userId: string; accountId: string }) {
+  async resetOwnAccountPassword(input: { userId: number; accountId: string }) {
     this.assertBridge();
 
     const account = await this.ownAccount(input.userId, input.accountId);
@@ -921,7 +921,7 @@ export class Mt5AccountsService {
    * itself. Trimming a name, or changing its capitalisation, is a real edit and
    * still reaches MT5.
    */
-  private async assertNameFree(userId: string, name: string, exceptAccountId?: string) {
+  private async assertNameFree(userId: number, name: string, exceptAccountId?: string) {
     const [clash] = await this.db
       .select({ id: tradingAccounts.id })
       .from(tradingAccounts)
@@ -941,7 +941,7 @@ export class Mt5AccountsService {
     }
   }
 
-  async renameOwnAccount(input: { userId: string; accountId: string; name: string }) {
+  async renameOwnAccount(input: { userId: number; accountId: string; name: string }) {
     this.assertBridge();
 
     /*
@@ -1023,7 +1023,7 @@ export class Mt5AccountsService {
    * account rather than an error message. The portal is told the ceiling by
    * `self-service` so it can say so before the client types.
    */
-  async fundOwnDemoAccount(input: { userId: string; accountId: string; amount: string }) {
+  async fundOwnDemoAccount(input: { userId: number; accountId: string; amount: string }) {
     this.assertBridge();
 
     const account = await this.ownAccount(input.userId, input.accountId);

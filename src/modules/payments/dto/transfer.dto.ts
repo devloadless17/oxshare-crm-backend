@@ -36,7 +36,7 @@ export class RequestTransferDto {
 @NoClientFields('a transfer between a wallet and a trading account, addressed by ids')
 export class TransferDto {
   @ApiProperty() id: string;
-  @ApiProperty() userId: string;
+  @ApiProperty({ type: 'integer' }) userId: number;
   @ApiProperty() walletId: string;
   @ApiProperty() tradingAccountId: string;
   @ApiProperty({ enum: TRANSFER_DIRECTIONS }) direction: string;

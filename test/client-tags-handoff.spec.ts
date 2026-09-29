@@ -57,29 +57,29 @@ let deskA: string;
 let deskB: string;
 let deskC: string;
 /** Tagged desk A — handed to desk B by DESK_A. */
-let handoffClient: string;
+let handoffClient: number;
 /** No tags — routed to desk B by INTAKE. */
-let newClient: string;
+let newClient: number;
 /** Tagged desk A — INTAKE removes it, returning the client to intake. */
-let returningClient: string;
+let returningClient: number;
 /** Tagged desks A and C — the concurrency case. */
-let raceClient: string;
+let raceClient: number;
 /** Tagged desk B only — outside DESK_A's territory. */
-let deskBClient: string;
+let deskBClient: number;
 
-async function waitForRow(action: string, subjectId: string, timeoutMs = 3000) {
+async function waitForRow(action: string, subjectId: number, timeoutMs = 3000) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     const rows = await ctx.db.db
       .select()
       .from(auditLog)
-      .where(and(eq(auditLog.action, action), eq(auditLog.subjectId, subjectId)));
+      .where(and(eq(auditLog.action, action), eq(auditLog.subjectId, String(subjectId))));
     if (rows.length > 0 || Date.now() >= deadline) return rows;
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
 }
 
-async function tagIdsOf(clientId: string): Promise<string[]> {
+async function tagIdsOf(clientId: number): Promise<string[]> {
   const rows = await ctx.db.db
     .select({ tagId: clientTagAssignments.tagId })
     .from(clientTagAssignments)

@@ -189,7 +189,7 @@ export class IbApplicationsService {
    * history to record a fact that is not true, and would silently move a whole
    * sub-tree the day somebody is switched off and on again.
    */
-  private async inheritedParentIbUserIdFor(userId: string): Promise<string | null> {
+  private async inheritedParentIbUserIdFor(userId: number): Promise<number | null> {
     const user = await this.users.findById(userId);
     const introducerId = user?.referredByIbUserId;
     if (!introducerId) return null;
@@ -207,7 +207,7 @@ export class IbApplicationsService {
    * nothing about why. The portal's job is to render the difference; this
    * method's job is to make it available.
    */
-  async statusFor(userId: string): Promise<{
+  async statusFor(userId: number): Promise<{
     account: (IbAccountRow & { agencyName: string | null; products: string[] }) | null;
     application: (IbApplicationRow & { agencyName: string | null }) | null;
     eligible: boolean;
@@ -329,7 +329,7 @@ export class IbApplicationsService {
    * verify), they already have one open (wait). Each says which.
    */
   async apply(
-    userId: string,
+    userId: number,
     input: {
       motivation?: string;
       website?: string;
@@ -638,7 +638,7 @@ export class IbApplicationsService {
        * from who recruited them. So there is nothing to pass here and nothing on
        * the approval screen to get wrong.
        */
-      parentIbUserId?: string | null;
+      parentIbUserId?: number | null;
       agencyId?: string | null;
     } = {},
   ): Promise<IbAccountRow> {
@@ -942,7 +942,7 @@ export class IbApplicationsService {
    * is where somebody reading this should have to think about it.
    */
   private async notifyDecision(
-    userId: string,
+    userId: number,
     decision: 'approved' | 'rejected',
     options: { referralCode?: string; reason?: string },
   ): Promise<void> {
@@ -1159,7 +1159,7 @@ export class IbApplicationsService {
    *   can see it.
    */
   /** Whether this reader may see this client — for a fact, never an error. */
-  private canSee(clientId: string, scope: ClientScope): Promise<boolean> {
+  private canSee(clientId: number, scope: ClientScope): Promise<boolean> {
     if (scope.unrestricted) return Promise.resolve(true);
     return this.visibility.assertVisible(clientId, scope).then(
       () => true,
@@ -1181,7 +1181,7 @@ export class IbApplicationsService {
     return { ...view, parentOutsideTerritory: false };
   }
 
-  async partnerDetailFor(userId: string, scope: ClientScope, fieldMask: FieldMask) {
+  async partnerDetailFor(userId: number, scope: ClientScope, fieldMask: FieldMask) {
     await this.visibility.assertVisible(userId, scope);
 
     const account = await this.ib.findAccount(userId);
@@ -1330,8 +1330,8 @@ export class IbApplicationsService {
       limit?: number;
       sort?: string;
       order?: string;
-      ibUserId?: string;
-      clientUserId?: string;
+      ibUserId?: number;
+      clientUserId?: number;
       /** Free text over the PARTNER's email and name — see the store. */
       q?: string;
       status?: string;
@@ -1393,7 +1393,7 @@ export class IbApplicationsService {
    * a series of decisions, each audited.
    */
   async changeLevel(
-    userId: string,
+    userId: number,
     level: number,
     scope: ClientScope,
     actor: Actor,
@@ -1443,8 +1443,8 @@ export class IbApplicationsService {
    * the new parent exactly as an approval would.
    */
   async reassignParent(
-    userId: string,
-    parentIbUserId: string | null,
+    userId: number,
+    parentIbUserId: number | null,
     scope: ClientScope,
     actor: Actor,
   ): Promise<IbAccountRow> {
@@ -1498,7 +1498,7 @@ export class IbApplicationsService {
    * "remove partner" here at all.
    */
   async setActive(
-    userId: string,
+    userId: number,
     active: boolean,
     scope: ClientScope,
     actor: Actor,
@@ -1571,7 +1571,7 @@ export class IbApplicationsService {
    * The NAME is unchanged on purpose: "has room" still reads correctly at the
    * call site, and a partner who is suspended has no room for anybody.
    */
-  private async assertParentHasRoom(parentIbUserId: string): Promise<void> {
+  private async assertParentHasRoom(parentIbUserId: number): Promise<void> {
     const parent = await this.ib.findAccount(parentIbUserId);
     if (!parent) throw new ValidationError('The chosen parent partner does not exist.');
     if (!parent.active) {
@@ -1619,7 +1619,7 @@ export class IbApplicationsService {
    * A cycle is not a cosmetic problem: the payout walk climbs parents until it
    * runs out, and a loop is a walk that never does.
    */
-  async wouldCreateCycle(userId: string, parentIbUserId: string): Promise<boolean> {
+  async wouldCreateCycle(userId: number, parentIbUserId: number): Promise<boolean> {
     if (userId === parentIbUserId) return true;
     // If the proposed parent already sits BENEATH this partner, pointing at
     // them closes the ring.

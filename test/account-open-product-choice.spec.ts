@@ -32,7 +32,7 @@ import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './mone
 let ctx: MoneyTestContext;
 let accounts: Mt5AccountsService;
 let createOnMt5: ReturnType<typeof vi.fn>;
-let clientId: string;
+let clientId: number;
 let standardId: string;
 let premiumId: string;
 let ecnId: string;
@@ -71,7 +71,7 @@ async function recordedProduct(accountId: string): Promise<string | null> {
 beforeAll(async () => {
   ctx = await startMoneyTestDb();
 
-  const { rows } = await ctx.db.execute<{ id: string }>(sql`
+  const { rows } = await ctx.db.execute<{ id: number }>(sql`
     INSERT INTO users (email, password_hash, first_name, last_name)
     VALUES ('open-choice@oxshare-e2e.test', 'x', 'Open', 'Choice')
     RETURNING id
@@ -215,10 +215,10 @@ describe('the product fallback for accounts that recorded none', () => {
  * has to come BEFORE MT5 opens anything: the trading server has no rollback.
  */
 describe('the name a client gives an account they open', () => {
-  let holderId: string;
+  let holderId: number;
 
   beforeAll(async () => {
-    const { rows } = await ctx.db.execute<{ id: string }>(sql`
+    const { rows } = await ctx.db.execute<{ id: number }>(sql`
       INSERT INTO users (email, password_hash, first_name, last_name)
       VALUES ('open-name@oxshare-e2e.test', 'x', 'Named', 'Holder')
       RETURNING id

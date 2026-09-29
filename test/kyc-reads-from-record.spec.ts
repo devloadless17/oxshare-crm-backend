@@ -36,7 +36,7 @@ const CLIENT = { email: 'record-reads@oxshare-e2e.test', password: 'client-passw
 let ctx: HttpTestContext;
 let client: Session;
 let admin: Session;
-let clientId: string;
+let clientId: number;
 const front = `${randomUUID()}.png`;
 const replaced = `${randomUUID()}.png`;
 

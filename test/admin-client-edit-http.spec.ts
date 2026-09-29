@@ -47,7 +47,7 @@ let master: Session;
 let clerk: Session;
 let viewer: Session;
 let maskedClerk: Session;
-let clientId: string;
+let clientId: number;
 
 async function clientRow() {
   const [row] = await ctx.db.db.select().from(users).where(eq(users.id, clientId));
@@ -66,7 +66,7 @@ async function auditRows(action: string) {
   const rows = await ctx.db.db
     .select()
     .from(auditLog)
-    .where(and(eq(auditLog.action, action), eq(auditLog.subjectId, clientId)));
+    .where(and(eq(auditLog.action, action), eq(auditLog.subjectId, String(clientId))));
   return rows.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
 }
 
@@ -184,7 +184,7 @@ beforeEach(async () => {
    * unauthenticated — fifteen 401s that look like a broken guard rather than a
    * broken fixture.
    */
-  await ctx.db.db.delete(refreshTokens).where(eq(refreshTokens.subjectId, clientId));
+  await ctx.db.db.delete(refreshTokens).where(eq(refreshTokens.subjectId, String(clientId)));
 });
 
 describe('editing a profile', () => {
@@ -376,7 +376,10 @@ describe('changing the sign-in email', () => {
   it('revokes every portal session the client had', async () => {
     const client = await actingAs(ctx, 'portal', CLIENT);
     const clientTokens = () =>
-      ctx.db.db.select().from(refreshTokens).where(eq(refreshTokens.subjectId, clientId));
+      ctx.db.db
+        .select()
+        .from(refreshTokens)
+        .where(eq(refreshTokens.subjectId, String(clientId)));
 
     expect((await clientTokens()).filter((t) => t.revokedAt === null).length).toBeGreaterThan(0);
 

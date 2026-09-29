@@ -226,7 +226,7 @@ export class AdminTagsService {
   }
 
   async tagsForClient(
-    clientId: string,
+    clientId: number,
     actor: AuthenticatedAdmin,
   ): Promise<ClientTagAssignmentView[]> {
     assertActorCan(actor, 'clients.view', "view a client's tags");
@@ -245,7 +245,7 @@ export class AdminTagsService {
    * `confirmLeavesScope` — see `changeTags`.
    */
   async assign(
-    clientId: string,
+    clientId: number,
     tagId: string,
     actor: AuthenticatedAdmin,
     options: { confirmLeavesScope?: boolean } = {},
@@ -270,7 +270,7 @@ export class AdminTagsService {
    * admin holding the grant still sees, so there was nothing to protect.
    */
   async unassign(
-    clientId: string,
+    clientId: number,
     tagId: string,
     actor: AuthenticatedAdmin,
     options: { confirmLeavesScope?: boolean } = {},
@@ -298,7 +298,7 @@ export class AdminTagsService {
    * An unrestricted actor sees every tag set, so they are never asked.
    */
   private async changeTags(
-    clientId: string,
+    clientId: number,
     tag: ClientTag,
     change: 'assign' | 'unassign',
     actor: AuthenticatedAdmin,
@@ -380,7 +380,7 @@ export class AdminTagsService {
    * scope. The list endpoints get this for free from the WHERE clause; a
    * by-id write has to ask.
    */
-  private async assertClientVisible(clientId: string, actor: AuthenticatedAdmin): Promise<void> {
+  private async assertClientVisible(clientId: number, actor: AuthenticatedAdmin): Promise<void> {
     const client = await this.users.findForAdmin(clientId, actor.clientScope);
     if (!client) throw new ClientNotFoundError();
   }

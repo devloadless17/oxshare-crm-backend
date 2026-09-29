@@ -210,7 +210,7 @@ export class AdminMoneyService {
    * rather than relying on the HTTP interceptor alone.
    */
   async creditWallet(
-    params: { userId: string; amount: string; currency: string; reason: string },
+    params: { userId: number; amount: string; currency: string; reason: string },
     reference: string,
     actor: AuthenticatedAdmin,
   ) {
@@ -685,7 +685,7 @@ export class AdminMoneyService {
    */
   private async debitTradingAccount(
     params: {
-      account: { id: string; userId: string; currency: string; login: string | null };
+      account: { id: string; userId: number; currency: string; login: string | null };
       amount: string;
       reason: string;
     },
@@ -769,7 +769,7 @@ export class AdminMoneyService {
    * exists returns the existing one rather than failing, which is the right
    * answer for a button somebody pressed twice.
    */
-  async openWallet(params: { userId: string; currency: string }, actor: AuthenticatedAdmin) {
+  async openWallet(params: { userId: number; currency: string }, actor: AuthenticatedAdmin) {
     assertActorCan(actor, 'wallets.create', 'open a client wallet');
     await this.visibility.assertVisible(params.userId, actor.clientScope);
 
@@ -1331,7 +1331,7 @@ export class AdminMoneyService {
    * `void`-dispatched by all three callers, so it must also never reject.
    */
   private async emailWithdrawalDecision(
-    row: { userId: string; amount: string; currency: string },
+    row: { userId: number; amount: string; currency: string },
     decision: 'approved' | 'paid' | 'rejected',
     reason?: string,
   ): Promise<void> {
@@ -1466,7 +1466,7 @@ export class AdminMoneyService {
    */
   private toDepositDecision(row: {
     id: string;
-    userId: string;
+    userId: number;
     amount: string;
     currency: string;
     state: string;
@@ -1517,7 +1517,7 @@ export class AdminMoneyService {
 
   async listLedger(
     query: {
-      userId?: string;
+      userId?: number;
       walletId?: string;
       q?: string;
       entryType?: string;

@@ -19,11 +19,11 @@ import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './mone
  */
 let ctx: MoneyTestContext;
 let overview: IbOverviewService;
-let partnerId: string;
-let clientId: string;
+let partnerId: number;
+let clientId: number;
 
-async function user(email: string, first: string): Promise<string> {
-  const { rows } = await ctx.db.execute<{ id: string }>(sql`
+async function user(email: string, first: string): Promise<number> {
+  const { rows } = await ctx.db.execute<{ id: number }>(sql`
     INSERT INTO users (email, password_hash, first_name, last_name)
     VALUES (${email}, 'x', ${first}, 'Test')
     RETURNING id

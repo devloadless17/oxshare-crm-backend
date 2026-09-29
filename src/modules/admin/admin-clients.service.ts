@@ -85,7 +85,7 @@ export function referredFilter(value: string | undefined): boolean | undefined {
 /** Who introduced a client, as a list row carries it — see `withReferrers`. */
 export interface ClientRowReferrer {
   /** Absent for an introducer outside the reader's territory (R1). */
-  ibUserId?: string;
+  ibUserId?: number;
   portalId?: number;
   firstName?: string;
   lastName?: string;
@@ -109,7 +109,7 @@ export interface ClientRowReferrer {
  * are exactly what they were before this existed. The raw attribution id is
  * stripped either way — it is how the referrer is found, not part of the row.
  */
-export async function withReferrers<T extends { referredByIbUserId: string | null }>(
+export async function withReferrers<T extends { referredByIbUserId: number | null }>(
   rows: readonly T[],
   users: UsersStore,
   scope: ClientScope,
@@ -120,7 +120,7 @@ export async function withReferrers<T extends { referredByIbUserId: string | nul
         rows.flatMap((row) => (row.referredByIbUserId ? [row.referredByIbUserId] : [])),
         scope,
       )
-    : new Map<string, { portalId: number; firstName: string; lastName: string }>();
+    : new Map<number, { portalId: number; firstName: string; lastName: string }>();
   return rows.map(({ referredByIbUserId, ...row }) => {
     if (!canSeeNetwork || !referredByIbUserId) return row;
     const introducer = introducers.get(referredByIbUserId);
@@ -242,7 +242,7 @@ export class AdminClientsService {
       emailVerified?: string;
       kycStatus?: string;
       tag?: string;
-      referredBy?: string;
+      referredBy?: number;
       referred?: string;
       sort?: string;
       order?: string;
@@ -329,18 +329,15 @@ export class AdminClientsService {
      * client in the system. So a value that cannot be a user id fails loudly
      * instead.
      */
-    let referredBy: string | undefined;
-    if (query.referredBy !== undefined && query.referredBy !== '') {
-      if (!UUID_RE.test(query.referredBy)) {
-        throw new ValidationError('referredBy must be a client id.');
-      }
-      referredBy = query.referredBy;
-    }
+    // Validated as a Portal ID at the edge (ClientRefPipe), which refuses a
+    // malformed value loudly rather than ignoring it.
+    const referredBy = query.referredBy;
 
     const { rows, total } = await this.users.findPage({
       page,
       limit,
-      cursor: query.cursor ? decodeCursor(query.cursor, sort) : undefined,
+      // Keyed by the Portal ID (0159): the cursor's id is an integer.
+      cursor: query.cursor ? decodeCursor(query.cursor, sort, undefined, 'integer') : undefined,
       // Counting is a full scan of the filtered set. Requested explicitly, or
       // implied by the legacy offset caller, which renders a page count.
       withTotal: query.withTotal === 'true' || (!query.cursor && query.page !== undefined),
@@ -422,7 +419,7 @@ export class AdminClientsService {
    * independent reads on one screen, and doing them one after another turns a
    * profile open into five round trips of latency for no benefit.
    */
-  async getClientProfile(clientId: string, actor: AuthenticatedAdmin) {
+  async getClientProfile(clientId: number, actor: AuthenticatedAdmin) {
     assertActorCan(actor, 'clients.view', 'open a client profile');
 
     // The scoped lookup, first. An out-of-scope client 404s exactly as a
@@ -670,7 +667,7 @@ export class AdminClientsService {
    * `countReferredBy` for why the previous "unscoped by design" was answered
    * rather than merely overruled.
    */
-  private async referredClientsOf(clientId: string, scope: ClientScope) {
+  private async referredClientsOf(clientId: number, scope: ClientScope) {
     const clients = await this.users.listReferredBy(clientId, REFERRED_CLIENTS_SHOWN, scope);
     return clients.map((referred) => ({
       clientUserId: referred.id,
@@ -707,7 +704,7 @@ export class AdminClientsService {
    * takes, so a submission cannot slip in between the check and the edit.
    */
   async updateClientProfile(
-    userId: string,
+    userId: number,
     patch: Partial<Record<ProfileKey, string>> & { reason?: string },
     actor: AuthenticatedAdmin,
   ) {
@@ -789,7 +786,7 @@ export class AdminClientsService {
    * JWTs and expire on their own. What revocation guarantees is that none of
    * them can be refreshed into a new one.
    */
-  async changeClientEmail(userId: string, rawEmail: string, actor: AuthenticatedAdmin) {
+  async changeClientEmail(userId: number, rawEmail: string, actor: AuthenticatedAdmin) {
     assertActorCan(actor, 'clients.email', "change a client's sign-in email");
 
     const user = await this.users.findForAdmin(userId, actor.clientScope);
@@ -879,7 +876,7 @@ export class AdminClientsService {
    */
   private profileView(
     user: {
-      id: string;
+      id: number;
       portalId: number;
       email: string;
       firstName: string;
@@ -967,7 +964,7 @@ export class AdminClientsService {
    * should see named, and "the code was RIGHT and that partner is suspended",
    * which is somebody else's decision and a different conversation.
    */
-  async setClientReferrer(userId: string, referralCode: string, actor: AuthenticatedAdmin) {
+  async setClientReferrer(userId: number, referralCode: string, actor: AuthenticatedAdmin) {
     assertActorCan(actor, 'clients.referrer.set', 'record a referring partner');
     // Scoped first: an out-of-scope client 404s exactly as a missing one, so
     // nothing about the response says they exist.
@@ -1028,7 +1025,7 @@ export class AdminClientsService {
     return this.profileView(updated, actor);
   }
 
-  async setClientStatus(userId: string, status: 'active' | 'suspended', actor: AuthenticatedAdmin) {
+  async setClientStatus(userId: number, status: 'active' | 'suspended', actor: AuthenticatedAdmin) {
     // Suspension kills live sessions and blocks login — a real privilege.
     assertActorCan(actor, 'clients.suspend', 'suspend or reactivate a client');
     // Scoped lookup: an out-of-scope client is 404, never 403. A 403 here would

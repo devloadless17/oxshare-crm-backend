@@ -21,8 +21,8 @@ async function q<T = Record<string, unknown>>(text: string, values: unknown[] = 
   return (await ctx.pool.query(text, values)).rows as T[];
 }
 
-async function client(name: string): Promise<string> {
-  const [row] = await q<{ id: string }>(
+async function client(name: string): Promise<number> {
+  const [row] = await q<{ id: number }>(
     `INSERT INTO users (email, password_hash, first_name, last_name, email_verified)
      VALUES ($1, 'x', 'Layla', 'Haddad', true) RETURNING id`,
     [`quota-${name}@example.com`],
@@ -31,7 +31,7 @@ async function client(name: string): Promise<string> {
 }
 
 /** One object in the registry, as an upload writes it. */
-async function stored(owner: string, key: string, bytes: number, deleted = false) {
+async function stored(owner: number, key: string, bytes: number, deleted = false) {
   await q(
     `INSERT INTO stored_objects (bucket, storage_key, provider, content_type, byte_size, sha256,
                                  owner_user_id, uploaded_by_id, uploaded_by_kind, deleted_at)
@@ -41,7 +41,7 @@ async function stored(owner: string, key: string, bytes: number, deleted = false
 }
 
 /** A version of `owner`'s record holding `key` as its one page. */
-async function version(owner: string, slot: string, key: string, frozen: boolean) {
+async function version(owner: number, slot: string, key: string, frozen: boolean) {
   const [doc] = await q<{ id: string }>(
     `INSERT INTO client_documents (user_id, slot) VALUES ($1, $2) RETURNING id`,
     [owner, slot],

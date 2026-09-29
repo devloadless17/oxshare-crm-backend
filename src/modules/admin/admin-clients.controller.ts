@@ -125,7 +125,7 @@ export class AdminClientsController {
     @Query('emailVerified') emailVerified?: string,
     @Query('kycStatus') kycStatus?: string,
     @Query('tag') tag?: string,
-    @Query('referredBy', ClientRefPipe) referredBy?: string,
+    @Query('referredBy', ClientRefPipe) referredBy?: number,
     @Query('referred') referred?: string,
     @Query('sort') sort?: string,
     @Query('order') order?: string,
@@ -286,7 +286,7 @@ export class AdminClientsController {
     @Query('emailVerified') emailVerified?: string,
     @Query('kycStatus') kycStatus?: string,
     @Query('tag') tag?: string,
-    @Query('referredBy', ClientRefPipe) referredBy?: string,
+    @Query('referredBy', ClientRefPipe) referredBy?: number,
     @Query('referred') referred?: string,
     @Query('sort') sort?: string,
     @Query('order') order?: string,
@@ -341,7 +341,7 @@ export class AdminClientsController {
     'UsersStore.findForAdmin(id, scope) — an out-of-scope client is 404, identically to a missing one.',
   )
   getClientProfile(
-    @Param('id', ClientRefPipe) id: string,
+    @Param('id', ClientRefPipe) id: number,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
     return this.clients.getClientProfile(id, req.admin);
@@ -368,7 +368,7 @@ export class AdminClientsController {
   @ScopedToClients('UsersStore.findForAdmin(id, scope) — an out-of-scope client is 404, never 403.')
   @Audited('client.profile_update')
   updateClientProfile(
-    @Param('id', ClientRefPipe) id: string,
+    @Param('id', ClientRefPipe) id: number,
     @Body() dto: UpdateClientProfileDto,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
@@ -396,7 +396,7 @@ export class AdminClientsController {
   @ScopedToClients('UsersStore.findForAdmin(id, scope) — an out-of-scope client is 404, never 403.')
   @Audited('client.email_change')
   changeClientEmail(
-    @Param('id', ClientRefPipe) id: string,
+    @Param('id', ClientRefPipe) id: number,
     @Body() dto: ChangeClientEmailDto,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
@@ -431,7 +431,7 @@ export class AdminClientsController {
   @ScopedToClients('UsersStore.findForAdmin(id, scope) — an out-of-scope client is 404, never 403.')
   @Audited('client.referrer_set')
   setClientReferrer(
-    @Param('id', ClientRefPipe) id: string,
+    @Param('id', ClientRefPipe) id: number,
     @Body() dto: SetClientReferrerDto,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
@@ -452,7 +452,7 @@ export class AdminClientsController {
   @ScopedToClients('UsersStore.findForAdmin(id, scope) — an out-of-scope client is 404, never 403.')
   @Audited('client.suspend')
   setClientStatus(
-    @Param('id', ClientRefPipe) id: string,
+    @Param('id', ClientRefPipe) id: number,
     @Body() dto: ClientStatusDto,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {

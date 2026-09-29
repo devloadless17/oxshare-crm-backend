@@ -312,13 +312,14 @@ export interface StoredFile {
 
 /** Who is uploading, for the registry. */
 export interface Uploader {
-  id: string;
+  /** An admin's uuid, or a client's Portal ID (0159) — stored as text. */
+  id: string | number;
   kind: UploaderKind;
   /**
    * The client the file is ABOUT, when that differs from the uploader — an admin
    * uploading on a client's behalf — or null for objects belonging to nobody.
    */
-  ownerUserId?: string | null;
+  ownerUserId?: number | null;
 }
 
 @Injectable()
@@ -434,7 +435,7 @@ export class StoredFilesService {
     }
 
     const owner = bucket.countsTowardOwnerQuota
-      ? (uploader.ownerUserId ?? (uploader.kind === 'client' ? uploader.id : null))
+      ? (uploader.ownerUserId ?? (uploader.kind === 'client' ? Number(uploader.id) : null))
       : null;
     if (owner) await this.assertWithinQuota(owner, buffer.length);
 
@@ -664,7 +665,7 @@ export class StoredFilesService {
    * §6 locking rules apply to the ledger, where a lost update is a wrong balance;
    * applying them here would imply a guarantee this does not make.
    */
-  private async assertWithinQuota(ownerUserId: string, incomingBytes: number): Promise<void> {
+  private async assertWithinQuota(ownerUserId: number, incomingBytes: number): Promise<void> {
     const used = await this.registry.liveBytesForOwner(ownerUserId);
     if (used + incomingBytes <= OWNER_STORAGE_QUOTA_BYTES) return;
 

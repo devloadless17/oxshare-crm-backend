@@ -42,16 +42,16 @@ const MASTER = { email: 'scope-enf-master@oxshare.com', password: 'admin-passwor
 const SCOPED = { email: 'scope-enf-scoped@oxshare.com', password: 'admin-password-123' };
 
 let ctx: HttpTestContext;
-let mineId: string;
-let theirsId: string;
+let mineId: number;
+let theirsId: number;
 
 interface Listish {
-  items?: { id?: string; userId?: string }[];
+  items?: { id?: number; userId?: number }[];
 }
 
 /** Ids in a list response, whichever key the endpoint uses for the client. */
-const clientIdsIn = (body: unknown): string[] =>
-  ((body as Listish).items ?? []).map((row) => row.userId ?? row.id ?? '');
+const clientIdsIn = (body: unknown): number[] =>
+  ((body as Listish).items ?? []).map((row) => row.userId ?? row.id ?? -1);
 
 beforeAll(async () => {
   ctx = await startHttpTestApp();
@@ -324,32 +324,32 @@ describe('by-id routes answer 404 for an out-of-scope client, never 403', () => 
   const BY_ID = [
     {
       signature: 'GET /admin/clients/:id/tags',
-      run: (s: Session, id: string) => s.get(`/v1/admin/clients/${id}/tags`),
+      run: (s: Session, id: number) => s.get(`/v1/admin/clients/${id}/tags`),
     },
     {
       signature: 'GET /admin/kyc/:userId',
-      run: (s: Session, id: string) => s.get(`/v1/admin/kyc/${id}`),
+      run: (s: Session, id: number) => s.get(`/v1/admin/kyc/${id}`),
     },
     {
       signature: 'GET /admin/kyc/:userId/history',
-      run: (s: Session, id: string) => s.get(`/v1/admin/kyc/${id}/history`),
+      run: (s: Session, id: number) => s.get(`/v1/admin/kyc/${id}/history`),
     },
     {
       signature: 'PATCH /admin/clients/:id/status',
-      run: (s: Session, id: string) =>
+      run: (s: Session, id: number) =>
         s.patch(`/v1/admin/clients/${id}/status`, { status: 'suspended' }),
     },
     {
       signature: 'PATCH /admin/kyc/:userId/claim',
-      run: (s: Session, id: string) => s.patch(`/v1/admin/kyc/${id}/claim`, {}),
+      run: (s: Session, id: number) => s.patch(`/v1/admin/kyc/${id}/claim`, {}),
     },
     {
       signature: 'PATCH /admin/kyc/:userId/approve',
-      run: (s: Session, id: string) => s.patch(`/v1/admin/kyc/${id}/approve`, {}),
+      run: (s: Session, id: number) => s.patch(`/v1/admin/kyc/${id}/approve`, {}),
     },
     {
       signature: 'PATCH /admin/kyc/:userId/reject',
-      run: (s: Session, id: string) =>
+      run: (s: Session, id: number) =>
         s.patch(`/v1/admin/kyc/${id}/reject`, { reason: 'scope enforcement probe' }),
     },
     /*
@@ -365,46 +365,46 @@ describe('by-id routes answer 404 for an out-of-scope client, never 403', () => 
      */
     {
       signature: 'GET /admin/clients/:id',
-      run: (s: Session, id: string) => s.get(`/v1/admin/clients/${id}`),
+      run: (s: Session, id: number) => s.get(`/v1/admin/clients/${id}`),
     },
     {
       // The identity record: documents and every verification decision.
       signature: 'GET /admin/clients/:id/identity',
-      run: (s: Session, id: string) => s.get(`/v1/admin/clients/${id}/identity`),
+      run: (s: Session, id: number) => s.get(`/v1/admin/clients/${id}/identity`),
     },
     {
       signature: 'GET /admin/clients/:id/closed-positions',
-      run: (s: Session, id: string) => s.get(`/v1/admin/clients/${id}/closed-positions`),
+      run: (s: Session, id: number) => s.get(`/v1/admin/clients/${id}/closed-positions`),
     },
     {
       signature: 'GET /admin/clients/:id/transactions',
-      run: (s: Session, id: string) => s.get(`/v1/admin/clients/${id}/transactions`),
+      run: (s: Session, id: number) => s.get(`/v1/admin/clients/${id}/transactions`),
     },
     {
       signature: 'GET /admin/ib/partners/:userId',
-      run: (s: Session, id: string) => s.get(`/v1/admin/ib/partners/${id}`),
+      run: (s: Session, id: number) => s.get(`/v1/admin/ib/partners/${id}`),
     },
     {
       signature: 'PATCH /admin/clients/:id',
-      run: (s: Session, id: string) => s.patch(`/v1/admin/clients/${id}`, { firstName: 'Probe' }),
+      run: (s: Session, id: number) => s.patch(`/v1/admin/clients/${id}`, { firstName: 'Probe' }),
     },
     {
       signature: 'PATCH /admin/clients/:id/email',
-      run: (s: Session, id: string) =>
+      run: (s: Session, id: number) =>
         s.patch(`/v1/admin/clients/${id}/email`, { email: 'scope-probe@oxshare-e2e.test' }),
     },
     {
       signature: 'PATCH /admin/clients/:id/referrer',
-      run: (s: Session, id: string) =>
+      run: (s: Session, id: number) =>
         s.patch(`/v1/admin/clients/${id}/referrer`, { referralCode: 'SCOPEPROBE' }),
     },
     {
       signature: 'PATCH /admin/kyc/:userId/release',
-      run: (s: Session, id: string) => s.patch(`/v1/admin/kyc/${id}/release`, {}),
+      run: (s: Session, id: number) => s.patch(`/v1/admin/kyc/${id}/release`, {}),
     },
     {
       signature: 'PATCH /admin/kyc/:userId/personal-info',
-      run: (s: Session, id: string) =>
+      run: (s: Session, id: number) =>
         s.patch(`/v1/admin/kyc/${id}/personal-info`, {
           reason: 'scope enforcement probe — a correction',
           dateOfBirth: '1985-04-12',
@@ -412,7 +412,7 @@ describe('by-id routes answer 404 for an out-of-scope client, never 403', () => 
     },
     {
       signature: 'POST /admin/kyc/:userId/reverify',
-      run: (s: Session, id: string) =>
+      run: (s: Session, id: number) =>
         s.post(`/v1/admin/kyc/${id}/reverify`, {
           reason: 'scope enforcement probe — a re-verification',
           items: ['passport'],
@@ -420,26 +420,26 @@ describe('by-id routes answer 404 for an out-of-scope client, never 403', () => 
     },
     {
       signature: 'PATCH /admin/ib/partners/:userId/active',
-      run: (s: Session, id: string) =>
+      run: (s: Session, id: number) =>
         s.patch(`/v1/admin/ib/partners/${id}/active`, { active: false }),
     },
     {
       signature: 'PATCH /admin/ib/partners/:userId/level',
-      run: (s: Session, id: string) => s.patch(`/v1/admin/ib/partners/${id}/level`, { level: 2 }),
+      run: (s: Session, id: number) => s.patch(`/v1/admin/ib/partners/${id}/level`, { level: 2 }),
     },
     {
       signature: 'PATCH /admin/ib/partners/:userId/parent',
-      run: (s: Session, id: string) =>
+      run: (s: Session, id: number) =>
         s.patch(`/v1/admin/ib/partners/${id}/parent`, { parentIbUserId: null }),
     },
     {
       signature: 'POST /admin/clients/:id/tags/:tagId',
-      run: (s: Session, id: string) =>
+      run: (s: Session, id: number) =>
         s.post(`/v1/admin/clients/${id}/tags/00000000-0000-4000-8000-000000000000`, {}),
     },
     {
       signature: 'DELETE /admin/clients/:id/tags/:tagId',
-      run: (s: Session, id: string) =>
+      run: (s: Session, id: number) =>
         s.del(`/v1/admin/clients/${id}/tags/00000000-0000-4000-8000-000000000000`),
     },
   ];

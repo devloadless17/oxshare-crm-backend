@@ -53,7 +53,7 @@ const config = {
 
 function makeUser(overrides: Partial<User> = {}): User {
   return {
-    id: 'user-1',
+    id: 1000000,
     portalId: 1000000,
     email: 'client@oxshare.com',
     passwordHash: 'stored-hash',
@@ -123,8 +123,8 @@ function build(overrides: { user?: User | undefined } = {}): Harness {
     findById: vi.fn().mockResolvedValue(overrides.user),
     findByVerificationTokenHash: vi.fn().mockResolvedValue(undefined),
     consumeEmailVerification: vi.fn().mockResolvedValue(true),
-    create: vi.fn((data: Partial<User>) => Promise.resolve({ id: 'new-user', ...data } as User)),
-    update: vi.fn((_id: string, patch: Partial<User>) => Promise.resolve(makeUser(patch))),
+    create: vi.fn((data: Partial<User>) => Promise.resolve({ id: 1000099, ...data } as User)),
+    update: vi.fn((_id: number, patch: Partial<User>) => Promise.resolve(makeUser(patch))),
     // The 6-digit code's atomic store methods (0138) — proven against real
     // Postgres in email-code-signin.spec.ts; here they only have to answer.
     issueEmailCode: vi.fn().mockResolvedValue(undefined),
@@ -319,7 +319,7 @@ describe('verifyEmail', () => {
     );
     await expect(h.service.verifyEmail('stale')).rejects.toThrow(/expired/i);
 
-    expect(h.users.update).toHaveBeenCalledWith('user-1', {
+    expect(h.users.update).toHaveBeenCalledWith(1000000, {
       emailVerificationTokenHash: undefined,
       emailVerificationExpiry: undefined,
       emailVerificationConsumedAt: undefined,
@@ -357,7 +357,7 @@ describe('verifyEmail', () => {
     // The token's HASH is what identifies the row to redeem — the same value
     // that found it, so a concurrent re-issue cannot be redeemed by this call.
     expect(h.users.consumeEmailVerification).toHaveBeenCalledWith(
-      'user-1',
+      1000000,
       hashOf('good'),
       expect.any(Date),
     );
@@ -604,7 +604,7 @@ describe('login', () => {
     await h.service.login({ email: 'client@oxshare.com', password: PASSWORD }, res);
     expect(Object.keys(cookies).length).toBeGreaterThanOrEqual(3); // access, refresh, csrf
     expect(h.refreshTokens.record).toHaveBeenCalledWith(
-      expect.objectContaining({ surface: 'portal', subjectId: 'user-1' }),
+      expect.objectContaining({ surface: 'portal', subjectId: 1000000 }),
     );
   });
 
@@ -641,7 +641,7 @@ describe('login', () => {
     await h.service.login({ email: 'client@oxshare.com', password: PASSWORD }, res);
 
     expect(h.users.update).toHaveBeenCalledWith(
-      'user-1',
+      1000000,
       expect.objectContaining({ passwordHash: 'argon2id-upgraded' }),
     );
   });
@@ -665,8 +665,8 @@ describe('logout', () => {
     // Logging out on one device must not leave the others live (R-3.3).
     const h = build({ user: makeUser() });
     const { res } = fakeResponse();
-    await h.service.logout('user-1', res);
-    expect(h.refreshTokens.revokeAllForSubject).toHaveBeenCalledWith('portal', 'user-1');
+    await h.service.logout(1000000, res);
+    expect(h.refreshTokens.revokeAllForSubject).toHaveBeenCalledWith('portal', 1000000);
   });
 
   it('clears the session cookies, including the superseded legacy names', async () => {
@@ -674,7 +674,7 @@ describe('logout', () => {
     // expire keeps a readable credential in the browser for up to 30 days.
     const h = build({ user: makeUser() });
     const { res, cleared } = fakeResponse();
-    await h.service.logout('user-1', res);
+    await h.service.logout(1000000, res);
     expect(cleared).toEqual(expect.arrayContaining(['access_token', 'refresh_token']));
     expect(cleared.length).toBeGreaterThan(3);
   });

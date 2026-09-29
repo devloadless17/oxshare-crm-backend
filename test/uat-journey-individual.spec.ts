@@ -70,7 +70,7 @@ const CLIENT = {
 
 let ctx: HttpTestContext;
 let mail: ReturnType<typeof emailRecorder>;
-let clientId: string;
+let clientId: number;
 let tradingAccountId: string;
 let withdrawalId: string;
 
@@ -293,7 +293,7 @@ describe('§14 J1 — step 2: manual KYC to verification level 1', () => {
     const admin = await actingAs(ctx, 'admin', MASTER);
     const res = await admin.get('/v1/admin/kyc?status=needs_review&limit=100');
     expect(res.status).toBe(200);
-    const items = (res.body as { items: { userId: string }[] }).items;
+    const items = (res.body as { items: { userId: number }[] }).items;
     expect(items.some((r) => r.userId === clientId)).toBe(true);
   });
 

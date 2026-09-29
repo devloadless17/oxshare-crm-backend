@@ -32,7 +32,8 @@ import { UsersStore, type User } from '../../store/users.store';
 /** Who is changing a profile — every change is recorded against somebody. */
 export interface ProfileActor {
   kind: 'client' | 'admin' | 'system';
-  id: string;
+  /** An admin's uuid, or a client's Portal ID (0159). */
+  id: string | number;
   email: string;
 }
 
@@ -44,7 +45,7 @@ export interface ProfileActor {
 export interface ProfileAuditOptions {
   action?: string;
   subjectType?: AuditSubjectType;
-  subjectId?: string;
+  subjectId?: string | number;
   /** Where the change came from — `kyc`, `admin_edit`, `kyc_correction`. */
   via?: string;
   /** Why — a reviewer's correction of a verified record must say. */
@@ -115,7 +116,7 @@ export class ClientProfileService {
    * fields that actually moved.
    */
   async update(
-    userId: string,
+    userId: number,
     input: Partial<Record<ProfileKey, unknown>>,
     actor: ProfileActor,
     options: {
@@ -242,7 +243,7 @@ export class ClientProfileService {
    * experience. The KYC review now calls this too (`KycService.correctIdentity`).
    */
   async editAsAdmin(
-    userId: string,
+    userId: number,
     input: Partial<Record<ProfileKey, unknown>>,
     actor: ProfileActor,
     options: {

@@ -841,7 +841,7 @@ export class AdminMoneyController {
   @ScopedToClients('WalletService.listEntries applies the predicate to wallets.user_id.')
   listLedger(
     @Req() req: Request & { admin: AuthenticatedAdmin },
-    @Query('userId', ClientRefPipe) userId?: string,
+    @Query('userId', ClientRefPipe) userId?: number,
     @Query('q') q?: string,
     @Query('walletId') walletId?: string,
     @Query('entryType') entryType?: string,
@@ -859,7 +859,7 @@ export class AdminMoneyController {
          * then all it has is a cast error. On a route taking several ids that
          * matters, and the database paid for a round trip to produce it.
          */
-        userId: uuidQuery(userId, 'userId'),
+        userId: userId,
         q,
         walletId: uuidQuery(walletId, 'walletId'),
         entryType,

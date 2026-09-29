@@ -41,7 +41,7 @@ const PROFILE = {
 
 let ctx: HttpTestContext;
 let admin: Session;
-const ids: Record<string, string> = {};
+const ids: Record<string, number> = {};
 const sessions: Record<string, Session> = {};
 let kycReason: string;
 let withdrawalReason: string;
@@ -50,19 +50,19 @@ async function rows<T>(query: ReturnType<typeof sql>): Promise<T[]> {
   return (await ctx.db.db.execute(query)).rows as T[];
 }
 
-const decisions = (user: string) =>
+const decisions = (user: number) =>
   rows<{ outcome: string; reason_id: string | null; returned_items: string[]; covered: string[] }>(
     sql`SELECT v.outcome, v.reason_id, v.returned_items,
                coalesce((SELECT array_agg(c.document_id::text ORDER BY c.document_id)
                            FROM client_verification_documents c WHERE c.verification_id = v.id),
                         '{}') AS covered
-          FROM client_verifications v WHERE v.user_id = ${user}::uuid ORDER BY v.seq`,
+          FROM client_verifications v WHERE v.user_id = ${user}::integer ORDER BY v.seq`,
   );
 
-const live = async (user: string) =>
+const live = async (user: number) =>
   (
     await rows<{ status: string; rejected_fields: string[] | null }>(
-      sql`SELECT status, rejected_fields FROM kyc_submissions WHERE user_id = ${user}::uuid`,
+      sql`SELECT status, rejected_fields FROM kyc_submissions WHERE user_id = ${user}::integer`,
     )
   )[0];
 
@@ -173,7 +173,7 @@ describe('returning a submission', () => {
       returned_items: ['doc_front', 'firstName'],
     });
     const [attempt] = await rows<{ reason_id: string }>(
-      sql`SELECT reason_id FROM kyc_submission_attempts WHERE user_id = ${ids['returned']}::uuid`,
+      sql`SELECT reason_id FROM kyc_submission_attempts WHERE user_id = ${ids['returned']}::integer`,
     );
     expect(attempt.reason_id).toBe(kycReason);
   });
@@ -194,7 +194,7 @@ describe('returning a submission', () => {
     // The replacement is untouched: still the client's draft, still being worked on.
     const drafts = await rows<{ n: number }>(sql`
       SELECT count(*)::int AS n FROM client_documents
-       WHERE user_id = ${ids['returned']}::uuid AND slot = 'identity' AND frozen_at IS NULL`);
+       WHERE user_id = ${ids['returned']}::integer AND slot = 'identity' AND frozen_at IS NULL`);
     expect(drafts[0].n).toBe(1);
     expect((await live(ids['returned'])).rejected_fields).toEqual(['selfie']);
   });

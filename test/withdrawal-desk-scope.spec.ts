@@ -32,7 +32,7 @@ const SCOPED = { email: 'wd-scope-scoped@oxshare.com', password: 'admin-password
 
 let ctx: HttpTestContext;
 
-async function seedWithdrawal(userId: string, amount: string) {
+async function seedWithdrawal(userId: number, amount: string) {
   const db = ctx.db.db;
   const [wallet] = await db
     .insert(wallets)
@@ -149,7 +149,7 @@ afterAll(async () => {
 });
 
 interface DeskBody {
-  items: { userId: string }[];
+  items: { userId: number }[];
   total: number;
   counts: Record<string, number>;
 }

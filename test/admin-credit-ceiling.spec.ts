@@ -33,11 +33,11 @@ import { admins, roles, users } from '../src/database/schema';
 const MASTER = { email: 'credit-ceiling-master@oxshare-e2e.test', password: 'Sup3rSecret!' };
 
 let ctx: HttpTestContext;
-let clientId: string;
+let clientId: number;
 
 const idem = () => ({ headers: { 'idempotency-key': randomUUID() } });
 
-const balanceOf = async (userId: string): Promise<string | undefined> => {
+const balanceOf = async (userId: number): Promise<string | undefined> => {
   const { rows } = await ctx.db.db.execute<{ balance: string }>(sql`
     SELECT balance FROM wallets WHERE user_id = ${userId} AND currency = 'USD'
   `);

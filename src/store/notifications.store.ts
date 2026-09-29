@@ -44,10 +44,8 @@ import { clientIdentitySearch } from './users.store';
  * scopes on BOTH columns, which is the entire ownership check: a client
  * guessing an admin row's uuid still matches zero rows.
  */
-export interface NotificationRecipient {
-  kind: 'client' | 'admin';
-  id: string;
-}
+/** An admin by uuid, or a client by Portal ID (0159) — stored as text. */
+export type NotificationRecipient = { kind: 'admin'; id: string } | { kind: 'client'; id: number };
 
 export interface AppNotification {
   id: string;
@@ -113,7 +111,7 @@ export interface AdminNotificationRow {
   subjectKind: NotificationSubjectKind;
   subjectId: string;
   client: {
-    id: string;
+    id: number;
     portalId: number | null;
     firstName: string | null;
     lastName: string | null;
@@ -130,7 +128,7 @@ export interface AdminTaskRow {
   dedupeKey?: string;
   subjectKind: NotificationSubjectKind;
   subjectId: string;
-  subjectUserId: string;
+  subjectUserId: number;
   stillOpen: TaskStillOpen;
 }
 
@@ -153,7 +151,8 @@ const OPEN_RULES: Readonly<
   'kyc:awaiting-review': (id) => ({
     table: kycSubmissions,
     where: and(
-      eq(kycSubmissions.userId, id),
+      // A KYC task's subject is the client, by Portal ID (text in the column).
+      eq(kycSubmissions.userId, Number(id)),
       inArray(kycSubmissions.status, ['submitted', 'under_review']),
     ),
   }),
@@ -215,7 +214,7 @@ export class NotificationsStore {
   async insert(
     data: {
       /** Clients only — an admin row is a task; see `insertAdminTask`. */
-      recipient: { kind: 'client'; id: string };
+      recipient: { kind: 'client'; id: number };
       kind: string;
       params: Record<string, unknown>;
       dedupeKey?: string;
@@ -226,7 +225,7 @@ export class NotificationsStore {
       .insert(notifications)
       .values({
         recipientKind: data.recipient.kind,
-        recipientId: data.recipient.id,
+        recipientId: String(data.recipient.id),
         kind: data.kind,
         params: data.params,
         dedupeKey: data.dedupeKey,
@@ -324,7 +323,7 @@ export class NotificationsStore {
 
     const conditions: SQL[] = [
       eq(notifications.recipientKind, recipient.kind),
-      eq(notifications.recipientId, recipient.id),
+      eq(notifications.recipientId, String(recipient.id)),
     ];
     if (filter.unreadOnly) conditions.push(isNull(notifications.readAt));
     if (filter.cursor) conditions.push(this.after(filter.cursor));
@@ -369,7 +368,7 @@ export class NotificationsStore {
       .where(
         and(
           eq(notifications.recipientKind, recipient.kind),
-          eq(notifications.recipientId, recipient.id),
+          eq(notifications.recipientId, String(recipient.id)),
           isNull(notifications.readAt),
         ),
       );
@@ -388,7 +387,7 @@ export class NotificationsStore {
     const owned = and(
       eq(notifications.id, id),
       eq(notifications.recipientKind, recipient.kind),
-      eq(notifications.recipientId, recipient.id),
+      eq(notifications.recipientId, String(recipient.id)),
     );
 
     const updated = await this.db
@@ -419,7 +418,7 @@ export class NotificationsStore {
       .where(
         and(
           eq(notifications.recipientKind, recipient.kind),
-          eq(notifications.recipientId, recipient.id),
+          eq(notifications.recipientId, String(recipient.id)),
           isNull(notifications.readAt),
           upTo ? lte(notifications.createdAt, upTo) : undefined,
         ),
@@ -479,7 +478,7 @@ export class NotificationsStore {
         subjectUserId: notifications.subjectUserId,
         resolvedAt: notifications.resolvedAt,
         resolution: notifications.resolution,
-        clientPortalId: users.portalId,
+        clientPortalId: users.id,
         clientFirstName: users.firstName,
         clientLastName: users.lastName,
         resolverName: admins.name,
@@ -504,7 +503,7 @@ export class NotificationsStore {
         subjectKind: row.subjectKind as NotificationSubjectKind,
         subjectId: row.subjectId as string,
         client: {
-          id: row.subjectUserId as string,
+          id: row.subjectUserId as number,
           portalId: row.clientPortalId,
           firstName: row.clientFirstName,
           lastName: row.clientLastName,

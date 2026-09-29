@@ -100,7 +100,7 @@ const RECONNECT_DELAY_MS = 2_000;
 const MAX_SOCKET_LIFETIME_MS = 15 * 60 * 1000;
 
 /** A room holds exactly one principal's sockets — every tab they have open. */
-function roomFor(recipient: NotificationRecipient): string {
+function roomFor(recipient: { kind: NotificationRecipient['kind']; id: string | number }): string {
   return `${recipient.kind}:${recipient.id}`;
 }
 

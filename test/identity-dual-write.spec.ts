@@ -46,7 +46,7 @@ const PROFILE = {
 };
 
 let ctx: HttpTestContext;
-let clientId: string;
+let clientId: number;
 let client: Session;
 let admin: Session;
 

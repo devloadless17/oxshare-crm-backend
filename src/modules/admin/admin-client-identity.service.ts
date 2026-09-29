@@ -44,7 +44,7 @@ export class AdminClientIdentityService {
     private readonly kycConfig: KycConfigStore,
   ) {}
 
-  async recordFor(clientId: string, actor: AuthenticatedAdmin): Promise<ClientIdentityRecordDto> {
+  async recordFor(clientId: number, actor: AuthenticatedAdmin): Promise<ClientIdentityRecordDto> {
     const client = await this.users.findForAdmin(clientId, actor.clientScope);
     if (!client) throw new NotFoundError('Client not found.');
 

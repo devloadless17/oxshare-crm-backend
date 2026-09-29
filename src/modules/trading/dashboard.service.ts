@@ -88,7 +88,7 @@ export class DashboardService {
    * `WalletController` and `PaymentsController` already have, neither of which
    * annotates its handlers either.
    */
-  async forUser(userId: string) {
+  async forUser(userId: number) {
     const [wallets, recentTransactions, tradingAccountRows, openPositions, stats] =
       await Promise.all([
         this.wallets.listWallets(userId),
@@ -137,7 +137,7 @@ export class DashboardService {
    * is deliberately identical. Two screens describing one movement differently
    * is how a client concludes the numbers are wrong.
    */
-  private async recentTransactions(userId: string) {
+  private async recentTransactions(userId: number) {
     const rows = await this.db.execute(sql`
       WITH combined AS (
         SELECT
@@ -192,7 +192,7 @@ export class DashboardService {
    * the transaction and position histories grow without bound, and counting them
    * client-side would move every row across the wire to produce one integer.
    */
-  private async statsFor(userId: string): Promise<DashboardDto['stats']> {
+  private async statsFor(userId: number): Promise<DashboardDto['stats']> {
     const [accountRows, liveRows, openPositionRows, pendingRows, referredRows] = await Promise.all([
       this.db
         .select({ value: count() })

@@ -28,19 +28,19 @@ let ctx: MoneyTestContext;
 let currencies: CurrenciesService;
 let wallets: WalletService;
 let ibWallets: IbWalletService;
-let client: string;
-let partner: string;
-let suspended: string;
+let client: number;
+let partner: number;
+let suspended: number;
 
-async function user(email: string): Promise<string> {
-  const { rows } = await ctx.db.execute<{ id: string }>(sql`
+async function user(email: string): Promise<number> {
+  const { rows } = await ctx.db.execute<{ id: number }>(sql`
     INSERT INTO users (email, password_hash, first_name, last_name)
     VALUES (${email}, 'x', 'Wallet', 'Holder') RETURNING id
   `);
   return rows[0].id;
 }
 
-async function makePartner(userId: string, code: string, active = true): Promise<void> {
+async function makePartner(userId: number, code: string, active = true): Promise<void> {
   await ctx.db.execute(sql`
     INSERT INTO ib_accounts (user_id, referral_code, program_id, active)
     VALUES (${userId}, ${code},

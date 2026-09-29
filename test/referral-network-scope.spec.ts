@@ -56,17 +56,17 @@ const SCOPED = { email: 'ref-scope-scoped@oxshare.com', password: 'admin-passwor
 const CLIENTS = '/v1/admin/clients';
 
 let ctx: HttpTestContext;
-let partnerId: string;
-let mineId: string;
-let theirsId: string;
+let partnerId: number;
+let mineId: number;
+let theirsId: number;
 /** Sub-partners of `partnerId`: one inside the reader's territory, one outside. */
-let subMineId: string;
-let subTheirsId: string;
+let subMineId: number;
+let subTheirsId: number;
 /** A partner the reader CAN open, whose PARENT sits outside their territory. */
-let childPartnerId: string;
-let outsideParentId: string;
+let childPartnerId: number;
+let outsideParentId: number;
 /** In the reader's territory, but INTRODUCED by a partner who is not. */
-let introducedFromOutsideId: string;
+let introducedFromOutsideId: number;
 
 beforeAll(async () => {
   ctx = await startHttpTestApp();
@@ -287,7 +287,7 @@ afterAll(async () => {
 });
 
 type Profile = {
-  referredClients?: { clientUserId: string }[];
+  referredClients?: { clientUserId: number }[];
   referredShown?: number;
   referredTotal?: number;
 };
@@ -473,12 +473,12 @@ describe("a partner's SUB-PARTNERS follow the reader's territory too", () => {
    * the `referredShown` / `referredTotal` of the line below.
    */
   type Detail = {
-    parent: { userId: string; email: string } | null;
+    parent: { userId: number; email: string } | null;
     parentOutsideTerritory: boolean;
-    directPartners: { userId: string; email?: string }[];
+    directPartners: { userId: number; email?: string }[];
   };
 
-  const detailFor = async (who: typeof MASTER, userId: string): Promise<Detail> => {
+  const detailFor = async (who: typeof MASTER, userId: number): Promise<Detail> => {
     const session = await actingAs(ctx, 'admin', who);
     const res = await session.get(`/v1/admin/ib/partners/${userId}`).expect(200);
     return res.body as Detail;
@@ -533,11 +533,11 @@ describe("a partner's SUB-PARTNERS follow the reader's territory too", () => {
 
 describe("a partner's PARENT follows the reader's territory", () => {
   type Detail = {
-    parent: { userId: string; email: string } | null;
+    parent: { userId: number; email: string } | null;
     parentOutsideTerritory: boolean;
   };
 
-  const detailFor = async (who: typeof MASTER, userId: string): Promise<Detail> => {
+  const detailFor = async (who: typeof MASTER, userId: number): Promise<Detail> => {
     const session = await actingAs(ctx, 'admin', who);
     const res = await session.get(`/v1/admin/ib/partners/${userId}`).expect(200);
     return res.body as Detail;
@@ -594,7 +594,7 @@ describe("the client profile's REFERRER follows the reader's territory", () => {
    */
   type Profile = {
     referrer?: {
-      ibUserId: string;
+      ibUserId: number;
       email?: string;
       firstName?: string;
       lastName?: string;
@@ -602,7 +602,7 @@ describe("the client profile's REFERRER follows the reader's territory", () => {
     };
   };
 
-  const profileFor = async (who: typeof MASTER, clientId: string): Promise<Profile> => {
+  const profileFor = async (who: typeof MASTER, clientId: number): Promise<Profile> => {
     const session = await actingAs(ctx, 'admin', who);
     const res = await session.get(`/v1/admin/clients/${clientId}`).expect(200);
     return res.body as Profile;

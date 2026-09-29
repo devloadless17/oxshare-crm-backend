@@ -176,8 +176,8 @@ let ADMIN_ID = '';
 let OTHER_ADMIN_ID = '';
 
 /** A client with a funded wallet and a KYC submission waiting for a decision. */
-async function makeClientAwaitingReview(email: string): Promise<string> {
-  const { rows } = await ctx.db.execute<{ id: string }>(sql`
+async function makeClientAwaitingReview(email: string): Promise<number> {
+  const { rows } = await ctx.db.execute<{ id: number }>(sql`
     INSERT INTO users (email, password_hash, first_name, last_name, verification_level, email_verified)
     VALUES (${email}, 'x', 'Gate', 'Subject', 0, true)
     RETURNING id
@@ -198,7 +198,7 @@ async function makeClientAwaitingReview(email: string): Promise<string> {
   return userId;
 }
 
-const withdraw = (userId: string) =>
+const withdraw = (userId: number) =>
   transactions.requestWithdrawal({
     userId,
     currency: 'USD',
@@ -207,14 +207,14 @@ const withdraw = (userId: string) =>
     methodKey: 'whish',
   });
 
-async function levelOf(userId: string): Promise<number> {
+async function levelOf(userId: number): Promise<number> {
   const { rows } = await ctx.db.execute<{ verification_level: number }>(
     sql`SELECT verification_level FROM users WHERE id = ${userId}`,
   );
   return Number(rows[0].verification_level);
 }
 
-async function statusOf(userId: string): Promise<string> {
+async function statusOf(userId: number): Promise<string> {
   const { rows } = await ctx.db.execute<{ status: string }>(
     sql`SELECT status FROM kyc_submissions WHERE user_id = ${userId}`,
   );
@@ -263,7 +263,7 @@ describe('the KYC gate on wallet-to-account transfers — the SECOND door', () =
    * hidden — without it, "level 0 throws" would be satisfied by a gate that
    * refuses everybody.
    */
-  const transfer = (userId: string) =>
+  const transfer = (userId: number) =>
     transfers.request({
       userId,
       tradingAccountId: '00000000-0000-4000-8000-0000000000ff',

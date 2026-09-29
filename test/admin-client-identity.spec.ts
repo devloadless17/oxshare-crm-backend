@@ -26,7 +26,7 @@ let ctx: HttpTestContext;
 let admin: Session;
 let viewer: Session;
 let client: Session;
-let clientId: string;
+let clientId: number;
 
 type IdentityRecordBody = {
   documents?: {

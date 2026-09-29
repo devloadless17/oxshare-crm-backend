@@ -48,8 +48,8 @@ const PROFILE = {
 };
 
 let ctx: HttpTestContext;
-let ownerId: string;
-let otherId: string;
+let ownerId: number;
+let otherId: number;
 let owner: Session;
 let other: Session;
 let admin: Session;
@@ -73,7 +73,7 @@ async function plant(name: string): Promise<void> {
 /** The stored name of the owner's current identity-document front page. */
 async function currentFront(): Promise<string> {
   const row = await one<{ path: string }>(sql`
-    SELECT document->>'frontFilePath' AS path FROM kyc_submissions WHERE user_id = ${ownerId}::uuid`);
+    SELECT document->>'frontFilePath' AS path FROM kyc_submissions WHERE user_id = ${ownerId}::integer`);
   return row.path.split('/').pop()!;
 }
 
@@ -153,7 +153,7 @@ describe('GET /uploads/kyc/:file — the owner comes from the record', () => {
 
     // The live row is gone; the returned version is on the client's record.
     const live = await one<{ n: number }>(sql`
-      SELECT count(*)::int AS n FROM kyc_submissions WHERE user_id = ${ownerId}::uuid`);
+      SELECT count(*)::int AS n FROM kyc_submissions WHERE user_id = ${ownerId}::integer`);
     expect(live.n).toBe(0);
     expect((await read(owner, presented)).status).toBe(200);
     expect((await read(admin, presented)).status).toBe(200);
@@ -187,7 +187,7 @@ describe('GET /uploads/kyc/:file — the owner comes from the record', () => {
     // Written as the KYC columns once held it: a leading slash.
     await ctx.db.db.execute(sql`
       INSERT INTO kyc_submission_attempts (user_id, attempt_no, status, document, archived_at)
-      VALUES (${ownerId}::uuid, 99, 'rejected',
+      VALUES (${ownerId}::integer, 99, 'rejected',
               ${JSON.stringify({ docType: 'passport', frontFilePath: `/uploads/kyc/${legacy}` })}::jsonb,
               now())`);
 
@@ -207,7 +207,7 @@ describe('GET /uploads/kyc/:file — the owner comes from the record', () => {
     ] as const) {
       await ctx.db.db.execute(sql`
         INSERT INTO kyc_submission_attempts (user_id, attempt_no, status, document, archived_at)
-        VALUES (${user}::uuid, ${no}, 'rejected',
+        VALUES (${user}::integer, ${no}, 'rejected',
                 ${JSON.stringify({ docType: 'passport', frontFilePath: `uploads/kyc/${shared}` })}::jsonb,
                 now())`);
     }

@@ -40,7 +40,7 @@ export class ClientIdentityService {
    * transaction that changed it, after its writes and any level change, so the
    * record moves with the change or not at all.
    */
-  async recordFromKyc(userId: string, executor: Executor): Promise<void> {
+  async recordFromKyc(userId: number, executor: Executor): Promise<void> {
     await this.store.adopt(userId, executor);
   }
 
@@ -50,7 +50,7 @@ export class ClientIdentityService {
    * Undefined for a name no single client's record holds, or one that names no
    * file at all.
    */
-  async ownerOfKycFile(fileName: string): Promise<string | undefined> {
+  async ownerOfKycFile(fileName: string): Promise<number | undefined> {
     const name = filenameFromStored(fileName);
     if (!name || name !== fileName) return undefined;
     return this.store.ownerOfFile(storedPath(KYC_BUCKET.dir, name));
@@ -63,7 +63,7 @@ export class ClientIdentityService {
    * and awaiting review; or the outcome of the latest decision that covered it,
    * with the pages that decision returned.
    */
-  async recordOf(userId: string): Promise<IdentityRecord> {
+  async recordOf(userId: number): Promise<IdentityRecord> {
     const { versions, decisions } = await this.store.recordOf(userId);
     const slots = new Map<string, IdentityVersion[]>();
     for (const row of versions) {
@@ -90,7 +90,7 @@ export class ClientIdentityService {
   }
 
   /** What is out of step between the KYC rows and the record. Empty is healthy. */
-  async drift(userId?: string): Promise<IdentityDrift[]> {
+  async drift(userId?: number): Promise<IdentityDrift[]> {
     return this.store.drift(userId);
   }
 

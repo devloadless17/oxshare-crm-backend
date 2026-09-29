@@ -19,7 +19,7 @@ export class KycIdentityReview implements IdentityReviewPort {
   constructor(private readonly kyc: KycStore) {}
 
   async lockForChange(
-    userId: string,
+    userId: number,
     executor: Executor,
   ): Promise<IdentityReviewState | undefined> {
     const submission = await this.kyc.lockForUpdate(userId, executor);
@@ -28,11 +28,11 @@ export class KycIdentityReview implements IdentityReviewPort {
       : undefined;
   }
 
-  async keepReturned(userId: string, remaining: string[], executor: Executor): Promise<void> {
+  async keepReturned(userId: number, remaining: string[], executor: Executor): Promise<void> {
     await this.kyc.update(userId, { rejectedFields: remaining }, executor);
   }
 
-  async standingOf(userId: string): Promise<IdentityReviewStanding> {
+  async standingOf(userId: number): Promise<IdentityReviewStanding> {
     const submission = await this.kyc.findByUserId(userId);
     if (submission?.status !== 'approved') {
       return { status: submission?.status, verifiedRequired: [] };

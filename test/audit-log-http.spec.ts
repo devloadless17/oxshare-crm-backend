@@ -31,7 +31,7 @@ import {
 const MASTER = { email: 'audit-http-master@oxshare.com', password: 'admin-password-123' };
 
 let ctx: HttpTestContext;
-let clientId: string;
+let clientId: number;
 
 interface AuditRow {
   action: string;
@@ -128,7 +128,7 @@ describe('the action log serves what it records', () => {
     const row = await waitForRow(
       session,
       '/v1/admin/audit-log?action=client.suspend',
-      (r) => r.subjectId === clientId,
+      (r) => r.subjectId === String(clientId),
     );
     expect(row, 'the suspension was not recorded at all').toBeDefined();
     // The property the whole file exists for. Supertest connects over loopback,
@@ -152,7 +152,7 @@ describe('the action log serves what it records', () => {
     const row = await waitForRow(
       session,
       '/v1/admin/audit-log?action=client.suspend',
-      (r) => r.subjectId === clientId,
+      (r) => r.subjectId === String(clientId),
     );
     expect(row?.actorKind).toBe('admin');
   });
@@ -164,7 +164,7 @@ describe('the action log serves what it records', () => {
     const row = await waitForRow(
       session,
       '/v1/admin/audit-log?action=client.suspend',
-      (r) => r.subjectId === clientId,
+      (r) => r.subjectId === String(clientId),
     );
     expect(row?.actorEmail).toBe(MASTER.email);
   });
@@ -309,21 +309,21 @@ describe('client-subject rows follow the reader’s scope — D-54, resolved', (
         actorEmail: SCOPED.email,
         action: 'kyc.approve',
         subjectType: 'kyc_submission',
-        subjectId: inScope.id,
+        subjectId: String(inScope.id),
       },
       {
         actorId: scopedAdmin.id,
         actorEmail: SCOPED.email,
         action: 'kyc.approve',
         subjectType: 'kyc_submission',
-        subjectId: outScope.id,
+        subjectId: String(outScope.id),
       },
       {
         actorId: scopedAdmin.id,
         actorEmail: SCOPED.email,
         action: 'client_tag.assign',
         subjectType: 'user',
-        subjectId: outScope.id,
+        subjectId: String(outScope.id),
       },
       {
         actorId: scopedAdmin.id,
@@ -346,7 +346,7 @@ describe('client-subject rows follow the reader’s scope — D-54, resolved', (
         actorEmail: SCOPED.email,
         action: 'ib.approve',
         subjectType: 'ib_account',
-        subjectId: outScope.id,
+        subjectId: String(outScope.id),
       },
       {
         actorId: scopedAdmin.id,
@@ -424,11 +424,11 @@ describe('client-subject rows follow the reader’s scope — D-54, resolved', (
     const visible = rows(res.body);
 
     expect(
-      visible.some((r) => r.subjectId === inScope.id),
+      visible.some((r) => r.subjectId === String(inScope.id)),
       'a row about a client INSIDE the territory disappeared',
     ).toBe(true);
     expect(
-      visible.some((r) => r.subjectId === outScope.id),
+      visible.some((r) => r.subjectId === String(outScope.id)),
       'a row naming a client OUTSIDE the territory leaked to a scoped reader',
     ).toBe(false);
     expect(
@@ -445,7 +445,7 @@ describe('client-subject rows follow the reader’s scope — D-54, resolved', (
           r.subjectId === '33333333-4444-5555-6666-777777777777' ||
           r.subjectId === '44444444-5555-6666-7777-888888888888' ||
           r.subjectId === '55555555-6666-7777-8888-999999999999' ||
-          (r.subjectType === 'ib_account' && r.subjectId === outScope.id),
+          (r.subjectType === 'ib_account' && r.subjectId === String(outScope.id)),
       ),
       'a money/trading/ib row naming an out-of-scope client in its details leaked',
     ).toBe(false);
@@ -459,7 +459,7 @@ describe('client-subject rows follow the reader’s scope — D-54, resolved', (
     // scoped reader must not.
     const master = await actingAs(ctx, 'admin', MASTER);
     const everything = rows((await master.get('/v1/admin/audit-log?limit=100')).body);
-    expect(everything.some((r) => r.subjectId === outScope.id)).toBe(true);
+    expect(everything.some((r) => r.subjectId === String(outScope.id))).toBe(true);
   });
 });
 
@@ -479,7 +479,7 @@ describe('the action log can be investigated over the wire', () => {
     await waitForRow(
       session,
       '/v1/admin/audit-log?action=client.suspend',
-      (r) => r.subjectId === clientId,
+      (r) => r.subjectId === String(clientId),
     );
 
     const res = await session.get(`/v1/admin/audit-log?subjectId=${clientId}&limit=100`);
@@ -488,7 +488,7 @@ describe('the action log can be investigated over the wire', () => {
     expect(items.length).toBeGreaterThan(0);
     // Every row, not merely the first: a parameter the controller ignores
     // returns a list that HAPPENS to start with the subject's newest row.
-    expect(items.every((r) => r.subjectId === clientId)).toBe(true);
+    expect(items.every((r) => r.subjectId === String(clientId))).toBe(true);
   });
 
   it('narrows to one ADMINISTRATOR by part of their email', async () => {
@@ -497,7 +497,7 @@ describe('the action log can be investigated over the wire', () => {
     await waitForRow(
       session,
       '/v1/admin/audit-log?action=client.reactivate',
-      (r) => r.subjectId === clientId,
+      (r) => r.subjectId === String(clientId),
     );
 
     const res = await session.get('/v1/admin/audit-log?q=audit-http-master&limit=100');

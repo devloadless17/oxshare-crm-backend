@@ -52,7 +52,7 @@ const VIEWER = { email: 'claim-viewer@oxshare.com', password: 'viewer-password-1
 const OUTSIDER = { email: 'claim-outsider@oxshare.com', password: 'outsider-password' };
 
 let ctx: HttpTestContext;
-let subjectId: string;
+let subjectId: number;
 let reviewerId: string;
 
 beforeAll(async () => {
@@ -337,7 +337,8 @@ describe('handing a claim back', () => {
       (await ctx.db.db.select().from(auditLog).where(eq(auditLog.action, 'kyc.release'))).filter(
         // By WHO released it too: an earlier case's own fire-and-forget release
         // row can land after `before` was read, and it names the same subject.
-        (r) => r.subjectId === subjectId && !before.has(r.id) && r.actorEmail === MASTER.email,
+        (r) =>
+          r.subjectId === String(subjectId) && !before.has(r.id) && r.actorEmail === MASTER.email,
       );
     const deadline = Date.now() + 5_000;
     let fresh = await freshRows();
@@ -364,7 +365,7 @@ describe('who is holding it', () => {
     expect((detail.body as { reviewedByName?: string }).reviewedByName).toBe('Rita Reviewer');
 
     const queue = await master.get('/v1/admin/kyc?status=under_review&limit=100');
-    const row = (queue.body as { items: { userId: string; reviewedByName?: string }[] }).items.find(
+    const row = (queue.body as { items: { userId: number; reviewedByName?: string }[] }).items.find(
       (i) => i.userId === subjectId,
     );
     expect(row?.reviewedByName, 'the queue does not say who has it').toBe('Rita Reviewer');

@@ -47,7 +47,7 @@ const MASKED = { email: 'mask-limited@oxshare.com', password: 'admin-password-12
 const CLIENTS = '/v1/admin/clients';
 
 let ctx: HttpTestContext;
-let clientId: string;
+let clientId: number;
 
 interface ListBody {
   items: Record<string, unknown>[];
@@ -416,7 +416,7 @@ describe('the KYC screen is not a bypass', () => {
       expect.arrayContaining(['kyc.personalInfo.email', 'kyc.user.email']),
     );
     // The unmasked parts still arrive — this is a mask, not a 403.
-    expect((res.body as { userId: string }).userId).toBe(clientId);
+    expect((res.body as { userId: number }).userId).toBe(clientId);
   });
 
   it('hides them on the review QUEUE too', async () => {
@@ -496,7 +496,7 @@ describe('the DECISION is not a bypass either', () => {
     expect(text).not.toContain('mask-target@oxshare-e2e.test');
     expect(text).not.toContain('+961 1 000 000');
     // A mask, not a 403 and not an empty body: the submission still arrives.
-    expect((res.body as { userId: string }).userId).toBe(clientId);
+    expect((res.body as { userId: number }).userId).toBe(clientId);
     expect((res.body as { maskedFields: string[] }).maskedFields).toEqual(
       expect.arrayContaining(['kyc.user.email']),
     );
@@ -838,7 +838,7 @@ describe('the IB lists are not a bypass either', () => {
     const session = await actingAs(ctx, 'admin', MASKED);
     const res = await session.get('/v1/admin/ib/applications').expect(200);
 
-    const body = res.body as { rows: { user: { id: string; email?: string } }[] };
+    const body = res.body as { rows: { user: { id: number; email?: string } }[] };
     expect(body.rows.length, 'no applications — the mask case is vacuous').toBeGreaterThan(0);
     expect(body.rows.some((r) => r.user.id === clientId)).toBe(true);
     expect(JSON.stringify(body)).not.toContain('mask-target@oxshare-e2e.test');

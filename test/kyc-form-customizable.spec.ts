@@ -32,7 +32,7 @@ type Step = { slug: string; enabled: boolean; evidenceRequired?: boolean; fields
 let ctx: HttpTestContext;
 let admin: Session;
 let client: Session;
-let clientId: string;
+let clientId: number;
 
 const readForm = async () => (await admin.get('/v1/admin/kyc-config')).body as Step[];
 const saveForm = async (steps: Step[]) => {

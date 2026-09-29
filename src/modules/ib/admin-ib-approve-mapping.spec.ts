@@ -16,7 +16,7 @@ import type { IbApplicationsService } from './ib-applications.service';
  */
 describe('AdminIbController approve mapping', () => {
   const APPLICATION = '5b1c4a48-9adc-4a06-8f28-0e6f7ffbe001';
-  const PARENT = '5b1c4a48-9adc-4a06-8f28-0e6f7ffbe002';
+  const PARENT = 1000002;
 
   function harness() {
     const approve = vi.fn().mockResolvedValue({});

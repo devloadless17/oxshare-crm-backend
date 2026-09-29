@@ -224,7 +224,7 @@ export class AdminComplianceController {
   @ApiOkResponse({ type: KycSubmissionDto })
   @ScopedToClients('Scoped by-id read — an out-of-scope submission 404s like a missing one.')
   getKyc(
-    @Param('userId', ClientRefPipe) userId: string,
+    @Param('userId', ClientRefPipe) userId: number,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
     return this.compliance.getKyc(userId, req.admin);
@@ -247,7 +247,7 @@ export class AdminComplianceController {
   @ApiOkResponse({ type: [KycAttemptDto] })
   @ScopedToClients('Scoped by-id read over kyc_submission_attempts.')
   getKycHistory(
-    @Param('userId', ClientRefPipe) userId: string,
+    @Param('userId', ClientRefPipe) userId: number,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
     return this.compliance.getKycHistory(userId, req.admin);
@@ -267,7 +267,7 @@ export class AdminComplianceController {
   )
   @Audited('kyc.claim')
   claimKyc(
-    @Param('userId', ClientRefPipe) userId: string,
+    @Param('userId', ClientRefPipe) userId: number,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
     return this.compliance.claimKyc(userId, req.admin);
@@ -296,7 +296,7 @@ export class AdminComplianceController {
   )
   @Audited('kyc.release')
   releaseKyc(
-    @Param('userId', ClientRefPipe) userId: string,
+    @Param('userId', ClientRefPipe) userId: number,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
     return this.compliance.releaseKyc(userId, req.admin);
@@ -329,7 +329,7 @@ export class AdminComplianceController {
   )
   @Audited('kyc.identity_correct')
   correctKycIdentity(
-    @Param('userId', ClientRefPipe) userId: string,
+    @Param('userId', ClientRefPipe) userId: number,
     @Body() dto: CorrectKycIdentityDto,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
@@ -350,7 +350,7 @@ export class AdminComplianceController {
   )
   @Audited('kyc.approve')
   approveKyc(
-    @Param('userId', ClientRefPipe) userId: string,
+    @Param('userId', ClientRefPipe) userId: number,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
     return this.compliance.approveKyc(userId, req.admin);
@@ -369,7 +369,7 @@ export class AdminComplianceController {
   @ScopedToClients("Predicate inside the transition's UPDATE ... WHERE.")
   @Audited('kyc.reject')
   rejectKyc(
-    @Param('userId', ClientRefPipe) userId: string,
+    @Param('userId', ClientRefPipe) userId: number,
     @Body() dto: RejectDto,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
@@ -403,7 +403,7 @@ export class AdminComplianceController {
   )
   @Audited('kyc.reverification_request')
   requestReverification(
-    @Param('userId', ClientRefPipe) userId: string,
+    @Param('userId', ClientRefPipe) userId: number,
     @Body() dto: ReverifyKycDto,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {

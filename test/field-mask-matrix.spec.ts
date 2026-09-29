@@ -115,7 +115,7 @@ const SENTINEL: Record<string, string> = {
 };
 
 let ctx: HttpTestContext;
-let clientId: string;
+let clientId: number;
 let clientPortalId: number;
 let maskableKeys: string[];
 
@@ -215,7 +215,8 @@ beforeAll(async () => {
     .values({ ...TARGET, passwordHash: 'x', emailVerified: true })
     .returning();
   clientId = client.id;
-  clientPortalId = client.portalId;
+  // 0159: `users.id` IS the Portal ID now — the separate column is gone.
+  clientPortalId = client.id;
 
   // D-82's three fields, each on the row that carries it.
   const [wallet] = await db
@@ -236,12 +237,12 @@ beforeAll(async () => {
     motivation: SENTINEL['client.partnerApplication'],
   });
   await db.insert(auditLog).values({
-    actorId: clientId,
+    actorId: String(clientId),
     actorEmail: TARGET.email,
     actorKind: 'client',
     action: 'client.profile_update',
     subjectType: 'user',
-    subjectId: clientId,
+    subjectId: String(clientId),
     ipAddress: SENTINEL['client.ipAddress'],
   });
 
@@ -359,7 +360,7 @@ describe('every maskable field, hidden on its own', () => {
           if (!wire.includes('MatrixProofFile.pdf')) {
             problems.push(`${key}: masking it also removed the address-proof document`);
           }
-          if (!wire.includes(clientId)) {
+          if (!wire.includes(String(clientId))) {
             problems.push(`${key}: masking it emptied the response`);
           }
         }

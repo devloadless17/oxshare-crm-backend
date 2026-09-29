@@ -38,7 +38,7 @@ const CLIENT = { email: 'reverify-client@oxshare-e2e.test', password: 'client-pa
 const REASON = 'Your passport on file has expired. Please upload your new one.';
 
 let ctx: HttpTestContext;
-let clientId: string;
+let clientId: number;
 
 async function row() {
   const [submission] = await ctx.db.db

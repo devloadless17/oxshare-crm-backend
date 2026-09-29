@@ -25,12 +25,12 @@ let territoryTagId: string;
 /** A second territory nobody is assigned to — the clean INTAKE LENS: a scoped
  *  admin holding it plus the grant sees exactly the untriaged pool. */
 let emptyTagId: string;
-let taggedClientId: string;
-let untaggedClientId: string;
+let taggedClientId: number;
+let untaggedClientId: number;
 
 const intakeLens = () => scopeOf([emptyTagId], true, false);
 
-async function visibleTo(scope: ReturnType<typeof scopeOf>): Promise<string[]> {
+async function visibleTo(scope: ReturnType<typeof scopeOf>): Promise<number[]> {
   const predicate = clientScopePredicate(scope, users.id);
   const rows = await ctx.db.select({ id: users.id }).from(users).where(predicate);
   return rows.map((r) => r.id);

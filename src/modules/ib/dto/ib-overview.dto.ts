@@ -95,7 +95,7 @@ export class IbEarningsDto {
  */
 /** One client this partner introduced. */
 export class IbReferredClientDto {
-  @ApiProperty() userId: string;
+  @ApiProperty({ type: 'integer' }) userId: number;
 
   @ApiProperty({
     description:
@@ -115,7 +115,7 @@ export class IbReferredClientDto {
 
 /** One partner sitting directly beneath this one. */
 export class IbSubPartnerDto {
-  @ApiProperty() userId: string;
+  @ApiProperty({ type: 'integer' }) userId: number;
   @ApiProperty() name: string;
   /*
    * NO TERMS on this row — 0112. A sub-partner's rate card is between them and

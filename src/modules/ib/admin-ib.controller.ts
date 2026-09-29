@@ -29,7 +29,7 @@ import {
   IB_PARTNER_SORT_COLUMNS,
 } from '../../store/ib.store';
 import { ibAccrualKindEnum, ibAccrualStatusEnum } from '../../database/schema';
-import { enumQuery, uuidQuery } from '../../common/query-params';
+import { enumQuery } from '../../common/query-params';
 import { ClientRefPipe } from '../../common/client-ref.pipe';
 import { AdminExportService } from '../admin/admin-export.service';
 import { AdminAuditService } from '../admin/admin-audit.service';
@@ -348,8 +348,8 @@ export class AdminIbController {
     @Req() req: Request & { admin: AuthenticatedAdmin },
     @Query('page') page?: string,
     @Query('limit') limit?: string,
-    @Query('ibUserId', ClientRefPipe) ibUserId?: string,
-    @Query('clientUserId', ClientRefPipe) clientUserId?: string,
+    @Query('ibUserId', ClientRefPipe) ibUserId?: number,
+    @Query('clientUserId', ClientRefPipe) clientUserId?: number,
     @Query('q') q?: string,
     @Query('status') status?: string,
     @Query('kind') kind?: string,
@@ -368,8 +368,8 @@ export class AdminIbController {
          * then all it has is a cast error. On a route taking several ids that
          * matters, and the database paid for a round trip to produce it.
          */
-        ibUserId: uuidQuery(ibUserId, 'ibUserId'),
-        clientUserId: uuidQuery(clientUserId, 'clientUserId'),
+        ibUserId: ibUserId,
+        clientUserId: clientUserId,
         q,
         // Validated against the column's own enum, so an unrecognised value is
         // a 400 rather than a filter that silently matches nothing.
@@ -609,7 +609,7 @@ export class AdminIbController {
   @ScopedToClients('Checks the SUBJECT with assertVisible; out-of-scope 404s like a missing one.')
   partnerDetail(
     @Req() req: Request & { admin: AuthenticatedAdmin },
-    @Param('userId', ClientRefPipe) userId: string,
+    @Param('userId', ClientRefPipe) userId: number,
   ) {
     return this.applications.partnerDetailFor(userId, req.admin.clientScope, req.admin.fieldMask);
   }
@@ -644,7 +644,7 @@ export class AdminIbController {
   @Audited('ib.level_change')
   async changeLevel(
     @Req() req: Request & { admin: AuthenticatedAdmin },
-    @Param('userId', ClientRefPipe) userId: string,
+    @Param('userId', ClientRefPipe) userId: number,
     @Body() dto: ChangeIbLevelDto,
   ) {
     return this.applications.accountViewFor(
@@ -669,7 +669,7 @@ export class AdminIbController {
   @Audited('ib.parent_change')
   async reassignParent(
     @Req() req: Request & { admin: AuthenticatedAdmin },
-    @Param('userId', ClientRefPipe) userId: string,
+    @Param('userId', ClientRefPipe) userId: number,
     @Body() dto: ReassignIbParentDto,
   ) {
     return this.applications.accountViewFor(
@@ -698,7 +698,7 @@ export class AdminIbController {
   @Audited('ib.partners.suspend')
   async setActive(
     @Req() req: Request & { admin: AuthenticatedAdmin },
-    @Param('userId', ClientRefPipe) userId: string,
+    @Param('userId', ClientRefPipe) userId: number,
     @Body() dto: SetIbActiveDto,
   ) {
     return this.applications.accountViewFor(

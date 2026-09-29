@@ -32,7 +32,7 @@ export class AdminClientIdentityController {
     'UsersStore.findForAdmin(id, scope) — an out-of-scope client is 404, identically to a missing one.',
   )
   recordFor(
-    @Param('id', ClientRefPipe) id: string,
+    @Param('id', ClientRefPipe) id: number,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ): Promise<ClientIdentityRecordDto> {
     return this.identity.recordFor(id, req.admin);

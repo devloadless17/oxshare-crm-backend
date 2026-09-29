@@ -111,7 +111,7 @@ export class IbApplicationDto {
   id: string;
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty()
-  userId: string;
+  userId: number;
   @ClientField('client.partnerApplication')
   @ApiProperty({ type: 'string', nullable: true })
   motivation: string | null;
@@ -154,16 +154,16 @@ export class IbApplicationDto {
   'the application and its commission terms; the shapes naming a PERSON in this file are marked field by field',
 )
 export class IbAccountDto {
-  @ApiProperty() userId: string;
+  @ApiProperty({ type: 'integer' }) userId: number;
   @ApiProperty() level: number;
   @ApiProperty({
-    type: 'string',
+    type: 'integer',
     nullable: true,
     description:
       'Null at the top of a chain — or, on an admin response, when the parent is ' +
       'outside your territory (`parentOutsideTerritory`).',
   })
-  parentIbUserId: string | null;
+  parentIbUserId: number | null;
   @ApiPropertyOptional({
     description:
       'Admin responses only: true when a parent exists that the reader may not see. The ' +
@@ -291,7 +291,7 @@ export class ApproveIbApplicationDto {
    * partner apply past the two-level ladder.
    */
   @ApiPropertyOptional({
-    type: 'string',
+    type: 'integer',
     nullable: true,
     description:
       'The parent to nest the new partner under. OMITTED means "the reviewer did not say" — ' +
@@ -300,8 +300,9 @@ export class ApproveIbApplicationDto {
       'introduced them.',
   })
   @IsOptional()
-  @IsUUID()
-  parentIbUserId?: string | null;
+  @IsInt()
+  @Min(1)
+  parentIbUserId?: number | null;
 
   /**
    * Override the agency the applicant asked for.
@@ -416,13 +417,14 @@ export class ReverseAccrualDto {
  */
 export class ReassignIbParentDto {
   @ApiProperty({
-    type: 'string',
+    type: 'integer',
     nullable: true,
     description: 'The new parent partner, or null to make them a direct partner.',
   })
   @ValidateIf((_, value) => value !== null)
-  @IsUUID()
-  parentIbUserId: string | null;
+  @IsInt()
+  @Min(1)
+  parentIbUserId: number | null;
 }
 
 export class SetIbActiveDto {
@@ -439,7 +441,7 @@ export class SetIbActiveDto {
 export class IbPartnerPersonDto {
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty()
-  userId: string;
+  userId: number;
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty({ type: 'integer', example: 1000245, description: 'Their Portal ID.' })
   portalId: number;
@@ -528,7 +530,7 @@ export class IbPartnerEarningsDto {
 export class IbPartnerDetailDto {
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty()
-  userId: string;
+  userId: number;
   /*
    * The RUNG this partner stands on, and the terms it carries (0112).
    *
@@ -720,7 +722,7 @@ export const IB_PARTNER_STATUSES = ['active', 'suspended'] as const;
   'the partner account: rung, code, state and appointment — none of it an attribute of the person',
 )
 export class IbPartnerListAccountDto {
-  @ApiProperty() userId: string;
+  @ApiProperty({ type: 'integer' }) userId: number;
   @ApiProperty({ example: 1, description: 'The rung, which decides their terms (0112).' })
   level: number;
   @ApiProperty({ description: 'What a client types at registration to be attributed here.' })
@@ -740,8 +742,8 @@ export class IbPartnerListAccountDto {
  */
 export class IbPartnerListPersonDto {
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
-  @ApiProperty()
-  id: string;
+  @ApiProperty({ type: 'integer', example: 1000245, description: 'The client’s Portal ID (0159).' })
+  id: number;
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty({ type: 'integer', example: 1000245, description: 'Their Portal ID.' })
   portalId: number;

@@ -75,7 +75,7 @@ const STORED = {
 
 let ctx: HttpTestContext;
 let email: string;
-let clientId: string;
+let clientId: number;
 
 async function profileRow(id = clientId) {
   const [row] = await ctx.db.db
@@ -279,7 +279,9 @@ describe('one record, whoever changes it', () => {
     const rows = await ctx.db.db
       .select({ details: auditLog.details, actorKind: auditLog.actorKind })
       .from(auditLog)
-      .where(and(eq(auditLog.action, 'client.profile_update'), eq(auditLog.subjectId, clientId)));
+      .where(
+        and(eq(auditLog.action, 'client.profile_update'), eq(auditLog.subjectId, String(clientId))),
+      );
     const kyc = rows.find((r) => (r.details as { via?: string })?.via === 'kyc');
     expect(kyc, 'the KYC edit left no audit row').toBeDefined();
     expect(kyc?.actorKind).toBe('client');
@@ -379,7 +381,12 @@ describe('what a reviewer is checking cannot move under them', () => {
       const [row] = await ctx.db.db
         .select({ details: auditLog.details, subjectType: auditLog.subjectType })
         .from(auditLog)
-        .where(and(eq(auditLog.action, 'kyc.identity_correct'), eq(auditLog.subjectId, clientId)));
+        .where(
+          and(
+            eq(auditLog.action, 'kyc.identity_correct'),
+            eq(auditLog.subjectId, String(clientId)),
+          ),
+        );
       expect(row?.subjectType).toBe('kyc_submission');
       expect(row?.details).toMatchObject({
         before: { dateOfBirth: STORED.dateOfBirth },

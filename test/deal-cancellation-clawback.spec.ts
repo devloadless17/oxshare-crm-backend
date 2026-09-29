@@ -57,8 +57,8 @@ const adminBell = {
   notifyAdmins: vi.fn().mockResolvedValue(undefined),
 };
 
-let partnerId: string;
-let clientId: string;
+let partnerId: number;
+let clientId: number;
 /** The product's rate card — see the ladder note in `beforeAll`. */
 let terms: CommissionTypeTerms;
 let programId: string;
@@ -66,8 +66,8 @@ let programId: string;
 const LOGIN = '500123';
 const POSITION = '778899';
 
-async function makeUser(email: string): Promise<string> {
-  const { rows } = await ctx.db.execute<{ id: string }>(sql`
+async function makeUser(email: string): Promise<number> {
+  const { rows } = await ctx.db.execute<{ id: number }>(sql`
     INSERT INTO users (email, password_hash, first_name, last_name)
     VALUES (${email}, 'x', ${email.split('@')[0]}, 'Person')
     RETURNING id

@@ -195,7 +195,7 @@ export class ClientTagsStore {
    * store has no business joining `admins`, and a page of clients needs one
    * lookup rather than one per row.
    */
-  async tagsForClient(userId: string): Promise<ClientTagAssignment[]> {
+  async tagsForClient(userId: number): Promise<ClientTagAssignment[]> {
     const rows = await this.db
       .select({
         id: clientTags.id,
@@ -225,8 +225,8 @@ export class ClientTagsStore {
    * N+1 that ARCHITECTURE §5 names as the actual risk at this table's size —
    * 25 extra round trips per keystroke of the search box.
    */
-  async tagsForClients(userIds: readonly string[]): Promise<Map<string, ClientTag[]>> {
-    const byUser = new Map<string, ClientTag[]>();
+  async tagsForClients(userIds: readonly number[]): Promise<Map<number, ClientTag[]>> {
+    const byUser = new Map<number, ClientTag[]>();
     if (userIds.length === 0) return byUser;
 
     const rows = await this.db
@@ -268,7 +268,7 @@ export class ClientTagsStore {
    * just never admitted it.
    */
   async assign(
-    userId: string,
+    userId: number,
     tagId: string,
     assignedBy: string | null,
     executor?: Executor,
@@ -282,7 +282,7 @@ export class ClientTagsStore {
   }
 
   /** Detach a tag. Returns whether anything was removed — same reasoning. */
-  async unassign(userId: string, tagId: string, executor?: Executor): Promise<boolean> {
+  async unassign(userId: number, tagId: string, executor?: Executor): Promise<boolean> {
     const removed = await (executor ?? this.db)
       .delete(clientTagAssignments)
       .where(and(eq(clientTagAssignments.userId, userId), eq(clientTagAssignments.tagId, tagId)))
@@ -307,14 +307,14 @@ export class ClientTagsStore {
    * row, so it can conflict with nothing but another tag change on this client.
    * Two keys (namespace, client), released at commit or rollback.
    */
-  async lockAssignments(userId: string, executor: Executor): Promise<void> {
+  async lockAssignments(userId: number, executor: Executor): Promise<void> {
     await executor.execute(
       sql`SELECT pg_advisory_xact_lock(${CLIENT_TAGS_LOCK_NAMESPACE}, hashtext(${userId}))`,
     );
   }
 
   /** The ids of the tags a client carries — what a tag change is judged on. */
-  async tagIdsForClient(userId: string, executor?: Executor): Promise<string[]> {
+  async tagIdsForClient(userId: number, executor?: Executor): Promise<string[]> {
     const rows = await (executor ?? this.db)
       .select({ tagId: clientTagAssignments.tagId })
       .from(clientTagAssignments)

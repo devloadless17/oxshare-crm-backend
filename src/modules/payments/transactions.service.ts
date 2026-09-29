@@ -87,7 +87,7 @@ export type TransactionListRow = TransactionView & {
 /** The union's own column names, before they are mapped to the DTO's. */
 interface CombinedRow {
   id: string;
-  user_id: string;
+  user_id: number;
   wallet_id: string;
   direction: TransactionRow['direction'];
   amount: string;
@@ -149,7 +149,7 @@ export interface AdminMovementsFilter {
    */
   scope: ClientScope;
   /** Narrow to one client — already validated as a UUID at the edge. */
-  userId?: string;
+  userId?: number;
   direction?: MovementDirection;
   kind?: MovementKind;
   state?: MovementState;
@@ -182,7 +182,7 @@ export interface AdminTransactionExportRow {
   rivalExternalId: string | null;
   destination: string | null;
   rejectionReason: string | null;
-  userId: string;
+  userId: number;
   userPortalId: number;
   userEmail: string;
   userFirstName: string;
@@ -637,7 +637,7 @@ export class TransactionsService {
   }
 
   async requestWithdrawal(params: {
-    userId: string;
+    userId: number;
     amount: string;
     currency: Currency;
     destination: string;
@@ -924,7 +924,7 @@ export class TransactionsService {
    * invite one of them to read an amount or a state off a row they have not yet
    * established the caller may see.
    */
-  async ownerOf(id: string): Promise<string | undefined> {
+  async ownerOf(id: string): Promise<number | undefined> {
     const [row] = await this.db
       .select({ userId: transactions.userId })
       .from(transactions)
@@ -1085,7 +1085,7 @@ export class TransactionsService {
         rivalNeedsAttention: transactions.rivalNeedsAttention,
         rivalAttentionReason: transactions.rivalAttentionReason,
         userId: transactions.userId,
-        userPortalId: users.portalId,
+        userPortalId: users.id,
         userEmail: users.email,
         userFirstName: users.firstName,
         userLastName: users.lastName,
@@ -1322,7 +1322,7 @@ export class TransactionsService {
         reviewedAt: transactions.reviewedAt,
         settledAt: transactions.settledAt,
         userId: transactions.userId,
-        userPortalId: users.portalId,
+        userPortalId: users.id,
         userEmail: users.email,
         userFirstName: users.firstName,
         userLastName: users.lastName,
@@ -1749,7 +1749,7 @@ export class TransactionsService {
    * value out of the database to compare it.
    */
   async listForUser(
-    userId: string,
+    userId: number,
     query: ListTransactionsQueryDto = {},
   ): Promise<{ items: TransactionListRow[]; total: number; page: number; limit: number }> {
     const page = query.page ?? 1;
@@ -1931,7 +1931,7 @@ export class TransactionsService {
    * R-2.5 names.
    */
   async summaryForUser(
-    userId: string,
+    userId: number,
     query: ListTransactionsQueryDto = {},
   ): Promise<
     { currency: string; direction: string; state: string; count: number; total: string }[]
@@ -1989,7 +1989,7 @@ export class TransactionsService {
       if (scoped) conditions.push(scoped);
       // Validated as a UUID at the edge — an unvalidated value against a uuid
       // column is the 500 common/query-params.ts documents.
-      if (filter.userId) conditions.push(sql`${owner} = ${filter.userId}::uuid`);
+      if (filter.userId) conditions.push(sql`${owner} = ${filter.userId}::integer`);
       return whereOf(conditions);
       /*
        * FALSE — no rebate arm on the admin Financial list.
@@ -2017,7 +2017,7 @@ export class TransactionsService {
         users.email      AS user_email,
         users.first_name AS user_first_name,
         users.last_name  AS user_last_name,
-        users.portal_id  AS user_portal_id
+        users.id  AS user_portal_id
       FROM combined
       JOIN users ON users.id = combined.user_id`;
 
@@ -2711,7 +2711,7 @@ export class TransactionsService {
    * guarantees no two declarations can ever share a reference.
    */
   async requestDeposit(params: {
-    userId: string;
+    userId: number;
     amount: string;
     currency: Currency;
     method: string;
@@ -3217,7 +3217,7 @@ export class TransactionsService {
   async gatewayDepositState(
     method: string,
     reference: string,
-    ownerId: string,
+    ownerId: number,
   ): Promise<{ state: string }> {
     const [tx] = await this.db
       .select({ state: transactions.state, userId: transactions.userId })
@@ -3446,7 +3446,7 @@ export class TransactionsService {
      * — and a way to drive the settlement of — anybody else's payment. A
      * mismatch is a 404, never a 403: the difference is an existence oracle.
      */
-    opts: { ownerId?: string } = {},
+    opts: { ownerId?: number } = {},
   ): Promise<{ state: string }> {
     const [tx] = await this.db
       .select()
@@ -3859,7 +3859,7 @@ export class TransactionsService {
    * Post-write and never-throws, like every fan-out.
    */
   private announceDepositAttention(
-    tx: { id: string; userId: string; amount: string; currency: string },
+    tx: { id: string; userId: number; amount: string; currency: string },
     reason: DepositAttentionReason,
   ): void {
     void this.notifications.notifyAdmins({
@@ -3878,7 +3878,7 @@ export class TransactionsService {
    * rejection about a courtesy.
    */
   private async sendDepositOutcomeEmail(
-    userId: string,
+    userId: number,
     outcome: 'succeeded' | 'failed' | 'rejected',
     amount: string,
     currency: string,
@@ -3909,7 +3909,7 @@ export class TransactionsService {
    * (wallet, reference). Used by the provider webhook when credentials land.
    */
   async creditDeposit(params: {
-    userId: string;
+    userId: number;
     amount: string;
     currency: Currency;
     provider: string;

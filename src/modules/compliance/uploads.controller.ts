@@ -25,7 +25,7 @@ import { EmailNotVerifiedError } from '../../common/errors/domain-errors';
 import { AdminsStore, type Admin } from '../../store/admins.store';
 import { RolesStore } from '../../store/roles.store';
 import { ClientIdentityService } from '../client-identity/client-identity.service';
-import { UsersStore } from '../../store/users.store';
+import { UsersStore, parsePortalId } from '../../store/users.store';
 import { AuditLogStore, type AuditSubjectType } from '../../store/audit-log.store';
 import { DepositProofsStore } from '../../store/deposit-proofs.store';
 import { AdminClientScopesStore } from '../../store/admin-client-scopes.store';
@@ -55,7 +55,7 @@ import {
 
 /** Who a request resolved to, and therefore what gets recorded about the read. */
 type Reader =
-  { kind: 'admin'; id: string; email: string } | { kind: 'client'; id: string; email: string };
+  { kind: 'admin'; id: string; email: string } | { kind: 'client'; id: number; email: string };
 
 /**
  * WHO may read a file in a given bucket — the four questions that differ between
@@ -74,7 +74,7 @@ interface ReadPolicy {
   /** Refuse a scoped admin who cannot see the owning client. Throws 404, never 403. */
   assertInScope(admin: Admin, fileName: string): Promise<void>;
   /** Does this client own this file? */
-  clientOwns(userId: string, fileName: string): Promise<boolean>;
+  clientOwns(userId: number, fileName: string): Promise<boolean>;
   /** The R-6.6 audit row this read writes. */
   audit: { action: string; subjectType: AuditSubjectType };
   adminForbidden: string;
@@ -155,7 +155,7 @@ export class UploadsController {
   )
   async serveAvatar(
     @Param('file') file: string,
-    @Req() req: Request & { user: { id: string } },
+    @Req() req: Request & { user: { id: number } },
     @Res() res: Response,
   ) {
     const name = basename(file); // neutralise any traversal attempt
@@ -717,12 +717,16 @@ export class UploadsController {
          * portal request — see the admin branch for why a bespoke
          * authentication path must not be the weakest one.
          */
-        const owner = await this.users.findById(payload.sub);
+        // The subject is the Portal ID (0159); a pre-0159 token names a uuid
+        // and reads as no session at all.
+        const clientId = parsePortalId(payload.sub);
+        if (clientId === undefined) throw new UnauthorizedException('Please log in again.');
+        const owner = await this.users.findById(clientId);
         if (owner) this.assertClientSessionLive(owner, payload);
         if (payload.fam && (await this.refreshTokens.familyIsRevoked('portal', payload.fam))) {
           throw new UnauthorizedException('That session has been signed out. Please log in again.');
         }
-        if (await policy.clientOwns(payload.sub, fileName)) {
+        if (await policy.clientOwns(clientId, fileName)) {
           /*
            * The CLIENT branch checks `emailVerified`; the admin branch above
            * cannot and must not — an admin has no such column, and testing it
@@ -743,7 +747,7 @@ export class UploadsController {
               'Please verify your email address before accessing your documents.',
             );
           }
-          return { kind: 'client', id: payload.sub, email: owner?.email ?? 'unknown' };
+          return { kind: 'client', id: clientId, email: owner?.email ?? 'unknown' };
         }
         throw new ForbiddenException(policy.clientForbidden);
       } catch (e) {
@@ -912,7 +916,7 @@ export class UploadsController {
    * row goes, and the check stopped at "no submission", so a client lost their
    * own archived passport — while any reviewing admin could still open it.
    */
-  private async clientOwnsDocument(userId: string, fileName: string): Promise<boolean> {
+  private async clientOwnsDocument(userId: number, fileName: string): Promise<boolean> {
     return (await this.identity.ownerOfKycFile(fileName)) === userId;
   }
 }

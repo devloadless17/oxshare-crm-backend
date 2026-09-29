@@ -368,7 +368,7 @@ export class KycReviewLayoutDto {
 export class KycSubmissionDto {
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty()
-  userId: string;
+  userId: number;
   @ApiProperty({
     enum: ['not_started', 'in_progress', 'submitted', 'under_review', 'approved', 'rejected'],
   })
@@ -736,7 +736,7 @@ export class ClientTagWithCountDto extends ClientTagDto {
 export class ClientRowReferrerDto {
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiPropertyOptional({ description: 'Absent when the introducer is outside your territory.' })
-  ibUserId?: string;
+  ibUserId?: number;
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiPropertyOptional({
     type: 'integer',
@@ -779,8 +779,12 @@ export class ClientRowReferrerDto {
  */
 export class ClientRowDto {
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
-  @ApiProperty()
-  id: string;
+  @ApiProperty({
+    type: 'integer',
+    example: 1000245,
+    description: 'The client’s Portal ID — their one id (0159).',
+  })
+  id: number;
   /**
    * The client's PORTAL ID — the human number, 1,000,000 up (migration 0133).
    * What staff read and search by; `id` stays the key for URLs and the API.
@@ -900,7 +904,7 @@ export class ProfileTradingAccountDto {
 export class ProfileReferrerDto {
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiPropertyOptional({ description: 'Absent when the introducer is outside your territory.' })
-  ibUserId?: string;
+  ibUserId?: number;
   /*
    * IDENTITY IS OMITTED WHEN THE INTRODUCER IS OUTSIDE THE READER'S TERRITORY.
    *
@@ -956,7 +960,7 @@ export class ProfileReferrerDto {
 export class ProfileReferredClientDto {
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty()
-  clientUserId: string;
+  clientUserId: number;
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty({ type: 'integer', example: 1000245, description: 'Their Portal ID.' })
   clientPortalId: number;
@@ -1019,8 +1023,12 @@ export class ProfileKycDto {
  */
 export class ClientAccountDto {
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
-  @ApiProperty({ format: 'uuid' })
-  id: string;
+  @ApiProperty({
+    type: 'integer',
+    example: 1000245,
+    description: 'The client’s Portal ID — their one id (0159).',
+  })
+  id: number;
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty({ type: 'integer', example: 1000245, description: 'The client’s Portal ID.' })
   portalId: number;
@@ -1092,8 +1100,12 @@ export class ClientAccountDto {
 
 export class ClientProfileDto {
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
-  @ApiProperty()
-  id: string;
+  @ApiProperty({
+    type: 'integer',
+    example: 1000245,
+    description: 'The client’s Portal ID — their one id (0159).',
+  })
+  id: number;
   /**
    * The client's PORTAL ID — the human number, 1,000,000 up (migration 0133).
    * What staff read and search by; `id` stays the key for URLs and the API.
@@ -1860,8 +1872,8 @@ export class WithdrawalRowDto {
    * rows still satisfy it.
    */
   @NotClientField('addresses the record\u2019s owner; client.id is unmaskable for that reason')
-  @ApiPropertyOptional({ type: String })
-  userId?: string;
+  @ApiPropertyOptional({ type: 'integer' })
+  userId?: number;
   @NotClientField('an identifier addressing the wallet, not an attribute of the person')
   @ApiPropertyOptional({ type: String })
   walletId?: string;
@@ -2638,7 +2650,7 @@ export class WalletDiscrepancyDto {
 
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty()
-  userId: string;
+  userId: number;
 
   /** The client's Portal ID — the identifier an operator quotes. Never masked. */
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
@@ -3029,7 +3041,7 @@ export class DepositDecisionDto {
 
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty({ description: 'The client this deposit belongs to.' })
-  userId: string;
+  userId: number;
 
   @NotClientField(
     'a money, paging or configuration value on the RECORD, carrying no client attribute',

@@ -188,7 +188,7 @@ export class AdminTagsController {
     'AdminTagsService.assertClientVisible → findForAdmin, so an out-of-scope client 404s.',
   )
   forClient(
-    @Param('id', ClientRefPipe) id: string,
+    @Param('id', ClientRefPipe) id: number,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
     return this.tags.tagsForClient(id, req.admin);
@@ -217,7 +217,7 @@ export class AdminTagsController {
   )
   @Audited('client_tag.assign')
   assign(
-    @Param('id', ClientRefPipe) id: string,
+    @Param('id', ClientRefPipe) id: number,
     @Param('tagId', UuidParam) tagId: string,
     @Query('confirmLeavesScope') confirmLeavesScope: string | undefined,
     @Req() req: Request & { admin: AuthenticatedAdmin },
@@ -246,7 +246,7 @@ export class AdminTagsController {
   )
   @Audited('client_tag.unassign')
   unassign(
-    @Param('id', ClientRefPipe) id: string,
+    @Param('id', ClientRefPipe) id: number,
     @Param('tagId', UuidParam) tagId: string,
     @Query('confirmLeavesScope') confirmLeavesScope: string | undefined,
     @Req() req: Request & { admin: AuthenticatedAdmin },

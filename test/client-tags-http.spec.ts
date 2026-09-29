@@ -29,8 +29,8 @@ let ctx: HttpTestContext;
 let alphaTagId: string;
 let alphaTagSlug: string;
 let betaTagId: string;
-let alphaClientId: string;
-let betaClientId: string;
+let alphaClientId: number;
+let betaClientId: number;
 let scopedAdminId: string;
 
 interface TagBody {
@@ -44,7 +44,7 @@ interface ChangeBody {
   stillVisible: boolean;
 }
 interface ListBody {
-  items: { id: string; email?: string; firstName?: string; tags?: TagBody[] }[];
+  items: { id: number; email?: string; firstName?: string; tags?: TagBody[] }[];
   maskedFields: string[];
   nextCursor: string | null;
 }

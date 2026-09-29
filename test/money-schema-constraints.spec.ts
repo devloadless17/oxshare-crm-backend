@@ -66,8 +66,8 @@ async function failureMessage(run: Promise<unknown>): Promise<string> {
   throw new Error('Expected the statement to be refused, but it succeeded.');
 }
 
-async function makeUser(email: string): Promise<string> {
-  const { rows } = await ctx.db.execute<{ id: string }>(sql`
+async function makeUser(email: string): Promise<number> {
+  const { rows } = await ctx.db.execute<{ id: number }>(sql`
     INSERT INTO users (email, password_hash, first_name, last_name)
     VALUES (${email}, 'x', 'Test', 'Client')
     RETURNING id
@@ -75,7 +75,7 @@ async function makeUser(email: string): Promise<string> {
   return rows[0].id;
 }
 
-async function makeWallet(userId: string, currency = 'USD', balance = '0'): Promise<string> {
+async function makeWallet(userId: number, currency = 'USD', balance = '0'): Promise<string> {
   const { rows } = await ctx.db.execute<{ id: string }>(sql`
     INSERT INTO wallets (user_id, currency, balance) VALUES (${userId}, ${currency}, ${balance})
     RETURNING id
@@ -392,7 +392,7 @@ describe('trading accounts', () => {
     const first = await makeUser('login-a@test.local');
     const second = await makeUser('login-b@test.local');
 
-    const insert = (userId: string) => sql`
+    const insert = (userId: number) => sql`
       INSERT INTO trading_accounts (user_id, login, environment, currency)
       VALUES (${userId}, '500123', 'live', 'USD')
     `;

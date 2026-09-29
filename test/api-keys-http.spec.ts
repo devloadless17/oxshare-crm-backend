@@ -49,9 +49,9 @@ const SCOPED = { email: 'apikey-scoped@oxshare.com', password: 'admin-password-1
  */
 const KEY_OWNER = { email: 'apikey-owner@oxshare.com', password: 'admin-password-123' };
 
-let inScopeClientId: string;
+let inScopeClientId: number;
 let keyOwnerId: string;
-let outScopeClientId: string;
+let outScopeClientId: number;
 
 let ctx: HttpTestContext;
 

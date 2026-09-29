@@ -34,9 +34,9 @@ const MASKED = { email: 'account-resp-masked@oxshare.com', password: PASSWORD };
 const CLIENTS = '/v1/admin/clients';
 
 let ctx: HttpTestContext;
-let targetId: string;
-let orphanId: string;
-let partnerId: string;
+let targetId: number;
+let orphanId: number;
+let partnerId: number;
 
 /** Every property `ClientAccountDto` declares, read from the class itself. */
 function declaredKeys(): Set<string> {

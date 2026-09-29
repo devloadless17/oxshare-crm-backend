@@ -151,7 +151,7 @@ export class AdminComplianceService {
    * screen they open dozens of times an hour, and the row that matters most —
    * the DECISION — is recorded separately either way.
    */
-  async getKyc(userId: string, actor?: AuthenticatedAdmin) {
+  async getKyc(userId: number, actor?: AuthenticatedAdmin) {
     // Before the submission is read, so an out-of-scope client's details never
     // reach a log line or an error on the way to being refused.
     if (actor) await this.visibility.assertVisible(userId, actor.clientScope);
@@ -180,7 +180,7 @@ export class AdminComplianceService {
    * unlike the three decisions below, which change privilege and are asserted
    * in both places (R-4.3).
    */
-  async getKycHistory(userId: string, actor: AuthenticatedAdmin) {
+  async getKycHistory(userId: number, actor: AuthenticatedAdmin) {
     assertActorCanAny(actor, ['kyc.view', 'kyc.review'], "view a client's KYC history");
     /*
      * The gap `client-scope-enforcement.spec.ts` found.
@@ -316,7 +316,7 @@ export class AdminComplianceService {
    * against the wrong subject is one a reviewer reading the submission's
    * history will not find.
    */
-  async correctKycIdentity(userId: string, dto: CorrectKycIdentityDto, actor: AuthenticatedAdmin) {
+  async correctKycIdentity(userId: number, dto: CorrectKycIdentityDto, actor: AuthenticatedAdmin) {
     assertActorCan(actor, 'kyc.identity.correct', 'correct identity details');
     // FIRST, as everywhere on this surface: an out-of-scope client 404s exactly
     // as a missing one does, so nothing about the response says they exist.
@@ -346,7 +346,7 @@ export class AdminComplianceService {
   }
 
   // ─── KYC: approve ─────────────────────────────────────────────────────────
-  async approveKyc(userId: string, actor: AuthenticatedAdmin) {
+  async approveKyc(userId: number, actor: AuthenticatedAdmin) {
     assertActorCan(actor, 'kyc.review', 'approve a KYC submission');
     // FIRST, before the submission is read: an out-of-scope client 404s exactly
     // as a missing one does, so nothing about the response says they exist.
@@ -375,7 +375,7 @@ export class AdminComplianceService {
     };
   }
   // ─── KYC: claim for review ────────────────────────────────────────────────
-  async claimKyc(userId: string, actor: AuthenticatedAdmin) {
+  async claimKyc(userId: number, actor: AuthenticatedAdmin) {
     assertActorCan(actor, 'kyc.review', 'claim a KYC submission for review');
     await this.visibility.assertVisible(userId, actor.clientScope);
     const result = await this.kycService.claim(userId, actor.id);
@@ -412,7 +412,7 @@ export class AdminComplianceService {
    * guard: that is what makes a release accountable, which is the property
    * this needs, instead of restricted, which is the property that strands work.
    */
-  async releaseKyc(userId: string, actor: AuthenticatedAdmin) {
+  async releaseKyc(userId: number, actor: AuthenticatedAdmin) {
     assertActorCan(actor, 'kyc.review', 'hand a KYC submission back to the queue');
     await this.visibility.assertVisible(userId, actor.clientScope);
     // Read BEFORE the release, or the id it names has already been cleared.
@@ -457,7 +457,7 @@ export class AdminComplianceService {
   }
   // ─── KYC: reject ──────────────────────────────────────────────────────────
   async rejectKyc(
-    userId: string,
+    userId: number,
     actor: AuthenticatedAdmin,
     reason?: string,
     rejectedFields?: string[],
@@ -526,7 +526,7 @@ export class AdminComplianceService {
    * reason and the items asked for.
    */
   async requestReverification(
-    userId: string,
+    userId: number,
     actor: AuthenticatedAdmin,
     reason: string,
     items: string[],

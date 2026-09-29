@@ -91,8 +91,8 @@ async function makeAgency(name: string): Promise<string> {
   return agency.id;
 }
 
-async function makeUser(email: string, referredBy?: string): Promise<string> {
-  const { rows } = await ctx.db.execute<{ id: string }>(sql`
+async function makeUser(email: string, referredBy?: number): Promise<number> {
+  const { rows } = await ctx.db.execute<{ id: number }>(sql`
     INSERT INTO users (email, password_hash, first_name, last_name, referred_by_ib_user_id)
     VALUES (${email}, 'x', 'Test', 'Client', ${referredBy ?? null})
     RETURNING id
@@ -100,7 +100,7 @@ async function makeUser(email: string, referredBy?: string): Promise<string> {
   return rows[0].id;
 }
 
-async function makePartner(email: string, agencyId: string): Promise<string> {
+async function makePartner(email: string, agencyId: string): Promise<number> {
   const partnerId = await makeUser(email);
   await ctx.db.execute(sql`
     INSERT INTO ib_accounts (user_id, referral_code, agency_id, program_id)

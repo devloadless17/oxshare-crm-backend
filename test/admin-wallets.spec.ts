@@ -50,8 +50,8 @@ const NO_PERMS = { email: 'wallets-nobody@oxshare.com', password: 'admin-passwor
 const HUGE_BALANCE = '12345678901234567.89012345';
 
 let ctx: HttpTestContext;
-let mineId: string;
-let theirsId: string;
+let mineId: number;
+let theirsId: number;
 let hugeWalletId: string;
 
 interface WalletRow {

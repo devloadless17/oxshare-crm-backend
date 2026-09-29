@@ -16,7 +16,7 @@ export type IdentityDriftProblem =
 
 /** One thing the KYC columns and the record disagree on. */
 export interface IdentityDrift {
-  userId: string;
+  userId: number;
   /** The document slot, or null for a decision or the level. */
   slot: string | null;
   problem: IdentityDriftProblem;
@@ -55,7 +55,7 @@ export interface IdentityRepair {
   /** Clients brought back in step. */
   repaired: number;
   /** Clients adoption failed on — each left exactly as it was — and why. */
-  failed: { userId: string; message: string }[];
+  failed: { userId: number; message: string }[];
   /** What was out of step before the pass, counted by kind. */
   problems: Partial<Record<IdentityDriftProblem, number>>;
 }
@@ -74,8 +74,8 @@ export class ClientIdentityStore {
   constructor(@Inject(DRIZZLE_DB) private readonly db: Db) {}
 
   /** Bring this client's record in step with their KYC rows. Idempotent. */
-  async adopt(userId: string, executor: Executor = this.db): Promise<void> {
-    await executor.execute(sql`SELECT identity_adopt(${userId}::uuid)`);
+  async adopt(userId: number, executor: Executor = this.db): Promise<void> {
+    await executor.execute(sql`SELECT identity_adopt(${userId}::integer)`);
   }
 
   /**
@@ -86,8 +86,8 @@ export class ClientIdentityStore {
    * do: a file is never shared, so that is a data error, and guessing whose it
    * is would be how one client's passport is served to another.
    */
-  async ownerOfFile(storageKey: string): Promise<string | undefined> {
-    const result = await this.db.execute<{ user_id: string }>(sql`
+  async ownerOfFile(storageKey: string): Promise<number | undefined> {
+    const result = await this.db.execute<{ user_id: number }>(sql`
       SELECT DISTINCT d.user_id
         FROM client_document_pages p
         JOIN client_documents d ON d.id = p.document_id
@@ -101,7 +101,7 @@ export class ClientIdentityStore {
    * within its slot, each with its pages and the LATEST decision that covered
    * it; and every decision, newest first.
    */
-  async recordOf(userId: string): Promise<{
+  async recordOf(userId: number): Promise<{
     versions: IdentityVersionRow[];
     decisions: IdentityDecisionRow[];
   }> {
@@ -119,29 +119,29 @@ export class ClientIdentityStore {
                ORDER BY v.seq DESC LIMIT 1) AS decision
         FROM client_documents d
         LEFT JOIN client_document_pages p ON p.document_id = d.id
-       WHERE d.user_id = ${userId}::uuid
+       WHERE d.user_id = ${userId}::integer
        GROUP BY d.id
        ORDER BY d.slot, d.frozen_at DESC NULLS FIRST, d.created_at DESC`);
     const decisions = await this.db.execute<IdentityDecisionRow>(sql`
       SELECT seq, outcome, level_after AS "levelAfter", method, admin_email AS "decidedBy",
              reason, returned_items AS "returnedItems", decided_at AS "decidedAt"
         FROM client_verifications
-       WHERE user_id = ${userId}::uuid
+       WHERE user_id = ${userId}::integer
        ORDER BY seq DESC`);
     return { versions: versions.rows, decisions: decisions.rows };
   }
 
   /** What is out of step — for one client, or everyone. Empty is healthy. */
-  async drift(userId?: string, executor: Executor = this.db): Promise<IdentityDrift[]> {
+  async drift(userId?: number, executor: Executor = this.db): Promise<IdentityDrift[]> {
     const result = await executor.execute<{
-      user_id: string;
+      user_id: number;
       slot: string | null;
       problem: IdentityDriftProblem;
     }>(
       userId === undefined
         ? sql`SELECT user_id, slot, problem FROM identity_drift ORDER BY user_id, problem, slot`
         : sql`SELECT user_id, slot, problem FROM identity_drift
-               WHERE user_id = ${userId}::uuid ORDER BY problem, slot`,
+               WHERE user_id = ${userId}::integer ORDER BY problem, slot`,
     );
     return result.rows.map((row) => ({
       userId: row.user_id,

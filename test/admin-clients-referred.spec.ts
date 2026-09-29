@@ -39,14 +39,14 @@ const MASKED = { email: 'referred-masked@oxshare.com', password: 'admin-password
 const CLIENTS = '/v1/admin/clients';
 
 interface Referrer {
-  ibUserId?: string;
+  ibUserId?: number;
   portalId?: number;
   firstName?: string;
   lastName?: string;
   outsideTerritory: boolean;
 }
 interface Row {
-  id: string;
+  id: number;
   type: string;
   referrer?: Referrer;
 }
@@ -57,18 +57,18 @@ interface Page {
 
 let ctx: HttpTestContext;
 /** A partner inside the scoped reader's territory, and one outside it. */
-let partnerIn: { id: string; portalId: number };
-let partnerOut: { id: string; portalId: number };
+let partnerIn: { id: number; portalId: number };
+let partnerOut: { id: number; portalId: number };
 /** Tagged (in territory), introduced by `partnerIn`. */
-let clientA: string;
+let clientA: number;
 /** Tagged, introduced by the partner OUTSIDE the territory. */
-let clientB: string;
+let clientB: number;
 /** Untagged (outside the territory), introduced by `partnerIn`. */
-let clientC: string;
+let clientC: number;
 /** Tagged, introduced by nobody. */
-let clientD: string;
+let clientD: number;
 /** Tagged, introduced by `partnerIn` — and a partner themselves since. */
-let clientE: string;
+let clientE: number;
 
 beforeAll(async () => {
   ctx = await startHttpTestApp();
@@ -118,7 +118,7 @@ beforeAll(async () => {
     .insert(adminClientTagScopes)
     .values({ adminId: scopedId, tagId: tag.id, createdBy: scopedId });
 
-  const person = async (email: string, first: string, referredBy: string | null = null) => {
+  const person = async (email: string, first: string, referredBy: number | null = null) => {
     const [row] = await db
       .insert(users)
       .values({
@@ -134,8 +134,8 @@ beforeAll(async () => {
 
   const pIn = await person('referred-partner-in@oxshare-e2e.test', 'Inside');
   const pOut = await person('referred-partner-out@oxshare-e2e.test', 'Outside');
-  partnerIn = { id: pIn.id, portalId: pIn.portalId };
-  partnerOut = { id: pOut.id, portalId: pOut.portalId };
+  partnerIn = { id: pIn.id, portalId: pIn.id };
+  partnerOut = { id: pOut.id, portalId: pOut.id };
   // Partners FIRST: the attribution column is a foreign key to ib_accounts.
   await db.insert(ibAccounts).values([
     { userId: partnerIn.id, level: 1, active: true, referralCode: 'REFPAGE1' },
@@ -168,7 +168,7 @@ afterAll(async () => {
 });
 
 const ids = (page: Page) => page.items.map((row) => row.id);
-const rowOf = (page: Page, id: string) => page.items.find((row) => row.id === id);
+const rowOf = (page: Page, id: number) => page.items.find((row) => row.id === id);
 
 describe('GET /admin/clients?referred=', () => {
   it('true lists every client a partner introduced — and nobody else', async () => {

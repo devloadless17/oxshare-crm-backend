@@ -378,9 +378,9 @@ async function main() {
   const statuses = ['active', 'active', 'active', 'pending', 'suspended'];
 
   await step('users', async () => {
+    // No id: a client's key is their Portal ID, which the sequence assigns (0159).
     const rows = Array.from({ length: CLIENTS }, (_, at) => {
       return [
-        randomUUID(),
         `loadtest+${at}@${SEED_DOMAIN}`,
         UNUSABLE_HASH,
         pick(['Omar', 'Layla', 'Youssef', 'Nour', 'Karim', 'Rana', 'Ali', 'Sara'], at),
@@ -397,7 +397,6 @@ async function main() {
     return insertMany(
       'users',
       [
-        'id',
         'email',
         'password_hash',
         'first_name',

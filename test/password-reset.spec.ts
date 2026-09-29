@@ -51,7 +51,7 @@ async function makeUser(email: string, status: 'active' | 'suspended' = 'active'
   return row;
 }
 
-async function reload(id: string) {
+async function reload(id: number) {
   const [row] = await ctx.db.select().from(users).where(eq(users.id, id));
   return row;
 }

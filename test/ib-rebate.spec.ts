@@ -31,13 +31,13 @@ import type { CommissionTypeTerms } from '../src/modules/ib/commission';
 let ctx: MoneyTestContext;
 let commissions: CommissionService;
 
-let partnerId: string;
-let clientId: string;
+let partnerId: number;
+let clientId: number;
 
 const POSITION_ID = '11111111-1111-4111-8111-111111111111';
 
-async function makeUser(email: string): Promise<string> {
-  const { rows } = await ctx.db.execute<{ id: string }>(sql`
+async function makeUser(email: string): Promise<number> {
+  const { rows } = await ctx.db.execute<{ id: number }>(sql`
     INSERT INTO users (email, password_hash, first_name, last_name)
     VALUES (${email}, 'x', ${email.split('@')[0]}, 'Person')
     RETURNING id
@@ -81,8 +81,8 @@ async function accrue(sourceId = POSITION_ID): Promise<number> {
 async function accrualRows() {
   const { rows } = await ctx.db.execute<{
     kind: string;
-    ib_user_id: string;
-    client_user_id: string;
+    ib_user_id: number;
+    client_user_id: number;
     amount: string;
     status: string;
   }>(sql`
@@ -92,7 +92,7 @@ async function accrualRows() {
   return rows;
 }
 
-async function walletsOf(userId: string) {
+async function walletsOf(userId: number) {
   const { rows } = await ctx.db.execute<{ kind: string; currency: string; balance: string }>(sql`
     SELECT kind, currency, balance FROM wallets WHERE user_id = ${userId} ORDER BY kind
   `);

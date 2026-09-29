@@ -156,7 +156,7 @@ async function main() {
          * positions and refuses the statement outright.
          */
         `INSERT INTO trading_accounts (user_id, login, environment, currency, balance, status, name)
-         SELECT $1::uuid, $2::varchar, 'live', 'USD', $3::numeric, 'active', $4::varchar
+         SELECT $1::integer, $2::varchar, 'live', 'USD', $3::numeric, 'active', $4::varchar
          WHERE NOT EXISTS (SELECT 1 FROM trading_accounts WHERE login = $2::varchar)`,
         [owner, `vol-${i}`, `${1000 + i}.00000000`, `Volume ${i}`],
       );
@@ -246,7 +246,7 @@ async function main() {
         `INSERT INTO transfers
            (user_id, wallet_id, trading_account_id, direction, amount, currency, state,
             failure_reason, settled_at)
-         SELECT $1::uuid, $2::uuid, $3::uuid, $4::transfer_direction, $5::numeric,
+         SELECT $1::integer, $2::uuid, $3::uuid, $4::transfer_direction, $5::numeric,
                 $6::varchar, $7::transfer_state, $8::text, $9::timestamptz
          WHERE NOT EXISTS (
            SELECT 1 FROM transfers

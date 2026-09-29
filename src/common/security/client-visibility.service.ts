@@ -55,7 +55,7 @@ export class ClientVisibilityService {
    * suits a route that names the client itself.
    */
   async assertVisible(
-    clientId: string,
+    clientId: number,
     scope: ClientScope,
     notFound: () => DomainError = () => new ClientNotFoundError(),
   ): Promise<void> {

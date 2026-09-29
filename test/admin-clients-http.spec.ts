@@ -39,11 +39,22 @@ import { eq } from 'drizzle-orm';
 
 const ADMIN = { email: 'clients-http@oxshare.com', password: 'admin-password-123' };
 const CLIENTS = '/v1/admin/clients';
+/**
+ * A well-formed uuid — the shape every client key used to be, before 0159
+ * dropped it. No client has one any more, so this stands for a bookmarked
+ * pre-migration link or a pasted uuid: something that must never match a
+ * client search and must never be accepted where a Portal ID is required.
+ */
+const LEGACY_UUID = '00000000-0000-4000-8000-0000000000ff';
 
 let ctx: HttpTestContext;
-/** A seeded client's uuid — what rows are keyed on, and no longer searchable. */
-let approvedId: string;
-/** The same client's Portal ID, which is what the search box takes (0133). */
+/**
+ * A seeded client's id — since migration 0159 the Portal ID IS the id, so this
+ * and `approvedPortalId` are the same number. Both names are kept because the
+ * API still returns both an `id` and a `portalId` field (equal) on every row.
+ */
+let approvedId: number;
+/** Same value as `approvedId` — see above. What the search box takes (0133, 0159). */
 let approvedPortalId: number;
 
 beforeAll(async () => {
@@ -112,7 +123,7 @@ beforeAll(async () => {
 
   void noKyc;
   approvedId = approved.id;
-  approvedPortalId = approved.portalId;
+  approvedPortalId = approved.id;
 });
 
 afterAll(async () => {
@@ -192,7 +203,7 @@ describe('searching by Portal ID', () => {
   it('returns exactly that client for their Portal ID', async () => {
     const session = await actingAs(ctx, 'admin', ADMIN);
     const res = await session.get(`${CLIENTS}?q=${approvedPortalId}&withTotal=true`).expect(200);
-    const body = res.body as { items: { id: string; portalId: number }[]; total: number };
+    const body = res.body as { items: { id: number; portalId: number }[]; total: number };
     expect(body.items.map((c) => c.id)).toEqual([approvedId]);
     expect(body.items[0].portalId).toBe(approvedPortalId);
     // The count carries the same predicate, so it describes the same set.
@@ -203,7 +214,7 @@ describe('searching by Portal ID', () => {
     const session = await actingAs(ctx, 'admin', ADMIN);
     const q = encodeURIComponent(`  #${approvedPortalId} `);
     const res = await session.get(`${CLIENTS}?q=${q}`).expect(200);
-    const body = res.body as { items: { id: string }[] };
+    const body = res.body as { items: { id: number }[] };
     expect(body.items.map((c) => c.id)).toEqual([approvedId]);
   });
 
@@ -211,7 +222,7 @@ describe('searching by Portal ID', () => {
     const session = await actingAs(ctx, 'admin', ADMIN);
     const prefix = String(approvedPortalId).slice(0, 4);
     const res = await session.get(`${CLIENTS}?q=${prefix}`).expect(200);
-    const body = res.body as { items: { id: string }[] };
+    const body = res.body as { items: { id: number }[] };
     expect(body.items.map((c) => c.id)).not.toContain(approvedId);
   });
 
@@ -231,61 +242,69 @@ describe('searching by Portal ID', () => {
 
   it('no longer answers a pasted uuid — it is shown nowhere', async () => {
     const session = await actingAs(ctx, 'admin', ADMIN);
-    const res = await session.get(`${CLIENTS}?q=${approvedId}`).expect(200);
+    const res = await session.get(`${CLIENTS}?q=${LEGACY_UUID}`).expect(200);
     expect((res.body as { items: unknown[] }).items).toEqual([]);
   });
 
   it('still searches name and email as before', async () => {
     const session = await actingAs(ctx, 'admin', ADMIN);
     const res = await session.get(`${CLIENTS}?q=fully-verified`).expect(200);
-    const body = res.body as { items: { id: string }[] };
+    const body = res.body as { items: { id: number }[] };
     expect(body.items.map((c) => c.id)).toEqual([approvedId]);
   });
 
-  it('puts the Portal ID in the CSV export, never the uuid', async () => {
+  it('puts the Portal ID in the CSV export, never a uuid', async () => {
     const session = await actingAs(ctx, 'admin', ADMIN);
     const res = await session.get(`${CLIENTS}/export?q=${approvedPortalId}`).expect(200);
     const [header, row] = res.text.replace(/^\uFEFF/, '').split('\r\n');
     expect(header.split(',')[0]).toBe('Portal ID');
     expect(row.split(',')[0]).toBe(String(approvedPortalId));
-    expect(res.text).not.toContain(approvedId);
+    // There is no client uuid left to leak (0159) \u2014 this is the defence-in-depth
+    // half of the original assertion: no uuid-shaped value appears anywhere.
+    expect(res.text).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
   });
 });
 
 /**
- * A client is ADDRESSED by Portal ID too — `ClientRefPipe`.
+ * A client is ADDRESSED by Portal ID — `ClientRefPipe`.
  *
  * The console's URLs carry the Portal ID (`/clients/1000245`, `/kyc/1000245`)
  * and pass it straight to the API, so every route that names a client takes
- * one and resolves it to the uuid the record is keyed on. These pin the three
- * answers that matter: the right client, the same 404 an unknown client gets —
- * never a distinguishable one — and a 400 for something that is neither.
+ * one. Since 0159 the Portal ID IS the id the record is keyed on — nothing is
+ * "resolved" any more, so a uuid (the pre-0159 internal key) is no longer a
+ * second valid shape: it is refused at the edge like any other malformed
+ * value. These pin what matters now: the right client, the same 404 an
+ * unknown Portal ID gets whichever unknown number is tried — never a
+ * distinguishable one — and a 400 for anything that is not a Portal ID.
  */
 describe('a client is addressed by Portal ID', () => {
   it('serves the profile at /clients/<Portal ID>', async () => {
     const session = await actingAs(ctx, 'admin', ADMIN);
     const res = await session.get(`${CLIENTS}/${approvedPortalId}`).expect(200);
-    const body = res.body as { id: string; portalId: number };
+    const body = res.body as { id: number; portalId: number };
     expect(body.portalId).toBe(approvedPortalId);
     expect(body.id).toBe(approvedId);
   });
 
-  it('still serves it at the internal key, for links minted before', async () => {
+  it('refuses a pre-0159 uuid link with 400, rather than silently resolving it', async () => {
+    // The uuid is gone: `ClientRefPipe` no longer resolves it to anything, so a
+    // link minted before the migration must fail loudly rather than 404 (which
+    // would look like "no such client") or, worse, 200 on the wrong row.
     const session = await actingAs(ctx, 'admin', ADMIN);
-    const res = await session.get(`${CLIENTS}/${approvedId}`).expect(200);
-    expect((res.body as { portalId: number }).portalId).toBe(approvedPortalId);
+    const res = await session.get(`${CLIENTS}/${LEGACY_UUID}`).expect(400);
+    expect((res.body as { code: string }).code).toBe('VALIDATION_FAILED');
   });
 
-  it('answers an unknown Portal ID exactly as it answers an unknown client', async () => {
+  it('answers an unknown Portal ID exactly as it answers a DIFFERENT unknown Portal ID', async () => {
     // A distinguishable "no such Portal ID" would be an existence probe of its
-    // own; the pipe resolves to the nil uuid so the route answers as usual.
+    // own — the response must not vary with which never-issued number is tried.
     const session = await actingAs(ctx, 'admin', ADMIN);
-    const byNumber = await session.get(`${CLIENTS}/999999999`);
-    const byKey = await session.get(`${CLIENTS}/00000000-0000-4000-8000-000000000000`);
-    expect(byNumber.status).toBe(404);
-    expect(byKey.status).toBe(404);
-    expect((byNumber.body as { message: unknown }).message).toEqual(
-      (byKey.body as { message: unknown }).message,
+    const first = await session.get(`${CLIENTS}/999999999`);
+    const second = await session.get(`${CLIENTS}/888888888`);
+    expect(first.status).toBe(404);
+    expect(second.status).toBe(404);
+    expect((first.body as { message: unknown }).message).toEqual(
+      (second.body as { message: unknown }).message,
     );
   });
 
@@ -308,7 +327,7 @@ describe('a client is addressed by Portal ID', () => {
   it('serves the KYC review at /kyc/<Portal ID>', async () => {
     const session = await actingAs(ctx, 'admin', ADMIN);
     const res = await session.get(`/v1/admin/kyc/${approvedPortalId}`).expect(200);
-    expect((res.body as { userId: string }).userId).toBe(approvedId);
+    expect((res.body as { userId: number }).userId).toBe(approvedId);
   });
 
   it('filters the client list by a partner’s Portal ID, and refuses nonsense', async () => {
@@ -461,9 +480,9 @@ describe('verification state is two columns, not one vague status', () => {
  */
 describe('the Network sections of the client profile', () => {
   const LIMITED = { email: 'clients-http-no-ib@oxshare.com', password: 'admin-password-123' };
-  let partnerId: string;
-  let referredId: string;
-  let soloId: string;
+  let partnerId: number;
+  let referredId: number;
+  let soloId: number;
 
   beforeAll(async () => {
     const passwords = new PasswordService();
@@ -531,7 +550,7 @@ describe('the Network sections of the client profile', () => {
     const res = await session.get(`${CLIENTS}/${referredId}`).expect(200);
     const body = res.body as {
       type: string;
-      referrer?: { ibUserId: string; email: string; active: boolean };
+      referrer?: { ibUserId: number; email: string; active: boolean };
     };
 
     // The badge and the card must agree — they derive from the same column.
@@ -547,7 +566,7 @@ describe('the Network sections of the client profile', () => {
     const res = await session.get(`${CLIENTS}/${partnerId}`).expect(200);
     const body = res.body as {
       type: string;
-      referredClients?: { clientUserId: string; email: string }[];
+      referredClients?: { clientUserId: number; email: string }[];
       referredShown?: number;
     };
 

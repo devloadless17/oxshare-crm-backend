@@ -61,12 +61,12 @@ import { EmailService } from '../src/modules/email/email.service';
 const ADMIN = { email: 'kyc-correct-admin@oxshare.com', password: 'admin-password-123' };
 const REVIEWER = { email: 'kyc-correct-reviewer@oxshare.com', password: 'admin-password-123' };
 
-const ROUTE = (id: string) => `/v1/admin/kyc/${id}/personal-info`;
+const ROUTE = (id: number) => `/v1/admin/kyc/${id}/personal-info`;
 /** Every correction of a verified record says why (the owner's ruling, 26 Sep 2026). */
 const REASON = 'Typed wrongly at registration; the passport reads otherwise.';
 
 let ctx: HttpTestContext;
-let userId: string;
+let userId: number;
 
 const ORIGINAL = {
   firstName: 'Layla',
@@ -289,7 +289,7 @@ describe('correcting an approved submission', () => {
           details: auditLog.details,
         })
         .from(auditLog)
-        .where(eq(auditLog.subjectId, userId));
+        .where(eq(auditLog.subjectId, String(userId)));
       if (rows.length === 0) await new Promise((r) => setTimeout(r, 50));
     }
 

@@ -46,13 +46,13 @@ let ctx: MoneyTestContext;
 let commissions: CommissionService;
 
 /** Everybody, by the name this file calls them. */
-const who: Record<string, string> = {};
+const who: Record<string, number> = {};
 /** Programme ids, by name. */
 /** Agency ids, by name. */
 const agency: Record<string, string> = {};
 
-async function makeUser(handle: string): Promise<string> {
-  const { rows } = await ctx.db.execute<{ id: string }>(sql`
+async function makeUser(handle: string): Promise<number> {
+  const { rows } = await ctx.db.execute<{ id: number }>(sql`
     INSERT INTO users (email, password_hash, first_name, last_name, verification_level, email_verified)
     VALUES (${`${handle}@e2e.test`}, 'x', ${handle}, 'Person', 1, true)
     RETURNING id
@@ -133,9 +133,9 @@ async function makeAgency(name: string): Promise<string> {
 async function makePartner(
   handle: string,
   level: number,
-  parent?: string,
+  parent?: number,
   agencyId?: string,
-): Promise<string> {
+): Promise<number> {
   const id = await makeUser(handle);
   await ctx.db.execute(sql`
     INSERT INTO ib_accounts (user_id, parent_ib_user_id, referral_code, active, level, agency_id)
@@ -146,7 +146,7 @@ async function makePartner(
 }
 
 /** A trading client, attributed to `introducer`. */
-async function makeClient(handle: string, introducer: string): Promise<string> {
+async function makeClient(handle: string, introducer: number): Promise<number> {
   const id = await makeUser(handle);
   await ctx.db.execute(
     sql`UPDATE users SET referred_by_ib_user_id = ${introducer} WHERE id = ${id}`,
@@ -155,7 +155,7 @@ async function makeClient(handle: string, introducer: string): Promise<string> {
 }
 
 /** One closed one-lot trade on the product above. */
-async function trade(clientUserId: string, sourceId: string) {
+async function trade(clientUserId: number, sourceId: string) {
   return commissions.accrueForDeal({
     dealRowId: sourceId,
     ticket: sourceId.slice(0, 6),
@@ -169,8 +169,8 @@ async function trade(clientUserId: string, sourceId: string) {
 /** What landed, as `handle@depth=amount` strings — readable in a failure message. */
 async function paidFor(sourceId: string): Promise<string[]> {
   const { rows } = await ctx.db.execute<{
-    ib_user_id: string;
-    client_user_id: string | null;
+    ib_user_id: number;
+    client_user_id: number | null;
     kind: string;
     depth: number;
     amount: string;
@@ -179,12 +179,12 @@ async function paidFor(sourceId: string): Promise<string[]> {
       FROM ib_accruals WHERE source_id = ${sourceId} ORDER BY kind, depth
   `);
 
-  const nameOf = (id: string) =>
-    Object.entries(who).find(([, value]) => value === id)?.[0] ?? id.slice(0, 6);
+  const nameOf = (id: number) =>
+    Object.entries(who).find(([, value]) => value === id)?.[0] ?? String(id);
 
   return rows.map((row) =>
     row.kind === 'rebate'
-      ? `rebate→${nameOf(row.client_user_id ?? '')}=${row.amount}`
+      ? `rebate→${nameOf(row.client_user_id ?? 0)}=${row.amount}`
       : `${nameOf(row.ib_user_id)}@${row.depth}=${row.amount}`,
   );
 }

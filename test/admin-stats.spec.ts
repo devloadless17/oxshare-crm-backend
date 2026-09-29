@@ -65,9 +65,9 @@ const OUTSIDER = { email: 'stats-outsider@oxshare.com', password: 'admin-passwor
 let ctx: HttpTestContext;
 
 /** Clients carrying the scoped admin's tag. */
-const mine: string[] = [];
+const mine: number[] = [];
 /** Clients carrying no tag at all — invisible to the scoped admin. */
-const theirs: string[] = [];
+const theirs: number[] = [];
 
 /** The read keys every stats section needs — not the whole catalog. */
 const STATS_PERMISSIONS = [
@@ -188,9 +188,9 @@ async function makeClient(options: {
   withdrawal?: { amount: string; state: string; daysAgo: number };
   ibApplication?: 'pending' | 'approved' | 'rejected';
   ibPartner?: boolean;
-}): Promise<string> {
+}): Promise<number> {
   const db = ctx.db.db;
-  const { rows } = await db.execute<{ id: string }>(sql`
+  const { rows } = await db.execute<{ id: number }>(sql`
     INSERT INTO users (email, password_hash, first_name, last_name, status, verification_level, created_at)
     VALUES (
       ${options.email}, 'x', 'Stats', 'Client',
@@ -250,7 +250,7 @@ async function makeClient(options: {
   if (options.ibPartner) {
     await db.execute(sql`
       INSERT INTO ib_accounts (user_id, referral_code, program_id)
-      VALUES (${userId}, ${`STATS-${userId.slice(0, 8)}`},
+      VALUES (${userId}, ${`STATS-${userId}`},
               (SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1))
     `);
   }

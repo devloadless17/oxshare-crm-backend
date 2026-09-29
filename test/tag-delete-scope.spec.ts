@@ -40,7 +40,7 @@ let deskB: string;
 let sharedTag: string;
 /** Carried only by desk A's client. */
 let ownTag: string;
-let outsideClient: string;
+let outsideClient: number;
 
 async function tagExists(id: string): Promise<boolean> {
   const rows = await ctx.db.db.select().from(clientTags).where(eq(clientTags.id, id));

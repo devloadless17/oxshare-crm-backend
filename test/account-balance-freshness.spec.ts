@@ -28,7 +28,7 @@ import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './mone
  * inherit all of it; that delegation is asserted here rather than assumed.
  */
 let ctx: MoneyTestContext;
-let userId: string;
+let userId: number;
 
 /** What MT5 says right now, and how many times it was asked. */
 const mt5 = { balance: '900.00000000', calls: [] as string[], fail: false, delayMs: 0 };
@@ -69,7 +69,7 @@ beforeEach(async () => {
   mt5.fail = false;
   mt5.delayMs = 0;
 
-  const { rows } = await ctx.db.execute<{ id: string }>(sql`
+  const { rows } = await ctx.db.execute<{ id: number }>(sql`
     INSERT INTO users (email, password_hash, first_name, last_name, verification_level, email_verified)
     VALUES ('freshness@test.local', 'x', 'Test', 'Client', 1, true)
     RETURNING id

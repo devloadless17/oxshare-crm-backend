@@ -72,7 +72,7 @@ import {
 const MASTER = { email: 'completeness-master@oxshare.com', password: 'admin-password-123' };
 
 let ctx: HttpTestContext;
-let clientId: string;
+let clientId: number;
 
 const SWAGGER_PROPERTY_LIST = 'swagger/apiModelPropertiesArray';
 

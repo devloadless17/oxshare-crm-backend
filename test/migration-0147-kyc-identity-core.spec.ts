@@ -29,7 +29,7 @@ const SQL = readFileSync(join(MIGRATIONS, `${TAG}.sql`), 'utf8');
 
 let ctx: MoneyTestContext;
 let folder: string;
-let clientId: string;
+let clientId: number;
 
 async function q<T = Record<string, unknown>>(text: string, values: unknown[] = []): Promise<T[]> {
   return (await ctx.pool.query(text, values)).rows as T[];
@@ -134,7 +134,7 @@ beforeAll(async () => {
   await step('step-5', 6, 'review', 'Review & Submit', []);
 
   // ── A client who answered all of it. ──
-  const [client] = await q<{ id: string }>(
+  const [client] = await q<{ id: number }>(
     `INSERT INTO users (email, password_hash, first_name, last_name, email_verified)
      VALUES ('mig0147@oxshare-e2e.test', 'x', 'Layla', 'Haddad', true) RETURNING id`,
   );

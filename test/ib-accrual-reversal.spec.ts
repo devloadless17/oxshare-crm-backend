@@ -45,13 +45,13 @@ import { UsersStore } from '../src/store/users.store';
 let ctx: MoneyTestContext;
 let commissions: CommissionService;
 
-let partnerId: string;
-let clientId: string;
+let partnerId: number;
+let clientId: number;
 
 const DEAL_ROW_ID = '22222222-2222-4222-8222-222222222222';
 
-async function makeUser(email: string): Promise<string> {
-  const { rows } = await ctx.db.execute<{ id: string }>(sql`
+async function makeUser(email: string): Promise<number> {
+  const { rows } = await ctx.db.execute<{ id: number }>(sql`
     INSERT INTO users (email, password_hash, first_name, last_name)
     VALUES (${email}, 'x', ${email.split('@')[0]}, 'Person')
     RETURNING id
@@ -99,14 +99,14 @@ async function accrualRows() {
   return rows;
 }
 
-async function walletOf(userId: string, kind: string): Promise<string | null> {
+async function walletOf(userId: number, kind: string): Promise<string | null> {
   const { rows } = await ctx.db.execute<{ balance: string }>(
     sql`SELECT balance FROM wallets WHERE user_id = ${userId} AND kind = ${kind}::wallet_kind`,
   );
   return rows[0]?.balance ?? null;
 }
 
-async function ledgerFor(userId: string) {
+async function ledgerFor(userId: number) {
   const { rows } = await ctx.db.execute<{
     entry_type: string;
     amount: string;

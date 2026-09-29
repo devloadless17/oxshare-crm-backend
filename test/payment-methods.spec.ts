@@ -90,8 +90,8 @@ afterAll(async () => {
   await stopMoneyTestDb(ctx);
 });
 
-async function makeClient(email: string): Promise<string> {
-  const { rows } = await ctx.db.execute<{ id: string }>(sql`
+async function makeClient(email: string): Promise<number> {
+  const { rows } = await ctx.db.execute<{ id: number }>(sql`
     INSERT INTO users (email, password_hash, first_name, last_name, verification_level, email_verified)
     VALUES (${email}, 'x', 'Test', 'Client', 1, true)
     RETURNING id
@@ -447,12 +447,12 @@ describe('a gateway that will not start the payment', () => {
     gateways.startPayment.mockResolvedValue({ paymentUrl: 'https://example.test/pay/stub' });
   });
 
-  async function enabledWhishDeposit(email: string): Promise<string> {
+  async function enabledWhishDeposit(email: string): Promise<number> {
     await ctx.db.execute(sql`UPDATE payment_methods SET enabled = true WHERE key = 'whish'`);
     return makeClient(email);
   }
 
-  async function depositRow(userId: string) {
+  async function depositRow(userId: number) {
     const { rows } = await ctx.db.execute<{ state: string; rejection_reason: string | null }>(
       sql`SELECT state, rejection_reason FROM transactions WHERE user_id = ${userId}`,
     );

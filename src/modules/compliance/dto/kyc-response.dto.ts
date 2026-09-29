@@ -246,7 +246,7 @@ export class KycStepStateDto {
 }
 
 export class KycStatusDto {
-  @ApiProperty() userId: string;
+  @ApiProperty({ type: 'integer' }) userId: number;
   @ApiProperty({ enum: KYC_STATUSES }) status: (typeof KYC_STATUSES)[number];
 
   @ApiPropertyOptional({

@@ -90,24 +90,25 @@ export const rejectionContextEnum = pgEnum('rejection_context', [
 export const users = pgTable(
   'users',
   {
-    id: uuid('id').defaultRandom().primaryKey(),
     /**
-     * The client's PORTAL ID — the human number, from 1,000,000 up (0133).
+     * The client's PORTAL ID — their one identifier, and the key every foreign
+     * key points at (0159, D-83). From 1,000,000 up.
      *
-     * What staff and the client see and search by; the UUID above stays the
-     * key every foreign key points at, and the one URLs and API routes use. A
-     * sequential number is guessable, so it must never become an access key —
-     * it names a client to a person, not to the system.
+     * It was a second number beside a uuid primary key (0133) until the owner
+     * ruled a client has one identifier: the number staff and the client see,
+     * search by, and type. A sequential number is guessable, so it is never an
+     * access key — authorisation stays on the session and the scope.
      *
-     * Drawn from `users_portal_id_seq` by a column DEFAULT, so no insert path
-     * has to remember it. Clients imported from the old platform set it
-     * explicitly to their original number (1 … ~200,000), below the range the
-     * sequence owns; the importer must refuse anything ≥ 1,000,000. Gaps are
-     * expected — a failed registration still consumes its number.
+     * Drawn from `users_id_seq` by the DEFAULT, so no insert path has to
+     * remember it; a trigger refuses to change it (`users_id_immutable`).
+     * Clients imported from the old platform set it explicitly to their
+     * original number (1 … ~200,000), below the range the sequence owns; the
+     * importer must refuse anything ≥ 1,000,000. Gaps are expected — a failed
+     * registration still consumes its number.
      */
-    portalId: integer('portal_id')
-      .notNull()
-      .default(sql`nextval('users_portal_id_seq')`),
+    id: integer('id')
+      .primaryKey()
+      .default(sql`nextval('users_id_seq')`),
     email: varchar('email', { length: 255 }).notNull().unique(),
     passwordHash: varchar('password_hash', { length: 255 }).notNull(),
     firstName: varchar('first_name', { length: 100 }).notNull(),
@@ -317,11 +318,10 @@ export const users = pgTable(
      * declared far below this table and `.references()` would be a forward
      * reference at module scope.
      */
-    referredByIbUserId: uuid('referred_by_ib_user_id'),
+    referredByIbUserId: integer('referred_by_ib_user_id'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    uniqueIndex('users_portal_id_uq').on(t.portalId),
     index('users_type_idx').on(t.type),
     index('users_status_idx').on(t.status),
     index('users_verification_level_idx').on(t.verificationLevel),
@@ -713,7 +713,7 @@ export const clientTagAssignments = pgTable(
   {
     // `restrict`, matching every other FK to `users` here: a client with
     // history is never deleted out from under the rows that reference them.
-    userId: uuid('user_id')
+    userId: integer('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
     // `cascade`, unlike the scope table below. A tag is a label; deleting it
@@ -805,7 +805,7 @@ export const kycSubmissions = pgTable(
      * compliance record with it. Deleting a client is a deliberate act with a
      * retention policy attached (PLATFORM-CONVENTIONS 12.9), not a side effect.
      */
-    userId: uuid('user_id')
+    userId: integer('user_id')
       .primaryKey()
       .references(() => users.id, { onDelete: 'restrict' }),
     status: kycStatusEnum('status').notNull().default('not_started'),
@@ -957,7 +957,7 @@ export const kycSubmissionAttempts = pgTable(
   'kyc_submission_attempts',
   {
     id: uuid('id').primaryKey().defaultRandom(),
-    userId: uuid('user_id')
+    userId: integer('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
     attemptNo: integer('attempt_no').notNull(),
@@ -1018,7 +1018,7 @@ export const clientDocuments = pgTable(
   'client_documents',
   {
     id: uuid('id').primaryKey().defaultRandom(),
-    userId: uuid('user_id')
+    userId: integer('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
     /** `identity` | `address` | `selfie` | `other:<field key>`. */
@@ -1062,7 +1062,7 @@ export const clientVerifications = pgTable(
   'client_verifications',
   {
     id: uuid('id').primaryKey().defaultRandom(),
-    userId: uuid('user_id')
+    userId: integer('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
     seq: integer('seq').notNull(),
@@ -2488,7 +2488,7 @@ export const wallets = pgTable(
     walletNumber: varchar('wallet_number', { length: 12 })
       .notNull()
       .default(sql`wallet_number()`),
-    userId: uuid('user_id')
+    userId: integer('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
     /*
@@ -2638,7 +2638,7 @@ export const tradingAccounts = pgTable(
   'trading_accounts',
   {
     id: uuid('id').defaultRandom().primaryKey(),
-    userId: uuid('user_id')
+    userId: integer('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
     /**
@@ -3133,7 +3133,7 @@ export const transactions = pgTable(
   'transactions',
   {
     id: uuid('id').defaultRandom().primaryKey(),
-    userId: uuid('user_id')
+    userId: integer('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
     walletId: uuid('wallet_id')
@@ -3279,7 +3279,7 @@ export const transfers = pgTable(
   'transfers',
   {
     id: uuid('id').defaultRandom().primaryKey(),
-    userId: uuid('user_id')
+    userId: integer('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
     walletId: uuid('wallet_id')
@@ -3363,7 +3363,7 @@ export const ibWalletTransfers = pgTable(
   'ib_wallet_transfers',
   {
     id: uuid('id').defaultRandom().primaryKey(),
-    userId: uuid('user_id')
+    userId: integer('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
     /** The COMMISSION wallet debited. */
@@ -3413,7 +3413,7 @@ export const auditLog = pgTable(
   'audit_log',
   {
     id: uuid('id').defaultRandom().primaryKey(),
-    actorId: uuid('actor_id').notNull(),
+    actorId: text('actor_id').notNull(),
     actorEmail: varchar('actor_email', { length: 255 }).notNull(),
     /**
      * WHAT KIND of principal acted.
@@ -3463,7 +3463,7 @@ export const auditLog = pgTable(
      * reader's client scope filters on it (D-54). Never sent: a client is shown
      * by Portal ID. No foreign key — history outlives the client it names.
      */
-    clientId: uuid('client_id'),
+    clientId: integer('client_id'),
   },
   (t) => [
     index('audit_log_created_at_idx').on(t.createdAt),
@@ -3518,7 +3518,7 @@ export const idempotencyKeys = pgTable(
     /** `POST /payments/withdrawals` — so one key may be reused across endpoints. */
     endpoint: varchar('endpoint', { length: 255 }).notNull(),
     /** Whose key it is. Two users may pick the same key without colliding. */
-    actorId: uuid('actor_id').notNull(),
+    actorId: text('actor_id').notNull(),
     /**
      * SHA-256 of the request body.
      *
@@ -3578,7 +3578,7 @@ export const refreshTokens = pgTable(
     familyId: uuid('family_id').notNull(),
     /** 'admin' | 'portal'. The two surfaces are separate (R-3.1) and so are their tokens. */
     surface: varchar('surface', { length: 16 }).notNull(),
-    subjectId: uuid('subject_id').notNull(),
+    subjectId: text('subject_id').notNull(),
     /**
      * SHA-256, not bcrypt.
      *
@@ -4048,7 +4048,7 @@ export const ibApplications = pgTable(
   'ib_applications',
   {
     id: uuid('id').defaultRandom().primaryKey(),
-    userId: uuid('user_id')
+    userId: integer('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
     /**
@@ -4124,7 +4124,7 @@ export const ibApplications = pgTable(
 export const ibAccounts = pgTable(
   'ib_accounts',
   {
-    userId: uuid('user_id')
+    userId: integer('user_id')
       .primaryKey()
       .references(() => users.id, { onDelete: 'restrict' }),
     /*
@@ -4175,7 +4175,7 @@ export const ibAccounts = pgTable(
      */
     level: integer('level').notNull().default(1),
     /** NULL means they deal with the broker directly — the top of a chain. */
-    parentIbUserId: uuid('parent_ib_user_id'),
+    parentIbUserId: integer('parent_ib_user_id'),
     /**
      * What a client types at registration to be attributed to this partner.
      *
@@ -4327,11 +4327,11 @@ export const ibAccruals = pgTable(
   {
     id: uuid('id').defaultRandom().primaryKey(),
     /** The partner who earned it. */
-    ibUserId: uuid('ib_user_id')
+    ibUserId: integer('ib_user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
     /** The client whose activity generated it — who this is owed BECAUSE of. */
-    clientUserId: uuid('client_user_id')
+    clientUserId: integer('client_user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
     /**
@@ -4523,7 +4523,7 @@ export const positions = pgTable(
      * reference keeps the row attributable to the specific login it was traded
      * on.
      */
-    userId: uuid('user_id')
+    userId: integer('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
     tradingAccountId: uuid('trading_account_id')
@@ -4663,7 +4663,7 @@ export const notifications = pgTable(
      * (clients are never deleted, admins are suspended), so orphaning is not a
      * live risk.
      */
-    recipientId: uuid('recipient_id').notNull(),
+    recipientId: text('recipient_id').notNull(),
     /*
      * Catalogue slug, e.g. 'withdrawal.approved'. varchar rather than a
      * pgEnum: adding an event to the catalogue must not need a migration.
@@ -4703,9 +4703,9 @@ export const notifications = pgTable(
      * No foreign keys, for the recipient's reason above: clients are never
      * deleted, and a bell row must not add a failure mode to anyone's write.
      */
-    subjectUserId: uuid('subject_user_id'),
+    subjectUserId: integer('subject_user_id'),
     subjectKind: varchar('subject_kind', { length: 24 }).$type<NotificationSubjectKind>(),
-    subjectId: uuid('subject_id'),
+    subjectId: text('subject_id'),
     /*
      * Set by the item tables' triggers the moment somebody handles the item —
      * for EVERY admin's row about it at once. Never written by application
@@ -4803,8 +4803,8 @@ export const storedObjects = pgTable(
      * `restrict` matches `kyc_submissions` — deleting a client must fail loudly
      * rather than silently discard the record of what they uploaded.
      */
-    ownerUserId: uuid('owner_user_id').references(() => users.id, { onDelete: 'restrict' }),
-    uploadedById: uuid('uploaded_by_id').notNull(),
+    ownerUserId: integer('owner_user_id').references(() => users.id, { onDelete: 'restrict' }),
+    uploadedById: text('uploaded_by_id').notNull(),
     /** 'client' | 'admin' — the same shape as `audit_log.actor_kind`. */
     uploadedByKind: varchar('uploaded_by_kind', { length: 16 }).notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

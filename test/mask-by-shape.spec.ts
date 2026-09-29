@@ -54,7 +54,7 @@ class PageDto {
 
 /** A recursive graph: a partner has a parent who is a partner. */
 class PartnerDto {
-  @ApiProperty() userId: string = '';
+  @ApiProperty() userId: number = 0;
   @ClientField('client.email') @ApiProperty() email: string = '';
   @ApiProperty({ type: () => PartnerDto }) parent?: PartnerDto;
   @ApiProperty({ type: () => [PartnerDto] }) directPartners: PartnerDto[] = [];
@@ -180,7 +180,7 @@ describe('free-form maps, which a shape cannot describe', () => {
    * property a fixed DTO could never have had.
    */
   class SubmissionDto {
-    @ApiProperty() userId: string = '';
+    @ApiProperty() userId: number = 0;
     @ClientFieldMap('kyc.personalInfo') @ApiProperty() personalInfo: Record<string, string> = {};
   }
 

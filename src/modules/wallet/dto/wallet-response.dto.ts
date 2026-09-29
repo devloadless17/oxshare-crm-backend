@@ -43,7 +43,7 @@ export class WalletDto {
   })
   walletNumber: string;
 
-  @ApiProperty() userId: string;
+  @ApiProperty({ type: 'integer' }) userId: number;
 
   /**
    * What this wallet is CALLED.
@@ -160,7 +160,7 @@ export class LedgerEntryDto {
 
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty()
-  userId: string;
+  userId: number;
   /*
    * Nullable, and the LEFT join behind them is the reason. `ledger_entries` is
    * append-only: an entry whose client row has since gone must still appear,

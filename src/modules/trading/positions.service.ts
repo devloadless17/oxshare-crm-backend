@@ -51,7 +51,7 @@ export class PositionsService {
   ) {}
 
   /** Every open position on one client's accounts, newest first. */
-  async openFor(userId: string) {
+  async openFor(userId: number) {
     return await this.db
       .select()
       .from(positions)
@@ -60,7 +60,7 @@ export class PositionsService {
   }
 
   async open(input: {
-    userId: string;
+    userId: number;
     tradingAccountId: string;
     ticket: string;
     symbol: string;

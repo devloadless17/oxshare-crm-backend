@@ -26,8 +26,9 @@ export interface RecordObjectInput {
   /** Lowercase hex. */
   sha256: string;
   originalName?: string | null;
-  ownerUserId?: string | null;
-  uploadedById: string;
+  ownerUserId?: number | null;
+  /** An admin's uuid, or a client's Portal ID — stored as text (0159). */
+  uploadedById: string | number;
   uploadedByKind: UploaderKind;
 }
 
@@ -40,7 +41,7 @@ export interface StoredObjectRow {
   byteSize: number;
   sha256: string;
   originalName: string | null;
-  ownerUserId: string | null;
+  ownerUserId: number | null;
   createdAt: Date;
   deletedAt: Date | null;
 }
@@ -74,7 +75,7 @@ export class StoredObjectsStore {
         sha256: input.sha256,
         originalName: input.originalName ?? null,
         ownerUserId: input.ownerUserId ?? null,
-        uploadedById: input.uploadedById,
+        uploadedById: String(input.uploadedById),
         uploadedByKind: input.uploadedByKind,
       })
       .onConflictDoUpdate({
@@ -109,7 +110,7 @@ export class StoredObjectsStore {
    * Matched by the page's key, which is the registry key under `uploads/` (0151's
    * one spelling).
    */
-  async liveBytesForOwner(ownerUserId: string): Promise<number> {
+  async liveBytesForOwner(ownerUserId: number): Promise<number> {
     const [row] = await this.db
       .select({ total: sql<string>`COALESCE(SUM(${storedObjects.byteSize}), 0)` })
       .from(storedObjects)

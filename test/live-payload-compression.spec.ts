@@ -57,7 +57,7 @@ function position(ticket: number): Mt5LivePosition {
 
 function reading(positionCount: number): Mt5LiveEvent {
   return {
-    userId: '11111111-1111-4111-8111-111111111111',
+    userId: 1000301,
     accountId: '22222222-2222-4222-8222-222222222222',
     currency: 'USD',
     balance: '1250.00000000',
@@ -136,7 +136,7 @@ describe('a live reading survives a full book', () => {
 
     expect(decoded.equity).toBe('1237.60000000');
     expect(decoded.marginLevel).toBe('3750.30');
-    expect(decoded.userId).toBe('11111111-1111-4111-8111-111111111111');
+    expect(decoded.userId).toBe(1000301);
     expect(decoded.positions?.[7]).toEqual(position(7));
   });
 

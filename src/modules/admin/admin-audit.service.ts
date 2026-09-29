@@ -56,7 +56,7 @@ export class AdminAuditService {
     actorId: string,
     action: string,
     subjectType: AuditSubjectType,
-    subjectId: string,
+    subjectId: string | number,
     details?: Record<string, unknown>,
   ): Promise<void> {
     const actor = await this.admins.findById(actorId);
@@ -82,7 +82,7 @@ export class AdminAuditService {
     actorId: string,
     action: string,
     subjectType: AuditSubjectType,
-    subjectId: string,
+    subjectId: string | number,
     details?: Record<string, unknown>,
   ) {
     // Fire-and-forget: an audit-write failure must never fail the admin action,

@@ -146,7 +146,7 @@ export class NotificationsService implements NotificationDispatchPort {
    */
   private async resolveAdminRecipients(
     permissionKeys: readonly string[],
-    subjectClientId: string,
+    subjectClientId: number,
   ): Promise<string[]> {
     const wanted = new Set(permissionKeys.map(normalizePermissionKey));
     const { rows } = await this.admins.findAll();

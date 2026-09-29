@@ -24,35 +24,33 @@ describe('newEmailCode', () => {
 
 describe('hashEmailCode', () => {
   it('is keyed: the same code hashes differently under another secret, and never to a plain digest', () => {
-    const hash = hashEmailCode(SECRET, 'user-1', '123456');
+    const hash = hashEmailCode(SECRET, 1000001, '123456');
     expect(hash).toMatch(/^[0-9a-f]{64}$/);
-    expect(hash).not.toBe(hashEmailCode(`${SECRET}-rotated`, 'user-1', '123456'));
+    expect(hash).not.toBe(hashEmailCode(`${SECRET}-rotated`, 1000001, '123456'));
     expect(hash).not.toBe(createHash('sha256').update('123456').digest('hex'));
   });
 
   it('is bound to the user: one row’s hash does not match another’s', () => {
-    expect(hashEmailCode(SECRET, 'user-1', '123456')).not.toBe(
-      hashEmailCode(SECRET, 'user-2', '123456'),
+    expect(hashEmailCode(SECRET, 1000001, '123456')).not.toBe(
+      hashEmailCode(SECRET, 1000002, '123456'),
     );
   });
 
   it('is deterministic, so a presented code can be checked', () => {
-    expect(hashEmailCode(SECRET, 'user-1', '000042')).toBe(
-      hashEmailCode(SECRET, 'user-1', '000042'),
-    );
+    expect(hashEmailCode(SECRET, 1000001, '000042')).toBe(hashEmailCode(SECRET, 1000001, '000042'));
   });
 
   it('refuses to hash without a secret rather than hashing weakly', () => {
-    expect(() => hashEmailCode('', 'user-1', '123456')).toThrow(/no secret/);
+    expect(() => hashEmailCode('', 1000001, '123456')).toThrow(/no secret/);
   });
 });
 
 describe('sameEmailCodeHash', () => {
-  const a = hashEmailCode(SECRET, 'user-1', '123456');
+  const a = hashEmailCode(SECRET, 1000001, '123456');
 
   it('matches only the identical hash', () => {
     expect(sameEmailCodeHash(a, a)).toBe(true);
-    expect(sameEmailCodeHash(a, hashEmailCode(SECRET, 'user-1', '123457'))).toBe(false);
+    expect(sameEmailCodeHash(a, hashEmailCode(SECRET, 1000001, '123457'))).toBe(false);
   });
 
   it('is false, never a throw, for a malformed or empty stored value', () => {

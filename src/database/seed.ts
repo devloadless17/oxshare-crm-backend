@@ -1352,7 +1352,7 @@ const POOL_PROFILE = {
  */
 export async function createFreshE2eClient(
   db: ReturnType<typeof getDb>,
-): Promise<{ id: string; email: string; password: string }> {
+): Promise<{ id: number; email: string; password: string }> {
   const password = 'client123';
   const stamp = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   const email = `e2e-fresh-${stamp}@${E2E_FRESH_DOMAIN}`;
@@ -1384,7 +1384,7 @@ export async function createFreshE2eClient(
     ...fixtureEvidence(`fresh-${stamp}`),
   });
   // Its presented evidence, frozen on its record (0152).
-  await db.execute(sql`SELECT identity_adopt(${client.id}::uuid)`);
+  await db.execute(sql`SELECT identity_adopt(${client.id}::integer)`);
 
   return { id: client.id, email, password };
 }

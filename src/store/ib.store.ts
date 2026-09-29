@@ -124,7 +124,7 @@ export class IbStore {
   // ── applications ───────────────────────────────────────────────────────────
 
   /** The application a client currently has open, if any. */
-  async findPendingByUser(userId: string): Promise<IbApplicationRow | undefined> {
+  async findPendingByUser(userId: number): Promise<IbApplicationRow | undefined> {
     const [row] = await this.db
       .select()
       .from(ibApplications)
@@ -141,7 +141,7 @@ export class IbStore {
    * cannot tell the difference between never having applied and having been
    * turned down.
    */
-  async findLatestByUser(userId: string): Promise<IbApplicationRow | undefined> {
+  async findLatestByUser(userId: number): Promise<IbApplicationRow | undefined> {
     const [row] = await this.db
       .select()
       .from(ibApplications)
@@ -262,7 +262,7 @@ export class IbStore {
         application: ibApplications,
         user: {
           id: users.id,
-          portalId: users.portalId,
+          portalId: users.id,
           email: users.email,
           firstName: users.firstName,
           lastName: users.lastName,
@@ -326,7 +326,7 @@ export class IbStore {
 
   // ── accounts ───────────────────────────────────────────────────────────────
 
-  async findAccount(userId: string): Promise<IbAccountRow | undefined> {
+  async findAccount(userId: number): Promise<IbAccountRow | undefined> {
     const [row] = await this.db
       .select()
       .from(ibAccounts)
@@ -359,7 +359,7 @@ export class IbStore {
   }
 
   /** How many partners sit directly beneath this one — the `maxDirectPartners` check. */
-  async countDirectPartners(parentUserId: string): Promise<number> {
+  async countDirectPartners(parentUserId: number): Promise<number> {
     const [{ value }] = await this.db
       .select({ value: count() })
       .from(ibAccounts)
@@ -407,7 +407,7 @@ export class IbStore {
    * this same partner-detail payload is scoped, so the counts obeyed territory
    * while the roster beside them did not.
    */
-  async findDirectPartners(parentUserId: string, scope: ClientScope) {
+  async findDirectPartners(parentUserId: number, scope: ClientScope) {
     const belongsToParent = eq(ibAccounts.parentIbUserId, parentUserId);
 
     const rows = await this.db
@@ -419,7 +419,7 @@ export class IbStore {
         referralCode: ibAccounts.referralCode,
         active: ibAccounts.active,
         approvedAt: ibAccounts.approvedAt,
-        portalId: users.portalId,
+        portalId: users.id,
         email: users.email,
         firstName: users.firstName,
         lastName: users.lastName,
@@ -449,7 +449,7 @@ export class IbStore {
    * withheld from this reader — the count, never who (R2). Zero for an
    * unrestricted reader, without a query.
    */
-  async countDirectPartnersOutside(parentUserId: string, scope: ClientScope): Promise<number> {
+  async countDirectPartnersOutside(parentUserId: number, scope: ClientScope): Promise<number> {
     const inScope = clientScopePredicate(scope, ibAccounts.userId);
     if (!inScope) return 0;
     const [{ value }] = await this.db
@@ -471,8 +471,8 @@ export class IbStore {
    * table can hold a cycle (a self-FK only checks the target exists), so this
    * query must survive one rather than assume it cannot happen.
    */
-  async ancestorsOf(userId: string): Promise<string[]> {
-    const result = await this.db.execute<{ user_id: string }>(sql`
+  async ancestorsOf(userId: number): Promise<number[]> {
+    const result = await this.db.execute<{ user_id: number }>(sql`
       WITH RECURSIVE chain AS (
         SELECT user_id, parent_ib_user_id
           FROM ib_accounts
@@ -533,7 +533,7 @@ export class IbStore {
       filter.scope ?? UNRESTRICTED,
       ibAccounts.parentIbUserId,
     );
-    const parentPortalId = sql<number | null>`(SELECT parent.portal_id FROM users AS parent
+    const parentPortalId = sql<number | null>`(SELECT parent.id FROM users AS parent
       WHERE parent.id = ${ibAccounts.parentIbUserId}${parentVisible ? sql` AND ${parentVisible}` : sql``})`;
 
     const sortKey: IbPartnerSortKey = filter.sort ?? DEFAULT_IB_PARTNER_SORT;
@@ -545,7 +545,7 @@ export class IbStore {
         account: ibAccounts,
         user: {
           id: users.id,
-          portalId: users.portalId,
+          portalId: users.id,
           email: users.email,
           firstName: users.firstName,
           lastName: users.lastName,
@@ -616,8 +616,8 @@ export class IbStore {
     page: number;
     limit: number;
     scope?: ClientScope;
-    ibUserId?: string;
-    clientUserId?: string;
+    ibUserId?: number;
+    clientUserId?: number;
     /**
      * The PARTNER's Portal ID, or free text over their email and name — never
      * the client's.
@@ -700,7 +700,7 @@ export class IbStore {
      * like an unknown one — no rows. Undefined for an unrestricted reader.
      */
     const partnerScope = clientScopePredicate(scope, partner.id);
-    const seesPerson = (id: string) => clientScopePredicate(scope, sql`${id}::uuid`);
+    const seesPerson = (id: number) => clientScopePredicate(scope, sql`${id}::integer`);
 
     const where = and(
       visible,
@@ -769,14 +769,14 @@ export class IbStore {
         partnerInScope: partnerInScopeExpr,
         partner: {
           id: partner.id,
-          portalId: partner.portalId,
+          portalId: partner.id,
           email: partner.email,
           firstName: partner.firstName,
           lastName: partner.lastName,
         },
         client: {
           id: client.id,
-          portalId: client.portalId,
+          portalId: client.id,
           email: client.email,
           firstName: client.firstName,
           lastName: client.lastName,
@@ -921,8 +921,8 @@ export class IbStore {
    * loop: they never counted towards either figure, and grouping them would
    * give a currency that only ever held a clawback a row of zeroes.
    */
-  async earningsByPartner(ibUserIds: string[]) {
-    const byPartner = new Map<string, PartnerEarnings[]>();
+  async earningsByPartner(ibUserIds: number[]) {
+    const byPartner = new Map<number, PartnerEarnings[]>();
     if (ibUserIds.length === 0) return byPartner;
 
     const rows = await this.db
@@ -978,7 +978,7 @@ export class IbStore {
   }
 
   async updateAccount(
-    userId: string,
+    userId: number,
     /*
      * `level` replaced `programId` as the term that decides pay — 0112. The
      * programme stays assignable only so a historical value can be corrected;

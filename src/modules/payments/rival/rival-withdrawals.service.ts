@@ -722,7 +722,7 @@ export class RivalWithdrawalsService {
   }
 
   private async emailDecision(
-    row: { userId: string; amount: string; currency: string },
+    row: { userId: number; amount: string; currency: string },
     decision: 'paid' | 'rejected',
     reason?: string,
   ): Promise<void> {

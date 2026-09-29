@@ -58,7 +58,7 @@ import { desc, eq } from 'drizzle-orm';
 const MASTER = { email: 'audit-complete@oxshare.com', password: 'admin-password-123' };
 
 let ctx: HttpTestContext;
-let clientId: string;
+let clientId: number;
 
 beforeAll(async () => {
   ctx = await startHttpTestApp();

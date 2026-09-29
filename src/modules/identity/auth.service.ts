@@ -11,7 +11,7 @@ import { normaliseReferralCode } from '../../common/referral-code';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { v4 as uuidv4 } from 'uuid';
-import { UsersStore, User } from '../../store/users.store';
+import { UsersStore, User, parsePortalId } from '../../store/users.store';
 import { IbStore } from '../../store/ib.store';
 import {
   WALLET_PROVISIONING,
@@ -374,7 +374,7 @@ export class AuthService {
    * unambiguous upper-case alphabet, and a client typing one off a screenshot
    * should not be defeated by their keyboard.
    */
-  private async resolveReferral(code: string | undefined): Promise<string | undefined> {
+  private async resolveReferral(code: string | undefined): Promise<number | undefined> {
     /*
      * NORMALISED, not merely trimmed — see `common/referral-code.ts`.
      *
@@ -945,7 +945,7 @@ export class AuthService {
      */
     if (!providedRefreshToken) throw new SessionRevokedError('No refresh token provided.');
 
-    let userId: string;
+    let userId: number;
     let jti: string | undefined;
     try {
       const decoded = this.jwt.verify<{ sub: string; jti?: string; typ?: string }>(
@@ -964,7 +964,10 @@ export class AuthService {
       if (!isTokenKind(decoded, TOKEN_KIND.refresh)) {
         throw new SessionRevokedError('Invalid or expired refresh token.');
       }
-      userId = decoded.sub;
+      // The subject is the Portal ID (0159); a pre-0159 token names a uuid.
+      const subject = parsePortalId(decoded.sub);
+      if (subject === undefined) throw new SessionRevokedError('Invalid or expired refresh token.');
+      userId = subject;
       jti = decoded.jti;
     } catch {
       throw new SessionRevokedError('Invalid or expired refresh token.');
@@ -1106,7 +1109,7 @@ export class AuthService {
    * Verified in full rather than decoded: an unverified `sub` would let anyone
    * end anyone else's sessions by writing their own cookie.
    */
-  private subjectFromRefreshCookie(req: Request): string | null {
+  private subjectFromRefreshCookie(req: Request): number | null {
     const token = readSessionCookie(
       req.cookies as Record<string, string | undefined> | undefined,
       COOKIE_BASES.clientRefresh,
@@ -1120,13 +1123,13 @@ export class AuthService {
         algorithms: TOKEN_ALGORITHMS,
         clockTolerance: TOKEN_CLOCK_TOLERANCE_SECONDS,
       });
-      return isTokenKind(decoded, TOKEN_KIND.refresh) ? decoded.sub : null;
+      return isTokenKind(decoded, TOKEN_KIND.refresh) ? (parsePortalId(decoded.sub) ?? null) : null;
     } catch {
       return null;
     }
   }
 
-  async logout(userId: string, res: Response) {
+  async logout(userId: number, res: Response) {
     // Revokes EVERY family for this user, not just the one presenting a token:
     // logging out on one device must not leave the others live (R-3.3).
     await this.refreshTokens.revokeAllForSubject('portal', userId);
@@ -1223,7 +1226,7 @@ export class AuthService {
     res: Response,
     accessToken: string,
     refreshToken: string,
-    userId: string,
+    userId: number,
     /*
      * The anti-forgery token the caller already holds, on a refresh. Reused
      * rather than rotated; the admin twin of this method carries the full
@@ -1318,7 +1321,7 @@ export class AuthService {
    * leave a row pointing at bytes that are gone, which is a broken image on
    * every screen the client visits.
    */
-  async setAvatar(userId: string, buffer: Buffer, declaredMime: string) {
+  async setAvatar(userId: number, buffer: Buffer, declaredMime: string) {
     const user = await this.users.findById(userId);
     if (!user) throw new AuthenticationError('Your session is no longer valid. Please sign in.');
 
@@ -1346,7 +1349,7 @@ export class AuthService {
    * at bytes that are gone. Clearing first means a failed delete leaves an
    * orphaned file and a correct row.
    */
-  async removeAvatar(userId: string) {
+  async removeAvatar(userId: number) {
     const user = await this.users.findById(userId);
     if (!user) throw new AuthenticationError('Your session is no longer valid. Please sign in.');
 
@@ -1358,7 +1361,7 @@ export class AuthService {
     return { avatarUrl: null };
   }
 
-  async findUserById(id: string): Promise<User | undefined> {
+  async findUserById(id: number): Promise<User | undefined> {
     return await this.users.findById(id);
   }
 
@@ -1391,7 +1394,7 @@ export class AuthService {
    *     teaches them not to.
    */
   async changePassword(
-    userId: string,
+    userId: number,
     currentPassword: string,
     newPassword: string,
     res: Response,
@@ -1513,7 +1516,7 @@ export class AuthService {
    * mislabels a row — see `familyIdForJti` — but getting it right is what lets
    * the UI stop someone revoking the session they are sitting in by accident.
    */
-  async listSessions(userId: string, currentFamilyId: string | null) {
+  async listSessions(userId: number, currentFamilyId: string | null) {
     const sessions = await this.refreshTokens.listSessions('portal', userId);
     return sessions.map((s) => ({
       id: s.id,
@@ -1534,7 +1537,7 @@ export class AuthService {
    * 404 rather than a 403 on purpose: telling a caller "that session exists but
    * is not yours" confirms the existence of another account's session id.
    */
-  async revokeSession(userId: string, familyId: string, currentFamilyId: string | null) {
+  async revokeSession(userId: number, familyId: string, currentFamilyId: string | null) {
     /*
      * Revoking your CURRENT session through this endpoint is refused, and
      * pointed at logout instead.

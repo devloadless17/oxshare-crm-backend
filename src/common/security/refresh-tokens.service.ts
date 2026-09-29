@@ -108,7 +108,7 @@ export class RefreshTokensService {
    */
   async record(params: {
     surface: AuthSurface;
-    subjectId: string;
+    subjectId: string | number;
     /** The `jti` already embedded in the signed token. */
     jti: string;
     token: string;
@@ -130,7 +130,7 @@ export class RefreshTokensService {
       id: params.jti,
       familyId,
       surface: params.surface,
-      subjectId: params.subjectId,
+      subjectId: String(params.subjectId),
       tokenHash: this.hash(params.token),
       expiresAt: params.expiresAt,
       userAgent: params.device?.userAgent ?? null,
@@ -323,7 +323,7 @@ export class RefreshTokensService {
     surface: AuthSurface;
     jti: string;
     familyId: string;
-    subjectId: string;
+    subjectId: string | number;
     /** The `jti` embedded in the replacement token. */
     jtiNext: string;
     nextToken: string;
@@ -352,7 +352,7 @@ export class RefreshTokensService {
         id: params.jtiNext,
         familyId: params.familyId,
         surface: params.surface,
-        subjectId: params.subjectId,
+        subjectId: String(params.subjectId),
         tokenHash: this.hash(params.nextToken),
         expiresAt: params.expiresAt,
         userAgent: params.device?.userAgent ?? null,
@@ -414,14 +414,14 @@ export class RefreshTokensService {
    * family that happens to be presenting a token leaves every other device the
    * account is signed in on still working.
    */
-  async revokeAllForSubject(surface: AuthSurface, subjectId: string): Promise<number> {
+  async revokeAllForSubject(surface: AuthSurface, subjectId: string | number): Promise<number> {
     const revoked = await this.db
       .update(refreshTokens)
       .set({ revokedAt: new Date() })
       .where(
         and(
           eq(refreshTokens.surface, surface),
-          eq(refreshTokens.subjectId, subjectId),
+          eq(refreshTokens.subjectId, String(subjectId)),
           isNull(refreshTokens.revokedAt),
         ),
       )
@@ -478,7 +478,7 @@ export class RefreshTokensService {
    * fingerprint shown is the most RECENT one for that session rather than the
    * one captured at login a month ago.
    */
-  async listSessions(surface: AuthSurface, subjectId: string): Promise<SessionSummary[]> {
+  async listSessions(surface: AuthSurface, subjectId: string | number): Promise<SessionSummary[]> {
     const now = new Date();
     const rows = await this.db
       .select()
@@ -486,7 +486,7 @@ export class RefreshTokensService {
       .where(
         and(
           eq(refreshTokens.surface, surface),
-          eq(refreshTokens.subjectId, subjectId),
+          eq(refreshTokens.subjectId, String(subjectId)),
           isNull(refreshTokens.revokedAt),
           gt(refreshTokens.expiresAt, now),
         ),
@@ -531,7 +531,7 @@ export class RefreshTokensService {
    */
   async revokeFamilyForSubject(
     surface: AuthSurface,
-    subjectId: string,
+    subjectId: string | number,
     familyId: string,
   ): Promise<number> {
     const revoked = await this.db
@@ -541,7 +541,7 @@ export class RefreshTokensService {
         and(
           eq(refreshTokens.familyId, familyId),
           eq(refreshTokens.surface, surface),
-          eq(refreshTokens.subjectId, subjectId),
+          eq(refreshTokens.subjectId, String(subjectId)),
           isNull(refreshTokens.revokedAt),
         ),
       )

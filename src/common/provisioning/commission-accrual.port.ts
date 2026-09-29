@@ -75,7 +75,7 @@ export interface CommissionAccrualPort {
    */
   accrueForClosedPosition(position: {
     positionId: string;
-    clientUserId: string;
+    clientUserId: number;
     /** Lots traded — what every term is priced against. */
     lots: string;
     currency: string;
@@ -99,7 +99,7 @@ export interface CommissionAccrualPort {
    */
   accrueForSettledDeposit(deposit: {
     transactionId: string;
-    clientUserId: string;
+    clientUserId: number;
     amount: string;
     currency: string;
   }): Promise<number>;
@@ -135,7 +135,7 @@ export interface CommissionAccrualPort {
     dealRowId: string;
     /** MT5's ticket, for logging. */
     ticket: string;
-    clientUserId: string;
+    clientUserId: number;
     /** Lots traded — what every term is priced against. */
     lots: string;
     currency: string;

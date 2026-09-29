@@ -109,10 +109,10 @@ let seq = 0;
 /** A verified, funded client with an APPROVED whish withdrawal. */
 async function makeApprovedWithdrawal(amount = '100'): Promise<{
   txId: string;
-  userId: string;
+  userId: number;
 }> {
   seq += 1;
-  const { rows } = await ctx.db.execute<{ id: string }>(sql`
+  const { rows } = await ctx.db.execute<{ id: number }>(sql`
     INSERT INTO users (email, password_hash, first_name, last_name, verification_level, email_verified)
     VALUES (${`rival-wd-${seq}@spec.test`}, 'x', 'Payout', 'Client', 1, true)
     RETURNING id
@@ -155,7 +155,7 @@ async function rowOf(txId: string) {
   return rows[0];
 }
 
-async function balanceOf(userId: string): Promise<string> {
+async function balanceOf(userId: number): Promise<string> {
   const { rows } = await ctx.db.execute<{ balance: string }>(
     sql`SELECT balance FROM wallets WHERE user_id = ${userId}`,
   );
@@ -439,7 +439,7 @@ describe('cancel-after-approve, both shapes', () => {
 
 describe('the request-time destination gate (Rival’s own rules, applied early)', () => {
   it('refuses a non-phone destination and a malformed Lebanese number', async () => {
-    const { rows } = await ctx.db.execute<{ id: string }>(sql`
+    const { rows } = await ctx.db.execute<{ id: number }>(sql`
       INSERT INTO users (email, password_hash, first_name, last_name, verification_level, email_verified)
       VALUES ('rival-wd-gate@spec.test', 'x', 'Gate', 'Client', 1, true) RETURNING id
     `);

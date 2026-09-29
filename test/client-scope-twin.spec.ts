@@ -28,7 +28,7 @@ import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './mone
 let ctx: MoneyTestContext;
 const tagIds: string[] = [];
 /** Each fixture client, with the tag ids it carries. */
-const carried = new Map<string, string[]>();
+const carried = new Map<number, string[]>();
 
 const SCOPES = [
   'unrestricted',
@@ -66,7 +66,7 @@ function scopeNamed(name: ScopeName): ClientScope {
   }
 }
 
-async function visibleBySql(scope: ClientScope): Promise<Set<string>> {
+async function visibleBySql(scope: ClientScope): Promise<Set<number>> {
   const rows = await ctx.db
     .select({ id: users.id })
     .from(users)

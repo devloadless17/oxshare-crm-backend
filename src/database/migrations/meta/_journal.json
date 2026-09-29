@@ -1114,6 +1114,13 @@
       "when": 1789140198750,
       "tag": "0158_kyc_form_customizable",
       "breakpoints": true
+    },
+    {
+      "idx": 160,
+      "version": "7",
+      "when": 1789140258750,
+      "tag": "0159_portal_id_is_the_key",
+      "breakpoints": true
     }
   ]
 }

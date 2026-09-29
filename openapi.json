@@ -2640,7 +2640,7 @@
             "in": "query",
             "description": "Restrict to one partner.",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           },
           {
@@ -2649,7 +2649,7 @@
             "in": "query",
             "description": "Restrict to one client.",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           },
           {
@@ -2934,7 +2934,7 @@
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           }
         ],
@@ -2971,7 +2971,7 @@
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           }
         ],
@@ -3018,7 +3018,7 @@
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           }
         ],
@@ -3065,7 +3065,7 @@
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           }
         ],
@@ -5222,7 +5222,7 @@
             "in": "query",
             "description": "Accounts of one client.",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           },
           {
@@ -5231,7 +5231,7 @@
             "in": "query",
             "description": "Accounts of every client this partner introduced, by the partner’s Portal ID (users.referred_by_ib_user_id). Scoped like every other filter.",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           },
           {
@@ -7143,7 +7143,7 @@
             "in": "query",
             "description": "Clients introduced by this partner, by the partner’s Portal ID (users.referred_by_ib_user_id). Scoped like every other filter — a reader still only sees their own territory. A value that is not a Portal ID is a 400, never a silently unfiltered list.",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           },
           {
@@ -7328,7 +7328,7 @@
             "in": "query",
             "description": "Clients introduced by this partner, by Portal ID — the same filter as the list, so the file matches the screen it was exported from.",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           },
           {
@@ -7407,7 +7407,7 @@
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           }
         ],
@@ -7442,7 +7442,7 @@
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           }
         ],
@@ -7489,7 +7489,7 @@
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           }
         ],
@@ -7536,7 +7536,7 @@
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           }
         ],
@@ -7582,7 +7582,7 @@
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           }
         ],
@@ -7629,7 +7629,7 @@
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           }
         ],
@@ -7843,7 +7843,7 @@
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           }
         ],
@@ -7882,7 +7882,7 @@
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           },
           {
@@ -7936,7 +7936,7 @@
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           },
           {
@@ -8154,7 +8154,7 @@
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           }
         ],
@@ -8190,7 +8190,7 @@
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           }
         ],
@@ -8229,7 +8229,7 @@
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           }
         ],
@@ -8266,7 +8266,7 @@
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           }
         ],
@@ -8303,7 +8303,7 @@
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           }
         ],
@@ -8349,7 +8349,7 @@
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           }
         ],
@@ -8385,7 +8385,7 @@
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           }
         ],
@@ -8432,7 +8432,7 @@
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           }
         ],
@@ -10099,7 +10099,7 @@
             "in": "query",
             "description": "Wallets of one client.",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           },
           {
@@ -10635,7 +10635,7 @@
             "required": true,
             "in": "query",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           },
           {
@@ -10905,7 +10905,7 @@
             "in": "query",
             "description": "Narrow to one client (UUID).",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           },
           {
@@ -11032,7 +11032,7 @@
             "in": "query",
             "description": "Narrow to one client (UUID).",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           },
           {
@@ -11158,7 +11158,7 @@
             "in": "query",
             "description": "Narrow to one client (UUID).",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           },
           {
@@ -11458,7 +11458,7 @@
             "in": "query",
             "description": "Wallets of one client.",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           },
           {
@@ -11517,7 +11517,7 @@
             "in": "query",
             "description": "Accounts of one client.",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           },
           {
@@ -11580,7 +11580,7 @@
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           },
           {
@@ -11633,7 +11633,7 @@
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           },
           {
@@ -12309,7 +12309,7 @@
           },
           "subjectId": {
             "type": "string",
-            "description": "The item's id — for a KYC task, the client's id."
+            "description": "The item's id — for a KYC task the client's Portal ID, for any other item the record's uuid."
           }
         },
         "required": [
@@ -13251,13 +13251,13 @@
         "type": "object",
         "properties": {
           "userId": {
-            "type": "string"
+            "type": "integer"
           },
           "level": {
             "type": "number"
           },
           "parentIbUserId": {
-            "type": "string",
+            "type": "integer",
             "nullable": true,
             "description": "Null at the top of a chain — or, on an admin response, when the parent is outside your territory (`parentOutsideTerritory`)."
           },
@@ -13305,7 +13305,7 @@
             "type": "string"
           },
           "userId": {
-            "type": "string"
+            "type": "number"
           },
           "motivation": {
             "type": "string",
@@ -13472,7 +13472,7 @@
             "description": "Human-friendly wallet number — 12 lowercase Crockford base32 chars. Display and support reference only; `id` remains the key."
           },
           "userId": {
-            "type": "string"
+            "type": "integer"
           },
           "name": {
             "type": "string",
@@ -13529,7 +13529,7 @@
         "type": "object",
         "properties": {
           "userId": {
-            "type": "string"
+            "type": "integer"
           },
           "name": {
             "type": "string",
@@ -13556,7 +13556,7 @@
         "type": "object",
         "properties": {
           "userId": {
-            "type": "string"
+            "type": "integer"
           },
           "name": {
             "type": "string"
@@ -13829,7 +13829,7 @@
         "type": "object",
         "properties": {
           "parentIbUserId": {
-            "type": "string",
+            "type": "integer",
             "nullable": true,
             "description": "The parent to nest the new partner under. OMITTED means \"the reviewer did not say\" — the introducer recorded at registration becomes the parent, which is the ordinary case. An explicit NULL roots them: they deal with the broker directly at level 1, whoever introduced them."
           },
@@ -13872,7 +13872,7 @@
         "type": "object",
         "properties": {
           "userId": {
-            "type": "string"
+            "type": "integer"
           },
           "level": {
             "type": "number",
@@ -13909,7 +13909,9 @@
         "type": "object",
         "properties": {
           "id": {
-            "type": "string"
+            "type": "integer",
+            "example": 1000245,
+            "description": "The client’s Portal ID (0159)."
           },
           "portalId": {
             "type": "integer",
@@ -14026,7 +14028,7 @@
         "type": "object",
         "properties": {
           "userId": {
-            "type": "string"
+            "type": "number"
           },
           "portalId": {
             "type": "integer",
@@ -14057,7 +14059,7 @@
         "type": "object",
         "properties": {
           "userId": {
-            "type": "string"
+            "type": "number"
           },
           "portalId": {
             "type": "integer",
@@ -14114,7 +14116,7 @@
         "type": "object",
         "properties": {
           "userId": {
-            "type": "string"
+            "type": "number"
           },
           "level": {
             "type": "number",
@@ -14253,7 +14255,7 @@
         "type": "object",
         "properties": {
           "parentIbUserId": {
-            "type": "string",
+            "type": "integer",
             "nullable": true,
             "description": "The new parent partner, or null to make them a direct partner."
           }
@@ -14743,7 +14745,7 @@
             "type": "string"
           },
           "userId": {
-            "type": "string"
+            "type": "integer"
           },
           "walletId": {
             "type": "string"
@@ -14961,7 +14963,7 @@
             "type": "string"
           },
           "userId": {
-            "type": "string"
+            "type": "integer"
           },
           "walletId": {
             "type": "string"
@@ -15356,7 +15358,7 @@
             "description": "The wallet’s human-friendly number — display only; `walletId` is the key."
           },
           "userId": {
-            "type": "string"
+            "type": "number"
           },
           "userPortalId": {
             "type": "number",
@@ -16271,8 +16273,7 @@
         "type": "object",
         "properties": {
           "userId": {
-            "type": "string",
-            "format": "uuid",
+            "type": "integer",
             "description": "The client this account belongs to."
           },
           "group": {
@@ -16893,7 +16894,7 @@
         "type": "object",
         "properties": {
           "userId": {
-            "type": "string"
+            "type": "integer"
           },
           "status": {
             "type": "string",
@@ -18050,7 +18051,7 @@
         "type": "object",
         "properties": {
           "ibUserId": {
-            "type": "string",
+            "type": "number",
             "description": "Absent when the introducer is outside your territory."
           },
           "portalId": {
@@ -18082,7 +18083,9 @@
         "type": "object",
         "properties": {
           "id": {
-            "type": "string"
+            "type": "integer",
+            "example": 1000245,
+            "description": "The client’s Portal ID — their one id (0159)."
           },
           "portalId": {
             "type": "number",
@@ -18286,7 +18289,7 @@
         "type": "object",
         "properties": {
           "ibUserId": {
-            "type": "string",
+            "type": "number",
             "description": "Absent when the introducer is outside your territory."
           },
           "portalId": {
@@ -18327,7 +18330,7 @@
         "type": "object",
         "properties": {
           "clientUserId": {
-            "type": "string"
+            "type": "number"
           },
           "clientPortalId": {
             "type": "integer",
@@ -18365,7 +18368,9 @@
         "type": "object",
         "properties": {
           "id": {
-            "type": "string"
+            "type": "integer",
+            "example": 1000245,
+            "description": "The client’s Portal ID — their one id (0159)."
           },
           "portalId": {
             "type": "number",
@@ -18585,8 +18590,9 @@
         "type": "object",
         "properties": {
           "id": {
-            "type": "string",
-            "format": "uuid"
+            "type": "integer",
+            "example": 1000245,
+            "description": "The client’s Portal ID — their one id (0159)."
           },
           "portalId": {
             "type": "integer",
@@ -19430,7 +19436,7 @@
         "type": "object",
         "properties": {
           "userId": {
-            "type": "string"
+            "type": "number"
           },
           "status": {
             "type": "string",
@@ -20621,7 +20627,7 @@
             "$ref": "#/components/schemas/WithdrawalUserDto"
           },
           "userId": {
-            "type": "string"
+            "type": "integer"
           },
           "walletId": {
             "type": "string"
@@ -20721,8 +20727,7 @@
         "type": "object",
         "properties": {
           "userId": {
-            "type": "string",
-            "format": "uuid",
+            "type": "integer",
             "description": "The client to credit."
           },
           "amount": {
@@ -20837,8 +20842,7 @@
         "type": "object",
         "properties": {
           "userId": {
-            "type": "string",
-            "format": "uuid"
+            "type": "integer"
           },
           "currency": {
             "type": "string",
@@ -20871,7 +20875,7 @@
             "type": "string"
           },
           "userId": {
-            "type": "string",
+            "type": "number",
             "description": "The client this deposit belongs to."
           },
           "amount": {
@@ -20969,7 +20973,7 @@
             "description": "The wallet’s human-friendly number — display only; `walletId` is the key."
           },
           "userId": {
-            "type": "string"
+            "type": "number"
           },
           "userPortalId": {
             "type": "number",

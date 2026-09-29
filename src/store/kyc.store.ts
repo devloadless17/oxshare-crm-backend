@@ -144,7 +144,7 @@ export interface KycAttempt {
 }
 
 export interface KycSubmission {
-  userId: string;
+  userId: number;
   status: KycStatus;
   rejectionReason?: string;
   rejectedFields?: string[];
@@ -296,7 +296,7 @@ export function stepDataFilePaths(stepData: KycSubmission['stepData'] | undefine
 export class KycStore {
   constructor(@Inject(DRIZZLE_DB) private readonly db: Db) {}
 
-  async getOrCreate(userId: string): Promise<KycSubmission> {
+  async getOrCreate(userId: number): Promise<KycSubmission> {
     const existing = await this.findByUserId(userId);
     if (existing) return existing;
     const [row] = await this.db
@@ -308,7 +308,7 @@ export class KycStore {
     return row ? toSubmission(row) : (await this.findByUserId(userId))!;
   }
 
-  async findByUserId(userId: string): Promise<KycSubmission | undefined> {
+  async findByUserId(userId: number): Promise<KycSubmission | undefined> {
     const [row] = await this.db
       .select(submissionRead)
       .from(kycSubmissions)
@@ -326,7 +326,7 @@ export class KycStore {
    * read the column before the other wrote, and the second write erased the
    * first page. The lock makes the second read wait for the first write.
    */
-  async lockForUpdate(userId: string, executor: Executor): Promise<KycSubmission | undefined> {
+  async lockForUpdate(userId: number, executor: Executor): Promise<KycSubmission | undefined> {
     const [row] = await executor
       .select(submissionRead)
       .from(kycSubmissions)
@@ -337,7 +337,7 @@ export class KycStore {
   }
 
   async update(
-    userId: string,
+    userId: number,
     patch: Partial<KycSubmission>,
     executor?: Executor,
   ): Promise<KycSubmission> {
@@ -387,7 +387,7 @@ export class KycStore {
    *   row that is once again unclaimed.
    */
   async transition(
-    userId: string,
+    userId: number,
     from: readonly KycStatus[],
     patch: Partial<Omit<KycSubmission, 'reviewedBy'>> & { reviewedBy?: string | null },
     executor?: Executor,
@@ -573,7 +573,7 @@ export class KycStore {
           country: users.country,
           user: {
             id: users.id,
-            portalId: users.portalId,
+            portalId: users.id,
             email: users.email,
             firstName: users.firstName,
             lastName: users.lastName,
@@ -741,7 +741,7 @@ export class KycStore {
   }
 
   /** This client's decided attempts, oldest first. */
-  async listAttempts(userId: string): Promise<KycAttempt[]> {
+  async listAttempts(userId: number): Promise<KycAttempt[]> {
     const rows = await this.db
       .select(attemptRead)
       .from(kycSubmissionAttempts)
@@ -772,7 +772,7 @@ export class KycStore {
    * not an orphan), and the uploads controller must let a client fetch a
    * document from their own history rather than 403 them on their own passport.
    */
-  async archivedDocumentPaths(userId: string): Promise<string[]> {
+  async archivedDocumentPaths(userId: number): Promise<string[]> {
     const attempts = await this.listAttempts(userId);
     return attempts.flatMap((a) =>
       [
@@ -795,7 +795,7 @@ export class KycStore {
   // REMOVED: `clearAll()` — an unguarded `DELETE FROM kyc_submissions` with no
   // caller once `KycService.resetAllKyc()` was deleted. See the note there.
 
-  async resetUser(userId: string, executor: Executor = this.db): Promise<void> {
+  async resetUser(userId: number, executor: Executor = this.db): Promise<void> {
     await executor.delete(kycSubmissions).where(eq(kycSubmissions.userId, userId));
   }
 }

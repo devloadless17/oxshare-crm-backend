@@ -46,8 +46,8 @@ const NO_PERMS = { email: 'ta-nobody@oxshare.com', password: 'admin-password-123
 const HUGE_BALANCE = '12345678901234567.89012345';
 
 let ctx: HttpTestContext;
-let mineId: string;
-let theirsId: string;
+let mineId: number;
+let theirsId: number;
 let liveAccountId: string;
 let demoAccountId: string;
 let noLoginAccountId: string;

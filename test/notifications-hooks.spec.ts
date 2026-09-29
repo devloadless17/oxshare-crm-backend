@@ -147,8 +147,8 @@ afterAll(async () => {
   await stopMoneyTestDb(ctx);
 });
 
-async function makeFundedClient(email: string, balance = '1000'): Promise<string> {
-  const { rows } = await ctx.db.execute<{ id: string }>(sql`
+async function makeFundedClient(email: string, balance = '1000'): Promise<number> {
+  const { rows } = await ctx.db.execute<{ id: number }>(sql`
     INSERT INTO users (email, password_hash, first_name, last_name, verification_level, email_verified)
     VALUES (${email}, 'x', 'Test', 'Client', 1, true)
     RETURNING id
@@ -165,7 +165,7 @@ async function makeFundedClient(email: string, balance = '1000'): Promise<string
   return userId;
 }
 
-async function rowsFor(userId: string, kind: string) {
+async function rowsFor(userId: number, kind: string) {
   const page = await store.findPage({ kind: 'client', id: userId }, { limit: 100 });
   return page.items.filter((n) => n.kind === kind);
 }
@@ -263,7 +263,7 @@ describe('withdrawal decisions and their bell rows are one commit', () => {
 });
 
 describe('deposit settlement', () => {
-  async function seedPendingDeposit(userId: string, reference: string): Promise<string> {
+  async function seedPendingDeposit(userId: number, reference: string): Promise<string> {
     const wallet = await wallets.getOrCreateWallet(userId, 'USD');
     const { rows } = await ctx.db.execute<{ id: string }>(sql`
       INSERT INTO transactions (user_id, wallet_id, direction, amount, currency, state, provider, provider_ref, rival_external_id)

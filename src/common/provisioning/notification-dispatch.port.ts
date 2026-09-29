@@ -26,7 +26,8 @@ export interface NotificationInput {
    * that must name its subject, so it can only be written by `notifyAdmins`
    * (and `notifications_admin_subject_ck` refuses one written any other way).
    */
-  recipient: { kind: 'client'; id: string };
+  /** The client, by Portal ID (0159). */
+  recipient: { kind: 'client'; id: number };
   /**
    * Catalogue slug, e.g. 'withdrawal.approved'. The frontends own the copy and
    * the deep link; the backend never encodes either.
@@ -58,7 +59,7 @@ export interface AdminTaskInput {
    * call site cannot mislabel it; a KYC task's `id` is the client's id,
    * because `kyc_submissions` is keyed on it.
    */
-  subject: { id: string; clientId: string };
+  subject: { id: string; clientId: number };
 }
 
 export interface NotificationDispatchPort {

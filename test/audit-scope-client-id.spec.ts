@@ -22,25 +22,25 @@ import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './mone
 
 let ctx: MoneyTestContext;
 let store: AuditLogStore;
-let inId: string; // client A, in the reader's territory
-let outId: string; // client B, outside it
+let inId: number; // client A, in the reader's territory
+let outId: number; // client B, outside it
 let outPortalId: number;
 let reader: ClientScope;
 const admin = crypto.randomUUID();
 
-async function client(email: string): Promise<{ id: string; portalId: number }> {
-  const { rows } = await ctx.db.execute<{ id: string; portal_id: number }>(sql`
+async function client(email: string): Promise<{ id: number }> {
+  const { rows } = await ctx.db.execute<{ id: number }>(sql`
     INSERT INTO users (email, password_hash, first_name, last_name)
-    VALUES (${email}, 'x', 'Scope', 'Probe') RETURNING id, portal_id`);
-  return { id: rows[0].id, portalId: rows[0].portal_id };
+    VALUES (${email}, 'x', 'Scope', 'Probe') RETURNING id`);
+  return { id: rows[0].id };
 }
 
 async function write(
   action: string,
   subjectType: AuditSubjectType,
-  subjectId: string,
+  subjectId: string | number,
   details?: Record<string, unknown>,
-  actor: { id: string; email: string; kind: 'admin' | 'client' } = {
+  actor: { id: string | number; email: string; kind: 'admin' | 'client' } = {
     id: admin,
     email: 'desk@oxshare.com',
     kind: 'admin',
@@ -90,7 +90,7 @@ async function aboutB(type: (typeof CLIENT_SUBJECT_TYPES)[number]): Promise<void
         INSERT INTO stored_objects (bucket, storage_key, provider, content_type, byte_size, sha256,
                                     owner_user_id, uploaded_by_id, uploaded_by_kind)
         VALUES (${bucket}, ${`${bucket}/${file}`}, 'disk', 'image/png', 1, ${'0'.repeat(64)},
-                ${outId}, ${outId}, 'client')`);
+                ${outId}, ${String(outId)}, 'client')`);
       return write(`probe.${type}`, type, file);
     }
   }
@@ -108,7 +108,9 @@ beforeAll(async () => {
   const b = await client('scope-b@oxshare-e2e.test');
   inId = a.id;
   outId = b.id;
-  outPortalId = b.portalId;
+  // The Portal ID and the id are the same number since 0159 — kept as a
+  // separate name here only because the assertions below read as "by Portal ID".
+  outPortalId = b.id;
   await ctx.db.execute(sql`
     INSERT INTO client_tag_assignments (user_id, tag_id)
     VALUES (${inId}, ${tag['scope-in']}), (${outId}, ${tag['scope-out']})`);
@@ -141,7 +143,7 @@ const find = (scope: ClientScope, q?: string) => store.findAll({ limit: 100, sco
 
 describe('audit_log.client_id — the database decides which client a row concerns', () => {
   it('resolves B for every client subject type, so the list and the SQL cannot drift', async () => {
-    const { rows } = await ctx.db.execute<{ action: string; client_id: string | null }>(sql`
+    const { rows } = await ctx.db.execute<{ action: string; client_id: number | null }>(sql`
       SELECT action, client_id FROM audit_log WHERE action LIKE 'probe.%' ORDER BY action`);
     const clientOf = new Map(rows.map((r) => [r.action, r.client_id]));
     for (const type of CLIENT_SUBJECT_TYPES) {

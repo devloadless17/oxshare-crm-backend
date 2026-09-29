@@ -39,10 +39,10 @@ let ctx: MoneyTestContext;
 let commissions: CommissionService;
 let deals: DealCommissionService;
 
-let partnerId: string;
-let clientId: string;
+let partnerId: number;
+let clientId: number;
 /** A client nobody introduced — real trades, nobody earns. */
-let unreferredId: string;
+let unreferredId: number;
 
 const LOGIN = '5000001';
 const UNREFERRED_LOGIN = '5000002';
@@ -63,8 +63,8 @@ const DEMO_LOGIN = '5000007';
 let terms: CommissionTypeTerms;
 let productId: string;
 
-async function makeUser(email: string): Promise<string> {
-  const { rows } = await ctx.db.execute<{ id: string }>(sql`
+async function makeUser(email: string): Promise<number> {
+  const { rows } = await ctx.db.execute<{ id: number }>(sql`
     INSERT INTO users (email, password_hash, first_name, last_name)
     VALUES (${email}, 'x', ${email.split('@')[0]}, 'Person')
     RETURNING id
@@ -1243,7 +1243,7 @@ describe('what the accrual is a share of', () => {
  */
 describe('a trade the broker earned nothing on', () => {
   const ZERO_LOGIN = '5000006';
-  let zeroPartnerId: string;
+  let zeroPartnerId: number;
 
   beforeAll(async () => {
     zeroPartnerId = await makeUser('deal-zero-partner@oxshare-e2e.test');

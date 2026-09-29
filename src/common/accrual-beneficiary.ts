@@ -16,9 +16,9 @@ import { ibAccruals } from '../database/schema';
  */
 export function accrualBeneficiary(accrual: {
   kind: string;
-  ibUserId: string;
-  clientUserId: string;
-}): string {
+  ibUserId: number;
+  clientUserId: number;
+}): number {
   return accrual.kind === 'rebate' ? accrual.clientUserId : accrual.ibUserId;
 }
 

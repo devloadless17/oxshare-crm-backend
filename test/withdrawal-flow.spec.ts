@@ -62,8 +62,8 @@ afterAll(async () => {
 });
 
 /** A verified client with a funded USD wallet. */
-async function makeFundedClient(email: string, balance = '1000'): Promise<string> {
-  const { rows } = await ctx.db.execute<{ id: string }>(sql`
+async function makeFundedClient(email: string, balance = '1000'): Promise<number> {
+  const { rows } = await ctx.db.execute<{ id: number }>(sql`
     INSERT INTO users (email, password_hash, first_name, last_name, verification_level, email_verified)
     VALUES (${email}, 'x', 'Test', 'Client', 1, true)
     RETURNING id
@@ -80,14 +80,14 @@ async function makeFundedClient(email: string, balance = '1000'): Promise<string
   return userId;
 }
 
-async function balanceOf(userId: string): Promise<string> {
+async function balanceOf(userId: number): Promise<string> {
   const { rows } = await ctx.db.execute<{ balance: string }>(
     sql`SELECT balance FROM wallets WHERE user_id = ${userId} AND currency = 'USD'`,
   );
   return rows[0].balance;
 }
 
-async function ledgerCount(userId: string): Promise<number> {
+async function ledgerCount(userId: number): Promise<number> {
   const { rows } = await ctx.db.execute<{ count: number }>(sql`
     SELECT count(*)::int AS count FROM ledger_entries le
       JOIN wallets w ON w.id = le.wallet_id
@@ -96,7 +96,7 @@ async function ledgerCount(userId: string): Promise<number> {
   return rows[0].count;
 }
 
-function request(userId: string, amount = '100') {
+function request(userId: number, amount = '100') {
   return transactions.requestWithdrawal({
     userId,
     currency: 'USD',
@@ -143,7 +143,7 @@ describe('requesting a withdrawal', () => {
   });
 
   it('refuses an unverified client, in the service and not only the guard', async () => {
-    const { rows } = await ctx.db.execute<{ id: string }>(sql`
+    const { rows } = await ctx.db.execute<{ id: number }>(sql`
       INSERT INTO users (email, password_hash, first_name, last_name, verification_level)
       VALUES ('unverified@test.local', 'x', 'Test', 'Client', 0)
       RETURNING id
