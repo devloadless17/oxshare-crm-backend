@@ -1,7 +1,7 @@
 import { ALL_PERMISSIONS } from './support/all-permissions';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { eq, sql } from 'drizzle-orm';
+import { eq, getTableColumns, sql } from 'drizzle-orm';
 import {
   actingAs,
   startHttpTestApp,
@@ -67,9 +67,20 @@ function upload(session: Session, field: string, docType?: string) {
   return req.attach('file', PNG, { filename: `${field}.png`, contentType: 'image/png' });
 }
 
+/** The KYC row, with its documents as the record holds them (0171). */
 async function stored(userId: number) {
   const [row] = await ctx.db.db
-    .select()
+    .select({
+      ...getTableColumns(kycSubmissions),
+      document: sql<Record<
+        string,
+        string
+      > | null>`identity_evidence(${kycSubmissions.identityDocumentId}, 'identity')`,
+      addressProof: sql<Record<
+        string,
+        string
+      > | null>`identity_evidence(${kycSubmissions.addressDocumentId}, 'address')`,
+    })
     .from(kycSubmissions)
     .where(eq(kycSubmissions.userId, userId));
   return row;

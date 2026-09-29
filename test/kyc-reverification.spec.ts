@@ -14,6 +14,7 @@ import {
 } from '../src/database/schema';
 import { DEFAULT_KYC_STEPS } from '../src/store/kyc-config.store';
 import { EmailService } from '../src/modules/email/email.service';
+import { recordKycEvidence } from './support/kyc-evidence';
 
 /**
  * AN APPROVED CLIENT WHOSE DETAILS CHANGED — the dead end, closed (26 Sep 2026).
@@ -112,6 +113,8 @@ beforeAll(async () => {
     submittedAt: new Date(),
     reviewedAt: new Date(),
     personalInfo: {},
+  });
+  await recordKycEvidence(db, clientId, {
     document: { docType: 'passport', frontFilePath: '/uploads/kyc/old-passport.png' },
     selfie: { filePath: '/uploads/kyc/old-selfie.png' },
     addressProof: { docType: 'utility_bill', filePath: '/uploads/kyc/old-bill.png' },

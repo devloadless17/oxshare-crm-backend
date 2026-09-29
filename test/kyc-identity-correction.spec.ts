@@ -13,6 +13,7 @@ import {
 } from '../src/database/schema';
 import { DEFAULT_KYC_STEPS } from '../src/store/kyc-config.store';
 import { EmailService } from '../src/modules/email/email.service';
+import { recordKycEvidence } from './support/kyc-evidence';
 
 /**
  * CORE-18 — THE ONE STATE WITH NO CORRECTION PATH.
@@ -175,8 +176,8 @@ beforeEach(async () => {
     submittedAt: new Date(),
     reviewedAt: new Date(),
     personalInfo: CUSTOM_ANSWERS,
-    document: { docType: 'passport' },
   });
+  await recordKycEvidence(db, userId, { document: { docType: 'passport' } });
 });
 
 /** The client's identity, as stored — the profile columns (0139). */

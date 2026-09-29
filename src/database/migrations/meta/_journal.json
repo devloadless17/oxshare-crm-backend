@@ -1205,6 +1205,13 @@
       "when": 1789140900750,
       "tag": "0170_reconcile_production",
       "breakpoints": true
+    },
+    {
+      "idx": 173,
+      "version": "7",
+      "when": 1789141000750,
+      "tag": "0171_identity_record_written_directly",
+      "breakpoints": true
     }
   ]
 }

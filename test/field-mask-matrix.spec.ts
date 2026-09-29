@@ -19,6 +19,7 @@ import {
   wallets,
 } from '../src/database/schema';
 import { DEFAULT_KYC_STEPS } from '../src/store/kyc-config.store';
+import { recordKycEvidence } from './support/kyc-evidence';
 
 /**
  * EACH MASKABLE FIELD, ON ITS OWN.
@@ -279,18 +280,17 @@ beforeAll(async () => {
     submittedAt: new Date(),
     // Only what a broker invented lives here (0139); the identity is the profile's.
     personalInfo: { customField_1: SENTINEL['kyc.stepData'] },
-    document: { docType: 'passport' },
     // One custom step, so `kyc.stepData` has something to hide. Without it the
     // key is maskable in the catalogue and untested here, which this file's own
     // guard refuses — a key with no distinguishable value is one it would
     // silently not be testing.
     stepData: { 'compliance-questions': { sourceOfFunds: SENTINEL['kyc.stepData'] } },
-    // A real page: evidence is read from the client's record, which holds pages
-    // — a name with no file is nothing a client ever presented.
-    addressProof: {
-      docType: 'utility_bill',
-      filePath: 'uploads/kyc/matrix-proof.pdf',
-    },
+  });
+  // A real page: evidence is read from the client's record, which holds pages
+  // — a name with no file is nothing a client ever presented.
+  await recordKycEvidence(db, clientId, {
+    document: { docType: 'passport' },
+    addressProof: { docType: 'utility_bill', filePath: 'uploads/kyc/matrix-proof.pdf' },
   });
 
   /*

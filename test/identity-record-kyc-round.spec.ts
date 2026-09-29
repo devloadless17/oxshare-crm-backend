@@ -14,26 +14,23 @@ import { admins, kycConfigSteps, roles, users } from '../src/database/schema';
 import { DEFAULT_KYC_STEPS } from '../src/store/kyc-config.store';
 
 /**
- * THE CLIENT'S IDENTITY RECORD MOVES WITH EVERY KYC CHANGE (identity-core
- * plan, slice 5).
+ * THE CLIENT'S IDENTITY RECORD IS WHAT EVERY KYC CHANGE WRITES (0171).
  *
- * The KYC columns are still what gets read; every transaction that changes
- * evidence or records a decision now ALSO writes the client's record, in the
- * same commit (`ClientIdentityService.recordFromKyc`). One whole round through
- * the real API — upload, submit, a page returned, the page replaced,
- * resubmitted, approved, returned for re-verification, reset — and after EVERY
- * step:
- *
- *  - nothing is out of step (`identity_drift` is empty);
- *  - the verification level equals the latest decision on the record;
+ * There are no KYC document columns any more: each write records exactly what
+ * it changed on the client's record, in the same transaction
+ * (`KycStore` → `identity_record_evidence` / `identity_record_decision`). One
+ * whole round through the real API — upload, submit, a page returned, the page
+ * replaced, resubmitted, approved, returned for re-verification, reset — and
+ * after EVERY step the verification level equals the latest decision on the
+ * record,
  *
  * plus what each step should have added: a draft while the client works, a
  * frozen version for what they presented, one decision per review, linked to
  * exactly what was decided on.
  */
 
-const ADMIN = { email: 'dual-write-admin@oxshare.com', password: 'admin-password-123' };
-const CLIENT = { email: 'dual-write@oxshare-e2e.test', password: 'client-password-123' };
+const ADMIN = { email: 'kyc-round-admin@oxshare.com', password: 'admin-password-123' };
+const CLIENT = { email: 'kyc-round@oxshare-e2e.test', password: 'client-password-123' };
 const PROFILE = {
   firstName: 'Layla',
   lastName: 'Haddad',
@@ -54,12 +51,8 @@ async function rows<T>(query: ReturnType<typeof sql>): Promise<T[]> {
   return (await ctx.db.db.execute(query)).rows as T[];
 }
 
-/** The two invariants, after every step. */
+/** The invariant, after every step. */
 async function inStep(step: string) {
-  expect(
-    await rows(sql`SELECT problem, slot FROM identity_drift WHERE user_id = ${clientId}::integer`),
-    step,
-  ).toEqual([]);
   const [level] = await rows<{ level: number; latest: number | null }>(sql`
     SELECT u.verification_level AS level,
            (SELECT level_after FROM client_verifications v WHERE v.user_id = u.id
@@ -224,5 +217,35 @@ describe('one KYC round, and the record after every step', () => {
       'a draft survived the reset',
     ).toBe(true);
     expect(versions).toHaveLength(2);
+  });
+});
+
+/*
+ * The money gate the record keeps (0153, unchanged by 0171): a client is
+ * VERIFIED only by a decision that verifies them. Raising the level by hand is
+ * refused at commit; the record's maintenance escape still lets an operator
+ * through, deliberately.
+ */
+describe('the verification level follows a decision', () => {
+  it('refuses VERIFYING a client with no decision that says so', async () => {
+    const [raised] = await ctx.db.db
+      .insert(users)
+      .values({
+        email: 'raised-by-hand@oxshare.test',
+        passwordHash: 'x',
+        emailVerified: true,
+        ...PROFILE,
+        phone: '+96170123457',
+      })
+      .returning();
+    await expect(
+      ctx.db.db.transaction((tx) =>
+        tx.execute(sql`UPDATE users SET verification_level = 1 WHERE id = ${raised.id}::integer`),
+      ),
+    ).rejects.toThrow();
+    const [row] = await rows<{ level: number }>(
+      sql`SELECT verification_level AS level FROM users WHERE id = ${raised.id}::integer`,
+    );
+    expect(row.level).toBe(0);
   });
 });

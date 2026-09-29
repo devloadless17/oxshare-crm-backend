@@ -181,31 +181,32 @@ export type KycFormSnapshot = {
   fields: { name: string; label: string; type: string }[];
 }[];
 
-type Row = typeof kycSubmissions.$inferSelect;
-type AttemptRow = typeof kycSubmissionAttempts.$inferSelect;
+/** A row with its three documents rebuilt from the record (`identity_evidence`). */
+type Evidence = {
+  document: Record<string, string> | null;
+  selfie: Record<string, string> | null;
+  addressProof: Record<string, string> | null;
+};
+type Row = typeof kycSubmissions.$inferSelect & Evidence;
 
 /**
- * A submission as READ (identity-core plan, slice 6): the platform's three
- * documents come from the client's identity RECORD — the version each pointer
- * names, rebuilt in the KYC shape by `identity_evidence` (0152) — not from the
- * columns the KYC layer still writes. Those are written until the contract
- * slice drops them, and read by nothing but the adoption routine.
+ * A submission as READ: the platform's three documents come from the client's
+ * identity RECORD — the version each pointer names, rebuilt in the KYC shape by
+ * `identity_evidence` (0152). There are no document columns to read any more
+ * (0171): the record is the only copy, written by `recordEvidence` below.
  *
- * The same shape, so no reader changes, with each path in its one spelling
- * (`uploads/kyc/<name>`). The writes that RETURN a row (`update`,
- * `transition`) still hand back what they wrote: the record catches up with
- * `recordFromKyc` in the same transaction, after them. A broker's own uploads
- * (`stepData`) are still read from the answers — no pointer names their
- * versions yet; the contract slice gives them one.
+ * The same shape every reader always had, each path in its one spelling
+ * (`uploads/kyc/<name>`). A broker's own uploads stay in `stepData`, the
+ * answers, and are versioned on the record from there.
  */
 const submissionRead = {
   ...getTableColumns(kycSubmissions),
   document: sql<
-    Row['document']
+    Evidence['document']
   >`identity_evidence(${kycSubmissions.identityDocumentId}, 'identity')`,
-  selfie: sql<Row['selfie']>`identity_evidence(${kycSubmissions.selfieDocumentId}, 'selfie')`,
+  selfie: sql<Evidence['selfie']>`identity_evidence(${kycSubmissions.selfieDocumentId}, 'selfie')`,
   addressProof: sql<
-    Row['addressProof']
+    Evidence['addressProof']
   >`identity_evidence(${kycSubmissions.addressDocumentId}, 'address')`,
 };
 
@@ -213,15 +214,18 @@ const submissionRead = {
 const attemptRead = {
   ...getTableColumns(kycSubmissionAttempts),
   document: sql<
-    AttemptRow['document']
+    Evidence['document']
   >`identity_evidence(${kycSubmissionAttempts.identityDocumentId}, 'identity')`,
   selfie: sql<
-    AttemptRow['selfie']
+    Evidence['selfie']
   >`identity_evidence(${kycSubmissionAttempts.selfieDocumentId}, 'selfie')`,
   addressProof: sql<
-    AttemptRow['addressProof']
+    Evidence['addressProof']
   >`identity_evidence(${kycSubmissionAttempts.addressDocumentId}, 'address')`,
 };
+
+/** The patch keys that change what the record holds for the live submission. */
+const EVIDENCE_KEYS = ['document', 'selfie', 'addressProof', 'stepData', 'status'] as const;
 
 const toSubmission = (r: Row): KycSubmission => ({
   userId: r.userId,
@@ -257,9 +261,6 @@ const toColumns = (
     ['reviewedAt', 'reviewedAt'],
     ['submittedAt', 'submittedAt'],
     ['personalInfo', 'personalInfo'],
-    ['document', 'document'],
-    ['selfie', 'selfie'],
-    ['addressProof', 'addressProof'],
     ['stepData', 'stepData'],
     ['reverificationRequestedAt', 'reverificationRequestedAt'],
     ['formSnapshot', 'formSnapshot'],
@@ -298,9 +299,10 @@ export class KycStore {
       .insert(kycSubmissions)
       .values({ userId, status: 'not_started' })
       .onConflictDoNothing({ target: kycSubmissions.userId })
-      .returning();
-    // Conflict means a concurrent create won — read it back.
-    return row ? toSubmission(row) : (await this.findByUserId(userId))!;
+      .returning({ userId: kycSubmissions.userId });
+    // Either way the row exists now (a conflict means a concurrent create won).
+    void row;
+    return (await this.findByUserId(userId))!;
   }
 
   async findByUserId(userId: number): Promise<KycSubmission | undefined> {
@@ -337,12 +339,57 @@ export class KycStore {
     executor?: Executor,
   ): Promise<KycSubmission> {
     await this.getOrCreate(userId);
-    const [row] = await (executor ?? this.db)
-      .update(kycSubmissions)
-      .set(toColumns(patch))
+    return this.within(executor, async (tx) => {
+      await tx
+        .update(kycSubmissions)
+        .set(toColumns(patch))
+        .where(eq(kycSubmissions.userId, userId));
+      await this.recordEvidence(userId, patch, tx);
+      return (await this.readIn(userId, tx))!;
+    });
+  }
+
+  /**
+   * Record on the client's identity record what a write changed (0171): a
+   * document, the selfie, a broker's upload, or the status that freezes them.
+   * The values come from the patch; a document the patch does not name keeps
+   * what the record already holds. In the caller's transaction, after the row
+   * write — one implementation (`identity_record_evidence`) for every path.
+   */
+  private async recordEvidence(
+    userId: number,
+    patch: { [K in (typeof EVIDENCE_KEYS)[number]]?: unknown },
+    tx: Executor,
+  ): Promise<void> {
+    if (!EVIDENCE_KEYS.some((key) => key in patch)) return;
+    const value = (key: 'document' | 'selfie' | 'addressProof', column: SQL, slot: string) =>
+      key in patch
+        ? sql`${patch[key] ? JSON.stringify(patch[key]) : null}::jsonb`
+        : sql`identity_evidence(${column}, ${slot})`;
+    await tx.execute(sql`
+      SELECT identity_record_evidence(
+        k.user_id, k.status::text,
+        ${value('document', sql`k.identity_document_id`, 'identity')},
+        ${value('addressProof', sql`k.address_document_id`, 'address')},
+        ${value('selfie', sql`k.selfie_document_id`, 'selfie')},
+        k.step_data,
+        coalesce(k.submitted_at, k.updated_at))
+        FROM kyc_submissions k
+       WHERE k.user_id = ${userId}::integer`);
+  }
+
+  private async readIn(userId: number, executor: Executor): Promise<KycSubmission | undefined> {
+    const [row] = await executor
+      .select(submissionRead)
+      .from(kycSubmissions)
       .where(eq(kycSubmissions.userId, userId))
-      .returning();
-    return toSubmission(row);
+      .limit(1);
+    return row ? toSubmission(row) : undefined;
+  }
+
+  /** Run in the caller's transaction, or in one of its own: row and record move together. */
+  private within<T>(executor: Executor | undefined, work: (tx: Executor) => Promise<T>) {
+    return executor ? work(executor) : this.db.transaction((tx) => work(tx));
   }
 
   /**
@@ -410,45 +457,49 @@ export class KycStore {
      */
     unheldOrHeldBy?: string,
   ): Promise<KycSubmission | undefined> {
-    const [row] = await (executor ?? this.db)
-      .update(kycSubmissions)
-      .set(toColumns(patch))
-      .where(
-        and(
-          eq(kycSubmissions.userId, userId),
-          inArray(kycSubmissions.status, [...from]),
-          /*
-           * ⚠️ SCOPED TO `under_review`, AND THE FIRST VERSION WAS NOT.
-           *
-           * It read `reviewed_by IS NULL OR = me`, which is right for a claim
-           * and wrong for everything else: EVERY DECIDED ROW CARRIES A REVIEWER.
-           * So once admin A approved, `reviewed_by` was A for good and admin B's
-           * rejection matched nothing — silently removing the ability to reject
-           * a mistaken approval, which `reject`'s wider `from` list exists to
-           * allow and which `kyc-decision-adversarial.spec.ts` drives on purpose.
-           *
-           * The rule is about a CLAIM, so it has to name one. A claim reserves
-           * the submission; a completed decision reserves nothing — it is a fact
-           * a later decision may correct.
-           *
-           * `IS NULL OR = me` on top, not `= me` alone: a `submitted` row nobody
-           * has claimed carries no reviewer, and refusing those would put a
-           * mandatory claim in front of every decision — friction on the
-           * ordinary path to fix a problem that only exists on the contested one.
-           */
-          ...(unheldOrHeldBy
-            ? [
-                or(
-                  ne(kycSubmissions.status, 'under_review'),
-                  isNull(kycSubmissions.reviewedBy),
-                  eq(kycSubmissions.reviewedBy, unheldOrHeldBy),
-                ),
-              ]
-            : []),
-        ),
-      )
-      .returning();
-    return row ? toSubmission(row) : undefined;
+    return this.within(executor, async (tx) => {
+      const [row] = await tx
+        .update(kycSubmissions)
+        .set(toColumns(patch))
+        .where(
+          and(
+            eq(kycSubmissions.userId, userId),
+            inArray(kycSubmissions.status, [...from]),
+            /*
+             * ⚠️ SCOPED TO `under_review`, AND THE FIRST VERSION WAS NOT.
+             *
+             * It read `reviewed_by IS NULL OR = me`, which is right for a claim
+             * and wrong for everything else: EVERY DECIDED ROW CARRIES A REVIEWER.
+             * So once admin A approved, `reviewed_by` was A for good and admin B's
+             * rejection matched nothing — silently removing the ability to reject
+             * a mistaken approval, which `reject`'s wider `from` list exists to
+             * allow and which `kyc-decision-adversarial.spec.ts` drives on purpose.
+             *
+             * The rule is about a CLAIM, so it has to name one. A claim reserves
+             * the submission; a completed decision reserves nothing — it is a fact
+             * a later decision may correct.
+             *
+             * `IS NULL OR = me` on top, not `= me` alone: a `submitted` row nobody
+             * has claimed carries no reviewer, and refusing those would put a
+             * mandatory claim in front of every decision — friction on the
+             * ordinary path to fix a problem that only exists on the contested one.
+             */
+            ...(unheldOrHeldBy
+              ? [
+                  or(
+                    ne(kycSubmissions.status, 'under_review'),
+                    isNull(kycSubmissions.reviewedBy),
+                    eq(kycSubmissions.reviewedBy, unheldOrHeldBy),
+                  ),
+                ]
+              : []),
+          ),
+        )
+        .returning({ userId: kycSubmissions.userId });
+      if (!row) return undefined;
+      await this.recordEvidence(userId, patch, tx);
+      return this.readIn(userId, tx);
+    });
   }
 
   async findAll(): Promise<KycSubmission[]> {
@@ -703,36 +754,57 @@ export class KycStore {
       reverification?: boolean;
       /** The configured reason the reviewer chose, kept beside the words the client read. */
       reasonId?: string;
+      /**
+       * A correction of a return decides what the LAST decision covered, never
+       * the drafts the client has uploaded since (`KycService.reject`).
+       */
+      sameEvidenceAsLast?: boolean;
     } = {},
   ): Promise<void> {
-    await (executor ?? this.db)
-      .insert(kycSubmissionAttempts)
-      .values({
-        userId: submission.userId,
-        attemptNo: sql<number>`(
+    const pointer = (
+      column: 'identity_document_id' | 'address_document_id' | 'selfie_document_id',
+    ) =>
+      options.sameEvidenceAsLast
+        ? sql`(SELECT ${sql.raw(column)} FROM kyc_submission_attempts WHERE user_id = ${submission.userId}::integer ORDER BY attempt_no DESC LIMIT 1)`
+        : sql`(SELECT ${sql.raw(column)} FROM kyc_submissions WHERE user_id = ${submission.userId}::integer)`;
+    await this.within(executor, async (tx) => {
+      const [attempt] = await tx
+        .insert(kycSubmissionAttempts)
+        .values({
+          userId: submission.userId,
+          attemptNo: sql<number>`(
           SELECT COALESCE(MAX(${kycSubmissionAttempts.attemptNo}), 0) + 1
           FROM ${kycSubmissionAttempts}
           WHERE ${kycSubmissionAttempts.userId} = ${submission.userId}
         )`,
-        status: submission.status,
-        personalInfo: submission.personalInfo,
-        document: submission.document as unknown as Record<string, string>,
-        selfie: submission.selfie as unknown as Record<string, string>,
-        addressProof: submission.addressProof as unknown as Record<string, string>,
-        // An archived attempt missing the custom answers would show a reviewer a
-        // partial record of what they decided on.
-        stepData: submission.stepData,
-        rejectionReason: submission.rejectionReason ?? null,
-        rejectedFields: submission.rejectedFields ?? null,
-        submittedAt: submission.submittedAt ?? null,
-        reviewedAt: submission.reviewedAt ?? null,
-        reviewedBy: submission.reviewedBy ?? null,
-        reverification: options.reverification ?? false,
-        reasonId: options.reasonId ?? null,
-        // What the broker's own steps asked, kept with the attempt it labels.
-        formSnapshot: submission.formSnapshot ?? null,
-      })
-      .onConflictDoNothing();
+          status: submission.status,
+          personalInfo: submission.personalInfo,
+          /*
+           * The versions the live row names as it is decided — already frozen,
+           * because a decision follows a submission. `identity_record_decision`
+           * below freezes any that is not, and records what the decision covered.
+           */
+          identityDocumentId: pointer('identity_document_id'),
+          addressDocumentId: pointer('address_document_id'),
+          selfieDocumentId: pointer('selfie_document_id'),
+          // An archived attempt missing the custom answers would show a reviewer a
+          // partial record of what they decided on.
+          stepData: submission.stepData,
+          rejectionReason: submission.rejectionReason ?? null,
+          rejectedFields: submission.rejectedFields ?? null,
+          submittedAt: submission.submittedAt ?? null,
+          reviewedAt: submission.reviewedAt ?? null,
+          reviewedBy: submission.reviewedBy ?? null,
+          reverification: options.reverification ?? false,
+          reasonId: options.reasonId ?? null,
+          // What the broker's own steps asked, kept with the attempt it labels.
+          formSnapshot: submission.formSnapshot ?? null,
+        })
+        .onConflictDoNothing()
+        .returning({ id: kycSubmissionAttempts.id });
+      // The decision, on the client's record, in the same transaction (0171).
+      if (attempt) await tx.execute(sql`SELECT identity_record_decision(${attempt.id}::uuid)`);
+    });
   }
 
   /** This client's decided attempts, oldest first. */
@@ -790,7 +862,15 @@ export class KycStore {
   // REMOVED: `clearAll()` — an unguarded `DELETE FROM kyc_submissions` with no
   // caller once `KycService.resetAllKyc()` was deleted. See the note there.
 
+  /**
+   * The live submission goes, and with it the client's DRAFTS — work never
+   * presented. What was presented stays on their record, frozen, with the
+   * decisions about it (0171; `identity_adopt` did this until then).
+   */
   async resetUser(userId: number, executor: Executor = this.db): Promise<void> {
     await executor.delete(kycSubmissions).where(eq(kycSubmissions.userId, userId));
+    await executor.execute(
+      sql`DELETE FROM client_documents WHERE user_id = ${userId}::integer AND frozen_at IS NULL`,
+    );
   }
 }

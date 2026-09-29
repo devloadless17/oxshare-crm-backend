@@ -19,7 +19,6 @@ import {
 } from './schema';
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { DEFAULT_KYC_STEPS } from '../store/kyc-config.store';
-import { ClientIdentityStore } from '../store/client-identity.store';
 import permissionsCatalog from '../config/permissions.json';
 
 // Idempotent dev/bootstrap seeds — safe to run on every boot. Idempotency
@@ -478,10 +477,12 @@ export async function runSeeds(): Promise<void> {
           // The identity is the PROFILE's (above) — `personal_info` holds only
           // answers to fields a broker invented, and this client gave none (0139).
           personalInfo: {},
-          document: { docType: 'passport' },
-          addressProof: { docType: 'utility_bill' },
         })
         .onConflictDoNothing({ target: kycSubmissions.userId });
+      await recordFixtureEvidence(db, e2eClient.id, {
+        document: { docType: 'passport' },
+        addressProof: { docType: 'utility_bill' },
+      });
     }
 
     /*
@@ -951,10 +952,12 @@ export async function runSeeds(): Promise<void> {
           status: 'submitted',
           submittedAt: new Date(),
           personalInfo: { email: `alpha@${E2E_DOMAIN}` },
-          document: { docType: 'passport' },
-          addressProof: { docType: 'utility_bill' },
         })
         .onConflictDoNothing({ target: kycSubmissions.userId });
+      await recordFixtureEvidence(db, alphaClient.id, {
+        document: { docType: 'passport' },
+        addressProof: { docType: 'utility_bill' },
+      });
     }
 
     /*
@@ -1085,14 +1088,13 @@ export async function runSeeds(): Promise<void> {
   }
 
   /*
-   * THE IDENTITY RECORD FOLLOWS WHAT THE SEEDS WROTE (0152).
+   * THE IDENTITY RECORD EXPLAINS EVERY SEEDED LEVEL (0171).
    *
-   * The seeds write KYC rows and verification levels directly, as fixtures do.
-   * Everything the application writes reaches the client's record inside its
-   * own transaction; this is the same routine for what the seeds wrote, run
-   * only where the record is out of step, so a second boot adds nothing.
+   * The seeds set verification levels directly, as fixtures do; each one gets
+   * the decision that explains it, only where none does yet, so a second boot
+   * adds nothing.
    */
-  await adoptIdentityDrift(db);
+  await recordSeedLevels(db);
 
   console.log(
     `🌱 Seeds applied (idempotent): master role/admin, demo client, rejection reasons${
@@ -1238,7 +1240,6 @@ export async function reassertReviewPool(db: ReturnType<typeof getDb>): Promise<
         submittedAt: new Date(),
         // Identity is the profile's (above); no broker-invented answers here.
         personalInfo: {},
-        ...evidence,
       })
       .onConflictDoUpdate({
         target: kycSubmissions.userId,
@@ -1253,33 +1254,56 @@ export async function reassertReviewPool(db: ReturnType<typeof getDb>): Promise<
           rejectedFields: null,
           // A re-verification request is part of the decision being reset.
           reverificationRequestedAt: null,
-          // And the evidence: approval re-asks the judge, which reads pages.
-          ...evidence,
         },
       });
+    // And the evidence, on the client's record: approval re-asks the judge,
+    // which reads pages.
+    await recordFixtureEvidence(db, pooled.id, evidence);
   }
 
-  // The reset evidence and levels, on each client's record (0152).
-  await adoptIdentityDrift(db);
+  await recordSeedLevels(db);
   return REVIEW_POOL.length;
 }
 
 /**
- * Bring the identity record (0151) in step for every client these fixtures just
- * wrote the KYC rows of — the record's own repair, which adopts each client
- * `identity_drift` names. Silent, because a fixture writing the KYC rows is
- * expected here, unlike at boot; LOUD on a client it cannot adopt, because a
- * fixture the record disagrees with is a broken fixture.
+ * A fixture's documents, recorded on the client's identity record (0171) —
+ * through `identity_record_evidence`, the same SQL `KycStore` writes with, as
+ * the row's status has them (frozen once presented). Run after the KYC row is
+ * written; idempotent, so a second boot adds nothing.
  */
-export async function adoptIdentityDrift(db: ReturnType<typeof getDb>): Promise<void> {
-  const { failed } = await new ClientIdentityStore(db).repairDrift();
-  if (failed.length > 0) {
-    throw new Error(
-      `identity_adopt failed for ${failed.length} fixture client(s): ${failed
-        .map(({ userId, message }) => `${userId}: ${message}`)
-        .join('; ')}`,
-    );
-  }
+async function recordFixtureEvidence(
+  db: ReturnType<typeof getDb>,
+  userId: number,
+  evidence: {
+    document?: Record<string, string>;
+    selfie?: Record<string, string>;
+    addressProof?: Record<string, string>;
+  },
+): Promise<void> {
+  const json = (value: Record<string, string> | undefined) =>
+    value ? JSON.stringify(value) : null;
+  await db.execute(sql`
+    SELECT identity_record_evidence(
+      k.user_id, k.status::text,
+      ${json(evidence.document)}::jsonb, ${json(evidence.addressProof)}::jsonb,
+      ${json(evidence.selfie)}::jsonb, k.step_data, coalesce(k.submitted_at, k.updated_at))
+      FROM kyc_submissions k
+     WHERE k.user_id = ${userId}::integer`);
+}
+
+/**
+ * The seeds set verification levels directly, as fixtures do; the KYC flow
+ * never does, because it decides first. So every seeded client whose level no
+ * decision explains gets the one that does (`identity_record_level`, 0171) —
+ * the `users_verified_by_a_decision` rule, kept true for fixtures too.
+ */
+async function recordSeedLevels(db: ReturnType<typeof getDb>): Promise<void> {
+  await db.execute(sql`
+    SELECT identity_record_level(u.id)
+      FROM users u
+     WHERE u.verification_level IS DISTINCT FROM coalesce(
+             (SELECT v.level_after FROM client_verifications v
+               WHERE v.user_id = u.id ORDER BY v.seq DESC LIMIT 1), 0)`);
 }
 
 /**
@@ -1372,10 +1396,9 @@ export async function createFreshE2eClient(
     submittedAt: new Date(),
     // Identity is the profile's (above); no broker-invented answers here.
     personalInfo: {},
-    ...fixtureEvidence(`fresh-${stamp}`),
   });
-  // Its presented evidence, frozen on its record (0152).
-  await db.execute(sql`SELECT identity_adopt(${client.id}::integer)`);
+  // Its presented evidence, frozen on its record.
+  await recordFixtureEvidence(db, client.id, fixtureEvidence(`fresh-${stamp}`));
 
   return { id: client.id, email, password };
 }

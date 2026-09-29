@@ -14,6 +14,7 @@ import { PasswordService } from '../src/common/security/password.service';
 import { STORAGE_DRIVER, type StorageDriver } from '../src/common/uploads/storage/storage-driver';
 import { admins, kycConfigSteps, roles, users } from '../src/database/schema';
 import { DEFAULT_KYC_STEPS } from '../src/store/kyc-config.store';
+import { recordFrozenIdentityDocument } from './support/kyc-evidence';
 
 /**
  * WHOSE IS THIS FILE? THE CLIENT'S IDENTITY RECORD SAYS (identity-core plan,
@@ -73,7 +74,7 @@ async function plant(name: string): Promise<void> {
 /** The stored name of the owner's current identity-document front page. */
 async function currentFront(): Promise<string> {
   const row = await one<{ path: string }>(sql`
-    SELECT document->>'frontFilePath' AS path FROM kyc_submissions WHERE user_id = ${ownerId}::integer`);
+    SELECT identity_evidence(identity_document_id, 'identity')->>'frontFilePath' AS path FROM kyc_submissions WHERE user_id = ${ownerId}::integer`);
   return row.path.split('/').pop()!;
 }
 
@@ -184,12 +185,11 @@ describe('GET /uploads/kyc/:file — the owner comes from the record', () => {
   it('finds the owner of a document stored under an old spelling of its path', async () => {
     const legacy = `${randomUUID()}.png`;
     await plant(legacy);
-    // Written as the KYC columns once held it: a leading slash.
-    await ctx.db.db.execute(sql`
-      INSERT INTO kyc_submission_attempts (user_id, attempt_no, status, document, archived_at)
-      VALUES (${ownerId}::integer, 99, 'rejected',
-              ${JSON.stringify({ docType: 'passport', frontFilePath: `/uploads/kyc/${legacy}` })}::jsonb,
-              now())`);
+    // Handed to the record as the KYC columns once held it: a leading slash.
+    await recordFrozenIdentityDocument(ctx.db.db, ownerId, {
+      docType: 'passport',
+      frontFilePath: `/uploads/kyc/${legacy}`,
+    });
 
     expect((await read(owner, legacy)).status).toBe(200);
     expect((await read(admin, legacy)).status).toBe(200);
@@ -201,15 +201,11 @@ describe('GET /uploads/kyc/:file — the owner comes from the record', () => {
     // hand one client's passport to another is "neither".
     const shared = `${randomUUID()}.png`;
     await plant(shared);
-    for (const [user, no] of [
-      [ownerId, 100],
-      [otherId, 1],
-    ] as const) {
-      await ctx.db.db.execute(sql`
-        INSERT INTO kyc_submission_attempts (user_id, attempt_no, status, document, archived_at)
-        VALUES (${user}::integer, ${no}, 'rejected',
-                ${JSON.stringify({ docType: 'passport', frontFilePath: `uploads/kyc/${shared}` })}::jsonb,
-                now())`);
+    for (const user of [ownerId, otherId]) {
+      await recordFrozenIdentityDocument(ctx.db.db, user, {
+        docType: 'passport',
+        frontFilePath: `uploads/kyc/${shared}`,
+      });
     }
 
     expect((await read(admin, shared)).status).toBe(404);

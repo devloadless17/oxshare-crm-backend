@@ -4,6 +4,7 @@ import { eq } from 'drizzle-orm';
 import { actingAs, startHttpTestApp, stopHttpTestApp, type HttpTestContext } from './http-setup';
 import { PasswordService } from '../src/common/security/password.service';
 import { admins, kycSubmissions, roles, users } from '../src/database/schema';
+import { recordKycEvidence } from './support/kyc-evidence';
 
 /**
  * THE DECISION PATH, DRIVEN ADVERSARIALLY — is the state machine a state machine?
@@ -111,8 +112,8 @@ beforeAll(async () => {
     status: 'submitted',
     submittedAt: new Date(),
     personalInfo: { firstName: 'Decide', lastName: 'Subject' },
-    document: { docType: 'passport' },
   });
+  await recordKycEvidence(db, subjectId, { document: { docType: 'passport' } });
 
   a = await actingAs(ctx, 'admin', REVIEWER_A);
   b = await actingAs(ctx, 'admin', REVIEWER_B);

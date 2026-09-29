@@ -1114,11 +1114,13 @@ they live here:
   and `test/kyc-form-customizable.spec.ts` (details taken off, optional selfie, a tightened form, a
   moved question).
 
-## The client's identity RECORD (0151–0152, 28 Sep 2026)
+## The client's identity RECORD (0151–0153, 0171; 28–30 Sep 2026)
 
 The owner's direction: a client's documents, selfie and verification belong to the CLIENT; KYC is
 only the process that collects and checks them, and may one day be an external tool. Built in
-slices; this is the state after the dual write (slice 5).
+slices; since **0171 (the contract slice) the record is the ONLY home of the evidence** — the KYC
+document columns (`document`, `selfie`, `address_proof` on `kyc_submissions` and
+`kyc_submission_attempts`) are dropped, and nothing is derived or dual-written any more.
 
 | table                                        | holds                                                                                                                                                                                                                   |
 | -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -1126,23 +1128,26 @@ slices; this is the state after the dual write (slice 5).
 | `client_verifications`                       | every decision, append-only: `outcome`, `level_after`, `method`, who, why                                                                                                                                               |
 | `client_verification_documents`              | exactly which versions each decision covered                                                                                                                                                                            |
 
-- **Evidence is READ from the record; the KYC columns are still WRITTEN.** Every read of a
-  submission's or attempt's identity document, proof of address and selfie goes through
-  `KycStore`'s `submissionRead`/`attemptRead`, which rebuild the KYC shapes from the version each
-  pointer names (`identity_evidence`, 0152) — paths in the one spelling. The columns are read by
-  nothing but adoption until the contract slice drops them. Two exceptions, both deliberate: the
-  writes that RETURN a row (`update`, `transition`) hand back what they wrote, and a broker's own
-  uploads are still read from `stepData` (no pointer names their versions yet).
-- ONE routine, `identity_adopt(user)` (0152), derives the record from the KYC rows — for the
-  backfill, the dual write, fixtures and the boot repair — so there is no second implementation to
-  drift. Two things run it:
-  - **the KYC code**, inside each transaction that changes evidence or decides
-    (`ClientIdentityService.recordFromKyc`), so the record is current WITHIN that transaction;
-  - **deferred triggers (0153)** on `kyc_submissions` and `kyc_submission_attempts`, at COMMIT, for
-    EVERY writer — an older build during a rollback, raw SQL, a test fixture, a KYC path added
-    later. Deferred because a decision is several writes; adopted after the first, a half-made
-    decision would be "explained" with an invented legacy row. The same stance as the bell (0140):
-    a new path that moves the KYC rows needs no record code.
+- **`KycStore` writes the record, in the KYC row's own transaction.** The KYC rows keep only
+  POINTERS (`identity_document_id`, `address_document_id`, `selfie_document_id`). Reads rebuild the
+  KYC shapes from the version each pointer names (`submissionRead`/`attemptRead` →
+  `identity_evidence`), so the pure KYC rules keep their `{document, selfie, addressProof}` shape.
+  Three SQL functions (0171) do the writing:
+  - `identity_record_evidence(user, status, document, address, selfie, step_data, at)` — called by
+    `update`/`transition`: a draft while the client works, frozen once presented; moves the pointers,
+    versions `stepData` uploads, drops stale drafts.
+  - `identity_record_decision(attempt)` — called by `archiveAttempt`: freezes what the attempt names,
+    records the `client_verifications` row and what it covered. Idempotent (`verification_id`).
+    A CORRECTED return (re-rejecting a returned submission) points the attempt at the LAST attempt's
+    versions (`sameEvidenceAsLast`), never at drafts the client uploaded since.
+  - `identity_record_level(user)` — for seeds and imports that set a level directly: records the
+    `fixture`/`legacy` decision that explains it.
+- ⚠️ **A raw INSERT into `kyc_submissions`/`kyc_submission_attempts` records NOTHING** — the 0153
+  follow triggers are gone. Fixtures call the functions above (`test/support/kyc-evidence.ts`,
+  `seed.ts` `recordFixtureEvidence`/`recordSeedLevels`); an attempt inserted by hand needs
+  `SELECT identity_record_decision(id)` or no decision exists for it.
+- ⚠️ **0171 cannot be rolled back by redeploying the previous build** — that build writes the
+  dropped columns. Roll forward only.
 - **History is protected by triggers, even from a superuser** (the ledger lesson, 0120): a frozen
   version, its pages and every decision refuse UPDATE and DELETE. The one escape is
   `SELECT set_config('oxshare.identity_maintenance', 'on', true)`, local to its transaction.
@@ -1150,27 +1155,17 @@ slices; this is the state after the dual write (slice 5).
   submission, then UNDER THE ESCAPE `client_verification_documents` → `client_verifications` →
   `client_documents` (pages cascade), then `stored_objects` (pages reference them), then the user.
   `docs/scripts/purge-account.sh` and `scripts/seed-load-test.mjs --purge` do exactly this.
-- **`identity_drift` names what is out of step** — eight kinds, listed in 0152 above the view. Empty
-  is healthy. `identity_adopt` must clear EVERY kind: `migration-0152-adopt-identity.spec.ts`
-  creates each one and proves a single adoption clears it (mutation-checked).
-- **Every boot repairs drift, in every environment** (`main.ts` → `repairDrift`, outside the seed
-  guard like `reportPermissionDrift`) — the DETECTOR for what the triggers cannot see: rows written
-  with triggers off (a restore, replication), a verification level set directly, an edit through
-  the escape. One transaction per client, never blocks the boot, and any drift raises
-  `identity.record_drift` (`notify`). `identity_adopt` locks the client's KYC row first, so a
-  repair waits for a KYC change in flight instead of racing it. To simulate such a write in a test,
-  `SET LOCAL session_replication_role = replica` (`identity-drift-repair.spec.ts`).
 - **Whose file is it? The record says** — `GET /uploads/kyc/:file` resolves the owner from the
   record's pages (`ClientIdentityService.ownerOfKycFile`) for EVERY reader. So an orphan is a 404
   even for an unrestricted admin (who was handed any file by name until 28 Sep 2026), a client
   keeps their presented documents after a reset (the live row goes, the record stays), and a file
   two records claim is served to nobody. A page is stored in ONE spelling, `uploads/kyc/<name>`
   (0152's `identity_page_key`, enforced by `client_document_pages_key_ck`), whatever the KYC
-  columns held — `./uploads/…`, `/uploads/…`, backslashes and bare names all reached production at
-  some point. Pinned by `test/kyc-file-owner.spec.ts`.
+  columns once held — `./uploads/…`, `/uploads/…`, backslashes and bare names all reached
+  production at some point. Pinned by `test/kyc-file-owner.spec.ts`.
 - **A client is VERIFIED only by a decision** (0153, `users_verified_by_a_decision`): raising
   `verification_level` — the money gate — is refused at COMMIT unless the client's latest decision
-  verifies them. Lowering it is not refused (a closed gate; adoption records it), nor is an INSERT
+  verifies them. Lowering it is not refused (a closed gate), nor is an INSERT
   (registration inserts 0; seeds and imports are recorded as `fixture`/`legacy`). To stage a
   verified client by hand, record a decision (`scripts/verify-client.mjs` does) or use the escape.
 - **The 50MB upload allowance never counts evidence**: a page of a FROZEN version is kept for ever
@@ -1247,11 +1242,11 @@ on `whish` then; since 0168 nothing does — see "Payment providers" below.)
 
 Three layers, and every money path reads them rather than a name (`modules/payments/providers/`):
 
-| layer    | what it is                                                                     | where                                                |
-| -------- | ------------------------------------------------------------------------------ | ---------------------------------------------------- |
-| PROVIDER | a system that moves money: `manual` (built in: the desk), `rival`, the next…   | one ADAPTER in code + one `payment_providers` row    |
-| CHANNEL  | one way it moves money, DECLARED by the adapter: direction, flow, destination | `adapter.channels` — never typed by an operator      |
-| METHOD   | what a client picks, bound to exactly one (provider, channel), fixed at birth  | `payment_methods` / `withdrawal_payment_methods`     |
+| layer    | what it is                                                                    | where                                             |
+| -------- | ----------------------------------------------------------------------------- | ------------------------------------------------- |
+| PROVIDER | a system that moves money: `manual` (built in: the desk), `rival`, the next…  | one ADAPTER in code + one `payment_providers` row |
+| CHANNEL  | one way it moves money, DECLARED by the adapter: direction, flow, destination | `adapter.channels` — never typed by an operator   |
+| METHOD   | what a client picks, bound to exactly one (provider, channel), fixed at birth | `payment_methods` / `withdrawal_payment_methods`  |
 
 - **A transaction records its route**: `provider_code`, `channel_code`, `provider_environment`, set at
   filing and immutable (trigger), like a method's. `transactions.provider` stays the idempotency
@@ -1259,7 +1254,7 @@ Three layers, and every money path reads them rather than a name (`modules/payme
   on it. A BEFORE INSERT trigger derives the route for an older build that writes none.
 - **`PaymentProviderRegistry` answers every route question** (`isRedirect`, `isDeskDecided`,
   `isAutomatedPayout`, `settlementScale`, `startPayment`/`checkPayment`, `states`). No `key ===
-  'whish'` remains; Rival's own names (`WISH`, the `whish:<id>` reference) live in its adapter and
+'whish'` remains; Rival's own names (`WISH`, the `whish:<id>` reference) live in its adapter and
   services only.
 - **State, one rule** (`provider-status.ts`): connected / unverified / failing / off / not_configured
   / sandbox_refused. A DEPOSIT method is offered only while its provider is usable (`availability`),
@@ -1303,7 +1298,7 @@ was sent from, a transfer code. The admin defines them per method in the method 
 live in `common/payments/proof-fields.ts` (pure).
 
 - **Config**: `payment_methods.proof_fields`, an ordered array of `{id, label, type: text|phone,
-  required, enabled, hint?}`. It holds at most 8 fields with unique labels, and each id (`f_…`) is
+required, enabled, hint?}`. It holds at most 8 fields with unique labels, and each id (`f_…`) is
   generated by the console and never changes. Fields are asked only while the method is offline,
   and only when enabled. A hidden field is kept but not asked.
 - **Answers**: `transactions.proof_details`, `[{fieldId, label, type, value}]`. **The label is
