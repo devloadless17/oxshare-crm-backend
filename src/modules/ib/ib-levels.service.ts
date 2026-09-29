@@ -3,10 +3,16 @@ import { asc, count, eq, sql } from 'drizzle-orm';
 import Decimal from 'decimal.js';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { getDb } from '../../database/db';
-import { ibLevels } from '../../database/schema';
+import { ibAccounts, ibLevels } from '../../database/schema';
 import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/domain-errors';
 import { AdminAuditService } from '../admin/admin-audit.service';
 import type { Actor } from '../../common/security/actor';
+import {
+  describeAcrossTerritory,
+  outsideTerritoryRemedy,
+  territoryCounts,
+  type ClientScope,
+} from '../../common/security/client-scope';
 import { ABSOLUTE_IB_MAX_LEVELS } from '../../common/ib-levels';
 import type { CreateIbLevelDto, IbLevelDto, UpdateIbLevelDto } from './dto/ib-level.dto';
 
@@ -44,6 +50,10 @@ type Db = ReturnType<typeof getDb>;
  * An operator trusted to READ the ladder is not automatically trusted to change
  * what every partner on it earns.
  */
+/** "1 partner stands", "3 partners stand". */
+const stand = (n: { inScope: number; outside: number }) =>
+  n.inScope + n.outside === 1 ? 'stands' : 'stand';
+
 @Injectable()
 export class IbLevelsService {
   constructor(
@@ -51,40 +61,62 @@ export class IbLevelsService {
     private readonly audit: AdminAuditService,
   ) {}
 
+  /** A rung's own row — its terms, with no count of who stands on it. */
+  private readonly columns = {
+    id: ibLevels.id,
+    level: ibLevels.level,
+    name: ibLevels.name,
+    description: ibLevels.description,
+    enabled: ibLevels.enabled,
+    commissionShare: ibLevels.commissionShare,
+    rebateShare: ibLevels.rebateShare,
+    createdAt: ibLevels.createdAt,
+    updatedAt: ibLevels.updatedAt,
+  };
+
   /**
    * The whole ladder, shallowest rung first, with how many partners stand on
-   * each.
+   * each — split by the READER's territory.
    *
    * The count is part of the row rather than a second call: it is what makes a
    * delete refusable in the UI before the database refuses it, and what tells an
    * operator how many people a share change is about to affect.
+   *
+   * `partnerCount` is the partners the reader may see; `partnersOutsideScope`
+   * the rest, counted and never named (D-81 R2). A platform total alone told a
+   * scoped desk "42 partners" and then listed 12 of them; a narrowed total alone
+   * would have them try to disable a rung they could not empty.
+   *
+   * Counted by a separate grouped query and merged, not by a correlated
+   * subquery in the select list: inside a select-list `sql` template Drizzle
+   * renders a column as its bare name, and `WHERE "level" = "level"` once made
+   * every rung report the platform's whole partner count.
    */
-  async listAll(): Promise<IbLevelDto[]> {
-    return this.db
-      .select({
-        id: ibLevels.id,
-        level: ibLevels.level,
-        name: ibLevels.name,
-        description: ibLevels.description,
-        enabled: ibLevels.enabled,
-        commissionShare: ibLevels.commissionShare,
-        rebateShare: ibLevels.rebateShare,
-        createdAt: ibLevels.createdAt,
-        updatedAt: ibLevels.updatedAt,
-        /*
-         * ⚠️ QUALIFIED BY HAND. Inside a select-list `sql` template Drizzle
-         * renders a column as its bare name, so `${ibLevels.level}` became
-         * `"level"` and, inside a subquery FROM ib_accounts, resolved to the
-         * inner table's own column: `WHERE "level" = "level"` — every rung
-         * reported the platform's whole partner count. Found while writing the
-         * same shape for commission types (0140).
-         */
-        partnerCount: sql<number>`(
-          SELECT COUNT(*)::int FROM ib_accounts AS a WHERE a.level = "ib_levels"."level"
-        )`,
-      })
+  async listAll(scope: ClientScope): Promise<IbLevelDto[]> {
+    const counts = territoryCounts(scope, ibAccounts.userId);
+    const [levels, standing] = await Promise.all([
+      this.db.select(this.columns).from(ibLevels).orderBy(asc(ibLevels.level)),
+      this.db
+        .select({ level: ibAccounts.level, inScope: counts.inScope, outside: counts.outside })
+        .from(ibAccounts)
+        .groupBy(ibAccounts.level),
+    ]);
+    const on = new Map(standing.map((row) => [row.level, row]));
+    return levels.map((row) => ({
+      ...row,
+      partnerCount: on.get(row.level)?.inScope ?? 0,
+      partnersOutsideScope: on.get(row.level)?.outside ?? 0,
+    }));
+  }
+
+  /** One rung's terms, for a caller that needs no count (approval, level changes). */
+  async findTerms(level: number) {
+    const [row] = await this.db
+      .select(this.columns)
       .from(ibLevels)
-      .orderBy(asc(ibLevels.level));
+      .where(eq(ibLevels.level, level))
+      .limit(1);
+    return row ?? null;
   }
 
   /**
@@ -98,9 +130,14 @@ export class IbLevelsService {
     return { maxLevels: ABSOLUTE_IB_MAX_LEVELS, absoluteMaxLevels: ABSOLUTE_IB_MAX_LEVELS };
   }
 
-  async findOne(level: number): Promise<IbLevelDto | null> {
-    const rows = await this.listAll();
+  async findOne(level: number, scope: ClientScope): Promise<IbLevelDto | null> {
+    const rows = await this.listAll(scope);
     return rows.find((row) => row.level === level) ?? null;
+  }
+
+  /** Everyone standing on a rung, in and outside the reader's territory. */
+  private standing(level: IbLevelDto) {
+    return { inScope: level.partnerCount, outside: level.partnersOutsideScope };
   }
 
   /**
@@ -147,7 +184,7 @@ export class IbLevelsService {
     this.assertShareFits('The commission share', commissionShare);
     this.assertShareFits('The rebate share', rebateShare);
 
-    if (await this.findOne(dto.level)) {
+    if (await this.findTerms(dto.level)) {
       throw new ConflictError(
         `Level ${dto.level} already exists. A level IS its number, so edit that one rather than ` +
           'adding a second.',
@@ -174,11 +211,16 @@ export class IbLevelsService {
       enabled: created.enabled,
     });
 
-    return { ...created, partnerCount: 0 };
+    return { ...created, partnerCount: 0, partnersOutsideScope: 0 };
   }
 
-  async update(level: number, dto: UpdateIbLevelDto, actor: Actor): Promise<IbLevelDto> {
-    const current = await this.findOne(level);
+  async update(
+    level: number,
+    dto: UpdateIbLevelDto,
+    actor: Actor,
+    scope: ClientScope,
+  ): Promise<IbLevelDto> {
+    const current = await this.findOne(level, scope);
     if (!current) throw new NotFoundError(`Level ${level} does not exist.`);
 
     /* Omitted means LEAVE IT — a PATCH that changes only the name leaves the
@@ -193,12 +235,15 @@ export class IbLevelsService {
      *
      * A disabled rung pays nothing, so this would stop every partner on it
      * earning — silently, from their side, with their referral links still
-     * working. Move them first; the refusal says how many there are.
+     * working. Move them first; the refusal says how many there are — and how
+     * many of them the reader cannot move themselves (D-81 R2).
      */
-    if (dto.enabled === false && current.enabled && current.partnerCount > 0) {
+    const standing = this.standing(current);
+    if (dto.enabled === false && current.enabled && standing.inScope + standing.outside > 0) {
       throw new ConflictError(
-        `${current.partnerCount} partner(s) stand on level ${level}, and a disabled level stops ` +
-          'paying. Move them to another level first.',
+        `${describeAcrossTerritory(standing, 'partner', 'partners')} ${stand(standing)} on ` +
+          `level ${level}, and a disabled level stops paying. Move them to another level first.` +
+          outsideTerritoryRemedy(standing.outside),
       );
     }
 
@@ -231,7 +276,11 @@ export class IbLevelsService {
       },
     });
 
-    return { ...updated, partnerCount: current.partnerCount };
+    return {
+      ...updated,
+      partnerCount: current.partnerCount,
+      partnersOutsideScope: current.partnersOutsideScope,
+    };
   }
 
   /**
@@ -249,8 +298,8 @@ export class IbLevelsService {
    * anybody cannot be deleted at all. That refusal reaches an operator as a
    * 500, which is why the two checks above catch the cases somebody can act on.
    */
-  async remove(level: number, actor: Actor) {
-    const current = await this.findOne(level);
+  async remove(level: number, actor: Actor, scope: ClientScope) {
+    const current = await this.findOne(level, scope);
     if (!current) throw new NotFoundError(`Level ${level} does not exist.`);
 
     if (level === 1) {
@@ -260,10 +309,12 @@ export class IbLevelsService {
       );
     }
 
-    if (current.partnerCount > 0) {
+    const standing = this.standing(current);
+    if (standing.inScope + standing.outside > 0) {
       throw new ConflictError(
-        `${current.partnerCount} partner(s) stand on level ${level}. Move them to another level ` +
-          'before deleting it.',
+        `${describeAcrossTerritory(standing, 'partner', 'partners')} ${stand(standing)} on ` +
+          `level ${level}. Move them to another level before deleting it.` +
+          outsideTerritoryRemedy(standing.outside),
       );
     }
 

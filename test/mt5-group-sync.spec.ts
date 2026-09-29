@@ -6,6 +6,7 @@ import {
 } from '../src/modules/trading/mt5/mt5-group-sync.service';
 import type { Mt5BridgeClient, Mt5Group } from '../src/modules/trading/mt5/mt5-bridge.client';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
+import { UNRESTRICTED } from '../src/common/security/client-scope';
 
 /**
  * The MT5 group mirror, against real Postgres.
@@ -317,7 +318,7 @@ describe('the MT5 Groups screen', () => {
     await accountIn('Real\\STANDARD', '7002');
     await accountIn('real\\ECN', '7003');
 
-    const rows = await groups.listForAdmin();
+    const rows = await groups.listForAdmin(UNRESTRICTED);
     const byName = new Map(rows.map((row) => [row.name, row]));
 
     expect(rows.map((row) => row.name)).toEqual(['real\\ECN', 'real\\Standard']);
@@ -352,7 +353,7 @@ describe('the MT5 Groups screen', () => {
       VALUES (${rows[0].id}, 'live', ${'real\\Standard'}, 'USD')
     `);
 
-    const [row] = await groups.listForAdmin();
+    const [row] = await groups.listForAdmin(UNRESTRICTED);
 
     expect(row?.products.map((p) => p.name)).toEqual(['Product real\\Standard', 'Second Standard']);
   });
@@ -362,7 +363,7 @@ describe('the MT5 Groups screen', () => {
     await groups.sync();
     listGroups.mockClear();
 
-    await groups.listForAdmin();
+    await groups.listForAdmin(UNRESTRICTED);
 
     expect(listGroups).not.toHaveBeenCalled();
   });
@@ -410,7 +411,7 @@ describe("a group's MT5 commission and margin levels", () => {
     serverGroups = [reported('real\\Pro', [perLot])];
     await groups.sync();
 
-    const [row] = await groups.listForAdmin();
+    const [row] = await groups.listForAdmin(UNRESTRICTED);
 
     expect(row?.commissions).toEqual([perLot]);
     expect(row?.marginCall).toBe('100.00000000');
@@ -425,7 +426,7 @@ describe("a group's MT5 commission and margin levels", () => {
     serverGroups = [group('real\\Pro')];
     await groups.sync();
 
-    const [row] = await groups.listForAdmin();
+    const [row] = await groups.listForAdmin(UNRESTRICTED);
 
     expect(row?.commissions).toEqual([perLot]);
     expect(row?.marginCall).toBe('100.00000000');
@@ -435,7 +436,7 @@ describe("a group's MT5 commission and margin levels", () => {
     serverGroups = [reported('real\\Free', []), group('real\\Unknown')];
     await groups.sync();
 
-    const rows = await groups.listForAdmin();
+    const rows = await groups.listForAdmin(UNRESTRICTED);
     const byName = new Map(rows.map((row) => [row.name, row]));
 
     expect(byName.get('real\\Free')?.commissions).toEqual([]);
@@ -458,7 +459,7 @@ describe("a group's MT5 commission and margin levels", () => {
     ];
 
     const run = await groups.sync();
-    const rows = await groups.listForAdmin();
+    const rows = await groups.listForAdmin(UNRESTRICTED);
     const odd = rows.find((row) => row.name === 'real\\Odd');
 
     expect(run?.onServer).toBe(2);

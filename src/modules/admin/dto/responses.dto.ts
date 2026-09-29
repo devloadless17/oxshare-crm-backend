@@ -723,8 +723,15 @@ export class ClientTagChangeResultDto {
   'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
 )
 export class ClientTagWithCountDto extends ClientTagDto {
-  @ApiProperty({ description: 'How many clients carry this tag.' })
+  @ApiProperty({ description: 'How many clients carry this tag in the reader’s territory.' })
   clientCount: number;
+  @ApiProperty({
+    type: 'integer',
+    description:
+      'How many clients carry it OUTSIDE the reader’s territory — a count, never who (D-81 R2). ' +
+      'Zero for a reader who sees every client.',
+  })
+  clientsOutsideScope: number;
 }
 
 /** The introducer on a client-list row — `ProfileReferrerDto`, cut to what a row shows. */

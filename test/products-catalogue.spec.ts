@@ -9,6 +9,7 @@ import type { Mt5AccountsService } from '../src/modules/trading/mt5/mt5-accounts
 import type { Mt5GroupSyncService } from '../src/modules/trading/mt5/mt5-group-sync.service';
 import { auditStub, auditStubAs, TEST_ACTOR } from './audit-stub';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
+import { UNRESTRICTED } from '../src/common/security/client-scope';
 
 /**
  * The product-type rules migration 0088 introduced, asserted against a real
@@ -475,7 +476,9 @@ describe('a product is sold on a commission type', () => {
       TEST_ACTOR,
     );
 
-    await expect(types.remove(typeId, TEST_ACTOR)).rejects.toBeInstanceOf(ConflictError);
+    await expect(types.remove(typeId, TEST_ACTOR, UNRESTRICTED)).rejects.toBeInstanceOf(
+      ConflictError,
+    );
     await expect(types.update(typeId, { enabled: false }, TEST_ACTOR)).rejects.toBeInstanceOf(
       ConflictError,
     );

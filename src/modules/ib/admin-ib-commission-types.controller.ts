@@ -127,6 +127,6 @@ export class AdminIbCommissionTypesController {
     @Req() req: Request & { admin: AuthenticatedAdmin },
     @Param('id', ParseUUIDPipe) id: string,
   ) {
-    await this.types.remove(id, req.admin);
+    await this.types.remove(id, req.admin, req.admin.clientScope);
   }
 }

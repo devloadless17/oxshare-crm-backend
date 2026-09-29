@@ -187,7 +187,17 @@ export class Mt5GroupDto {
 
   @ApiProperty({
     example: 12,
-    description: 'How many trading accounts the CRM holds in this group.',
+    description:
+      'How many trading accounts the CRM holds in this group, in the reader’s territory.',
   })
   accountCount: number;
+
+  @ApiProperty({
+    type: 'integer',
+    example: 0,
+    description:
+      'How many it holds OUTSIDE the reader’s territory — a count, never who (D-81 R2). Zero ' +
+      'for a reader who sees every client.',
+  })
+  accountsOutsideScope: number;
 }

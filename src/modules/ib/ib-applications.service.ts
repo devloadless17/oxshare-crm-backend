@@ -1257,7 +1257,7 @@ export class IbApplicationsService {
      * ladder is extended. Reporting the terms as null is how the screen can say
      * so, instead of showing zeroes that look configured.
      */
-    const levelTerms = await this.levels.findOne(account.level);
+    const levelTerms = await this.levels.findTerms(account.level);
 
     const detail = {
       userId,
@@ -1403,7 +1403,7 @@ export class IbApplicationsService {
     const account = await this.ib.findAccount(userId);
     if (!account) throw new NotFoundError('That partner does not exist.');
 
-    const target = await this.levels.findOne(level);
+    const target = await this.levels.findTerms(level);
     if (!target) {
       throw new NotFoundError(
         `Level ${level} is not configured, and a partner on an unconfigured level earns nothing. ` +
@@ -1603,7 +1603,7 @@ export class IbApplicationsService {
    * for sale.
    */
   private async ladderHasRungBeneath(parentLevel: number): Promise<boolean> {
-    const rung = await this.levels.findOne(parentLevel + 1);
+    const rung = await this.levels.findTerms(parentLevel + 1);
     return Boolean(rung?.enabled);
   }
 

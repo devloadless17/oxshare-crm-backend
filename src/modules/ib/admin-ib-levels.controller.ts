@@ -69,9 +69,12 @@ export class AdminIbLevelsController {
       'and a rate change can say how many people it affects.',
   })
   @ApiOkResponse({ type: IbLevelDto, isArray: true })
-  @NotClientScoped('Platform commission configuration; names no client and returns no client data.')
-  list() {
-    return this.levels.listAll();
+  @NotClientScoped(
+    'Platform commission configuration; names no client. Partner counts are split by the ' +
+      'reader’s territory — a count, never who (D-81 R2).',
+  )
+  list(@Req() req: Request & { admin: AuthenticatedAdmin }) {
+    return this.levels.listAll(req.admin.clientScope);
   }
 
   /*
@@ -131,14 +134,17 @@ export class AdminIbLevelsController {
       'and their referral links would keep working while they earned nothing.',
   })
   @ApiOkResponse({ type: IbLevelDto })
-  @NotClientScoped('Platform commission configuration; names no client and returns no client data.')
+  @NotClientScoped(
+    'Platform commission configuration; names no client. Partner counts are split by the ' +
+      'reader’s territory — a count, never who (D-81 R2).',
+  )
   @Audited('ib_level.update')
   update(
     @Req() req: Request & { admin: AuthenticatedAdmin },
     @Param('level', ParseIntPipe) level: number,
     @Body() dto: UpdateIbLevelDto,
   ) {
-    return this.levels.update(level, dto, req.admin);
+    return this.levels.update(level, dto, req.admin, req.admin.clientScope);
   }
 
   @Delete(':level')
@@ -152,12 +158,15 @@ export class AdminIbLevelsController {
       'deleting it stops the ladder paying rather than shortening it — and refuses one with ' +
       'deeper levels below it, because the ladder runs 1, 2, 3 … with no gaps.',
   })
-  @NotClientScoped('Platform commission configuration; names no client and returns no client data.')
+  @NotClientScoped(
+    'Platform commission configuration; names no client. Partner counts are split by the ' +
+      'reader’s territory — a count, never who (D-81 R2).',
+  )
   @Audited('ib_level.delete')
   remove(
     @Req() req: Request & { admin: AuthenticatedAdmin },
     @Param('level', ParseIntPipe) level: number,
   ) {
-    return this.levels.remove(level, req.admin);
+    return this.levels.remove(level, req.admin, req.admin.clientScope);
   }
 }

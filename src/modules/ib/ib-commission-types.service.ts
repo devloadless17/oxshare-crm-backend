@@ -1,11 +1,16 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { asc, count, eq, sql } from 'drizzle-orm';
+import { asc, eq, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { getDb } from '../../database/db';
 import { ibAccruals, ibCommissionTypes } from '../../database/schema';
 import { ConflictError, NotFoundError } from '../../common/errors/domain-errors';
 import { AdminAuditService } from '../admin/admin-audit.service';
 import type { Actor } from '../../common/security/actor';
+import {
+  describeAcrossTerritory,
+  territoryCounts,
+  type ClientScope,
+} from '../../common/security/client-scope';
 import type {
   CreateIbCommissionTypeDto,
   IbCommissionTypeDto,
@@ -198,7 +203,7 @@ export class IbCommissionTypesService {
    * ON DELETE RESTRICT, and a constraint violation reaches an operator as a 500
    * with a Postgres string in it. Both refusals say what to do instead.
    */
-  async remove(id: string, actor: Actor): Promise<{ deleted: true }> {
+  async remove(id: string, actor: Actor, scope: ClientScope): Promise<{ deleted: true }> {
     const current = await this.findOne(id);
     if (!current) throw new NotFoundError('Commission type not found.');
 
@@ -210,15 +215,25 @@ export class IbCommissionTypesService {
       );
     }
 
-    const [{ value: paid }] = await this.db
-      .select({ value: count() })
+    /*
+     * Counted by the BENEFICIARY's territory (D-81 R2): a commission belongs to
+     * the partner it paid, a rebate to the client it paid. The refusal holds
+     * whoever was paid — the split only says how much of that history the
+     * reader can see.
+     */
+    const split = territoryCounts(
+      scope,
+      sql`CASE WHEN ${ibAccruals.kind} = 'rebate' THEN ${ibAccruals.clientUserId} ELSE ${ibAccruals.ibUserId} END`,
+    );
+    const [paid] = await this.db
+      .select({ inScope: split.inScope, outside: split.outside })
       .from(ibAccruals)
       .where(eq(ibAccruals.commissionTypeId, id));
 
-    if (paid > 0) {
+    if (paid.inScope + paid.outside > 0) {
       throw new ConflictError(
-        `'${current.name}' has priced ${paid} payout(s), and the record of what was paid has to ` +
-          'stay explicable. Disable it instead of deleting it.',
+        `'${current.name}' has priced ${describeAcrossTerritory(paid, 'payout', 'payouts')}, and ` +
+          'the record of what was paid has to stay explicable. Disable it instead of deleting it.',
       );
     }
 

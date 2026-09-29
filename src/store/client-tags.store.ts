@@ -3,7 +3,11 @@ import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db, Executor } from '../database/db';
 import { clientTagAssignments, clientTags } from '../database/schema';
-import { clientScopePredicate, type ClientScope } from '../common/security/client-scope';
+import {
+  clientScopePredicate,
+  territoryCounts,
+  type ClientScope,
+} from '../common/security/client-scope';
 
 export interface ClientTag {
   id: string;
@@ -30,7 +34,10 @@ export interface ClientTagAssignment extends ClientTag {
 
 /** A tag plus how many clients carry it — the /tags screen's row. */
 export interface ClientTagWithCount extends ClientTag {
+  /** Clients carrying it that the reader may see. */
   clientCount: number;
+  /** Clients carrying it OUTSIDE the reader's territory — a count, never who (D-81 R2). */
+  clientsOutsideScope: number;
 }
 
 /**
@@ -93,9 +100,15 @@ export class ClientTagsStore {
    * the label is the business's taxonomy rather than a fact about any client.
    * What the count adds is a per-cohort POPULATION, which is a fact about
    * clients — so that is the half that follows the territory.
+   *
+   * And the part it withholds is COUNTED, beside it (`clientsOutsideScope`):
+   * the owner's ruling of 28 Sep 2026, "a count, no identity" (D-81 R2). A
+   * narrowed count alone reads as the whole cohort — and a delete refused for
+   * "clients outside your territory" should not surprise the screen that
+   * listed the tag.
    */
   async findAllWithCounts(scope: ClientScope): Promise<ClientTagWithCount[]> {
-    const scoped = clientScopePredicate(scope, clientTagAssignments.userId);
+    const counts = territoryCounts(scope, clientTagAssignments.userId);
     const rows = await this.db
       .select({
         id: clientTags.id,
@@ -105,26 +118,22 @@ export class ClientTagsStore {
         description: clientTags.description,
         createdAt: clientTags.createdAt,
         // LEFT JOIN + count of the joined key, so a tag nobody carries reports
-        // 0 rather than vanishing from the list.
-        clientCount: sql<number>`count(${clientTagAssignments.userId})::int`,
+        // 0 rather than vanishing from the list. The scope splits the count
+        // (FILTER), never the join or a WHERE: either would turn a scoped
+        // COUNT into a scoped LIST, and the vocabulary is meant to stay whole.
+        clientCount: counts.inScope,
+        clientsOutsideScope: counts.outside,
       })
       .from(clientTags)
-      .leftJoin(
-        clientTagAssignments,
-        /*
-         * The scope rides in the JOIN CONDITION, not a WHERE. A WHERE would
-         * drop the tag row itself as soon as no visible client carried it,
-         * which quietly turns a scoped COUNT into a scoped LIST — and the
-         * vocabulary is meant to stay whole.
-         */
-        scoped
-          ? and(eq(clientTagAssignments.tagId, clientTags.id), scoped)
-          : eq(clientTagAssignments.tagId, clientTags.id),
-      )
+      .leftJoin(clientTagAssignments, eq(clientTagAssignments.tagId, clientTags.id))
       .groupBy(clientTags.id)
       .orderBy(asc(clientTags.label));
 
-    return rows.map((r) => ({ ...toTag(r), clientCount: r.clientCount }));
+    return rows.map((r) => ({
+      ...toTag(r),
+      clientCount: r.clientCount,
+      clientsOutsideScope: r.clientsOutsideScope,
+    }));
   }
 
   async findAll(): Promise<ClientTag[]> {

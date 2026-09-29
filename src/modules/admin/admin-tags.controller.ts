@@ -266,6 +266,8 @@ const TAG_EXPORT_COLUMNS = [
   { header: 'Colour', value: (r: TagExportRow) => r.color },
   // A genuine integer count, not a monetary value.
   { header: 'Clients carrying it', value: (r: TagExportRow) => r.clientCount },
+  // The rest of the cohort, counted and never named (D-81 R2).
+  { header: 'Outside your territory', value: (r: TagExportRow) => r.clientsOutsideScope },
   { header: 'Created at', value: (r: TagExportRow) => r.createdAt },
 ] as const;
 
@@ -276,5 +278,6 @@ interface TagExportRow {
   description?: string;
   color?: string;
   clientCount: number;
+  clientsOutsideScope: number;
   createdAt: Date;
 }

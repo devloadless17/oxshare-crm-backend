@@ -1,6 +1,11 @@
-import { Controller, Get, UseGuards } from '@nestjs/common';
+import { Controller, Get, Req, UseGuards } from '@nestjs/common';
+import { Request } from 'express';
 import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { PermissionsGuard, RequirePermissions } from '../../admin/guards/admin.guard';
+import {
+  PermissionsGuard,
+  RequirePermissions,
+  type AuthenticatedAdmin,
+} from '../../admin/guards/admin.guard';
 import { NotClientScoped } from '../../admin/guards/client-scope.decorator';
 import { Mt5GroupSyncService } from './mt5-group-sync.service';
 import { Mt5GroupDto } from './dto/mt5-group.dto';
@@ -38,8 +43,11 @@ export class AdminMt5GroupsController {
       'product that sells the group, if any, and how many trading accounts the CRM holds in it.',
   })
   @ApiOkResponse({ type: Mt5GroupDto, isArray: true })
-  @NotClientScoped('MT5 server configuration; names no client and returns no client data.')
-  list() {
-    return this.groups.listForAdmin();
+  @NotClientScoped(
+    'MT5 server configuration; names no client. Account counts are split by the reader’s ' +
+      'territory — a count, never who (D-81 R2).',
+  )
+  list(@Req() req: Request & { admin: AuthenticatedAdmin }) {
+    return this.groups.listForAdmin(req.admin.clientScope);
   }
 }
