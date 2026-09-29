@@ -84,7 +84,8 @@ export function referredFilter(value: string | undefined): boolean | undefined {
 
 /** Who introduced a client, as a list row carries it — see `withReferrers`. */
 export interface ClientRowReferrer {
-  ibUserId: string;
+  /** Absent for an introducer outside the reader's territory (R1). */
+  ibUserId?: string;
   portalId?: number;
   firstName?: string;
   lastName?: string;
@@ -125,7 +126,7 @@ export async function withReferrers<T extends { referredByIbUserId: string | nul
     const introducer = introducers.get(referredByIbUserId);
     const referrer: ClientRowReferrer = introducer
       ? { ibUserId: referredByIbUserId, ...introducer, outsideTerritory: false }
-      : { ibUserId: referredByIbUserId, outsideTerritory: true };
+      : { outsideTerritory: true };
     return { ...row, referrer };
   });
 }
@@ -643,12 +644,8 @@ export class AdminClientsService {
      * territory. Told as a fact, with no identity attached.
      */
     if (!introducer && account) {
-      return {
-        ibUserId: client.referredByIbUserId,
-        active: account.active,
-        since: client.createdAt,
-        outsideTerritory: true,
-      };
+      // The fact and nothing else: no uuid, and not whether they are suspended.
+      return { since: client.createdAt, outsideTerritory: true };
     }
     // Unreachable while the users→ib_accounts FK stands; refusing to fabricate
     // a half-empty card is still better than trusting that forever.

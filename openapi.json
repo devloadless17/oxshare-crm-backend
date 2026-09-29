@@ -18000,7 +18000,8 @@
         "type": "object",
         "properties": {
           "ibUserId": {
-            "type": "string"
+            "type": "string",
+            "description": "Absent when the introducer is outside your territory."
           },
           "portalId": {
             "type": "integer",
@@ -18024,7 +18025,6 @@
           }
         },
         "required": [
-          "ibUserId",
           "outsideTerritory"
         ]
       },
@@ -18236,7 +18236,8 @@
         "type": "object",
         "properties": {
           "ibUserId": {
-            "type": "string"
+            "type": "string",
+            "description": "Absent when the introducer is outside your territory."
           },
           "portalId": {
             "type": "integer",
@@ -18260,7 +18261,7 @@
           },
           "active": {
             "type": "boolean",
-            "description": "False when the attribution was switched off."
+            "description": "False when the attribution was switched off. Absent when the introducer is outside your territory: whether a partner you may not see is suspended is not yours to learn."
           },
           "since": {
             "format": "date-time",
@@ -18268,9 +18269,7 @@
           }
         },
         "required": [
-          "ibUserId",
           "outsideTerritory",
-          "active",
           "since"
         ]
       },

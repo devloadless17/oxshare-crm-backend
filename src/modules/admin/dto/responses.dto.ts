@@ -735,8 +735,8 @@ export class ClientTagWithCountDto extends ClientTagDto {
 /** The introducer on a client-list row — `ProfileReferrerDto`, cut to what a row shows. */
 export class ClientRowReferrerDto {
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
-  @ApiProperty()
-  ibUserId: string;
+  @ApiPropertyOptional({ description: 'Absent when the introducer is outside your territory.' })
+  ibUserId?: string;
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiPropertyOptional({
     type: 'integer',
@@ -899,8 +899,8 @@ export class ProfileTradingAccountDto {
 
 export class ProfileReferrerDto {
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
-  @ApiProperty()
-  ibUserId: string;
+  @ApiPropertyOptional({ description: 'Absent when the introducer is outside your territory.' })
+  ibUserId?: string;
   /*
    * IDENTITY IS OMITTED WHEN THE INTRODUCER IS OUTSIDE THE READER'S TERRITORY.
    *
@@ -941,9 +941,13 @@ export class ProfileReferrerDto {
       '“introduced, by someone outside your territory” distinct from “not introduced”.',
   })
   outsideTerritory: boolean;
-  @ApiProperty({ description: 'False when the attribution was switched off.' })
+  @ApiPropertyOptional({
+    description:
+      'False when the attribution was switched off. Absent when the introducer is outside your ' +
+      'territory: whether a partner you may not see is suspended is not yours to learn.',
+  })
   @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
-  active: boolean;
+  active?: boolean;
   @NotClientField('a timestamp the system recorded, describing the record rather than the client')
   @ApiProperty()
   since: Date;

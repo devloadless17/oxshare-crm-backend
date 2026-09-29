@@ -643,6 +643,8 @@ describe("the client profile's REFERRER follows the reader's territory", () => {
     // off the street", which is a different commercial fact.
     const body = await profileFor(SCOPED, introducedFromOutsideId);
     expect(body.referrer?.outsideTerritory).toBe(true);
+    // …and nothing else about them: no uuid, not even whether they are suspended.
+    expect(body.referrer).toEqual({ since: expect.any(String), outsideTerritory: true });
 
     // And an in-territory introducer reports the opposite, or the flag would be
     // indistinguishable from "always true".

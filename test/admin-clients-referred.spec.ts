@@ -39,7 +39,7 @@ const MASKED = { email: 'referred-masked@oxshare.com', password: 'admin-password
 const CLIENTS = '/v1/admin/clients';
 
 interface Referrer {
-  ibUserId: string;
+  ibUserId?: string;
   portalId?: number;
   firstName?: string;
   lastName?: string;
@@ -276,10 +276,9 @@ describe("the Referrals page follows the reader's territory", () => {
     const res = await scoped.get(`${CLIENTS}?referred=true&limit=100`).expect(200);
     const page = res.body as Page;
 
-    expect(rowOf(page, clientB)?.referrer).toEqual({
-      ibUserId: partnerOut.id,
-      outsideTerritory: true,
-    });
+    // The fact alone: not even the partner's uuid (R1).
+    expect(rowOf(page, clientB)?.referrer).toEqual({ outsideTerritory: true });
+    expect(JSON.stringify(page)).not.toContain(partnerOut.id);
     expect(rowOf(page, clientA)?.referrer).toMatchObject({
       portalId: partnerIn.portalId,
       firstName: 'Inside',

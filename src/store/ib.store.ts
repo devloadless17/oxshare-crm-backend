@@ -679,10 +679,24 @@ export class IbStore {
     const partner = aliasedTable(users, 'partner_user');
     const client = aliasedTable(users, 'client_user');
 
+    /*
+     * Whether the PERSON a filter or search names is one this reader may see.
+     * A row stays visible through its beneficiary while the other party is
+     * masked; narrowing by that other party's id or identity would pick their
+     * rows out and put a name to the mask. So an outside person answers exactly
+     * like an unknown one — no rows. Undefined for an unrestricted reader.
+     */
+    const partnerScope = clientScopePredicate(scope, partner.id);
+    const seesPerson = (id: string) => clientScopePredicate(scope, sql`${id}::uuid`);
+
     const where = and(
       visible,
-      ...(filter.ibUserId ? [eq(ibAccruals.ibUserId, filter.ibUserId)] : []),
-      ...(filter.clientUserId ? [eq(ibAccruals.clientUserId, filter.clientUserId)] : []),
+      ...(filter.ibUserId
+        ? [eq(ibAccruals.ibUserId, filter.ibUserId), seesPerson(filter.ibUserId)]
+        : []),
+      ...(filter.clientUserId
+        ? [eq(ibAccruals.clientUserId, filter.clientUserId), seesPerson(filter.clientUserId)]
+        : []),
       ...(filter.status ? [eq(ibAccruals.status, filter.status as 'pending')] : []),
       /* Validated against the column's own enum at the edge, so an
          unrecognised value is a 400 rather than a filter matching nothing. */
@@ -695,9 +709,10 @@ export class IbStore {
        * for another screen to copy an id.
        *
        * A Portal ID or a name/email, through the one definition every client
-       * search shares — on the PARTNER alias, for the reason given on `q`.
+       * search shares — on the PARTNER alias, for the reason given on `q`, and
+       * only a partner this reader may see (`partnerScope`).
        */
-      ...(filter.q?.trim() ? [clientIdentitySearch(filter.q, partner)] : []),
+      ...(filter.q?.trim() ? [clientIdentitySearch(filter.q, partner), partnerScope] : []),
     );
 
     const sortKey: IbAccrualSortKey = filter.sort ?? DEFAULT_IB_ACCRUAL_SORT;
@@ -720,7 +735,6 @@ export class IbStore {
      * territory this reader may not hold. Rendering their name and email would
      * reintroduce the 13 Aug finding pointing the other way.
      */
-    const partnerScope = clientScopePredicate(scope, partner.id);
     const partnerInScopeExpr = partnerScope ? sql<boolean>`(${partnerScope})` : sql<boolean>`true`;
 
     const rawRows = await this.db
@@ -794,14 +808,12 @@ export class IbStore {
        * showing it for someone outside the reader's territory would hand them
        * the key to a person they may not look up.
        */
-      const hide = (person: {
-        id: string;
-        portalId: number;
-        email: string;
-        firstName: string;
-        lastName: string;
-      }) => ({
-        id: person.id,
+      /*
+       * The uuid goes too (R1): the row still has its own key, `accrual.id`,
+       * and an outside person's record id is not the reader's to hold.
+       */
+      const hide = () => ({
+        id: null as string | null,
         portalId: null as number | null,
         email: null as string | null,
         firstName: null as string | null,
@@ -810,8 +822,19 @@ export class IbStore {
 
       return {
         ...row,
-        client: clientInScope ? row.client : hide(row.client),
-        partner: partnerInScope ? row.partner : hide(row.partner),
+        /*
+         * The accrual names both people again by id, and names the outside
+         * client's trade: those go with the mask. The amounts, dates and terms
+         * stay — they are the visible beneficiary's.
+         */
+        accrual: {
+          ...row.accrual,
+          clientUserId: clientInScope ? row.accrual.clientUserId : null,
+          ibUserId: partnerInScope ? row.accrual.ibUserId : null,
+          sourceId: clientInScope ? row.accrual.sourceId : null,
+        },
+        client: clientInScope ? row.client : hide(),
+        partner: partnerInScope ? row.partner : hide(),
         clientMasked: !clientInScope,
         partnerMasked: !partnerInScope,
       };
