@@ -111,6 +111,8 @@ interface CombinedRow {
   rival_attention_reason: string | null;
   created_at: string;
   method_name: string | null;
+  /** The desk's label, falling back to the name (0161). ADMIN mappings only. */
+  method_label: string | null;
   kind: MovementKind;
   trading_account_id: string | null;
 }
@@ -245,7 +247,7 @@ function toMovementRow(row: AdminCombinedRow) {
      * fallback is their stated provider ('transfer' / 'commission'), which
      * the frontends already translate through `kind`.
      */
-    methodName: row.method_name ?? row.provider,
+    methodName: row.method_label ?? row.method_name ?? row.provider,
     provider: row.provider,
     providerRef: row.provider_ref,
     rivalExternalId: row.rival_external_id,
@@ -1091,16 +1093,17 @@ export class TransactionsService {
         userLastName: users.lastName,
         withdrawalMethodKey: transactions.withdrawalMethodKey,
         /*
-         * The rail's DISPLAY name, resolved server-side so the desk and the
-         * client read the same words and a renamed method is renamed in both at
-         * once — the rule `TransactionDto.methodName` already states for
-         * deposits.
+         * The rail's name AS THE DESK KNOWS IT — its internal label (0161),
+         * falling back to the display name — resolved server-side and joined at
+         * read time, so renaming it relabels every request at once.
          *
          * Null for every withdrawal written before migration 0062, which named
          * no method. The admin column falls back to `provider` for those rather
          * than showing a blank cell.
          */
-        withdrawalMethodName: withdrawalPaymentMethods.name,
+        withdrawalMethodName: sql<
+          string | null
+        >`coalesce(${withdrawalPaymentMethods.internalLabel}, ${withdrawalPaymentMethods.name})`,
       })
       .from(transactions)
       .innerJoin(users, eq(transactions.userId, users.id))
@@ -1525,6 +1528,7 @@ export class TransactionsService {
               THEN 'Rebate · ' || b.accrual_count || ' trades'
             ELSE 'Rebate'
           END::varchar                            AS method_name,
+          NULL::varchar                           AS method_label,
           'rebate'::text                          AS kind,
           NULL::uuid                              AS trading_account_id
         /*
@@ -1593,6 +1597,8 @@ export class TransactionsService {
            * unambiguous rather than a guess about precedence.
            */
           COALESCE(pm.name, wpm.name)             AS method_name,
+          -- The DESK's name (0161): admin mappings read it, the client's never do.
+          COALESCE(pm.internal_label, pm.name, wpm.internal_label, wpm.name) AS method_label,
           'payment'::text                         AS kind,
           NULL::uuid                              AS trading_account_id
         FROM transactions t
@@ -1644,6 +1650,7 @@ export class TransactionsService {
           NULL::text,                             -- rival_attention_reason
           tr.created_at,
           NULL::varchar                           AS method_name,
+          NULL::varchar                           AS method_label,
           'transfer'::text                        AS kind,
           tr.trading_account_id
         FROM transfers tr
@@ -1711,6 +1718,7 @@ export class TransactionsService {
           NULL::text,                             -- rival_attention_reason
           iwt.created_at,
           NULL::varchar                           AS method_name,
+          NULL::varchar                           AS method_label,
           'commission_transfer'::text             AS kind,
           NULL::uuid                              AS trading_account_id
         FROM ib_wallet_transfers iwt
@@ -3100,7 +3108,9 @@ export class TransactionsService {
           transactionId: tx.id,
           amount: tx.amount,
           currency: tx.currency,
-          method: paymentMethod.key,
+          // The DESK's name (0161), never the key: this is the sentence an
+          // operator reads ("…sent 100 USD by OMT – Hamra"). Snapshot at filing.
+          method: paymentMethod.internalLabel,
           reference,
         },
         dedupeKey: `admin.deposit.submitted:${tx.id}`,

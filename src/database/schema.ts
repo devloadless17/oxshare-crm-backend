@@ -2324,9 +2324,24 @@ export const tradingAccountStatusEnum = pgEnum('trading_account_status', [
 export const paymentMethods = pgTable(
   'payment_methods',
   {
-    /** A stable machine key — 'whish'. Never renamed. */
+    /**
+     * The method's permanent ID — 'whish', or a generated `pm_…`. Never renamed
+     * and never shown in the console: transactions reference it and spell it into
+     * `provider`, and code dispatches on it. 0161 says why a rename was built,
+     * measured and rejected; the desk's name for a method is `internalLabel`.
+     */
     key: varchar('key', { length: 40 }).primaryKey(),
+    /** What the CLIENT sees. */
     name: varchar('name', { length: 80 }).notNull(),
+    /**
+     * What the DESK sees, types and renames — on every admin screen, export and
+     * bell (0161). Required and unique case-insensitively, because it is how a
+     * person tells two methods apart on a transaction list. Joined at read time,
+     * so a rename is one row. Never sent to a client. A BEFORE INSERT trigger
+     * fills it from `name` for a writer that omits it (an older build after a
+     * rollback, raw SQL), and a CHECK refuses it blank.
+     */
+    internalLabel: varchar('internal_label', { length: 80 }).notNull(),
     currency: varchar('currency', { length: 10 })
       .notNull()
       .references(() => currencies.code, { onDelete: 'restrict' }),
@@ -2377,7 +2392,10 @@ export const paymentMethods = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index('payment_methods_enabled_sort_idx').on(t.enabled, t.sortOrder)],
+  (t) => [
+    index('payment_methods_enabled_sort_idx').on(t.enabled, t.sortOrder),
+    uniqueIndex('payment_methods_internal_label_uq').on(sql`lower(${t.internalLabel})`),
+  ],
 );
 
 /**
@@ -2405,9 +2423,15 @@ export const paymentMethods = pgTable(
 export const withdrawalPaymentMethods = pgTable(
   'withdrawal_payment_methods',
   {
-    /** A stable machine key — 'whish'. Never renamed; it is written onto rows. */
+    /**
+     * The rail's permanent ID — 'whish', or a generated `wm_…`. Never renamed and
+     * never shown in the console; it is written onto rows (see 0161).
+     */
     key: varchar('key', { length: 40 }).primaryKey(),
+    /** What the CLIENT sees. */
     name: varchar('name', { length: 80 }).notNull(),
+    /** The DESK's name for the rail — see `paymentMethods.internalLabel`. */
+    internalLabel: varchar('internal_label', { length: 80 }).notNull(),
     /**
      * Sized for a real URL, like `payment_methods.logo_url`.
      *
@@ -2422,7 +2446,10 @@ export const withdrawalPaymentMethods = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index('withdrawal_payment_methods_enabled_sort_idx').on(t.enabled, t.sortOrder)],
+  (t) => [
+    index('withdrawal_payment_methods_enabled_sort_idx').on(t.enabled, t.sortOrder),
+    uniqueIndex('withdrawal_payment_methods_internal_label_uq').on(sql`lower(${t.internalLabel})`),
+  ],
 );
 
 /**
@@ -3255,6 +3282,9 @@ export const transactions = pgTable(
     index('transactions_user_idx').on(t.userId),
     index('transactions_state_idx').on(t.state),
     index('transactions_created_at_idx').on(t.createdAt),
+    // The console's "in use" flag and a delete's RESTRICT check look up by these (0161).
+    index('transactions_method_key_idx').on(t.methodKey),
+    index('transactions_withdrawal_method_key_idx').on(t.withdrawalMethodKey),
     uniqueIndex('transactions_provider_ref_uq').on(t.provider, t.providerRef),
     // §6.3 for inbound Rival events: one CRM row per Rival payment/withdrawal,
     // so a replayed or misrouted event can never touch a second row. Partial —

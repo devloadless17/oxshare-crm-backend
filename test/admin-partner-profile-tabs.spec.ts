@@ -120,13 +120,13 @@ describe("a client's History names the method", () => {
 
   beforeAll(async () => {
     await ctx.db.execute(sql`
-      INSERT INTO payment_methods (key, name, currency)
-      VALUES ('tabs-whish', 'Whish Money', 'USD')
+      INSERT INTO payment_methods (key, name, internal_label, currency)
+      VALUES ('tabs-whish', 'Whish Money', 'Whish – tabs desk', 'USD')
       ON CONFLICT (key) DO NOTHING
     `);
     await ctx.db.execute(sql`
-      INSERT INTO withdrawal_payment_methods (key, name)
-      VALUES ('tabs-bank', 'Bank transfer')
+      INSERT INTO withdrawal_payment_methods (key, name, internal_label)
+      VALUES ('tabs-bank', 'Bank transfer', 'Bank – tabs desk')
       ON CONFLICT (key) DO NOTHING
     `);
     const { rows } = await ctx.db.execute<{ id: string }>(sql`
@@ -160,13 +160,14 @@ describe("a client's History names the method", () => {
     await movement('deposit', 'manual_admin', 'tabs-3', '2026-09-22T10:00:00Z');
   });
 
-  it('by its display name, for a deposit and a withdrawal alike', async () => {
+  // An ADMIN screen: the desk's internal name (0161), never the client-facing one.
+  it('by the desk’s internal name, for a deposit and a withdrawal alike', async () => {
     const page = await holdings.listClientTransactions({ userId: clientA });
 
     expect(page.rows.map((row) => [row.provider, row.methodName])).toEqual([
       ['manual_admin', null],
-      ['bank', 'Bank transfer'],
-      ['whish', 'Whish Money'],
+      ['bank', 'Bank – tabs desk'],
+      ['whish', 'Whish – tabs desk'],
     ]);
     // The join adds no rows and loses none.
     expect(page.total).toBe(3);

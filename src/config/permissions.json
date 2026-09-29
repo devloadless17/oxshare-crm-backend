@@ -365,7 +365,7 @@
   },
   "payments": {
     "moduleName": "Payment Methods",
-    "description": "How clients can put money in — the methods offered on the deposit screen, their instructions, and the account details money is sent to. No delete key: a method is disabled rather than removed (migration 0043), because a deleted method would orphan the deposits that used it.",
+    "description": "How clients can put money in — the methods offered on the deposit screen, their instructions, and the account details money is sent to. No delete key: `payments.edit` deletes only a method NO transaction references (a typo, a test row); a used one is disabled rather than removed, because its deposits must keep naming it.",
     "permissions": [
       {
         "key": "payments.view",

@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { NoClientFields } from '../../../common/security/client-field.decorator';
 import { IsBoolean, IsInt, IsOptional, IsString, Length, Matches, Min } from 'class-validator';
+import { METHOD_KEY_MESSAGE, METHOD_KEY_PATTERN } from '../method-keys';
 
 /**
  * A logo this API will serve, or an https one it will not.
@@ -97,18 +98,36 @@ export class CreatePaymentMethodDto {
    * It ends up in `transactions.provider` as `manual_<key>` and in URLs, so a
    * space or a slash here becomes a bug somewhere that cannot fix it.
    */
-  @ApiProperty({ example: 'whish', maxLength: 40 })
+  @ApiPropertyOptional({
+    example: 'whish',
+    maxLength: 40,
+    description:
+      'The permanent ID. Omit it — the platform generates one (`pm_…`) and the console never ' +
+      'shows it. Given only to create a row the CODE dispatches on (a gateway such as whish).',
+  })
+  @IsOptional()
   @IsString()
   @Length(2, 40)
-  @Matches(/^[a-z0-9_]+$/i, {
-    message: 'key may contain only letters, digits and underscores',
-  })
-  key: string;
+  @Matches(METHOD_KEY_PATTERN, { message: METHOD_KEY_MESSAGE })
+  key?: string;
 
   @ApiProperty({ example: 'Whish Money' })
   @IsString()
   @Length(1, 80)
   name: string;
+
+  @ApiPropertyOptional({
+    maxLength: 80,
+    example: 'OMT – Hamra branch',
+    description:
+      'What the DESK calls the method — shown, typed and renamed in the console in place of ' +
+      'the key, and on every admin screen, export and bell. Unique (case-insensitive). Never ' +
+      'sent to a client. Omitted, it starts as `name`.',
+  })
+  @IsOptional()
+  @IsString()
+  @Length(1, 80)
+  internalLabel?: string;
 
   /**
    * What this method settles in — NOT NULL, and the wallet a deposit lands in.
@@ -169,8 +188,10 @@ export class CreatePaymentMethodDto {
 }
 
 /**
- * `key` is absent: it is the primary key and `transactions.method_key`
- * references it, so renaming is a data migration rather than an edit.
+ * `key` is absent: it is the primary key, transactions reference it and spell it
+ * into `provider`, and code dispatches on it — migration 0161 records why a
+ * rename was built, measured and rejected. The desk renames a method through
+ * `internalLabel`, which is one row and rewrites no history.
  *
  * ## `instructions`, `payTo`, `minAmount` and `maxAmount` are gone from HERE too
  *
@@ -182,6 +203,18 @@ export class CreatePaymentMethodDto {
  */
 export class UpdatePaymentMethodDto {
   @ApiPropertyOptional() @IsOptional() @IsString() @Length(1, 80) name?: string;
+
+  @ApiPropertyOptional({
+    maxLength: 80,
+    example: 'OMT – Hamra branch',
+    description:
+      'Renames the method for the desk: one row, and every admin screen, export and bell ' +
+      'follows at once. Unique (case-insensitive), never blank, never sent to a client.',
+  })
+  @IsOptional()
+  @IsString()
+  @Length(1, 80)
+  internalLabel?: string;
 
   @ApiPropertyOptional() @IsOptional() @IsString() @Length(1, 10) currency?: string;
 
@@ -212,6 +245,40 @@ export class UpdatePaymentMethodDto {
   @IsOptional()
   @IsBoolean()
   requiresProof?: boolean;
+}
+
+/** The console's view of a method: the client shape plus what the desk may do to it. */
+@NoClientFields('operator configuration - the payment methods offered, not who used them')
+export class AdminPaymentMethodDto extends PaymentMethodDto {
+  @ApiProperty({
+    example: 'OMT – Hamra branch',
+    description:
+      'What the desk calls the method (admin-only, unique). The console shows it in ' +
+      'place of the key.',
+  })
+  internalLabel: string;
+
+  @ApiProperty({
+    description:
+      'The platform’s code depends on this method (a payment gateway), so it cannot be deleted.',
+  })
+  builtIn: boolean;
+
+  @ApiProperty({
+    description:
+      'A transaction references this method. Such a method cannot be deleted — disable it.',
+  })
+  inUse: boolean;
+}
+
+/** What deleting a never-used payment or withdrawal method answers with. */
+@NoClientFields('operator configuration - the payment methods offered, not who used them')
+export class DeletedMethodDto {
+  @ApiProperty({ example: 'typo_method' })
+  key: string;
+
+  @ApiProperty({ example: true })
+  deleted: boolean;
 }
 
 /**

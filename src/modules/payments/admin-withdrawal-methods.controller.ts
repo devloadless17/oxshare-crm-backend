@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Req, UseGuards } from '@nestjs/common';
 import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Request } from 'express';
 import {
@@ -14,12 +14,13 @@ import {
   CreateWithdrawalMethodDto,
   UpdateWithdrawalMethodDto,
 } from './dto/withdrawal-method.dto';
+import { DeletedMethodDto } from './dto/payment-method.dto';
 
 /**
  * Withdrawal methods — the payout rails the portal's withdraw form offers.
  *
  * The twin of `admin/payment-methods` (the DEPOSIT side), and deliberately
- * shaped like it: list everything, add one, patch one, never delete. Logos go
+ * shaped like it: list everything, add one, patch one, delete one nobody used. Logos go
  * through the same upload, `POST /admin/payment-methods/logo`, whose URL both
  * tables accept.
  *
@@ -74,9 +75,9 @@ export class AdminWithdrawalMethodsController {
   @ApiOperation({
     summary: 'Update a withdrawal method',
     description:
-      'PATCH, and `key` itself is not editable: it is the primary key and withdrawal requests ' +
-      'reference it. Disabling hides the method from new requests and leaves existing ones for ' +
-      'the desk to settle.',
+      'PATCH. `key` is permanent (0161); the desk renames a rail with `internalLabel`, shown on ' +
+      'every admin screen instead of `name`. Disabling hides the method from new requests and ' +
+      'leaves existing ones for the desk to settle.',
   })
   @ApiOkResponse({ type: AdminWithdrawalMethodDto })
   @NotClientScoped('Platform payment configuration; names no client and returns no client data.')
@@ -87,5 +88,22 @@ export class AdminWithdrawalMethodsController {
     @Body() dto: UpdateWithdrawalMethodDto,
   ) {
     return this.methods.update(key, dto, req.admin);
+  }
+
+  @Delete(':key')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('payments.edit')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Delete a withdrawal method that was never used',
+    description:
+      'Only a method NO withdrawal references — 409 otherwise; disable it instead. `whish` is ' +
+      'never deleted.',
+  })
+  @ApiOkResponse({ type: DeletedMethodDto })
+  @NotClientScoped('Platform payment configuration; names no client and returns no client data.')
+  @Audited('withdrawal_method.delete')
+  remove(@Req() req: Request & { admin: AuthenticatedAdmin }, @Param('key') key: string) {
+    return this.methods.remove(key, req.admin);
   }
 }

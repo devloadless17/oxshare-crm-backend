@@ -18,6 +18,8 @@ import { gatewayStub } from './gateway-stub';
 import type { PaymentGateways } from '../src/modules/payments/payment-gateways.service';
 import { PaymentIndeterminateError, ValidationError } from '../src/common/errors/domain-errors';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
+import { UNRESTRICTED } from '../src/common/security/client-scope';
+import { clientPaymentMethodView } from '../src/modules/payments/payment-method-view';
 
 /**
  * Deposit methods as operator DATA.
@@ -710,5 +712,81 @@ describe('positions without an order field', () => {
 
     expect(added.sortOrder).toBe(last + 1);
     expect(edited.sortOrder).toBe(last + 1);
+  });
+});
+
+describe('the desk’s label, the permanent key, and deleting (0161)', () => {
+  it('names the method on admin screens by the desk’s label, and never tells a client', async () => {
+    await methods.create(
+      {
+        key: MANUAL,
+        name: 'Bank transfer',
+        internalLabel: '  BLOM – account 1234 ',
+        currency: 'USD',
+        enabled: true,
+      },
+      ADMIN,
+    );
+    const userId = await makeClient('label@test.local');
+    await transactions.requestDeposit({ userId, amount: '100', currency: 'USD', method: MANUAL });
+
+    const admin = await transactions.listAllForAdmin({ scope: UNRESTRICTED });
+    expect(admin.items.map((row) => row.methodName)).toEqual(['BLOM – account 1234']);
+
+    // The client's own history and the client's method list: the display name,
+    // and the label nowhere in the payload.
+    const mine = await transactions.listForUser(userId);
+    expect(mine.items.map((row) => row.methodName)).toEqual(['Bank transfer']);
+    const offered = (await methods.listAvailable()).map(clientPaymentMethodView);
+    expect(offered.find((m) => m.key === MANUAL)?.name).toBe('Bank transfer');
+    expect(JSON.stringify([mine, offered])).not.toContain('BLOM');
+  });
+
+  it('generates a hidden permanent key, and starts the internal name as the display name', async () => {
+    const created = await methods.create({ name: 'Cash desk', currency: 'USD' }, ADMIN);
+    expect(created.key).toMatch(/^pm_[0-9a-z]{10}$/);
+    expect(created.internalLabel).toBe('Cash desk');
+  });
+
+  it('refuses a blank internal name, or one another method already has', async () => {
+    await methods.create({ key: MANUAL, name: 'Bank transfer', currency: 'USD' }, ADMIN);
+    await methods.create({ name: 'Cash', internalLabel: 'OMT Hamra', currency: 'USD' }, ADMIN);
+    await expect(methods.update(MANUAL, { internalLabel: '   ' }, ADMIN)).rejects.toThrow(/empty/);
+    await expect(methods.update(MANUAL, { internalLabel: 'omt hamra' }, ADMIN)).rejects.toThrow(
+      /already called/,
+    );
+    // Renaming a method to its own name (any case) is not a clash with itself.
+    await expect(
+      methods.update(MANUAL, { internalLabel: 'BANK TRANSFER' }, ADMIN),
+    ).resolves.toMatchObject({ internalLabel: 'BANK TRANSFER' });
+  });
+
+  it('refuses a key whose deposits would pass for the desk’s own credits (manual_admin)', async () => {
+    await expect(
+      methods.create({ key: 'Admin', name: 'Looks harmless', currency: 'USD' }, ADMIN),
+    ).rejects.toThrow(/reserved/);
+  });
+
+  it('deletes a method nobody used, and refuses one with a deposit or the gateway', async () => {
+    await configureManualMethod();
+    await methods.create({ key: 'typo', name: 'Typo', currency: 'USD' }, ADMIN);
+    await expect(methods.remove('typo', ADMIN)).resolves.toEqual({ key: 'typo', deleted: true });
+    expect(await methods.findOne('typo')).toBeNull();
+
+    const userId = await makeClient('delete@test.local');
+    await transactions.requestDeposit({ userId, amount: '100', currency: 'USD', method: MANUAL });
+    await expect(methods.remove(MANUAL, ADMIN)).rejects.toThrow(/Disable it instead/);
+    expect(await methods.findOne(MANUAL)).not.toBeNull();
+
+    await expect(methods.remove('whish', ADMIN)).rejects.toThrow(/built into the platform/);
+  });
+
+  it('keeps the key permanent in the database itself: a referenced key cannot change', async () => {
+    await configureManualMethod();
+    const userId = await makeClient('permanent@test.local');
+    await transactions.requestDeposit({ userId, amount: '100', currency: 'USD', method: MANUAL });
+    await expect(
+      ctx.db.execute(sql`UPDATE payment_methods SET key = 'renamed' WHERE key = ${MANUAL}`),
+    ).rejects.toThrow();
   });
 });

@@ -196,6 +196,7 @@ const WRITES_DETAILS: readonly string[] = [
   'leverage.create',
   'leverage.delete',
   'payment_method.create',
+  'payment_method.delete',
   'payment_method.update',
   'platform_link.set',
   'product.create',
@@ -225,6 +226,7 @@ const WRITES_DETAILS: readonly string[] = [
   'withdrawal.rival.submit',
   'withdrawal.settle',
   'withdrawal_method.create',
+  'withdrawal_method.delete',
   'withdrawal_method.update',
 ];
 

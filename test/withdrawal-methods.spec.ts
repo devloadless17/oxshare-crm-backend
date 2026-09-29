@@ -179,3 +179,32 @@ describe('positions without an order field', () => {
     expect(await offeredToClients()).toEqual(['whish', 'order_a', 'order_b']);
   });
 });
+
+describe('the desk’s label, reserved keys and deleting (0161)', () => {
+  it('stores the desk’s label on the rail (the client list picks key, name and logo only)', async () => {
+    const created = await methods.create(
+      { key: 'bank_payout', name: 'Bank', internalLabel: 'BLOM payouts' },
+      TEST_ACTOR,
+    );
+    expect(created).toMatchObject({ internalLabel: 'BLOM payouts', builtIn: false, inUse: false });
+    const { rows } = await ctx.db.execute<{ key: string }>(sql`
+      SELECT key FROM withdrawal_payment_methods WHERE internal_label = 'BLOM payouts'`);
+    expect(rows.map((r) => r.key)).toEqual(['bank_payout']);
+  });
+
+  it('refuses a key in the manual_ namespace deposits and the desk use', async () => {
+    await expect(
+      methods.create({ key: 'manual_admin', name: 'Sneaky' }, TEST_ACTOR),
+    ).rejects.toThrow(/reserved/);
+  });
+
+  it('never deletes whish, and deletes a method nobody used', async () => {
+    await expect(methods.remove('whish', TEST_ACTOR)).rejects.toThrow(/built into/);
+    await methods.create({ key: 'typo', name: 'Typo' }, TEST_ACTOR);
+    await expect(methods.remove('typo', TEST_ACTOR)).resolves.toEqual({
+      key: 'typo',
+      deleted: true,
+    });
+    expect(await methods.findOne('typo')).toBeNull();
+  });
+});

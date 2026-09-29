@@ -154,13 +154,13 @@ describe('creating a payment method', () => {
   });
 
   /*
-   * DELETE is gone, endpoint and all — not hidden behind a confirmation. A
-   * method is referenced by every deposit filed against it, so the capability
-   * only ever worked on rows nobody had used.
+   * DELETE exists again, narrowly (0161): a method NO transaction references.
+   * e2e_bank has none, so it goes; an unknown key is a 404; Whish never goes.
    */
-  it('has no delete route at all', async () => {
-    const res = await master.del('/v1/admin/payment-methods/e2e_bank');
-    expect(res.status).toBe(404);
+  it('deletes a method nobody used, and never the gateway', async () => {
+    expect((await master.del('/v1/admin/payment-methods/whish')).status).toBe(409);
+    expect((await master.del('/v1/admin/payment-methods/e2e_bank')).status).toBe(200);
+    expect((await master.del('/v1/admin/payment-methods/e2e_bank')).status).toBe(404);
   });
 });
 

@@ -383,7 +383,13 @@ describe('the crown jewel: a signed completed event credits the wallet, exactly 
       .onConflictDoNothing();
     await ctx.db.db
       .insert(paymentMethods)
-      .values({ key: 'whish', name: 'Whish', currency: 'USD', enabled: true })
+      .values({
+        key: 'whish',
+        name: 'Whish',
+        internalLabel: 'Whish',
+        currency: 'USD',
+        enabled: true,
+      })
       .onConflictDoNothing();
     await ctx.db.db.insert(users).values({
       id: USER_ID,

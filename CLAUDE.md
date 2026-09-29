@@ -1201,6 +1201,31 @@ the key behind the number.
 - Proof: `test/migration-0159-portal-id-primary-key.spec.ts` (mapping, no uuid left but provider
   references, append-only restored, immutability, money unchanged).
 
+## A payment method's key is a hidden ID; the desk renames its INTERNAL NAME (0161, 29 Sep 2026)
+
+The owner asked to rename what the desk reads on a transaction, which was the method's key.
+Renaming the key was built, measured and **rejected**. Do not bring it back. The key is the primary
+key every transaction references, it is spelled into `transactions.provider` (`manual_<key>`, half of
+the UNIQUE(provider, provider_ref) idempotency guard), and code dispatches on it (`whish`: the gateway,
+Rival payouts, the portal's payout field). A rename rewrote settled history: 17 s holding locks on
+100k rows, and past the 30 s statement timeout at about 250k.
+
+- **The key is permanent and never shown in the console.** The foreign keys stay `ON UPDATE NO ACTION`,
+  so the database refuses to change a referenced key. New methods get a generated opaque key
+  (`pm_…` / `wm_…`, `generateMethodKey`). A caller may name one only for a row the code dispatches on.
+- **`internal_label` is what the desk sees, types and renames.** It is required, unique
+  case-insensitively per table, and joined at read time by every ADMIN surface (the movements CTE's
+  `method_label`, the withdrawals desk, client activity, exports), so a rename is one row. The admin
+  bell's offline-deposit text snapshots it. It never reaches a client: `clientPaymentMethodView` picks
+  the client fields by name, and `payment-methods.spec.ts` pins that no client payload contains it.
+- **Every writer gets a label.** A BEFORE INSERT trigger fills it from `name` (key appended on a
+  clash) for a writer that omits it, such as an older build after a rollback or raw SQL, and a CHECK
+  refuses it blank.
+- **Reserved keys** (`method-keys.ts`): a deposit key may not produce a platform provider (`admin` →
+  `manual_admin`, the desk's own credits), and a withdrawal key may not start with `manual_`.
+- **Delete** only a method no transaction references (RESTRICT is the race-proof guard); a built-in
+  one (`whish`) never.
+
 ## Validation
 
 The global `ValidationPipe` (`whitelist`, `transform`) only validates where a **DTO class**
