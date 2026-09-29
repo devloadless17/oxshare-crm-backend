@@ -345,6 +345,16 @@ async function main() {
       rows,
       { onConflict: 'ON CONFLICT (name) DO NOTHING' },
     );
+    // Read BACK, like the clients below: on a re-run the names already exist,
+    // the insert above wrote nothing, and the ids just generated name no row.
+    productIds.length = 0;
+    for (const row of (
+      await db.query('SELECT id FROM trading_products WHERE name = ANY($1) ORDER BY sort_order', [
+        names,
+      ])
+    ).rows) {
+      productIds.push(row.id);
+    }
 
     await insertMany(
       'trading_product_groups',
@@ -358,7 +368,9 @@ async function main() {
           pick(currencies, at),
         ]),
       ),
-      { onConflict: 'ON CONFLICT (mt5_group) DO NOTHING' },
+      // No target: since 0142 several products may sell one group, so the old
+      // UNIQUE (mt5_group) is gone; any of the table's unique indexes absorbs a re-run.
+      { onConflict: 'ON CONFLICT DO NOTHING' },
     );
     return written;
   });
@@ -609,7 +621,6 @@ async function main() {
             randomUUID(),
             userId,
             'Created by the load-test seeder.',
-            `${(at + 1) * 10} lots / month`,
             status,
             // A rejected application the client can read a reason on, because
             // the portal renders it and a blank one renders as nothing.
@@ -640,7 +651,6 @@ async function main() {
         'source_type',
         'source_id',
         'depth',
-        'level',
         'rate_value',
         'base_amount',
         'amount',
@@ -660,7 +670,6 @@ async function main() {
             'transaction',
             randomUUID(),
             1,
-            partner.level,
             '30.0000',
             money(base, 0),
             money(Math.floor(base * 0.3), 0),
