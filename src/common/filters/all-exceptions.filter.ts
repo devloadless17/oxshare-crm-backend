@@ -194,7 +194,19 @@ export class AllExceptionsFilter implements ExceptionFilter {
     const requestId = request.id ?? 'unknown';
 
     const classified = this.classify(exception);
-    const { status, code, fields } = classified;
+    const { status, fields } = classified;
+    /*
+     * A 404 from NO ROUTE is a different fact from a 404 from a route: "this
+     * endpoint does not exist" (a frontend ahead of its API) versus "this
+     * record does not exist — or is not yours to see". The consoles rendered
+     * both as "endpoint not built yet", so a scoped admin following a link to
+     * a client outside their territory was told the feature was missing.
+     * Express sets `req.route` only when a route matched.
+     */
+    const code =
+      status === HttpStatus.NOT_FOUND && (request as { route?: unknown }).route === undefined
+        ? 'ROUTE_NOT_FOUND'
+        : classified.code;
     /*
      * ── A RATE LIMIT IS THE ONE ERROR ORDINARY USERS ACTUALLY SEE ───────────
      *
