@@ -13365,11 +13365,6 @@
             "example": "100000.00000000",
             "description": "The most one client may withdraw in any rolling 24 hours. In this currency's own units."
           },
-          "maxAdminCredit": {
-            "type": "string",
-            "example": "50000.00000000",
-            "description": "The most an operator may credit or fund in one action. In this currency's own units."
-          },
           "createdAt": {
             "format": "date-time",
             "type": "string"
@@ -13392,7 +13387,6 @@
           "minWithdrawal",
           "maxWithdrawal",
           "maxWithdrawalDaily",
-          "maxAdminCredit",
           "createdAt",
           "updatedAt"
         ]
@@ -13454,11 +13448,6 @@
             "type": "string",
             "example": "100000",
             "description": "The most one client may withdraw in any rolling 24 hours. In this currency's own units."
-          },
-          "maxAdminCredit": {
-            "type": "string",
-            "example": "50000",
-            "description": "The most an operator may credit or fund in one action. In this currency's own units."
           }
         },
         "required": [
@@ -13469,8 +13458,7 @@
           "maxDeposit",
           "minWithdrawal",
           "maxWithdrawal",
-          "maxWithdrawalDaily",
-          "maxAdminCredit"
+          "maxWithdrawalDaily"
         ]
       },
       "UpdateCurrencyDto": {
@@ -13522,11 +13510,6 @@
             "type": "string",
             "example": "100000",
             "description": "The most one client may withdraw in any rolling 24 hours. In this currency's own units."
-          },
-          "maxAdminCredit": {
-            "type": "string",
-            "example": "50000",
-            "description": "The most an operator may credit or fund in one action. In this currency's own units."
           }
         }
       },

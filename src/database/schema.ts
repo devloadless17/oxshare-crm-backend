@@ -1722,13 +1722,13 @@ export const currencies = pgTable(
     maxWithdrawalDaily: numeric('max_withdrawal_daily', { precision: 28, scale: 8 })
       .notNull()
       .default('100000'),
-    /**
-     * The most an operator may credit or fund in one action — the only paths
-     * that create balance from nothing, so a mistyped zero is caught here.
+    /*
+     * `max_admin_credit` was here and is gone (0168). It bounded the two paths
+     * that create balance from nothing — a hand credit and a trading-account
+     * funding — and was dropped at the owner's request on 29 Sep 2026. Nothing
+     * now refuses an over-large credit as it happens; the audit row is the
+     * record. See `admin-money.service.ts`, which keeps the full reasoning.
      */
-    maxAdminCredit: numeric('max_admin_credit', { precision: 28, scale: 8 })
-      .notNull()
-      .default('50000'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },

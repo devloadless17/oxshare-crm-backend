@@ -488,14 +488,13 @@ function isForeignKeyViolation(error: unknown): boolean {
   return (wrapped?.cause?.code ?? wrapped?.code) === '23503';
 }
 
-/** The six limit columns, selected under their DTO names. */
+/** The five limit columns, selected under their DTO names. */
 const LIMIT_COLUMNS = {
   minDeposit: currencies.minDeposit,
   maxDeposit: currencies.maxDeposit,
   minWithdrawal: currencies.minWithdrawal,
   maxWithdrawal: currencies.maxWithdrawal,
   maxWithdrawalDaily: currencies.maxWithdrawalDaily,
-  maxAdminCredit: currencies.maxAdminCredit,
 };
 
 /** The limits a write carries — only the ones it names. */

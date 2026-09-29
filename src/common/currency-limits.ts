@@ -29,7 +29,6 @@ export const CURRENCY_LIMIT_FIELDS = [
   'minWithdrawal',
   'maxWithdrawal',
   'maxWithdrawalDaily',
-  'maxAdminCredit',
 ] as const;
 export type CurrencyLimitField = (typeof CURRENCY_LIMIT_FIELDS)[number];
 export type CurrencyLimits = Record<CurrencyLimitField, string>;
@@ -41,7 +40,6 @@ const LABEL: Record<CurrencyLimitField, string> = {
   minWithdrawal: 'minimum withdrawal',
   maxWithdrawal: 'maximum withdrawal',
   maxWithdrawalDaily: 'daily withdrawal limit',
-  maxAdminCredit: 'maximum admin credit',
 };
 
 /**

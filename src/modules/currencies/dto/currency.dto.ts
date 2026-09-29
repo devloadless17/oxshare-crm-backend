@@ -50,8 +50,6 @@ export class CurrencyDto {
     limitDoc('The most one client may withdraw in any rolling 24 hours.', '100000.00000000'),
   )
   maxWithdrawalDaily: string;
-  @ApiProperty(limitDoc('The most an operator may credit or fund in one action.', '50000.00000000'))
-  maxAdminCredit: string;
   @ApiProperty() createdAt: Date;
   @ApiProperty() updatedAt: Date;
 }
@@ -136,10 +134,6 @@ export class CreateCurrencyDto {
   @ApiProperty(limitDoc('The most one client may withdraw in any rolling 24 hours.', '100000'))
   @Matches(LIMIT, { message: `maxWithdrawalDaily ${LIMIT_MESSAGE}` })
   maxWithdrawalDaily: string;
-
-  @ApiProperty(limitDoc('The most an operator may credit or fund in one action.', '50000'))
-  @Matches(LIMIT, { message: `maxAdminCredit ${LIMIT_MESSAGE}` })
-  maxAdminCredit: string;
 }
 
 /**
@@ -211,9 +205,4 @@ export class UpdateCurrencyDto {
   @IsOptional()
   @Matches(LIMIT, { message: `maxWithdrawalDaily ${LIMIT_MESSAGE}` })
   maxWithdrawalDaily?: string;
-
-  @ApiPropertyOptional(limitDoc('The most an operator may credit or fund in one action.', '50000'))
-  @IsOptional()
-  @Matches(LIMIT, { message: `maxAdminCredit ${LIMIT_MESSAGE}` })
-  maxAdminCredit?: string;
 }

@@ -45,7 +45,6 @@ const LBP_LIMITS = {
   minWithdrawal: '1000000',
   maxWithdrawal: '500000000',
   maxWithdrawalDaily: '1000000000',
-  maxAdminCredit: '100000000',
 };
 
 beforeAll(async () => {
@@ -130,7 +129,6 @@ describe('the day it ships', () => {
       minWithdrawal: '10.00000000',
       maxWithdrawal: '50000.00000000',
       maxWithdrawalDaily: '100000.00000000',
-      maxAdminCredit: '50000.00000000',
     });
   });
 });
@@ -306,8 +304,8 @@ describe('the limits themselves', () => {
     await expect(
       currencies.update('LBP', { maxWithdrawalDaily: '400000000' }, ADMIN),
     ).rejects.toMatchObject({ fields: { maxWithdrawalDaily: expect.any(String) } });
-    await expect(currencies.update('LBP', { maxAdminCredit: '0' }, ADMIN)).rejects.toMatchObject({
-      fields: { maxAdminCredit: 'The maximum admin credit must be above zero.' },
+    await expect(currencies.update('LBP', { minWithdrawal: '0' }, ADMIN)).rejects.toMatchObject({
+      fields: { minWithdrawal: 'The minimum withdrawal must be above zero.' },
     });
   });
 

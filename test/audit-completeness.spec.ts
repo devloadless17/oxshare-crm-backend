@@ -259,7 +259,6 @@ describe('recorded: the feature modules', () => {
       minWithdrawal: '10',
       maxWithdrawal: '50000',
       maxWithdrawalDaily: '100000',
-      maxAdminCredit: '50000',
     });
     expect([200, 201]).toContain(res.status);
 

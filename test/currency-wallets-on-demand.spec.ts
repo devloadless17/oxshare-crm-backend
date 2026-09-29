@@ -69,7 +69,6 @@ const LIMITS = {
   minWithdrawal: '10',
   maxWithdrawal: '50000',
   maxWithdrawalDaily: '100000',
-  maxAdminCredit: '50000',
 };
 
 const add = (code: string, enabled = true) =>

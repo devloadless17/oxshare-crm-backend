@@ -25,8 +25,6 @@ import { WalletService } from '../wallet/wallet.service';
 import { AdminsStore } from '../../store/admins.store';
 import { UsersStore } from '../../store/users.store';
 import { EmailService } from '../email/email.service';
-import Decimal from 'decimal.js';
-import { formatLimit } from '../../common/currency-limits';
 import { MoneyRuleError, NotFoundError, ValidationError } from '../../common/errors/domain-errors';
 import { AdminAuditService } from './admin-audit.service';
 import { assertActorCan } from '../../common/security/actor';
@@ -143,41 +141,28 @@ export class AdminMoneyService {
     @Inject(DRIZZLE_DB) private readonly db: Db,
   ) {}
 
-  /**
-   * The bound that holds when the operator is authorised and simply wrong.
+  /*
+   * ── There is no ceiling on a hand credit ─────────────────────────────────
    *
-   * Both callers mint balance from nothing, and their DTO accepts twenty digits
-   * (`money.dto.ts`), so an extra keystroke created a number no permission check
-   * would question. The ledger is append-only, so the correction is a
-   * compensating entry a human writes AFTER a client has seen the balance.
+   * `assertWithinAdminCeiling` stood here and bounded both paths that mint
+   * balance from nothing, against the currency's `max_admin_credit` (0162).
+   * The column and the check were removed at the owner's request on 29 Sep
+   * 2026: the desk does not work to a per-action ceiling, and a limit that is
+   * raised whenever it binds is a dialog rather than a control.
    *
-   * In the SERVICE, not the DTO, deliberately and per this repo's convention:
-   * the DTO validates SHAPE — this is a policy value the operator sets on the
-   * CURRENCY (0162), in that currency's units, which a decorator cannot express.
-   * It was one config number for every currency, so a credit of 50,001 LBP —
-   * about fifty cents — was refused as if it were a fortune.
+   * What that gives up, recorded so it is a decision and not a regression:
+   * the DTO accepts twenty digits (`money.dto.ts`) and permission checks ask
+   * WHO may credit, never HOW MUCH, so an extra keystroke now reaches the
+   * ledger. That ledger is append-only, so the correction is a compensating
+   * entry a human writes AFTER the client has seen the balance.
    *
-   * REFUSES, never clamps. `money-limits.ts` gives the reasoning at length: a
-   * clamped amount is a wrong number that looks deliberate and is
-   * indistinguishable in the ledger from a correct one.
+   * The audit row is what remains: every credit and funding records actor,
+   * amount and reason, so an over-credit is traceable after the fact even
+   * though nothing refuses it as it happens. If a bound is ever wanted back,
+   * it belongs here — in the SERVICE, not the DTO, because a per-currency
+   * policy value in that currency's own units is not something a decorator
+   * can express.
    */
-  private async assertWithinAdminCeiling(
-    amount: string,
-    currency: string,
-    action: 'credit' | 'fund',
-  ): Promise<void> {
-    const limits = await this.currencies.limitsFor(currency);
-    // Unreachable while wallets and accounts reference `currencies` by foreign key.
-    if (!limits) throw new ValidationError(`Unknown currency ${currency}.`);
-    const max = new Decimal(limits.maxAdminCredit);
-    if (new Decimal(amount).greaterThan(max)) {
-      throw new ValidationError(
-        `The most that can be ${action === 'credit' ? 'credited' : 'funded'} in one action is ` +
-          `${formatLimit(max)} ${currency}. Raise the currency's maximum admin credit if this is ` +
-          'genuinely intended, or split it — a hand-credit is not reversible, only compensable.',
-      );
-    }
-  }
 
   /**
    * Put money into a client's wallet, by hand.
@@ -236,8 +221,6 @@ export class AdminMoneyService {
     if (!reasonText) {
       throw new ValidationError('A reason is required when crediting a wallet by hand.');
     }
-
-    await this.assertWithinAdminCeiling(params.amount, params.currency, 'credit');
 
     /*
      * SCOPE FIRST, so an admin restricted to a subset of clients cannot credit
@@ -504,15 +487,6 @@ export class AdminMoneyService {
         'That client is not verified to KYC level 1, so money cannot be moved on their ' +
           'trading account. Verify them first.',
       );
-    }
-
-    /*
-     * The DEPOSIT direction mints, so it takes the ceiling. A withdraw moves
-     * money that already exists off the account and is bounded by the balance
-     * itself — a cap there would refuse a legitimate full-account withdrawal.
-     */
-    if (isDeposit) {
-      await this.assertWithinAdminCeiling(params.amount, account.currency, 'fund');
     }
 
     /*
