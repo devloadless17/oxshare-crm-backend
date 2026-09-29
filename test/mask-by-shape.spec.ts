@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { ApiProperty } from '@nestjs/swagger';
 import { ClientField, ClientFieldMap } from '../src/common/security/client-field.decorator';
-import { maskByShape } from '../src/common/security/mask-by-shape';
+import { maskByShape, maskByShapeReporting } from '../src/common/security/mask-by-shape';
 
 /**
  * THE SPIKE: can one annotation replace an alias list and six call sites?
@@ -285,5 +285,36 @@ describe('shapes that are not errors', () => {
     const masked = maskByShape(RowDto, row, ['client.phone']);
     expect(masked).toBe(row);
     expect(masked.others[0]).toBe(untouched);
+  });
+});
+
+describe('reporting what was hidden (D-82)', () => {
+  it('names each catalogue key it removed, once, and nothing the rows did not carry', () => {
+    const page = {
+      items: [
+        {
+          id: 'w1',
+          balance: '1',
+          user: { id: 'u1', email: 'a@x.test', firstName: 'A', lastName: 'B' },
+        },
+        {
+          id: 'w2',
+          balance: '2',
+          user: { id: 'u2', email: 'c@x.test', firstName: 'C', lastName: 'D' },
+        },
+      ],
+      total: 2,
+    };
+    const { value, removed } = maskByShapeReporting(PageDto, page, [
+      'client.email',
+      'client.phone', // hidden by the role, carried by no row: not reported
+    ]);
+    expect(removed).toEqual(['client.email']);
+    expect(JSON.stringify(value)).not.toContain('@x.test');
+  });
+
+  it('reports nothing when nothing was hidden', () => {
+    const row = { id: 'u', email: 'a@x.test', firstName: 'A', lastName: 'B' };
+    expect(maskByShapeReporting(HoldingOwnerDto, row, []).removed).toEqual([]);
   });
 });
