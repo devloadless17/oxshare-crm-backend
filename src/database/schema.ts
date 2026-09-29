@@ -811,9 +811,12 @@ export const kycSubmissions = pgTable(
       .references(() => users.id, { onDelete: 'restrict' }),
     status: kycStatusEnum('status').notNull().default('not_started'),
     personalInfo: jsonb('personal_info').$type<Record<string, string>>(),
-    document: jsonb('document').$type<Record<string, string>>(),
-    selfie: jsonb('selfie').$type<Record<string, string>>(),
-    addressProof: jsonb('address_proof').$type<Record<string, string>>(),
+    /*
+     * The identity document, proof of address and selfie are NOT columns here
+     * since 0171: they live on the client's identity record, named by the
+     * `*_document_id` pointers below, and `KycStore` rebuilds the KYC shapes
+     * from them (`identity_evidence`).
+     */
     /**
      * Answers for steps that are NOT one of the four canonical ones, keyed by
      * slug: `{ "compliance-questions": { "sourceOfFunds": "salary" } }`.
@@ -965,9 +968,12 @@ export const kycSubmissionAttempts = pgTable(
     /** The status this attempt ENDED in — `approved` or `rejected`. */
     status: kycStatusEnum('status').notNull(),
     personalInfo: jsonb('personal_info').$type<Record<string, string>>(),
-    document: jsonb('document').$type<Record<string, string>>(),
-    selfie: jsonb('selfie').$type<Record<string, string>>(),
-    addressProof: jsonb('address_proof').$type<Record<string, string>>(),
+    /*
+     * The identity document, proof of address and selfie are NOT columns here
+     * since 0171: they live on the client's identity record, named by the
+     * `*_document_id` pointers below, and `KycStore` rebuilds the KYC shapes
+     * from them (`identity_evidence`).
+     */
     /** Archived alongside the four columns — see `kyc_submissions.step_data`. */
     stepData: jsonb('step_data')
       .$type<Record<string, Record<string, string | { filePath: string }>>>()
@@ -4981,7 +4987,7 @@ export const notifications = pgTable(
  * how big was it" had no answer, and on a system holding identity documents for a
  * regulated broker that question gets asked under pressure.
  *
- * **Additive, not a replacement.** `kyc_submissions.document -> 'frontFilePath'`,
+ * **Additive, not a replacement.** `client_document_pages.storage_key`,
  * `users.avatar_filename` and `payment_methods.logo_url` are untouched. A row here
  * is evidence about an OBJECT; those columns are the claim about which object a
  * submission or a profile is made of. `scripts/r2-reconcile.mjs` cross-checks the

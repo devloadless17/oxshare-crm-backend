@@ -543,10 +543,14 @@ async function main() {
     await s3.send(new DeleteObjectCommand({ Bucket: BUCKET, Key: key })).catch(() => {});
   }
   await db.query(`DELETE FROM stored_objects WHERE storage_key = ANY($1)`, [uploadedKeys]);
+  // The uploads landed as DRAFTS on the client's identity record (backend 0171):
+  // unhook them from the KYC row, then let them go.
   await db.query(
-    `UPDATE kyc_submissions SET document = NULL, selfie = NULL, address_proof = NULL WHERE user_id = $1`,
+    `UPDATE kyc_submissions SET identity_document_id = NULL, address_document_id = NULL,
+            selfie_document_id = NULL WHERE user_id = $1`,
     [userId],
   );
+  await db.query(`DELETE FROM client_documents WHERE user_id = $1 AND frozen_at IS NULL`, [userId]);
   console.log(`    ✔ removed ${uploadedKeys.length} object(s) and their rows`);
 
   console.log(`\n${'═'.repeat(64)}`);

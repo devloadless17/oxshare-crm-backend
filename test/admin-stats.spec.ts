@@ -225,6 +225,8 @@ async function makeClient(options: {
             SELECT user_id, 1, status, submitted_at, reviewed_at, reviewed_at FROM live`
         : live,
     );
+    // The decision on the client's record, as `KycStore.archiveAttempt` writes it (0171).
+    await recordDecisions(db, userId);
   }
 
   if (options.withdrawal) {
@@ -834,6 +836,18 @@ describe('GET /admin/stats/withdrawal-volume', () => {
  * way to notice.
  */
 
+/** Each archived attempt's decision, in order — what `KycStore.archiveAttempt` records (0171). */
+async function recordDecisions(
+  db: { execute: (query: ReturnType<typeof sql>) => Promise<unknown> },
+  userId: number,
+): Promise<void> {
+  await db.execute(sql`
+    SELECT identity_record_decision(a.id)
+      FROM (SELECT id FROM kyc_submission_attempts
+             WHERE user_id = ${userId}::integer AND verification_id IS NULL
+             ORDER BY attempt_no) a`);
+}
+
 describe('the KYC trend is HISTORY, not the live rows', () => {
   it('keeps an approval since reversed, and a submission since replaced, on their days', async () => {
     const trend = async () =>
@@ -860,6 +874,7 @@ describe('the KYC trend is HISTORY, not the live rows', () => {
       INSERT INTO kyc_submissions (user_id, status, submitted_at)
       VALUES (${id}, 'submitted', ${day(0)})
     `);
+    await recordDecisions(ctx.db.db, id);
 
     const after = await trend();
     const delta = (daysAgo: number, key: 'submitted' | 'approved') =>

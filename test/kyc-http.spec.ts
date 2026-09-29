@@ -12,6 +12,7 @@ import {
 import { PasswordService } from '../src/common/security/password.service';
 import { admins, kycConfigSteps, kycSubmissions, roles, users } from '../src/database/schema';
 import { DEFAULT_KYC_STEPS } from '../src/store/kyc-config.store';
+import { recordKycEvidence } from './support/kyc-evidence';
 
 /**
  * The KYC surface, over HTTP, through the real guard chain.
@@ -152,12 +153,14 @@ beforeAll(async () => {
       submittedAt: new Date(),
       // Only a broker's own questions live here; this client answered none.
       personalInfo: {},
-      document: { docType: 'passport', frontFilePath: '/uploads/kyc/a.png' },
-      selfie: { filePath: '/uploads/kyc/b.png' },
-      addressProof: { docType: 'utility_bill', filePath: '/uploads/kyc/c.png' },
     },
     { userId: otherId, status: 'in_progress', personalInfo: { firstName: 'Other' } },
   ]);
+  await recordKycEvidence(ctx.db.db, clientId, {
+    document: { docType: 'passport', frontFilePath: '/uploads/kyc/a.png' },
+    selfie: { filePath: '/uploads/kyc/b.png' },
+    addressProof: { docType: 'utility_bill', filePath: '/uploads/kyc/c.png' },
+  });
 }, 180_000);
 
 afterAll(async () => {
@@ -508,6 +511,8 @@ describe('the review lifecycle, over HTTP', () => {
       userId: fresh.id,
       status: 'submitted',
       personalInfo: {},
+    });
+    await recordKycEvidence(ctx.db.db, fresh.id, {
       document: { docType: 'passport', frontFilePath: '/uploads/kyc/n1.png' },
       selfie: { filePath: '/uploads/kyc/n2.png' },
       addressProof: { docType: 'utility_bill', filePath: '/uploads/kyc/n3.png' },
@@ -549,6 +554,8 @@ describe('the review lifecycle, over HTTP', () => {
       userId: thin.id,
       status: 'submitted',
       personalInfo: {},
+    });
+    await recordKycEvidence(ctx.db.db, thin.id, {
       selfie: { filePath: '/uploads/kyc/t2.png' },
       addressProof: { docType: 'utility_bill', filePath: '/uploads/kyc/t3.png' },
     });

@@ -10,24 +10,16 @@ import {
   type Session,
 } from './http-setup';
 import { PasswordService } from '../src/common/security/password.service';
-import { ClientIdentityService } from '../src/modules/client-identity/client-identity.service';
+import { recordKycEvidence } from './support/kyc-evidence';
 import { admins, kycConfigSteps, roles, users } from '../src/database/schema';
 import { DEFAULT_KYC_STEPS } from '../src/store/kyc-config.store';
 
 /**
- * EVIDENCE IS READ FROM THE CLIENT'S RECORD (identity-core plan, slice 6).
+ * EVIDENCE IS READ FROM THE CLIENT'S RECORD — the only place it lives (0171).
  *
- * The KYC columns are still written — the record is derived from them — but
- * every read of a submission's identity document, proof of address and selfie
- * now comes from the record (`identity_evidence`, 0152). Two ways to see it on
- * the wire:
- *
- *  - a path the columns hold in an old spelling is served in the record's one
- *    spelling, `uploads/kyc/<name>`;
- *  - a change made to the columns where the record could not follow (triggers
- *    off, as a restore runs) is NOT what the API shows — until the repair
- *    adopts it. That is the contract slice's premise: once reads are the
- *    record's, the columns can go.
+ * Every read of a submission's identity document, proof of address and selfie
+ * comes from the record (`identity_evidence`, 0152), and a path handed to it in
+ * an old spelling is served in the record's one spelling, `uploads/kyc/<name>`.
  */
 
 const ADMIN = { email: 'record-reads-admin@oxshare.com', password: 'admin-password-123' };
@@ -38,16 +30,8 @@ let client: Session;
 let admin: Session;
 let clientId: number;
 const front = `${randomUUID()}.png`;
-const replaced = `${randomUUID()}.png`;
 
 type Status = { document?: Record<string, string> };
-
-async function withoutTriggers(query: ReturnType<typeof sql>): Promise<void> {
-  await ctx.db.db.transaction(async (tx) => {
-    await tx.execute(sql`SET LOCAL session_replication_role = replica`);
-    await tx.execute(query);
-  });
-}
 
 beforeAll(async () => {
   ctx = await startHttpTestApp();
@@ -87,12 +71,13 @@ beforeAll(async () => {
     })
     .returning();
   clientId = user.id;
-  // Written the way an old build once did: a leading `./`. The record adopts
-  // it (0153) in its one spelling.
+  // Handed over the way an old build once wrote it: a leading `./`. The record
+  // keeps it in its one spelling.
   await ctx.db.db.execute(sql`
-    INSERT INTO kyc_submissions (user_id, status, document)
-    VALUES (${clientId}::integer, 'in_progress',
-            ${JSON.stringify({ docType: 'passport', frontFilePath: `./uploads/kyc/${front}` })}::jsonb)`);
+    INSERT INTO kyc_submissions (user_id, status) VALUES (${clientId}::integer, 'in_progress')`);
+  await recordKycEvidence(ctx.db.db, clientId, {
+    document: { docType: 'passport', frontFilePath: `./uploads/kyc/${front}` },
+  });
   client = await actingAs(ctx, 'portal', CLIENT);
   admin = await actingAs(ctx, 'admin', ADMIN);
 }, 180_000);
@@ -114,20 +99,5 @@ describe('a submission’s evidence, as the API reads it', () => {
     const review = await admin.get(`/v1/admin/kyc/${clientId}`);
     expect(review.status).toBe(200);
     expect((review.body as Status).document?.frontFilePath).toBe(`uploads/kyc/${front}`);
-  });
-
-  it('does NOT show a change the record could not follow — until the repair adopts it', async () => {
-    await withoutTriggers(sql`
-      UPDATE kyc_submissions
-         SET document = jsonb_set(document, '{frontFilePath}', ${JSON.stringify(`uploads/kyc/${replaced}`)}::jsonb)
-       WHERE user_id = ${clientId}::integer`);
-
-    const before = await client.get('/v1/kyc/status');
-    expect((before.body as Status).document?.frontFilePath).toBe(`uploads/kyc/${front}`);
-
-    await ctx.app.get(ClientIdentityService).repairDrift();
-
-    const after = await client.get('/v1/kyc/status');
-    expect((after.body as Status).document?.frontFilePath).toBe(`uploads/kyc/${replaced}`);
   });
 });

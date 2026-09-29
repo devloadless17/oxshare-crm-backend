@@ -15,7 +15,6 @@ import type { Db } from '../src/database/db';
 import type { AuditLogStore } from '../src/store/audit-log.store';
 import { ClientProfileService } from '../src/modules/profile/client-profile.service';
 import { KycIdentityReview } from '../src/modules/compliance/kyc-identity-review';
-import type { ClientIdentityService } from '../src/modules/client-identity/client-identity.service';
 import { notificationsStub } from './notifications-stub';
 import {
   AuthorizationError,
@@ -194,7 +193,6 @@ function build(options: { stored?: KycSubmission; user?: User } = {}) {
     namesByIds: vi.fn().mockResolvedValue(new Map([['admin-2', 'Sarah Chen']])),
   };
   const notifications = notificationsStub();
-  const identityRecorder = { recordFromKyc: vi.fn().mockResolvedValue(undefined) };
 
   // In-memory storage: this suite asserts the KYC decision rules, not where the
   // bytes live. `deleteDocuments` goes through it, and the upload cases read
@@ -229,13 +227,6 @@ function build(options: { stored?: KycSubmission; user?: User } = {}) {
     // Appended LAST, matching the constructor: the one write path for the
     // client's identity (0139).
     profile,
-    /*
-     * The client's identity record (0151) is kept in step by a SQL routine
-     * over the real tables, which these in-memory stores do not have — so here
-     * it only records that it was asked. `test/identity-dual-write.spec.ts`
-     * proves the record itself, on real Postgres.
-     */
-    identityRecorder as unknown as ClientIdentityService,
   );
   return {
     service,

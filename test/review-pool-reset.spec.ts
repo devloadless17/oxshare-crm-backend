@@ -3,6 +3,7 @@ import { and, eq, like } from 'drizzle-orm';
 import { startHttpTestApp, stopHttpTestApp, type HttpTestContext } from './http-setup';
 import { E2E_POOL_DOMAIN, REVIEW_POOL_LABELS, reassertReviewPool } from '../src/database/seed';
 import { admins, kycSubmissions, users } from '../src/database/schema';
+import { recordKycEvidence } from './support/kyc-evidence';
 
 /**
  * THE POOL RESET PUTS A DECIDED FIXTURE BACK, WHOLE.
@@ -183,8 +184,8 @@ describe('the review pool reset', () => {
       reviewedAt: new Date(),
       reviewedBy: reviewerId,
       personalInfo: { firstName: 'Real' },
-      document: { docType: 'passport' },
     });
+    await recordKycEvidence(db, outsider.id, { document: { docType: 'passport' } });
 
     await reassertReviewPool(db);
 

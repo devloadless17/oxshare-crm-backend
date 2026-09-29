@@ -31,6 +31,7 @@ import {
   WithdrawalListResponseDto,
   WithdrawalRowDto,
 } from '../src/modules/admin/dto/responses.dto';
+import { recordKycEvidence } from './support/kyc-evidence';
 
 /**
  * A RESPONSE MAY NOT RETURN A KEY ITS SHAPE DOES NOT DECLARE.
@@ -182,6 +183,8 @@ beforeAll(async () => {
     submittedAt: new Date(),
     // The identity is the profile's; only a broker's own answers live here.
     personalInfo: { customField_1: 'Completeness answer' },
+  });
+  await recordKycEvidence(db, clientId, {
     document: { docType: 'passport', frontFilePath: 'uploads/kyc/doc.png' },
     selfie: { filePath: 'uploads/kyc/selfie.png' },
     addressProof: { docType: 'utility_bill', filePath: 'uploads/kyc/proof.png' },
@@ -530,6 +533,8 @@ describe('the remaining person-carrying responses declare the keys they return',
       status: 'submitted',
       submittedAt: new Date(),
       personalInfo: { firstName: 'Reject', lastName: 'Target' },
+    });
+    await recordKycEvidence(db, target.id, {
       document: { docType: 'passport', frontFilePath: 'uploads/kyc/doc.png' },
       addressProof: { docType: 'utility_bill', filePath: 'uploads/kyc/proof.png' },
     });

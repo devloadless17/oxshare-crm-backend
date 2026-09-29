@@ -4,8 +4,6 @@ import { ConfigService } from '@nestjs/config';
 import { KycService } from '../src/modules/compliance/kyc.service';
 import { ClientProfileService } from '../src/modules/profile/client-profile.service';
 import { KycIdentityReview } from '../src/modules/compliance/kyc-identity-review';
-import { ClientIdentityService } from '../src/modules/client-identity/client-identity.service';
-import { ClientIdentityStore } from '../src/store/client-identity.store';
 import { TransactionsService } from '../src/modules/payments/transactions.service';
 import { TransfersService } from '../src/modules/payments/transfers.service';
 import { WalletService } from '../src/modules/wallet/wallet.service';
@@ -135,9 +133,6 @@ beforeAll(async () => {
       // The review's state, through the port the KYC layer provides.
       new KycIdentityReview(new KycStore(db)),
     ),
-    // The client's identity record (0151), on the real tables: every decision
-    // here is recorded there in the same transaction.
-    new ClientIdentityService(new ClientIdentityStore(db)),
   );
   const { rows } = await ctx.db.execute<{ id: string }>(sql`
     INSERT INTO admins (email, password_hash, name, role, permissions)

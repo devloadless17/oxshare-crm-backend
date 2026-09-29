@@ -61,7 +61,6 @@ import {
 import type { Db } from '../../database/db';
 import type { ClientScope } from '../../common/security/client-scope';
 import { isProfileKey, type ProfileKey } from '../../common/profile/client-profile';
-import { ClientIdentityService } from '../client-identity/client-identity.service';
 import {
   ClientProfileService,
   profileOf,
@@ -300,13 +299,10 @@ export class KycService {
      * `personal_info`. APPENDED LAST, for the positional construction above.
      */
     private readonly profile: ClientProfileService,
-    /**
-     * The client's identity RECORD (0151): every transaction here that changes
-     * evidence or records a decision ends by recording it there, so the record
-     * moves with the KYC row or not at all. APPENDED LAST, for the positional
-     * construction above.
+    /*
+     * No identity-record dependency since 0171: `KycStore` records the evidence
+     * and the decisions itself, in the same transaction as the KYC row.
      */
-    private readonly identity: ClientIdentityService,
   ) {}
 
   /**
@@ -623,8 +619,6 @@ export class KycService {
       if (remaining.length !== flagged.length) patch['rejectedFields'] = remaining;
 
       const updated = await this.kycStore.update(userId, patch, tx);
-      // The document the client chose is a draft on their record.
-      await this.identity.recordFromKyc(userId, tx);
       return updated;
     });
 
@@ -823,8 +817,6 @@ export class KycService {
       replaced = documentPathsOf(current).filter((path) => !kept.has(path));
 
       await this.kycStore.update(userId, patch, tx);
-      // The page lands on the client's draft in the same commit.
-      await this.identity.recordFromKyc(userId, tx);
     });
 
     /*
@@ -1001,8 +993,6 @@ export class KycService {
             : 'KYC has already been submitted and is awaiting review.',
         );
       }
-      // What the client presented is frozen on their record, as they sent it.
-      await this.identity.recordFromKyc(userId, tx);
       return { submitted: moved, wasRejected: rejectedBefore };
     });
 
@@ -1207,8 +1197,6 @@ export class KycService {
        * here would be a second writer with nothing to copy.
        */
       await this.users.update(userId, { verificationLevel: 1 }, tx);
-      // The decision on the client's record, after the level it explains.
-      await this.identity.recordFromKyc(userId, tx);
       // The bell row commits WITH the decision — a rolled-back approval must
       // not leave a "you're verified" the client can read.
       await this.notifications.notify(
@@ -1530,7 +1518,6 @@ export class KycService {
       });
       // The money gate closes with the return, in the same commit.
       await this.users.update(userId, { verificationLevel: 0 }, tx);
-      await this.identity.recordFromKyc(userId, tx);
       /*
        * The client's bell, in the same commit — approve() and reject() stance: a
        * rolled-back return must not leave a "please update" the client can read.
@@ -1693,7 +1680,7 @@ export class KycService {
       await this.kycStore.archiveAttempt(
         { ...this.withPersonalView(updated, await this.users.findById(userId)), ...decided },
         tx,
-        { reasonId },
+        { reasonId, sameEvidenceAsLast: decided !== undefined },
       );
       /*
        * Take the verification level back, in the SAME transaction.
@@ -1707,7 +1694,6 @@ export class KycService {
        * should hold none of it, whichever path they arrived by.
        */
       await this.users.update(userId, { verificationLevel: 0 }, tx);
-      await this.identity.recordFromKyc(userId, tx);
       // Same stance as approve(): the row and the decision are one commit. The
       // reason rides in params so the bell can say what to fix.
       await this.notifications.notify(
@@ -1824,9 +1810,6 @@ export class KycService {
 
     await this.db.transaction(async (tx) => {
       await this.kycStore.resetUser(userId, tx);
-      // The client's drafts go with the row, in the same commit; their decided
-      // evidence stays on their record, where it always belonged.
-      await this.identity.recordFromKyc(userId, tx);
     });
     await this.deleteDocuments(deletable);
 
