@@ -36,17 +36,16 @@ export class OpenOwnAccountDto {
   environment: 'live' | 'demo';
 
   /**
-   * A label for the account, shown in MT5 and in the portal.
-   *
-   * Optional: a client who does not care gets their own name, which is what MT5
-   * expects and what an operator looking at the manager terminal can act on. It
-   * matters once somebody holds several — "Swing" and "Scalping" beat two rows
-   * reading the same thing.
+   * IGNORED (owner, 29 Sep 2026): the client does not name an account. It is
+   * named "First Last" for their first, then "First Last-2", "-3"… Accepted
+   * rather than refused only so a portal page loaded before this change can
+   * still open an account.
    */
   @ApiPropertyOptional({
     maxLength: 64,
-    example: 'Swing trading',
-    description: "Defaults to the client's own name.",
+    deprecated: true,
+    description:
+      'Ignored. The account is named after the client: "First Last", then "First Last-2", "-3"…',
   })
   @IsOptional()
   @IsString()

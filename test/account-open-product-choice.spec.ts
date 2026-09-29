@@ -16,7 +16,7 @@ import { ProductsStore } from '../src/store/products.store';
 import { AppSettingsStore } from '../src/store/app-settings.store';
 import { UNRESTRICTED } from '../src/common/security/client-scope';
 import { EMPTY_MASK } from '../src/common/security/field-mask';
-import { AccountNameTakenError, ValidationError } from '../src/common/errors/domain-errors';
+import { ValidationError } from '../src/common/errors/domain-errors';
 import { auditStubAs } from './audit-stub';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
 
@@ -206,15 +206,12 @@ describe('the product fallback for accounts that recorded none', () => {
 });
 
 /*
- * The account NAME a client gives on the portal's open form — restored after
- * its removal (backend e6fce0f), at the owner's request (25 Sep 2026).
- *
- * The name is what MT5 records as the account holder and what the portal
- * labels the account with. A client who leaves it blank gets their own name on
- * MT5 and NULL locally. A client may not use one name twice, and that refusal
- * has to come BEFORE MT5 opens anything: the trading server has no rollback.
+ * THE ACCOUNT NAME IS NOT THE CLIENT'S TO CHOOSE (owner, 29 Sep 2026): an opened
+ * account is named "First Last" for the client's first, then "First Last-2",
+ * "-3"… — the same on MT5 (the holder name) and in the CRM. A name the caller
+ * sends is ignored. This replaces the chosen-name rule of 25 Sep.
  */
-describe('the name a client gives an account they open', () => {
+describe('the name an opened account is given', () => {
   let holderId: number;
 
   beforeAll(async () => {
@@ -233,39 +230,37 @@ describe('the name a client gives an account they open', () => {
     return rows[0].name;
   }
 
-  it('sends the chosen name to MT5 and stores it for the portal', async () => {
-    const opened = await accounts.createOwnAccount({
+  const open = () =>
+    accounts.createOwnAccount({
       userId: holderId,
       environment: 'live',
       group: 'real\\ECN',
-      name: '  Swing trading  ',
+      // Sent, and ignored.
+      name: 'Swing trading',
     });
 
-    expect(createOnMt5).toHaveBeenCalledWith(expect.objectContaining({ name: 'Swing trading' }));
-    expect(await storedName(opened.id)).toBe('Swing trading');
-  });
-
-  it("uses the client's own name on MT5 when none is chosen, and stores none", async () => {
-    const opened = await accounts.createOwnAccount({
-      userId: holderId,
-      environment: 'live',
-      group: 'real\\ECN',
-    });
-
+  it('names the first account after the client, on MT5 and in the CRM', async () => {
+    const opened = await open();
     expect(createOnMt5).toHaveBeenCalledWith(expect.objectContaining({ name: 'Named Holder' }));
-    expect(await storedName(opened.id)).toBeNull();
+    expect(await storedName(opened.id)).toBe('Named Holder');
+    expect(opened.name).toBe('Named Holder');
   });
 
-  it('refuses a name the client already uses, whatever its case — before MT5', async () => {
-    await expect(
-      accounts.createOwnAccount({
-        userId: holderId,
-        environment: 'live',
-        group: 'real\\ECN',
-        name: 'SWING TRADING',
-      }),
-    ).rejects.toBeInstanceOf(AccountNameTakenError);
+  it('numbers the ones after it: -2, -3', async () => {
+    const second = await open();
+    const third = await open();
+    expect(await storedName(second.id)).toBe('Named Holder-2');
+    expect(await storedName(third.id)).toBe('Named Holder-3');
+    expect(createOnMt5).toHaveBeenLastCalledWith(
+      expect.objectContaining({ name: 'Named Holder-3' }),
+    );
+  });
 
-    expect(createOnMt5).not.toHaveBeenCalled();
+  it('names an account opened from the console the same way', async () => {
+    const opened = await accounts.createAccount(
+      { userId: holderId, group: 'real\\ECN', environment: 'live' },
+      ADMIN,
+    );
+    expect(await storedName(opened.id)).toBe('Named Holder-4');
   });
 });

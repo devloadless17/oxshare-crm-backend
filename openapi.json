@@ -16360,8 +16360,8 @@
           "name": {
             "type": "string",
             "maxLength": 64,
-            "example": "Swing trading",
-            "description": "Defaults to the client's own name."
+            "deprecated": true,
+            "description": "Ignored. The account is named after the client: \"First Last\", then \"First Last-2\", \"-3\"…"
           },
           "productId": {
             "type": "string",
@@ -17207,6 +17207,10 @@
               "live",
               "demo"
             ]
+          },
+          "name": {
+            "type": "string",
+            "example": "Rana Haddad-2"
           },
           "credentialsSentTo": {
             "type": "string"
