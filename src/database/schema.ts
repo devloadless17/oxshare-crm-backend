@@ -1726,14 +1726,7 @@ export const currencies = pgTable(
     maxWithdrawalDaily: numeric('max_withdrawal_daily', { precision: 28, scale: 8 })
       .notNull()
       .default('100000'),
-    /**
-     * The most an operator may credit or fund in one action — the only paths
-     * that create balance from nothing, so a mistyped zero is caught here.
-     */
-    // ⚠️ DEAD (0169, owner 29 Sep 2026): the admin credit ceiling was removed. Kept for rollbacks.
-    maxAdminCredit: numeric('max_admin_credit', { precision: 28, scale: 8 })
-      .notNull()
-      .default('50000'),
+    // `max_admin_credit` was DROPPED (0168_drop_max_admin_credit, re-checked by 0170).
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },

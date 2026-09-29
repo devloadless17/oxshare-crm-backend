@@ -516,12 +516,12 @@ function assertLimits(limits: Partial<CurrencyLimits>): void {
 }
 
 /**
- * A currency row without its DEAD columns (0169) — the daily withdrawal cap
- * and the admin credit ceiling are gone, and `CurrencyDto` does not name them.
+ * A currency row without its DEAD column (0169) — the daily withdrawal cap is
+ * gone, and `CurrencyDto` does not name it.
  */
-function publicCurrency<T extends { maxWithdrawalDaily?: unknown; maxAdminCredit?: unknown }>(
+function publicCurrency<T extends { maxWithdrawalDaily?: unknown }>(
   row: T,
-): Omit<T, 'maxWithdrawalDaily' | 'maxAdminCredit'> {
-  const { maxWithdrawalDaily: _daily, maxAdminCredit: _credit, ...rest } = row;
+): Omit<T, 'maxWithdrawalDaily'> {
+  const { maxWithdrawalDaily: _daily, ...rest } = row;
   return rest;
 }
