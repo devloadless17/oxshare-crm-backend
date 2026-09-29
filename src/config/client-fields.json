@@ -61,7 +61,7 @@
     "groupName": "Identity",
     "description": "Who the client is",
     "fields": [
-{
+      {
         "key": "client.id",
         "label": "Internal record key",
         "maskable": false,
@@ -257,6 +257,43 @@
         "label": "Custom step answers",
         "maskable": true,
         "$comment": "Answers to steps a broker configured beyond the four canonical ones, keyed by slug. ONE entry rather than one per field because the fields are invented after this file ships: a role that may not read them loses all of them, which is coarser than kyc.personalInfo and is the guarantee that can actually be kept."
+      }
+    ]
+  },
+  "money": {
+    "groupName": "Payments & partnership",
+    "description": "Where a client is paid, and what they wrote when applying to be a partner",
+    "fields": [
+      {
+        "key": "client.payoutDestination",
+        "label": "Payout destination",
+        "maskable": true,
+        "$comment": "The bank account, card, wallet address or payment phone a withdrawal is paid to. It was marked 'not a client-owned attribute' on both withdrawal desks, so no role could hide it (D-82). The desks and their CSVs carry it as `destination`.",
+        "aliases": [
+          "withdrawal.destination",
+          "withdrawalExport.destination",
+          "financial.destination",
+          "financialExport.destination"
+        ]
+      },
+      {
+        "key": "client.partnerApplication",
+        "label": "Partner application answers",
+        "maskable": true,
+        "$comment": "The free text a client writes when applying to be an introducing broker: their motivation and website. Free text holds whatever the client chose to tell us (D-82).",
+        "aliases": ["ibApplication.motivation", "ibApplication.website"]
+      }
+    ]
+  },
+  "activity": {
+    "groupName": "Activity",
+    "description": "Where the client connects from",
+    "fields": [
+      {
+        "key": "client.ipAddress",
+        "label": "IP address",
+        "maskable": true,
+        "$comment": "The address a CLIENT acted from, as the audit trail records it. Applied per row in AuditLogStore, not by a DTO mark: the same column holds an administrator's address on every other row (D-82)."
       }
     ]
   }

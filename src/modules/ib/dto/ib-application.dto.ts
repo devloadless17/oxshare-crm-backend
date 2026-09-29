@@ -101,15 +101,27 @@ export class CreateIbApplicationDto {
   website?: string;
 }
 
-@NoClientFields(
-  'the application and its commission terms; the shapes naming a PERSON in this file are marked field by field',
-)
+/*
+ * Field by field since D-82: `motivation` and `website` are the applicant's own
+ * words, and a class-wide "no client fields" waved them through every mask.
+ */
 export class IbApplicationDto {
-  @ApiProperty() id: string;
-  @ApiProperty() userId: string;
-  @ApiProperty({ type: 'string', nullable: true }) motivation: string | null;
-  @ApiProperty({ type: 'string', nullable: true }) website: string | null;
-  @ApiProperty({ enum: IB_APPLICATION_STATUSES }) status: IbApplicationStatusDto;
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty()
+  id: string;
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty()
+  userId: string;
+  @ClientField('client.partnerApplication')
+  @ApiProperty({ type: 'string', nullable: true })
+  motivation: string | null;
+  @ClientField('client.partnerApplication')
+  @ApiProperty({ type: 'string', nullable: true })
+  website: string | null;
+  @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
+  @ApiProperty({ enum: IB_APPLICATION_STATUSES })
+  status: IbApplicationStatusDto;
+  @NotClientField('the desk\u2019s decision about the record, not an attribute of the person')
   @ApiProperty({
     type: 'string',
     nullable: true,
@@ -124,10 +136,18 @@ export class IbApplicationDto {
    * applicant can see what they asked for while they wait — the one detail
    * they cannot otherwise recover once the form is gone.
    */
-  @ApiPropertyOptional({ type: 'string', nullable: true }) agencyName: string | null;
-  @ApiProperty({ type: 'string', nullable: true }) reviewedBy: string | null;
-  @ApiProperty({ type: 'string', format: 'date-time', nullable: true }) reviewedAt: Date | null;
-  @ApiProperty() submittedAt: Date;
+  @NotClientField('a catalogue name on the record, not an attribute of the person')
+  @ApiPropertyOptional({ type: 'string', nullable: true })
+  agencyName: string | null;
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty({ type: 'string', nullable: true })
+  reviewedBy: string | null;
+  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
+  @ApiProperty({ type: 'string', format: 'date-time', nullable: true })
+  reviewedAt: Date | null;
+  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
+  @ApiProperty()
+  submittedAt: Date;
 }
 
 @NoClientFields(

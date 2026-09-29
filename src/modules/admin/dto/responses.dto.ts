@@ -1764,9 +1764,9 @@ export class WithdrawalRowDto {
   )
   @ApiPropertyOptional({ type: String, nullable: true })
   providerRef?: string | null;
-  @NotClientField(
-    'not a client-owned attribute \u2014 destination describes the record rather than the person',
-  )
+  /* Where the client is paid — a bank account, wallet address or payment
+     phone. Personal data, hideable since D-82 (it was "not client-owned"). */
+  @ClientField('client.payoutDestination')
   @ApiPropertyOptional({ type: String, nullable: true })
   destination?: string | null;
   @NotClientField(
@@ -1891,23 +1891,42 @@ export class WithdrawalRowDto {
   maskedFields?: string[];
 }
 
-@NoClientFields(
-  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
-)
 export class WithdrawalListResponseDto {
-  @ApiProperty({ type: [WithdrawalRowDto] }) items: WithdrawalRowDto[];
+  @NotClientField(
+    'the nested rows, whose own shape carries the marks \u2014 masked there, not here',
+  )
+  @ApiProperty({ type: [WithdrawalRowDto] })
+  items: WithdrawalRowDto[];
   /**
    * Pass back as `?cursor=` for the next page; `null` on the last (R-2.4).
    *
    * This, not `total`, is what says whether there is more — counting is a full
    * scan of the filtered set and is only performed on request.
    */
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
   @ApiProperty({ type: String, nullable: true })
   nextCursor: string | null;
 
-  @ApiProperty() total: number;
-  @ApiProperty() page: number;
-  @ApiProperty() limit: number;
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  @ApiProperty()
+  total: number;
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  @ApiProperty()
+  page: number;
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  @ApiProperty()
+  limit: number;
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
   @ApiProperty({ type: 'object', additionalProperties: { type: 'number' } })
   counts: Record<string, number>;
   /**
@@ -1918,7 +1937,9 @@ export class WithdrawalListResponseDto {
    * rather than repeated per item. Without it the desk renders an em dash and
    * "hidden from you" becomes indistinguishable from "no email on file".
    */
-  @ApiPropertyOptional({ type: [String] }) maskedFields?: string[];
+  @NotClientField('the mask reporting on ITSELF, so the screen can say hidden rather than empty')
+  @ApiPropertyOptional({ type: [String] })
+  maskedFields?: string[];
 }
 
 // ── The Financial page: every money movement, platform-wide ─────────────────
@@ -2008,9 +2029,9 @@ export class AdminTransactionRowDto {
    */
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   rivalExternalId?: string | null;
-  @NotClientField(
-    'not a client-owned attribute \u2014 destination describes the record rather than the person',
-  )
+  /* Where the client is paid — a bank account, wallet address or payment
+     phone. Personal data, hideable since D-82 (it was "not client-owned"). */
+  @ClientField('client.payoutDestination')
   @ApiPropertyOptional({ type: String, nullable: true })
   destination?: string | null;
   /** Also carries a transfer's failure reason — one column for "why not". */
@@ -2071,22 +2092,41 @@ export class AdminTransactionRowDto {
   user: WithdrawalUserDto;
 }
 
-@NoClientFields(
-  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
-)
 export class AdminTransactionListResponseDto {
-  @ApiProperty({ type: [AdminTransactionRowDto] }) items: AdminTransactionRowDto[];
+  @NotClientField(
+    'the nested rows, whose own shape carries the marks \u2014 masked there, not here',
+  )
+  @ApiProperty({ type: [AdminTransactionRowDto] })
+  items: AdminTransactionRowDto[];
   /** Pass back as `?cursor=` for the next page; `null` on the last (R-2.4). */
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
   @ApiProperty({ type: String, nullable: true })
   nextCursor: string | null;
-  @ApiProperty() total: number;
-  @ApiProperty() page: number;
-  @ApiProperty() limit: number;
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  @ApiProperty()
+  total: number;
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  @ApiProperty()
+  page: number;
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  @ApiProperty()
+  limit: number;
   /**
    * Per-STATE sizes plus `all`, ignoring the active state filter but never
    * the scope — the withdrawal queue's two-axis rule, so the state tabs show
    * every state's size whichever tab is active.
    */
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
   @ApiProperty({ type: 'object', additionalProperties: { type: 'number' } })
   counts: Record<string, number>;
   /**
@@ -2094,6 +2134,9 @@ export class AdminTransactionListResponseDto {
    * never the scope — the same rule on the other axis, for the page's
    * deposit/withdrawal tabs.
    */
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
   @ApiProperty({ type: 'object', additionalProperties: { type: 'number' } })
   directionCounts: Record<string, number>;
   /**
@@ -2103,7 +2146,9 @@ export class AdminTransactionListResponseDto {
    * email". Only ever `financial.`-prefixed: a response announces its own
    * paths and nobody else's.
    */
-  @ApiPropertyOptional({ type: [String] }) maskedFields?: string[];
+  @NotClientField('the mask reporting on ITSELF, so the screen can say hidden rather than empty')
+  @ApiPropertyOptional({ type: [String] })
+  maskedFields?: string[];
 }
 
 @NoClientFields(

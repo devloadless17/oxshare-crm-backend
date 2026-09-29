@@ -71,9 +71,23 @@ class IbListPerson {
   lastName?: string | null;
 }
 
+/** The applicant's own words — hidden with `client.partnerApplication` (D-82). */
+class IbApplicationListApplication {
+  @ClientField('client.partnerApplication')
+  @ApiProperty({ required: false })
+  motivation?: string | null;
+
+  @ClientField('client.partnerApplication')
+  @ApiProperty({ required: false })
+  website?: string | null;
+}
+
 class IbApplicationListRow {
   @ApiProperty({ type: () => IbListPerson })
   user!: IbListPerson;
+
+  @ApiProperty({ type: () => IbApplicationListApplication })
+  application!: IbApplicationListApplication;
 }
 
 class IbPartnerListRow {

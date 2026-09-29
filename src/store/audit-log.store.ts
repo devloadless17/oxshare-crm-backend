@@ -25,7 +25,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db, Executor } from '../database/db';
 import { auditLog, users } from '../database/schema';
-import { currentClientIp } from '../common/logging/request-context';
+import { currentClientIp, currentFieldMask } from '../common/logging/request-context';
 import { clientIdByPortalId, escapeLike, parsePortalId } from './users.store';
 
 /**
@@ -112,6 +112,9 @@ export type AuditSubjectType =
  * uuid, not the Portal ID, not the email.
  */
 export const OUTSIDE_TERRITORY = '[client outside your territory]';
+
+/** A client actor's email or IP, for a role whose mask hides it (D-82). */
+export const HIDDEN_FROM_ROLE = '[hidden]';
 
 const UUID_TEXT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -444,6 +447,11 @@ export class AuditLogStore {
       conditions.push(
         sql`(coalesce(${auditLog.actorEmail}, '')::text) ILIKE ${`%${escapeLike(filter.q.trim())}%`}`,
       );
+      // A CLIENT actor's email is client data: a role that hides it must not
+      // be able to spell it out by fragment through this search (D-82).
+      if (currentFieldMask().includes('client.email')) {
+        conditions.push(sql`${auditLog.actorKind} <> 'client'`);
+      }
     }
     if (filter.scope && !filter.scope.unrestricted) {
       /*
@@ -581,6 +589,7 @@ export class AuditLogStore {
       actorKind: AuditActorKind;
       subjectId: string;
       details: Record<string, unknown> | null;
+      ipAddress: string | null;
       clientId: string | null;
     },
   >(
@@ -610,14 +619,27 @@ export class AuditLogStore {
     const portalIdOf = new Map(found.filter((u) => u.visible).map((u) => [u.id, u.portalId]));
     const hidden = new Set(found.filter((u) => !u.visible).map((u) => u.id));
 
+    // A client ACTOR's email and IP are client data, hidden per the reader's
+    // role like any other (D-82) — the static DTO cannot say so, because the
+    // same columns hold an administrator's on every other row.
+    const mask = currentFieldMask();
+    const hideClientEmail = mask.includes('client.email');
+    const hideClientIp = mask.includes('client.ipAddress');
+
     // `clientId` is the row's internal scope key — a uuid, never sent.
     return rows.map(({ clientId: _clientId, ...row }) => {
       const actor = row.actorId.toLowerCase();
-      const hiddenActor = row.actorKind === 'client' && hidden.has(actor);
+      const clientActor = row.actorKind === 'client';
+      const hiddenActor = clientActor && hidden.has(actor);
       return {
         ...row,
         actorId: hiddenActor ? OUTSIDE_TERRITORY : row.actorId,
-        actorEmail: hiddenActor ? OUTSIDE_TERRITORY : row.actorEmail,
+        actorEmail: hiddenActor
+          ? OUTSIDE_TERRITORY
+          : clientActor && hideClientEmail
+            ? HIDDEN_FROM_ROLE
+            : row.actorEmail,
+        ipAddress: clientActor && (hiddenActor || hideClientIp) ? null : row.ipAddress,
         actorPortalId: portalIdOf.get(actor) ?? null,
         subjectPortalId: portalIdOf.get(row.subjectId.toLowerCase()) ?? null,
         subjectId: hidden.has(row.subjectId.toLowerCase())
