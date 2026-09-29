@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import type { Server } from 'node:http';
 import request from 'supertest';
 import { actingAs, startHttpTestApp, stopHttpTestApp, type HttpTestContext } from './http-setup';
 import { PasswordService } from '../src/common/security/password.service';
@@ -72,7 +73,7 @@ describe('a masked administrator', () => {
       .expect(201);
     const plaintext = (minted.body as { plaintext: string }).plaintext;
 
-    const res = await request(ctx.app.getHttpServer())
+    const res = await request(ctx.app.getHttpServer() as Server)
       // The COMPLETE address: under D-82 a key that hides emails finds nobody by a fragment.
       .get(`/v1/admin/clients?q=${encodeURIComponent(CLIENT_EMAIL)}&limit=5`)
       .set('X-API-Key', plaintext)
