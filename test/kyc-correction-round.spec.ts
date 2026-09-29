@@ -383,7 +383,7 @@ describe('0136 takes the form debris out of personal_info', () => {
       stepData: {
         'source-of-funds': {
           customField_1790263641710: 'Acme Ltd',
-          customField_1790263652846: { filePath: 'uploads/kyc/p.jpg', fileName: 'p.jpg' },
+          customField_1790263652846: { filePath: 'uploads/kyc/p.jpg' },
         },
       },
     });

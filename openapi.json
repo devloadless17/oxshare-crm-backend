@@ -16785,13 +16785,7 @@
           "frontFilePath": {
             "type": "string"
           },
-          "frontFileName": {
-            "type": "string"
-          },
           "backFilePath": {
-            "type": "string"
-          },
-          "backFileName": {
             "type": "string"
           }
         }
@@ -16800,9 +16794,6 @@
         "type": "object",
         "properties": {
           "filePath": {
-            "type": "string"
-          },
-          "fileName": {
             "type": "string"
           },
           "docType": {
@@ -18758,11 +18749,6 @@
             "type": "string",
             "example": "uploads/kyc/2f0c….jpg",
             "description": "Opened through GET /uploads/kyc/:file, which checks the reader and audits it."
-          },
-          "fileName": {
-            "type": "string",
-            "nullable": true,
-            "description": "The name it was uploaded as."
           }
         },
         "required": [
@@ -19093,12 +19079,6 @@
           },
           "backFilePath": {
             "type": "string"
-          },
-          "frontFileName": {
-            "type": "string"
-          },
-          "backFileName": {
-            "type": "string"
           }
         }
       },
@@ -19106,9 +19086,6 @@
         "type": "object",
         "properties": {
           "filePath": {
-            "type": "string"
-          },
-          "fileName": {
             "type": "string"
           }
         }
@@ -19122,13 +19099,7 @@
           "filePath": {
             "type": "string"
           },
-          "fileName": {
-            "type": "string"
-          },
           "page2FilePath": {
-            "type": "string"
-          },
-          "page2FileName": {
             "type": "string"
           }
         }

@@ -1295,18 +1295,9 @@ export async function adoptIdentityDrift(db: ReturnType<typeof getDb>): Promise<
 function fixtureEvidence(tag: string) {
   const page = (name: string) => `uploads/kyc/e2e-fixture-${tag}-${name}.png`;
   return {
-    document: {
-      docType: 'passport',
-      fileName: `${tag}-passport.png`,
-      frontFilePath: page('passport'),
-      frontFileName: `${tag}-passport.png`,
-    },
-    selfie: { fileName: `${tag}-selfie.png`, filePath: page('selfie') },
-    addressProof: {
-      docType: 'utility_bill',
-      fileName: `${tag}-bill.png`,
-      filePath: page('bill'),
-    },
+    document: { docType: 'passport', frontFilePath: page('passport') },
+    selfie: { filePath: page('selfie') },
+    addressProof: { docType: 'utility_bill', filePath: page('bill') },
   };
 }
 

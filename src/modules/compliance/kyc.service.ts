@@ -154,10 +154,10 @@ function assertOpenForUploads(submission: { status: KycStatus }): void {
   }
 }
 
-type StoredPage = { filePath: string; fileName: string } | undefined;
+type StoredPage = { filePath: string } | undefined;
 
-function pageOf(filePath: string | undefined, fileName: string | undefined): StoredPage {
-  return filePath ? { filePath, fileName: fileName ?? '' } : undefined;
+function pageOf(filePath: string | undefined): StoredPage {
+  return filePath ? { filePath } : undefined;
 }
 
 /**
@@ -185,7 +185,7 @@ function placePage(
   storedType: string | undefined,
   pages: readonly StoredPage[],
   page: number,
-  file: { filePath: string; fileName: string },
+  file: { filePath: string },
   type: string | undefined,
 ): { docType?: string; pages: StoredPage[]; replaced: boolean } {
   const switching = type !== undefined && storedType !== undefined && storedType !== type;
@@ -641,7 +641,6 @@ export class KycService {
     userId: number,
     field: string,
     filePath: string,
-    fileName: string,
     /**
      * Which catalogue document this page belongs to (`passport`,
      * `national_id`, `utility_bill`…). Optional only because a portal predating
@@ -751,7 +750,8 @@ export class KycService {
       );
     }
 
-    const file = { filePath, fileName };
+    // The path alone: what the client called the file is not kept (0160, D-84).
+    const file = { filePath };
     let replaced: string[] = [];
     await this.db.transaction(async (tx) => {
       /*
@@ -770,10 +770,7 @@ export class KycService {
         const page = field === 'doc_back' ? 1 : 0;
         const doc = placePage(
           current.document?.docType,
-          [
-            pageOf(current.document?.frontFilePath, current.document?.frontFileName),
-            pageOf(current.document?.backFilePath, current.document?.backFileName),
-          ],
+          [pageOf(current.document?.frontFilePath), pageOf(current.document?.backFilePath)],
           page,
           file,
           type,
@@ -782,18 +779,13 @@ export class KycService {
         patch.document = {
           ...(doc.docType ? { docType: doc.docType } : {}),
           frontFilePath: doc.pages[0]?.filePath,
-          frontFileName: doc.pages[0]?.fileName,
           backFilePath: doc.pages[1]?.filePath,
-          backFileName: doc.pages[1]?.fileName,
         };
       } else if (canonical === 'address') {
         const page = field === 'address_proof_2' ? 1 : 0;
         const doc = placePage(
           current.addressProof?.docType,
-          [
-            pageOf(current.addressProof?.filePath, current.addressProof?.fileName),
-            pageOf(current.addressProof?.page2FilePath, current.addressProof?.page2FileName),
-          ],
+          [pageOf(current.addressProof?.filePath), pageOf(current.addressProof?.page2FilePath)],
           page,
           file,
           type,
@@ -802,9 +794,7 @@ export class KycService {
         patch.addressProof = {
           ...(doc.docType ? { docType: doc.docType } : {}),
           filePath: doc.pages[0]?.filePath,
-          fileName: doc.pages[0]?.fileName,
           page2FilePath: doc.pages[1]?.filePath,
-          page2FileName: doc.pages[1]?.fileName,
         };
       } else if (canonical === 'selfie') {
         patch.selfie = file;
@@ -853,7 +843,7 @@ export class KycService {
       await this.deleteDocuments(replaced.filter((path) => !archived.has(basename(path))));
     }
 
-    return { message: 'File uploaded.', field, fileName };
+    return { message: 'File uploaded.', field };
   }
 
   // ─── Submit KYC ────────────────────────────────────────────────────────────

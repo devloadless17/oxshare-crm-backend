@@ -181,9 +181,9 @@ beforeAll(async () => {
     submittedAt: new Date(),
     // The identity is the profile's; only a broker's own answers live here.
     personalInfo: { customField_1: 'Completeness answer' },
-    document: { docType: 'passport', fileName: 'doc.png' },
-    selfie: { fileName: 'selfie.png' },
-    addressProof: { docType: 'utility_bill', fileName: 'proof.png' },
+    document: { docType: 'passport', frontFilePath: 'uploads/kyc/doc.png' },
+    selfie: { filePath: 'uploads/kyc/selfie.png' },
+    addressProof: { docType: 'utility_bill', filePath: 'uploads/kyc/proof.png' },
   });
 
   // A wallet, so the holdings desk has a row to return rather than an empty
@@ -527,8 +527,8 @@ describe('the remaining person-carrying responses declare the keys they return',
       status: 'submitted',
       submittedAt: new Date(),
       personalInfo: { firstName: 'Reject', lastName: 'Target' },
-      document: { docType: 'passport', fileName: 'doc.png' },
-      addressProof: { docType: 'utility_bill', fileName: 'proof.png' },
+      document: { docType: 'passport', frontFilePath: 'uploads/kyc/doc.png' },
+      addressProof: { docType: 'utility_bill', filePath: 'uploads/kyc/proof.png' },
     });
 
     const session = await actingAs(ctx, 'admin', MASTER);

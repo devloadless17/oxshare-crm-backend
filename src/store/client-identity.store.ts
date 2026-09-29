@@ -29,7 +29,7 @@ export type IdentityVersionRow = {
   docType: string | null;
   createdAt: Date;
   frozenAt: Date | null;
-  pages: { part: number; path: string; fileName: string | null }[];
+  pages: { part: number; path: string }[];
   /** The latest decision that covered this version, if any has. */
   decision: {
     seq: number;
@@ -108,8 +108,8 @@ export class ClientIdentityStore {
     const versions = await this.db.execute<IdentityVersionRow>(sql`
       SELECT d.id, d.slot, d.doc_type AS "docType", d.created_at AS "createdAt",
              d.frozen_at AS "frozenAt",
-             coalesce(json_agg(json_build_object('part', p.part, 'path', p.storage_key,
-                                                 'fileName', p.file_name) ORDER BY p.part)
+             coalesce(json_agg(json_build_object('part', p.part, 'path', p.storage_key)
+                               ORDER BY p.part)
                         FILTER (WHERE p.document_id IS NOT NULL), '[]') AS pages,
              (SELECT json_build_object('seq', v.seq, 'outcome', v.outcome,
                                        'returnedItems', v.returned_items)

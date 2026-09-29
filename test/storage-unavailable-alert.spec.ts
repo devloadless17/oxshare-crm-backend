@@ -79,9 +79,7 @@ describe('a storage write that fails raises STORAGE_UNAVAILABLE', () => {
   it('alerts when the driver refuses, and still rethrows', async () => {
     const svc = service(() => Promise.reject(new Error('Request aborted')));
 
-    await expect(svc.write(KYC_BUCKET, PNG, 'image/png', uploader, 'id.png')).rejects.toThrow(
-      /aborted/,
-    );
+    await expect(svc.write(KYC_BUCKET, PNG, 'image/png', uploader)).rejects.toThrow(/aborted/);
 
     const alert = raised().find((a) => a.kind === ALERT_KINDS.STORAGE_UNAVAILABLE);
     expect(
@@ -100,7 +98,7 @@ describe('a storage write that fails raises STORAGE_UNAVAILABLE', () => {
     const svc = service(() => Promise.resolve());
 
     await expect(
-      svc.write(KYC_BUCKET, Buffer.from('not an image at all'), 'image/png', uploader, 'notes.txt'),
+      svc.write(KYC_BUCKET, Buffer.from('not an image at all'), 'image/png', uploader),
     ).rejects.toBeDefined();
 
     expect(

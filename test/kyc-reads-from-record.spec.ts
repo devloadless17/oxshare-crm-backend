@@ -40,7 +40,7 @@ let clientId: number;
 const front = `${randomUUID()}.png`;
 const replaced = `${randomUUID()}.png`;
 
-type Status = { document?: { docType?: string; frontFilePath?: string; frontFileName?: string } };
+type Status = { document?: Record<string, string> };
 
 async function withoutTriggers(query: ReturnType<typeof sql>): Promise<void> {
   await ctx.db.db.transaction(async (tx) => {
@@ -92,7 +92,7 @@ beforeAll(async () => {
   await ctx.db.db.execute(sql`
     INSERT INTO kyc_submissions (user_id, status, document)
     VALUES (${clientId}::integer, 'in_progress',
-            ${JSON.stringify({ docType: 'passport', frontFilePath: `./uploads/kyc/${front}`, frontFileName: 'passport.png' })}::jsonb)`);
+            ${JSON.stringify({ docType: 'passport', frontFilePath: `./uploads/kyc/${front}` })}::jsonb)`);
   client = await actingAs(ctx, 'portal', CLIENT);
   admin = await actingAs(ctx, 'admin', ADMIN);
 }, 180_000);
@@ -105,10 +105,10 @@ describe('a submission’s evidence, as the API reads it', () => {
   it('comes back in the record’s one spelling — to the client and to the reviewer', async () => {
     const mine = await client.get('/v1/kyc/status');
     expect(mine.status).toBe(200);
+    // The path and the type — and no filename, which is not kept (0160, D-84).
     expect((mine.body as Status).document).toEqual({
       docType: 'passport',
       frontFilePath: `uploads/kyc/${front}`,
-      frontFileName: 'passport.png',
     });
 
     const review = await admin.get(`/v1/admin/kyc/${clientId}`);

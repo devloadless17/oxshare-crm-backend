@@ -838,7 +838,7 @@ export const kycSubmissions = pgTable(
      * is not one anything needs to make.
      */
     stepData: jsonb('step_data')
-      .$type<Record<string, Record<string, string | { filePath: string; fileName: string }>>>()
+      .$type<Record<string, Record<string, string | { filePath: string }>>>()
       .notNull()
       .default({}),
     rejectionReason: text('rejection_reason'),
@@ -969,7 +969,7 @@ export const kycSubmissionAttempts = pgTable(
     addressProof: jsonb('address_proof').$type<Record<string, string>>(),
     /** Archived alongside the four columns — see `kyc_submissions.step_data`. */
     stepData: jsonb('step_data')
-      .$type<Record<string, Record<string, string | { filePath: string; fileName: string }>>>()
+      .$type<Record<string, Record<string, string | { filePath: string }>>>()
       .notNull()
       .default({}),
     rejectionReason: text('rejection_reason'),
@@ -1049,7 +1049,7 @@ export const clientDocumentPages = pgTable(
     storedObjectId: uuid('stored_object_id').references(() => storedObjects.id, {
       onDelete: 'restrict',
     }),
-    fileName: text('file_name'),
+    // No `file_name` since 0160 (D-84): a page is its part and its key.
     addedAt: timestamp('added_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -4796,8 +4796,8 @@ export const storedObjects = pgTable(
      * two owners would mean deleting one client's document deletes another's.
      */
     sha256: char('sha256', { length: 64 }).notNull(),
-    /** Display only. Never used to build a path or an extension. */
-    originalName: varchar('original_name', { length: 255 }),
+    // No `original_name` since 0160 (D-84): what the file was called on the
+    // uploader's device is not kept — it carried names and document numbers.
     /**
      * The client the object is ABOUT; null for brand marks belonging to nobody.
      * `restrict` matches `kyc_submissions` — deleting a client must fail loudly

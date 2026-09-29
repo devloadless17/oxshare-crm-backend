@@ -62,7 +62,6 @@ async function working(name: string): Promise<string> {
       JSON.stringify({
         docType: 'passport',
         frontFilePath: `uploads/kyc/repair-${name}.png`,
-        frontFileName: 'passport.png',
       }),
     ],
   );

@@ -162,7 +162,7 @@ export interface IdentityVersion {
   createdAt: Date;
   /** When it was presented for review — null for a draft. */
   presentedAt: Date | null;
-  pages: { part: number; path: string; fileName: string | null }[];
+  pages: { part: number; path: string }[];
 }
 
 export interface IdentityRecord {

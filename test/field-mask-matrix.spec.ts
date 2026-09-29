@@ -288,7 +288,6 @@ beforeAll(async () => {
     addressProof: {
       docType: 'utility_bill',
       filePath: 'uploads/kyc/matrix-proof.pdf',
-      fileName: 'MatrixProofFile.pdf',
     },
   });
 
@@ -357,7 +356,7 @@ describe('every maskable field, hidden on its own', () => {
 
           // 3. The screens still WORK — a document reference beside the address
           //    is not the address, and must survive being near it.
-          if (!wire.includes('MatrixProofFile.pdf')) {
+          if (!wire.includes('uploads/kyc/matrix-proof.pdf')) {
             problems.push(`${key}: masking it also removed the address-proof document`);
           }
           if (!wire.includes(String(clientId))) {

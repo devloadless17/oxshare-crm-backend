@@ -242,8 +242,6 @@ export class KycDocumentDto {
   @ApiPropertyOptional() docType?: string;
   @ApiPropertyOptional() frontFilePath?: string;
   @ApiPropertyOptional() backFilePath?: string;
-  @ApiPropertyOptional() frontFileName?: string;
-  @ApiPropertyOptional() backFileName?: string;
 }
 
 @NoClientFields(
@@ -251,7 +249,6 @@ export class KycDocumentDto {
 )
 export class KycSelfieDto {
   @ApiPropertyOptional() filePath?: string;
-  @ApiPropertyOptional() fileName?: string;
 }
 
 @NoClientFields(
@@ -260,9 +257,7 @@ export class KycSelfieDto {
 export class KycAddressProofDto {
   @ApiPropertyOptional() docType?: string;
   @ApiPropertyOptional() filePath?: string;
-  @ApiPropertyOptional() fileName?: string;
   @ApiPropertyOptional() page2FilePath?: string;
-  @ApiPropertyOptional() page2FileName?: string;
 }
 
 const LAYOUT_ONLY =
@@ -459,7 +454,7 @@ export class KycSubmissionDto {
     additionalProperties: { type: 'object', additionalProperties: { type: 'string' } },
     description: 'Answers for configured steps beyond the four canonical ones, keyed by slug.',
   })
-  stepData?: Record<string, Record<string, string | { filePath: string; fileName: string }>>;
+  stepData?: Record<string, Record<string, string | { filePath: string }>>;
   @ApiPropertyOptional({ type: KycUserDto, nullable: true })
   @NotClientField(
     'the nested person, whose own shape carries the marks \u2014 masked there, not here',
@@ -596,7 +591,7 @@ export class KycAttemptDto {
     additionalProperties: { type: 'object', additionalProperties: { type: 'string' } },
     description: 'Answers for configured steps beyond the four canonical ones, keyed by slug.',
   })
-  stepData?: Record<string, Record<string, string | { filePath: string; fileName: string }>>;
+  stepData?: Record<string, Record<string, string | { filePath: string }>>;
   @NotClientField('a timestamp the system recorded, describing the record rather than the client')
   @ApiProperty()
   archivedAt: Date;

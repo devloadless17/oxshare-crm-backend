@@ -352,24 +352,24 @@ describe('documents cannot change once the review has started', () => {
   for (const status of ['submitted', 'under_review'] as const) {
     it(`refuses an upload while ${status}`, async () => {
       const h = build({ stored: submission({ status }) });
-      await expect(
-        h.service.attachFile(1000001, 'doc_front', 'uploads/kyc/x.jpg', 'x.jpg'),
-      ).rejects.toThrow(/under review/i);
+      await expect(h.service.attachFile(1000001, 'doc_front', 'uploads/kyc/x.jpg')).rejects.toThrow(
+        /under review/i,
+      );
       expect(h.kycStore.update).not.toHaveBeenCalled();
     });
   }
 
   it('refuses an upload once approved', async () => {
     const h = build({ stored: submission({ status: 'approved' }) });
-    await expect(
-      h.service.attachFile(1000001, 'doc_front', 'uploads/kyc/x.jpg', 'x.jpg'),
-    ).rejects.toThrow(/already approved/i);
+    await expect(h.service.attachFile(1000001, 'doc_front', 'uploads/kyc/x.jpg')).rejects.toThrow(
+      /already approved/i,
+    );
     expect(h.kycStore.update).not.toHaveBeenCalled();
   });
 
   it('ALLOWS an upload after rejection, which is the point of that state', async () => {
     const h = build({ stored: submission({ status: 'rejected' }) });
-    await h.service.attachFile(1000001, 'doc_front', 'uploads/kyc/x.jpg', 'x.jpg');
+    await h.service.attachFile(1000001, 'doc_front', 'uploads/kyc/x.jpg');
     expect(h.kycStore.update).toHaveBeenCalled();
   });
 });
@@ -848,7 +848,7 @@ describe('saveStep stores only what the step asks for', () => {
       },
     ]);
     await h.service.saveStep(1000001, 'source-of-funds', {
-      payslip: { filePath: 'uploads/kyc/someone-else.jpg', fileName: 'x.jpg' },
+      payslip: { filePath: 'uploads/kyc/someone-else.jpg' },
       employer: 'Acme',
     });
     expect(h.kycStore.update).toHaveBeenCalledWith(
@@ -894,7 +894,7 @@ describe('an upload says which document its page belongs to', () => {
    * was GUESSED as passport on upload, and only Continue corrected it.
    */
   const upload = (h: ReturnType<typeof build>, field: string, name: string, docType?: string) =>
-    h.service.attachFile(1000001, field, `uploads/kyc/${name}`, name, docType);
+    h.service.attachFile(1000001, field, `uploads/kyc/${name}`, docType);
 
   it('starts the document afresh when the page is of a DIFFERENT document', async () => {
     const h = build({
@@ -902,9 +902,7 @@ describe('an upload says which document its page belongs to', () => {
         document: {
           docType: 'national_id',
           frontFilePath: 'uploads/kyc/id-front.jpg',
-          frontFileName: 'id-front.jpg',
           backFilePath: 'uploads/kyc/id-back.jpg',
-          backFileName: 'id-back.jpg',
         },
       }),
     });
@@ -913,7 +911,6 @@ describe('an upload says which document its page belongs to', () => {
     expect(patch.document).toEqual({
       docType: 'passport',
       frontFilePath: 'uploads/kyc/passport.jpg',
-      frontFileName: 'passport.jpg',
     });
   });
 
@@ -923,7 +920,6 @@ describe('an upload says which document its page belongs to', () => {
         document: {
           docType: 'national_id',
           frontFilePath: 'uploads/kyc/id-front.jpg',
-          frontFileName: 'id-front.jpg',
         },
       }),
     });
@@ -931,9 +927,7 @@ describe('an upload says which document its page belongs to', () => {
     expect(h.kycStore.update.mock.calls[0][1].document).toEqual({
       docType: 'national_id',
       frontFilePath: 'uploads/kyc/id-front.jpg',
-      frontFileName: 'id-front.jpg',
       backFilePath: 'uploads/kyc/id-back.jpg',
-      backFileName: 'id-back.jpg',
     });
   });
 
@@ -943,7 +937,6 @@ describe('an upload says which document its page belongs to', () => {
     const document = h.kycStore.update.mock.calls[0][1].document;
     expect(document).toEqual({
       frontFilePath: 'uploads/kyc/front.jpg',
-      frontFileName: 'front.jpg',
     });
     expect(document).not.toHaveProperty('docType');
   });
@@ -1023,7 +1016,6 @@ describe('an upload says which document its page belongs to', () => {
     expect(h.kycStore.update.mock.calls[0][1].addressProof).toEqual({
       docType: 'tenancy_agreement',
       page2FilePath: 'uploads/kyc/page2.jpg',
-      page2FileName: 'page2.jpg',
     });
   });
 
@@ -1095,12 +1087,12 @@ describe('a built-in step holds extra fields, and ONE judge decides every step',
   it('accepts an upload into an extra File field on a built-in step', async () => {
     const h = build({ stored: completeSubmission() });
     withExtras(h);
-    await h.service.attachFile(1000001, 'prooof3', 'uploads/kyc/lease.png', 'lease.png');
+    await h.service.attachFile(1000001, 'prooof3', 'uploads/kyc/lease.png');
     expect(h.kycStore.update).toHaveBeenCalledWith(
       1000001,
       expect.objectContaining({
         stepData: {
-          address: { prooof3: { filePath: 'uploads/kyc/lease.png', fileName: 'lease.png' } },
+          address: { prooof3: { filePath: 'uploads/kyc/lease.png' } },
         },
       }),
       expect.anything(),
@@ -1120,7 +1112,7 @@ describe('a built-in step holds extra fields, and ONE judge decides every step',
       stored: completeSubmission({
         stepData: {
           address: {
-            prooof3: { filePath: 'uploads/kyc/l.png', fileName: 'l.png' },
+            prooof3: { filePath: 'uploads/kyc/l.png' },
             note: 'Mr Haddad',
           },
         },

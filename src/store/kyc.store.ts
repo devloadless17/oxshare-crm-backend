@@ -97,21 +97,16 @@ export interface DocumentInfo {
   docType?: string;
   frontFilePath?: string;
   backFilePath?: string;
-  frontFileName?: string;
-  backFileName?: string;
 }
 
 export interface SelfieInfo {
   filePath?: string;
-  fileName?: string;
 }
 
 export interface AddressInfo {
   docType?: string;
   filePath?: string;
-  fileName?: string;
   page2FilePath?: string;
-  page2FileName?: string;
 }
 
 /**
@@ -134,7 +129,7 @@ export interface KycAttempt {
    * Always an object — the column is `NOT NULL DEFAULT '{}'` (migration 0130) —
    * so consumers never branch on null, only on whether a slug is present.
    */
-  stepData: Record<string, Record<string, string | { filePath: string; fileName: string }>>;
+  stepData: Record<string, Record<string, string | { filePath: string }>>;
   rejectionReason?: string;
   rejectedFields?: string[];
   submittedAt?: Date;
@@ -161,7 +156,7 @@ export interface KycSubmission {
    * Always an object — the column is `NOT NULL DEFAULT '{}'` (migration 0130) —
    * so consumers never branch on null, only on whether a slug is present.
    */
-  stepData: Record<string, Record<string, string | { filePath: string; fileName: string }>>;
+  stepData: Record<string, Record<string, string | { filePath: string }>>;
   /**
    * When a reviewer returned an APPROVED verification for the client to redo
    * (0147). Cleared by the approval that follows.

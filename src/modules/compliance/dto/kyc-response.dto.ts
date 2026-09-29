@@ -191,14 +191,11 @@ export class KycStepConfigDto {
 export class KycDocumentStateDto {
   @ApiPropertyOptional({ example: 'passport' }) docType?: string;
   @ApiPropertyOptional() frontFilePath?: string;
-  @ApiPropertyOptional() frontFileName?: string;
   @ApiPropertyOptional() backFilePath?: string;
-  @ApiPropertyOptional() backFileName?: string;
 }
 
 export class KycFileStateDto {
   @ApiPropertyOptional() filePath?: string;
-  @ApiPropertyOptional() fileName?: string;
   @ApiPropertyOptional({ example: 'utility_bill' }) docType?: string;
   @ApiPropertyOptional({ description: 'Second page, for multi-page address proof.' })
   page2FilePath?: string;
@@ -274,7 +271,7 @@ export class KycStatusDto {
     additionalProperties: { type: 'object', additionalProperties: { type: 'string' } },
     description: 'Answers for configured steps beyond the four canonical ones, keyed by slug.',
   })
-  stepData?: Record<string, Record<string, string | { filePath: string; fileName: string }>>;
+  stepData?: Record<string, Record<string, string | { filePath: string }>>;
 
   @ApiPropertyOptional({ description: 'Set when status is rejected.' }) rejectionReason?: string;
 

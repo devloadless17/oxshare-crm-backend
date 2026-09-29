@@ -28,14 +28,7 @@ export class ClientIdentityPageDto {
   })
   @NotClientField(RECORD)
   path: string;
-
-  @ApiPropertyOptional({
-    nullable: true,
-    type: String,
-    description: 'The name it was uploaded as.',
-  })
-  @NotClientField(RECORD)
-  fileName: string | null;
+  // No `fileName` since 0160 (D-84): the name it was uploaded as is not kept.
 }
 
 export class ClientIdentityVersionDto {

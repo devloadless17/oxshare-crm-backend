@@ -258,17 +258,11 @@ export class AdminPaymentMethodsController {
      * because an abandoned upload is not a configuration change, and the registry
      * row is what makes an unreferenced logo traceable to whoever wrote it.
      */
-    const stored = await this.files.write(
-      PAYMENT_LOGO_BUCKET,
-      file.buffer,
-      file.mimetype,
-      {
-        id: req.admin.id,
-        kind: 'admin',
-        ownerUserId: null,
-      },
-      file.originalname,
-    );
+    const stored = await this.files.write(PAYMENT_LOGO_BUCKET, file.buffer, file.mimetype, {
+      id: req.admin.id,
+      kind: 'admin',
+      ownerUserId: null,
+    });
     return { logoUrl: `/v1/uploads/payment-logos/${stored.filename}` };
   }
 

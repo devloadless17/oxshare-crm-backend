@@ -344,6 +344,12 @@ export class StoredFilesService {
    * HTML document ends up served as active content from the origin holding the
    * session cookies.
    *
+   * And the uploaded filename is not KEPT either (0160, D-84). What a file was
+   * called on somebody's device routinely carries their name or a document
+   * number, it would be shown beside the document whatever a role hides, and
+   * nothing needs it — a document is named by what it is. So there is no
+   * parameter to pass it through.
+   *
    * ## Ordering: bytes first, then the row
    *
    * If the registry insert fails, the object is deleted and the error propagates.
@@ -357,7 +363,6 @@ export class StoredFilesService {
     buffer: Buffer,
     declaredMime: string,
     uploader: Uploader,
-    originalName?: string | null,
   ): Promise<StoredFile> {
     if (buffer.length === 0) throw new ValidationError('That file is empty.');
 
@@ -490,7 +495,6 @@ export class StoredFilesService {
         contentType: actual,
         byteSize: buffer.length,
         sha256,
-        originalName: originalName ?? null,
         ownerUserId: owner,
         uploadedById: uploader.id,
         uploadedByKind: uploader.kind,

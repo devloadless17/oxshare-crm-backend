@@ -25,7 +25,6 @@ export interface RecordObjectInput {
   byteSize: number;
   /** Lowercase hex. */
   sha256: string;
-  originalName?: string | null;
   ownerUserId?: number | null;
   /** An admin's uuid, or a client's Portal ID — stored as text (0159). */
   uploadedById: string | number;
@@ -40,7 +39,6 @@ export interface StoredObjectRow {
   contentType: string;
   byteSize: number;
   sha256: string;
-  originalName: string | null;
   ownerUserId: number | null;
   createdAt: Date;
   deletedAt: Date | null;
@@ -73,7 +71,6 @@ export class StoredObjectsStore {
         contentType: input.contentType,
         byteSize: input.byteSize,
         sha256: input.sha256,
-        originalName: input.originalName ?? null,
         ownerUserId: input.ownerUserId ?? null,
         uploadedById: String(input.uploadedById),
         uploadedByKind: input.uploadedByKind,
@@ -85,7 +82,6 @@ export class StoredObjectsStore {
           contentType: input.contentType,
           byteSize: input.byteSize,
           sha256: input.sha256,
-          originalName: input.originalName ?? null,
           // Revives a row whose object was deleted and then re-written at the same
           // key. Leaving it soft-deleted would hide a live object from the quota.
           deletedAt: null,

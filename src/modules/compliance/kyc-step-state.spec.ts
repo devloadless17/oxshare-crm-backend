@@ -56,7 +56,7 @@ const STEPS: StateStep[] = [
   },
 ];
 
-const PNG = (name: string) => ({ filePath: `uploads/kyc/${name}.png`, fileName: `${name}.png` });
+const PNG = (name: string) => ({ filePath: `uploads/kyc/${name}.png` });
 
 const COMPLETE: StateSubmission = {
   personalInfo: {

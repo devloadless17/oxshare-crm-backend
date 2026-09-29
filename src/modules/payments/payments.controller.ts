@@ -312,13 +312,11 @@ export class PaymentsController {
      * KYC upload follows, and the entire distance between "my receipt" and
      * "anyone's receipt".
      */
-    const stored = await this.files.write(
-      DEPOSIT_PROOF_BUCKET,
-      file.buffer,
-      file.mimetype,
-      { id: req.user.id, kind: 'client', ownerUserId: req.user.id },
-      file.originalname,
-    );
+    const stored = await this.files.write(DEPOSIT_PROOF_BUCKET, file.buffer, file.mimetype, {
+      id: req.user.id,
+      kind: 'client',
+      ownerUserId: req.user.id,
+    });
 
     try {
       return await this.transactions.requestDeposit({

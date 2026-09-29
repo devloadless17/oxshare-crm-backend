@@ -41,7 +41,7 @@ describe('only the fields the step asks for are stored', () => {
 
   it('drops a value that is not a string — how "[object Object]" became an answer', () => {
     const { answers } = typedAnswersFor(PERSONAL, {
-      firstName: { filePath: 'uploads/kyc/x.jpg', fileName: 'x.jpg' },
+      firstName: { filePath: 'uploads/kyc/x.jpg' },
       dateOfBirth: 19900101,
       country: ['Lebanon'],
     });

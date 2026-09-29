@@ -186,7 +186,7 @@ describe('what a reviewer may return — what the client can answer, and nothing
   const PRESENTED = {
     document: { docType: 'passport', frontFilePath: 'uploads/kyc/f.png' },
     addressProof: { docType: 'utility_bill', filePath: 'uploads/kyc/b.png' },
-    selfie: { filePath: 'uploads/kyc/s.png', fileName: 's.png' },
+    selfie: { filePath: 'uploads/kyc/s.png' },
     stepData: { 'source-of-funds': { customField_e: 'ACME', customField_gone: 'old' } },
   };
   const returnable = (form = FORM, presented = PRESENTED) =>
