@@ -1,4 +1,5 @@
 import { eq } from 'drizzle-orm';
+import { legacyRoute } from './support/payment-route';
 import { ALL_PERMISSIONS } from './support/all-permissions';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
@@ -289,6 +290,7 @@ beforeAll(async () => {
       currency: 'USD',
       state: 'pending',
       provider: 'whish',
+      ...legacyRoute('whish', 'withdrawal'),
       destination: 'in-scope-destination',
     },
     {
@@ -299,6 +301,7 @@ beforeAll(async () => {
       currency: 'USD',
       state: 'pending',
       provider: 'whish',
+      ...legacyRoute('whish', 'withdrawal'),
       destination: 'out-of-scope-destination',
     },
   ]);
@@ -1093,6 +1096,7 @@ describe('an offset-batched export is bounded to ONE instant', () => {
         currency: wallet.currency,
         state: 'pending',
         provider: 'whish',
+        ...legacyRoute('whish', 'withdrawal'),
         destination: 'inserted-mid-export',
         createdAt: later,
       })

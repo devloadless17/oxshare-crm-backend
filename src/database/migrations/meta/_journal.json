@@ -1181,8 +1181,29 @@
     {
       "idx": 169,
       "version": "7",
+      "when": 1789140701750,
+      "tag": "0168_payment_providers",
+      "breakpoints": true
+    },
+    {
+      "idx": 171,
+      "version": "7",
       "when": 1789140800750,
       "tag": "0168_drop_max_admin_credit",
+      "breakpoints": true
+    },
+    {
+      "idx": 170,
+      "version": "7",
+      "when": 1789140801750,
+      "tag": "0169_no_daily_withdrawal_limit",
+      "breakpoints": true
+    },
+    {
+      "idx": 172,
+      "version": "7",
+      "when": 1789140900750,
+      "tag": "0170_reconcile_production",
       "breakpoints": true
     }
   ]

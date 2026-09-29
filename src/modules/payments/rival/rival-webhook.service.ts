@@ -7,6 +7,7 @@ import { TransactionsService } from '../transactions.service';
 import { RivalConfigService } from './rival-config.service';
 import { RivalWithdrawalsService } from './rival-withdrawals.service';
 import { verifyRivalDelivery } from './rival-signature';
+import type { ProviderWebhookReceiver } from '../providers/payment-provider';
 
 /**
  * One verified Rival CRM delivery, from raw bytes to an HTTP answer.
@@ -64,7 +65,9 @@ interface RivalEventBody {
 }
 
 @Injectable()
-export class RivalWebhookService {
+export class RivalWebhookService implements ProviderWebhookReceiver {
+  readonly providerCode = 'rival';
+
   private readonly logger = new Logger(RivalWebhookService.name);
 
   constructor(
@@ -77,6 +80,11 @@ export class RivalWebhookService {
 
   async handle(rawBody: Buffer | undefined, header: (name: string) => string | undefined) {
     return this.handleInternal(rawBody, header);
+  }
+
+  /** The generic `POST /v1/payments/providers/rival/webhook` — the same handling. */
+  receive(rawBody: Buffer | undefined, header: (name: string) => string | undefined) {
+    return this.handle(rawBody, header);
   }
 
   private async handleInternal(

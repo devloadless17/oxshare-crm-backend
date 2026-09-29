@@ -79,6 +79,14 @@ function FinancialFilterQueries() {
       enum: ['true'],
       description: 'Only payments flagged for a person to reconcile. Omit for every movement.',
     }),
+    ApiQuery({
+      name: 'decidedBy',
+      required: false,
+      enum: ['desk'],
+      description:
+        'Only movements a person decides: deposits paid outside the platform and every ' +
+        'withdrawal. A deposit on a provider’s hosted page is settled by the provider. (0168)',
+    }),
   );
 }
 
@@ -93,6 +101,7 @@ interface RawFilterParams {
   from?: string;
   to?: string;
   attention?: string;
+  decidedBy?: string;
 }
 
 /**
@@ -159,6 +168,7 @@ export class AdminFinancialController {
       to: dateQuery(raw.to, 'to'),
       // `true` or absent — anything else is a 400, like every enum filter here.
       attention: enumQuery(raw.attention, ['true'] as const, 'attention') ? true : undefined,
+      deskDecided: enumQuery(raw.decidedBy, ['desk'] as const, 'decidedBy') ? true : undefined,
     };
   }
 
@@ -221,6 +231,7 @@ export class AdminFinancialController {
     @Query('from') from?: string,
     @Query('to') to?: string,
     @Query('attention') attention?: string,
+    @Query('decidedBy') decidedBy?: string,
   ) {
     const chosen = exportFormat(format);
     const query = await this.filters({
@@ -233,6 +244,7 @@ export class AdminFinancialController {
       from,
       to,
       attention,
+      decidedBy,
     });
 
     this.audit.record(req.admin.id, 'export.transactions', 'transaction_list', req.admin.id, {
@@ -291,9 +303,21 @@ export class AdminFinancialController {
     @Query('from') from?: string,
     @Query('to') to?: string,
     @Query('attention') attention?: string,
+    @Query('decidedBy') decidedBy?: string,
   ) {
     return this.money.transactionsSummary(
-      await this.filters({ direction, kind, state, userId, currency, q, from, to, attention }),
+      await this.filters({
+        direction,
+        kind,
+        state,
+        userId,
+        currency,
+        q,
+        from,
+        to,
+        attention,
+        decidedBy,
+      }),
       req.admin,
     );
   }
@@ -340,6 +364,7 @@ export class AdminFinancialController {
     @Query('from') from?: string,
     @Query('to') to?: string,
     @Query('attention') attention?: string,
+    @Query('decidedBy') decidedBy?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('cursor') cursor?: string,
@@ -358,6 +383,7 @@ export class AdminFinancialController {
           from,
           to,
           attention,
+          decidedBy,
         })),
         page,
         limit,

@@ -189,6 +189,8 @@ export class RivalClient {
     amount: string;
     currency: string;
     notes: string;
+    /** Rival's payout type for the channel (0168) — `RIVAL_PAYOUT_METHODS`. */
+    method: 'WISH';
     recipientName: string;
     recipientPhone: string;
   }): Promise<RivalWithdrawal> {
@@ -200,7 +202,7 @@ export class RivalClient {
         currency: input.currency,
         notes: input.notes,
         payout: {
-          method: 'WISH',
+          method: input.method,
           recipientName: input.recipientName,
           recipientPhone: input.recipientPhone,
         },

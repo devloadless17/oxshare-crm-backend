@@ -3,7 +3,7 @@ import { and, asc, eq, ne, sql } from 'drizzle-orm';
 import Decimal from 'decimal.js';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
-import { paymentMethods, transactions } from '../../database/schema';
+import { paymentMethods, paymentProviders, transactions } from '../../database/schema';
 import { CurrenciesService } from '../currencies/currencies.service';
 import { toDecimal } from '../wallet/money';
 import {
@@ -19,9 +19,10 @@ import {
   type CurrencyLimits,
 } from '../../common/currency-limits';
 import { AdminAuditService } from '../admin/admin-audit.service';
+import { methodAvailability, type MethodAvailability } from './providers/provider-status';
 import type { Actor } from '../../common/security/actor';
 import type { CreatePaymentMethodDto, UpdatePaymentMethodDto } from './dto/payment-method.dto';
-import { PaymentGateways } from './payment-gateways.service';
+import { PaymentProviderRegistry } from './providers/payment-provider-registry';
 import { normaliseProofFields } from '../../common/payments/proof-fields';
 import {
   assertDepositMethodKeyAllowed,
@@ -38,7 +39,12 @@ export type PaymentMethodRow = typeof paymentMethods.$inferSelect;
  * range clients are held to (`minAmount`/`maxAmount`) beside the method's own
  * optional override (`ownMinAmount`/`ownMaxAmount`) the form edits.
  */
-export type AdminPaymentMethod = ClientPaymentMethod & { builtIn: boolean; inUse: boolean };
+export type AdminPaymentMethod = ClientPaymentMethod & {
+  builtIn: boolean;
+  inUse: boolean;
+  /** Whether clients are offered it, and if not, why (0168). */
+  availability: MethodAvailability;
+};
 
 /** A currency's deposit pair — what a method's range is resolved against. */
 type DepositRange = Pick<CurrencyLimits, 'minDeposit' | 'maxDeposit'>;
@@ -94,7 +100,7 @@ export class PaymentMethodsService {
      * constructor: this class is built positionally in the unit suites, so
      * inserting a parameter in the middle silently shifts every one after it.
      */
-    private readonly gateways: PaymentGateways,
+    private readonly providers: PaymentProviderRegistry,
   ) {}
 
   /** The admin screen's list, with what the desk may do to each method. */
@@ -104,10 +110,12 @@ export class PaymentMethodsService {
       .from(paymentMethods)
       .orderBy(asc(paymentMethods.sortOrder), asc(paymentMethods.key));
     const ranges = await this.depositRanges(rows.map(({ row }) => row.currency));
+    const providers = await this.providerStates();
     return rows.map(({ row, inUse }) => ({
       ...this.withEffectiveBounds(row, ranges),
-      builtIn: this.isBuiltIn(row.key),
+      builtIn: false,
       inUse,
+      availability: methodAvailability(row.enabled, providers.get(row.providerCode)),
     }));
   }
 
@@ -120,16 +128,13 @@ export class PaymentMethodsService {
       .limit(1);
     if (!found) return null;
     const ranges = await this.depositRanges([found.row.currency]);
+    const providers = await this.providerStates();
     return {
       ...this.withEffectiveBounds(found.row, ranges),
-      builtIn: this.isBuiltIn(found.row.key),
+      builtIn: false,
       inUse: found.inUse,
+      availability: methodAvailability(found.row.enabled, providers.get(found.row.providerCode)),
     };
-  }
-
-  /** A gateway: `PaymentGateways` dispatches on its key, so the code depends on the row. */
-  private isBuiltIn(key: string): boolean {
-    return this.gateways.isImplemented(key);
   }
 
   /** Everything, including disabled and unconfigured. The admin screen's list. */
@@ -200,8 +205,8 @@ export class PaymentMethodsService {
       this.logger.warn(
         `Payment method "${key}" is ENABLED but hidden from clients: this deployment has no ` +
           'credentials for its provider, so it cannot take a payment. Clients see "no deposit ' +
-          'methods available" while the admin console shows it switched on. Configure it under ' +
-          'Settings → Payments, or disable the method.',
+          'methods available" while the admin console shows it switched on. Set up and switch ' +
+          'on its payment provider, or disable the method.',
       );
     }
 
@@ -283,36 +288,42 @@ export class PaymentMethodsService {
     }
   }
 
+  /** Every provider's state, for the availability each admin row carries. */
+  private async providerStates() {
+    return this.providers.states(await this.db.select().from(paymentProviders));
+  }
+
   /**
-   * Is this method actually able to receive money?
-   *
-   * ## `enabled` is the operator's whole answer
-   *
-   * A method used to also need `pay_to` filled in, and before that a `kind` an
-   * operator picked from a dropdown. Both are gone with their columns: the admin
-   * surface is name, key, currency, logo and an enable/disable toggle, so
-   * "should clients see this?" is a question the operator answers directly
-   * rather than one inferred from whether they happened to complete a form.
-   *
-   * ## Except for a GATEWAY, which has a second, non-negotiable test
-   *
-   * A gateway needs its PROVIDER credentials present on this deployment. That is
-   * not an operator decision and cannot be one — the keys live in the
-   * environment, not the database, so an operator can enable Whish on a
-   * deployment that has no way to reach it.
-   *
-   * Such a method must not appear at all. A client who picks it and lands on an
-   * error has been told the platform is broken, rather than that this particular
-   * method is unavailable.
-   *
-   * `isImplemented` decides whether the credential test applies, and it is a fact
-   * about the BUILD rather than the row. A key with no gateway behind it is a
-   * manual method by definition, and there is nothing about it a deployment can
-   * fail to configure.
+   * Switching a method on while its provider cannot take money would show it
+   * Enabled in the console and hide it from every client. Refused, with what to
+   * do instead.
    */
-  private async isConfigured(row: PaymentMethodRow): Promise<boolean> {
-    if (this.gateways.isImplemented(row.key)) return this.gateways.isConfigured(row.key);
-    return true;
+  private async refuseEnabling(providerCode: string): Promise<never> {
+    const provider = this.providers.provider(providerCode);
+    const state = (await this.providerStates()).get(providerCode);
+    const why = state?.status === 'off' ? 'switched off' : 'not set up';
+    throw new ValidationError(
+      `${provider.name} is ${why}, so clients could not use this method. Set up and switch on ` +
+        `${provider.name} under Payment providers first.`,
+    );
+  }
+
+  /**
+   * Can this method's PROVIDER take money right now (0168)?
+   *
+   * `enabled` is the operator's decision about the method; this is the fact
+   * about its provider that no method setting can change. The desk (`manual`)
+   * always can. Rival, and every provider after it, only while it is switched
+   * on, set up, and not a sandbox configuration on a production deployment.
+   *
+   * A method whose provider cannot must not appear at all: a client who picks
+   * it and lands on an error has been told the platform is broken, rather than
+   * that this particular method is unavailable.
+   */
+  private isConfigured(row: PaymentMethodRow): Promise<boolean> {
+    // The method's own provider answers (0168): the desk always can; Rival, and
+    // every provider after it, only while switched on and configured.
+    return this.providers.isUsable(row.providerCode);
   }
 
   async findOne(key: string): Promise<PaymentMethodRow | null> {
@@ -393,6 +404,23 @@ export class PaymentMethodsService {
      */
     const key = dto.key !== undefined ? this.normalise(dto.key) : await this.freshKey();
     assertDepositMethodKeyAllowed(key);
+    /*
+     * The route, judged at SAVE (0168): a channel this provider declares for
+     * deposits, one a method may bind, carrying this currency, and taking a
+     * receipt only if it is paid outside the platform.
+     */
+    const route = {
+      providerCode: dto.providerCode ?? 'manual',
+      channelCode: dto.channelCode ?? 'offline',
+    };
+    this.providers.assertBindable(route, 'deposit', {
+      currency: dto.currency,
+      requiresProof: dto.requiresProof ?? false,
+    });
+    // Offered only once its provider can take money: asked for enabled, it is
+    // refused with the reason; left to the default, it starts switched off.
+    const providerUsable = await this.providers.isUsable(route.providerCode);
+    if (dto.enabled === true && !providerUsable) await this.refuseEnabling(route.providerCode);
     if (dto.key !== undefined && (await this.findOne(key))) {
       throw new ConflictError(`A payment method with the key ${key} already exists.`);
     }
@@ -413,12 +441,14 @@ export class PaymentMethodsService {
         internalLabel,
         currency,
         logoUrl: dto.logoUrl ?? null,
-        enabled: dto.enabled ?? true,
+        enabled: dto.enabled ?? providerUsable,
         sortOrder: dto.sortOrder ?? (await this.nextSortOrder()),
         requiresProof: dto.requiresProof ?? false,
         ownMinAmount,
         ownMaxAmount,
         proofFields: normaliseProofFields(dto.proofFields ?? []),
+        providerCode: route.providerCode,
+        channelCode: route.channelCode,
         updatedBy: adminId,
       })
       .returning();
@@ -460,6 +490,23 @@ export class PaymentMethodsService {
     if (!current) throw new NotFoundError(`Unknown payment method ${this.normalise(key)}.`);
 
     const currency = dto.currency ? await this.currencies.assertUsable(dto.currency) : undefined;
+    // The route never changes, but what rides on it must still fit it: a
+    // receipt only on a channel that takes one, a currency it carries.
+    this.providers.assertBindable(
+      { providerCode: current.providerCode, channelCode: current.channelCode },
+      'deposit',
+      {
+        currency: currency ?? current.currency,
+        requiresProof: dto.requiresProof ?? current.requiresProof,
+      },
+    );
+    if (
+      dto.enabled === true &&
+      !current.enabled &&
+      !(await this.providers.isUsable(current.providerCode))
+    ) {
+      await this.refuseEnabling(current.providerCode);
+    }
     const internalLabel =
       dto.internalLabel !== undefined ? requireInternalLabel(dto.internalLabel) : undefined;
     if (internalLabel !== undefined) await this.assertLabelFree(internalLabel, current.key);
@@ -542,9 +589,6 @@ export class PaymentMethodsService {
   async remove(key: string, actor: Actor): Promise<{ key: string; deleted: true }> {
     const current = await this.findOneForAdmin(key);
     if (!current) throw new NotFoundError(`Unknown payment method ${this.normalise(key)}.`);
-    if (current.builtIn) {
-      throw new ConflictError(`${current.name} is built into the platform and cannot be deleted.`);
-    }
     if (current.inUse) throw this.inUseError(current.name);
     try {
       await this.db.delete(paymentMethods).where(eq(paymentMethods.key, current.key));

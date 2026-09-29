@@ -57,7 +57,9 @@ export class PaymentsReturnController {
     // The reference format is ours (OX-…); anything else is not a deposit
     // reference and gets the failure page rather than a reflected value.
     const safeReference = /^[A-Z0-9-]{1,32}$/.test(reference) ? reference : '';
-    const safeMethod = method && /^[a-z0-9_-]{1,40}$/.test(method) ? method : 'whish';
+    // The namespace the link carried, or nothing: the portal then finds the
+    // deposit by its reference and the signed-in owner (0168). Never a guess.
+    const safeMethod = method && /^[a-z0-9_-]{1,40}$/.test(method) ? method : null;
 
     const base = (this.config.get<string>('PORTAL_URL') ?? 'http://localhost:3000').replace(
       /\/+$/,
@@ -65,7 +67,8 @@ export class PaymentsReturnController {
     );
     const target =
       `${base}/deposit/${safeOutcome}` +
-      `?reference=${encodeURIComponent(safeReference)}&method=${encodeURIComponent(safeMethod)}`;
+      `?reference=${encodeURIComponent(safeReference)}` +
+      (safeMethod ? `&method=${encodeURIComponent(safeMethod)}` : '');
 
     // 302, not 301: the portal address is config and must never be cached
     // into payers' browsers across a move.

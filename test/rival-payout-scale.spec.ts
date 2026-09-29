@@ -57,6 +57,7 @@ const payout = (amount: string) => ({
   amount,
   currency: 'USD',
   notes: 'crm:test',
+  method: 'WISH' as const,
   recipientName: 'Test Client',
   recipientPhone: '+96170123456',
 });

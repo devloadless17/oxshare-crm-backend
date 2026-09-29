@@ -46,6 +46,8 @@ export interface EffectiveRivalConfig {
   enabled: boolean;
   /** Where this came from, for the settings screen and log lines. */
   source: 'database' | 'environment';
+  /** `live` or `sandbox` (0168). A production deployment never resolves `sandbox`. */
+  environment: 'live' | 'sandbox';
 }
 
 const CACHE_TTL_MS = 10_000;
@@ -104,6 +106,21 @@ export class RivalConfigService {
     }
 
     if (row && row.baseUrl && row.apiKeyCiphertext) {
+      /*
+       * A SANDBOX configuration on a PRODUCTION deployment is refused outright
+       * (0168): a sandbox webhook must never be able to credit real money, and
+       * a sandbox URL pasted into production is the mistake that would allow
+       * it. Rival then reads as unconfigured — nothing is offered or paid — and
+       * the log says why.
+       */
+      const environment = row.environment === 'sandbox' ? 'sandbox' : 'live';
+      if (environment === 'sandbox' && this.config.get<string>('NODE_ENV') === 'production') {
+        this.logger.error(
+          'Rival is configured as SANDBOX on a production deployment; refusing it. ' +
+            'Set it to live, or use it on a sandbox deployment, in Payment providers.',
+        );
+        return null;
+      }
       const key = this.config.get<string>('APP_ENCRYPTION_KEY');
       let apiKey: string;
       try {
@@ -145,6 +162,7 @@ export class RivalConfigService {
         webhookKey,
         enabled: row.enabled,
         source: 'database',
+        environment,
       };
     }
 
@@ -161,6 +179,7 @@ export class RivalConfigService {
         // Env config carries no switch; being set is being on.
         enabled: true,
         source: 'environment',
+        environment: 'live',
       };
     }
 

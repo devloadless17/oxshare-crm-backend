@@ -1222,14 +1222,14 @@ the key behind the number.
 
 The owner asked to rename what the desk reads on a transaction, which was the method's key.
 Renaming the key was built, measured and **rejected**. Do not bring it back. The key is the primary
-key every transaction references, it is spelled into `transactions.provider` (`manual_<key>`, half of
-the UNIQUE(provider, provider_ref) idempotency guard), and code dispatches on it (`whish`: the gateway,
-Rival payouts, the portal's payout field). A rename rewrote settled history: 17 s holding locks on
-100k rows, and past the 30 s statement timeout at about 250k.
+key every transaction references, and it is spelled into `transactions.provider` (`manual_<key>`,
+half of the UNIQUE(provider, provider_ref) idempotency guard). A rename rewrote settled history: 17 s
+holding locks on 100k rows, and past the 30 s statement timeout at about 250k. (Code also dispatched
+on `whish` then; since 0168 nothing does — see "Payment providers" below.)
 
 - **The key is permanent and never shown in the console.** The foreign keys stay `ON UPDATE NO ACTION`,
   so the database refuses to change a referenced key. New methods get a generated opaque key
-  (`pm_…` / `wm_…`, `generateMethodKey`). A caller may name one only for a row the code dispatches on.
+  (`pm_…` / `wm_…`, `generateMethodKey`). A caller may still name one (seeds, specs).
 - **`internal_label` is what the desk sees, types and renames.** It is required, unique
   case-insensitively per table, and joined at read time by every ADMIN surface (the movements CTE's
   `method_label`, the withdrawals desk, client activity, exports), so a rename is one row. The admin
@@ -1240,8 +1240,61 @@ Rival payouts, the portal's payout field). A rename rewrote settled history: 17 
   refuses it blank.
 - **Reserved keys** (`method-keys.ts`): a deposit key may not produce a platform provider (`admin` →
   `manual_admin`, the desk's own credits), and a withdrawal key may not start with `manual_`.
-- **Delete** only a method no transaction references (RESTRICT is the race-proof guard); a built-in
-  one (`whish`) never.
+- **Delete** only a method no transaction references (RESTRICT is the race-proof guard). Since 0168
+  no method is built in, `whish` included: `builtIn` is always false and deprecated.
+
+## Payment providers: every method and transaction names its route (0168, 29 Sep 2026)
+
+Three layers, and every money path reads them rather than a name (`modules/payments/providers/`):
+
+| layer    | what it is                                                                     | where                                                |
+| -------- | ------------------------------------------------------------------------------ | ---------------------------------------------------- |
+| PROVIDER | a system that moves money: `manual` (built in: the desk), `rival`, the next…   | one ADAPTER in code + one `payment_providers` row    |
+| CHANNEL  | one way it moves money, DECLARED by the adapter: direction, flow, destination | `adapter.channels` — never typed by an operator      |
+| METHOD   | what a client picks, bound to exactly one (provider, channel), fixed at birth  | `payment_methods` / `withdrawal_payment_methods`     |
+
+- **A transaction records its route**: `provider_code`, `channel_code`, `provider_environment`, set at
+  filing and immutable (trigger), like a method's. `transactions.provider` stays the idempotency
+  NAMESPACE (`depositNamespace`: `whish`, `manual_<key>`, else `<provider>_<channel>`); nothing routes
+  on it. A BEFORE INSERT trigger derives the route for an older build that writes none.
+- **`PaymentProviderRegistry` answers every route question** (`isRedirect`, `isDeskDecided`,
+  `isAutomatedPayout`, `settlementScale`, `startPayment`/`checkPayment`, `states`). No `key ===
+  'whish'` remains; Rival's own names (`WISH`, the `whish:<id>` reference) live in its adapter and
+  services only.
+- **State, one rule** (`provider-status.ts`): connected / unverified / failing / off / not_configured
+  / sandbox_refused. A DEPOSIT method is offered only while its provider is usable (`availability`),
+  and switching one on while it is not is refused with the reason. A PAYOUT method is never hidden
+  for its provider's sake: the desk pays an automated one by hand while the provider is off
+  (`paidBy`).
+- **Settings are the adapter's declared fields**, edited on `admin/payment-providers`
+  (`payments.providers.view/.edit`, granted by 0168 to whoever held `settings.rival.*`). Secrets are
+  sealed and write-only; a GENERATED one (a webhook key) is only ever rotated and shown once; a URL
+  must be https on the public internet (`outbound-host`); sandbox is refused on a production
+  deployment, at save AND at run time. Audited `payment_provider.update|enable|disable|secret_rotate`.
+- **`rival_settings` is mirrored both ways by triggers** until the contract migration, so an older
+  build after a rollback runs on the credentials the console last saved, and the reverse.
+  `/admin/settings/rival` still works (it writes the same row); it goes with the Rival tab.
+- **The event log** (`payment_provider_events`, `PaymentProviderEventsStore.append`): every webhook
+  and poll result in one vocabulary (`payment.succeeded`, `payout.rejected`…) with what was done
+  (applied / ignored / rejected / failed). One row per fact by `UNIQUE(provider_code, event_key)`;
+  only a `failed` row is replaced by its retry. It never throws and never runs inside a money
+  transaction.
+- **Inbound events**: `POST /v1/payments/providers/:code/webhook` dispatches to the provider's
+  `ProviderWebhookReceiver`; Rival keeps `/v1/payments/rival/webhook` (its dashboard holds it).
+
+### Adding a provider (the USDT one is next)
+
+1. An adapter in `providers/<code>.provider.ts`: its channels, config fields, `isUsable()` (switched
+   on, set up, and refusing a sandbox row on a production deployment), `testConnection`,
+   `settingsChanged`, and `startPayment`/`checkPayment` for any `redirect` deposit channel.
+2. Register it in `PaymentsModule` (`PAYMENT_PROVIDER_ADAPTERS`) and in the `ADAPTERS` list of
+   `test/payment-provider-contract.spec.ts`, which it must pass.
+3. A migration seeding its `payment_providers` row (disabled, empty).
+4. Its inbound events: a `ProviderWebhookReceiver` in `PAYMENT_PROVIDER_WEBHOOKS` — verify the raw
+   bytes, refuse replays, record each report with `PaymentProviderEventsStore.append`.
+5. Payouts it automates: its own submit/reconcile service on a `JobLeaseService` lease, as
+   `RivalWithdrawalsService` does. (The provider-neutral reference/attention columns that replace
+   `rival_*` land with the first second provider.)
 
 ## An offline deposit carries the details that identify the payment (0163, 29 Sep 2026)
 

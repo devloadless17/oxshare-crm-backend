@@ -16,7 +16,13 @@ import { TradingModule } from '../trading/trading.module';
 import { IdentityModule } from '../identity/identity.module';
 import { CurrenciesModule } from '../currencies/currencies.module';
 import { AdminAuditService } from '../admin/admin-audit.service';
-import { PaymentGateways } from './payment-gateways.service';
+import { ManualPaymentProvider } from './providers/manual.provider';
+import { RivalPaymentProvider } from './providers/rival.provider';
+import { PaymentProviderRegistry } from './providers/payment-provider-registry';
+import { PAYMENT_PROVIDER_ADAPTERS, PAYMENT_PROVIDER_WEBHOOKS } from './providers/payment-provider';
+import { PaymentProvidersService } from './providers/payment-providers.service';
+import { AdminPaymentProvidersController } from './providers/admin-payment-providers.controller';
+import { PaymentProviderWebhookController } from './providers/payment-provider-webhook.controller';
 import { RivalModule } from './rival/rival.module';
 import { RivalWebhookController } from './rival/rival-webhook.controller';
 import { RivalWebhookService } from './rival/rival-webhook.service';
@@ -61,8 +67,10 @@ import { RivalPollScheduler } from './rival/rival-poll.scheduler';
     PaymentsController,
     PaymentsReturnController,
     RivalWebhookController,
+    PaymentProviderWebhookController,
     AdminPaymentMethodsController,
     AdminWithdrawalMethodsController,
+    AdminPaymentProvidersController,
   ],
   /*
    * `AdminAuditService` is provided here rather than imported from
@@ -91,13 +99,24 @@ import { RivalPollScheduler } from './rival/rival-poll.scheduler';
     // withdrawal confirmation code (D-67).
     AdminAuditService,
     /*
-     * The hosted-gateway seam. `PaymentGateways` is the registry every caller
-     * talks to; behind it sits Rival — Loadless's own payments platform, where
-     * Whish is integrated once. Nothing outside this module names either:
-     * a second rail is a case in one switch, not a change to the deposit flow,
-     * the method list or the webhook route.
+     * EVERY PAYMENT PROVIDER THE BUILD KNOWS (0168). A new provider is one
+     * adapter class added here and to the list below — nothing else names it.
      */
-    PaymentGateways,
+    ManualPaymentProvider,
+    RivalPaymentProvider,
+    {
+      provide: PAYMENT_PROVIDER_ADAPTERS,
+      useFactory: (manual: ManualPaymentProvider, rival: RivalPaymentProvider) => [manual, rival],
+      inject: [ManualPaymentProvider, RivalPaymentProvider],
+    },
+    PaymentProviderRegistry,
+    PaymentProvidersService,
+    // Each provider's inbound events, for the generic webhook route.
+    {
+      provide: PAYMENT_PROVIDER_WEBHOOKS,
+      useFactory: (rival: RivalWebhookService) => [rival],
+      inject: [RivalWebhookService],
+    },
     RivalWebhookService,
     RivalWithdrawalsService,
     RivalPollScheduler,
@@ -119,6 +138,7 @@ import { RivalPollScheduler } from './rival/rival-poll.scheduler';
    * this module, so the arrow runs one way and there is no cycle.
    */
   exports: [
+    PaymentProviderRegistry,
     TransactionsService,
     TransfersService,
     TransferExecutor,

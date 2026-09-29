@@ -11,7 +11,6 @@ import { emailStubAs } from './email-stub';
 import { notificationsStub } from './notifications-stub';
 import { transferExecutorStubAs, transfersStubAs } from './transfer-chain-stub';
 import { gatewayStub } from './gateway-stub';
-import type { PaymentGateways } from '../src/modules/payments/payment-gateways.service';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
 
 /**
@@ -48,14 +47,9 @@ beforeAll(async () => {
   transactions = new TransactionsService(
     wallets,
     ctx.db,
-    new PaymentMethodsService(
-      ctx.db,
-      currencies,
-      auditStubAs(),
-      gateway as unknown as PaymentGateways,
-    ),
+    new PaymentMethodsService(ctx.db, currencies, auditStubAs(), gateway),
     currencies,
-    gateway as unknown as PaymentGateways,
+    gateway,
     new ConfigService(),
     emailStubAs(),
     bell,
@@ -385,7 +379,7 @@ describe('the poller repairs an unconfirmed create', () => {
     await ctx.db.execute(sql`UPDATE transactions SET rival_external_id = NULL WHERE id = ${txId}`);
     gateway.startPayment.mockResolvedValueOnce({
       paymentUrl: 'https://pay.example.test/x',
-      rivalExternalId: externalId,
+      externalId,
     });
 
     expect(await transactions.recoverRivalExternalId(txId)).toBe(true);
@@ -405,7 +399,7 @@ describe('the poller repairs an unconfirmed create', () => {
     // sending a localhost URL would fail the create at Rival (D-68).
     gateway.startPayment.mockResolvedValueOnce({
       paymentUrl: 'https://pay.example.test/x',
-      rivalExternalId: externalId,
+      externalId,
     });
     expect(await transactions.recoverRivalExternalId(txId)).toBe(true);
     let input = gateway.startPayment.mock.calls.at(-1)?.[1] as Record<string, unknown>;
@@ -421,7 +415,7 @@ describe('the poller repairs an unconfirmed create', () => {
       );
       gateway.startPayment.mockResolvedValueOnce({
         paymentUrl: 'https://pay.example.test/x',
-        rivalExternalId: externalId,
+        externalId,
       });
       expect(await transactions.recoverRivalExternalId(txId)).toBe(true);
       input = gateway.startPayment.mock.calls.at(-1)?.[1] as Record<string, unknown>;

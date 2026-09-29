@@ -16,6 +16,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { METHOD_KEY_MESSAGE, METHOD_KEY_PATTERN } from '../method-keys';
+import { METHOD_AVAILABILITIES, type MethodAvailability } from '../providers/provider-status';
 import {
   PROOF_FIELD_ID_PATTERN,
   PROOF_FIELD_LIMITS,
@@ -197,6 +198,24 @@ const OWN_LIMIT_MESSAGE = 'must be an amount, e.g. 100 or 5000000 (up to 8 decim
 
 export class CreatePaymentMethodDto {
   /**
+   * The route — which provider moves the money, on which of its declared
+   * channels (0168). Fixed once the method exists. Omitted, a method is paid
+   * outside the platform and confirmed by the desk (`manual` · `offline`), which
+   * is what every method but Whish has always been.
+   */
+  @ApiPropertyOptional({ example: 'rival', maxLength: 40 })
+  @IsOptional()
+  @IsString()
+  @Length(1, 40)
+  providerCode?: string;
+
+  @ApiPropertyOptional({ example: 'whish', maxLength: 40 })
+  @IsOptional()
+  @IsString()
+  @Length(1, 40)
+  channelCode?: string;
+
+  /**
    * Lower-case, letters, digits and underscores.
    *
    * It ends up in `transactions.provider` as `manual_<key>` and in URLs, so a
@@ -207,7 +226,7 @@ export class CreatePaymentMethodDto {
     maxLength: 40,
     description:
       'The permanent ID. Omit it — the platform generates one (`pm_…`) and the console never ' +
-      'shows it. Given only to create a row the CODE dispatches on (a gateway such as whish).',
+      'shows it.',
   })
   @IsOptional()
   @IsString()
@@ -334,8 +353,8 @@ export class CreatePaymentMethodDto {
 }
 
 /**
- * `key` is absent: it is the primary key, transactions reference it and spell it
- * into `provider`, and code dispatches on it — migration 0161 records why a
+ * `key` is absent: it is the primary key, and transactions reference it and spell
+ * it into `provider` — migration 0161 records why a
  * rename was built, measured and rejected. The desk renames a method through
  * `internalLabel`, which is one row and rewrites no history.
  *
@@ -473,9 +492,15 @@ export class AdminPaymentMethodDto extends PaymentMethodDto {
   })
   internalLabel: string;
 
+  /**
+   * @deprecated Always false since 0168: the code reads a method's route
+   * (provider, channel), never its key, so no method is special. Kept until
+   * every console build has stopped reading it.
+   */
   @ApiProperty({
     description:
-      'The platform’s code depends on this method (a payment gateway), so it cannot be deleted.',
+      'Deprecated: always false. No method is built in since payment providers (0168); ' +
+      'any method no transaction references can be deleted.',
   })
   builtIn: boolean;
 
@@ -484,6 +509,27 @@ export class AdminPaymentMethodDto extends PaymentMethodDto {
       'A transaction references this method. Such a method cannot be deleted — disable it.',
   })
   inUse: boolean;
+
+  @ApiProperty({
+    example: 'rival',
+    description: 'The payment provider the method runs on (0168). Fixed at creation.',
+  })
+  providerCode: string;
+
+  @ApiProperty({
+    example: 'whish',
+    description: 'The provider’s deposit channel the method uses. Fixed at creation.',
+  })
+  channelCode: string;
+
+  @ApiProperty({
+    enum: METHOD_AVAILABILITIES,
+    description:
+      'Whether clients are offered it: `offered`; `disabled` (switched off here); ' +
+      '`provider_off` or `provider_not_configured` (enabled, but its provider cannot take ' +
+      'money, so clients do not see it).',
+  })
+  availability: MethodAvailability;
 }
 
 /** What deleting a never-used payment or withdrawal method answers with. */

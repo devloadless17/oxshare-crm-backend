@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { legacyRoute } from './support/payment-route';
 import 'reflect-metadata';
 import { ALL_PERMISSIONS } from './support/all-permissions';
 import { actingAs, startHttpTestApp, stopHttpTestApp, type HttpTestContext } from './http-setup';
@@ -299,6 +300,7 @@ describe('the withdrawal transitions declare the keys they return', () => {
         currency: 'USD',
         state: 'pending',
         provider: 'manual_test',
+        ...legacyRoute('manual_test', 'withdrawal'),
         destination: `completeness-${tag}`,
       })
       .returning();
@@ -416,6 +418,7 @@ describe('the remaining person-carrying responses declare the keys they return',
         currency: 'USD',
         state: 'pending',
         provider: 'manual_test',
+        ...legacyRoute('manual_test', 'withdrawal'),
         destination: `remaining-${tag}`,
       })
       .returning();

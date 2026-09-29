@@ -108,7 +108,13 @@ describe('creating a payment method', () => {
 
     const listed = await master.get('/v1/admin/payment-methods');
     const row = (listed.body as { key: string }[]).find((m) => m.key === 'e2e_bank');
-    expect(row).toBeDefined();
+    // The route and whether clients see it reach the console (0168): the view
+    // picks fields by name, and these were once declared but never sent.
+    expect(row).toMatchObject({
+      providerCode: 'manual',
+      channelCode: 'offline',
+      availability: 'offered',
+    });
   });
 
   /**
@@ -155,10 +161,9 @@ describe('creating a payment method', () => {
 
   /*
    * DELETE exists again, narrowly (0161): a method NO transaction references.
-   * e2e_bank has none, so it goes; an unknown key is a 404; Whish never goes.
+   * e2e_bank has none, so it goes; an unknown key is a 404.
    */
-  it('deletes a method nobody used, and never the gateway', async () => {
-    expect((await master.del('/v1/admin/payment-methods/whish')).status).toBe(409);
+  it('deletes a method nobody used', async () => {
     expect((await master.del('/v1/admin/payment-methods/e2e_bank')).status).toBe(200);
     expect((await master.del('/v1/admin/payment-methods/e2e_bank')).status).toBe(404);
   });

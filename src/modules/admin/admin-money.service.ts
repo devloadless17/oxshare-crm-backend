@@ -141,29 +141,6 @@ export class AdminMoneyService {
     @Inject(DRIZZLE_DB) private readonly db: Db,
   ) {}
 
-  /*
-   * ── There is no ceiling on a hand credit ─────────────────────────────────
-   *
-   * `assertWithinAdminCeiling` stood here and bounded both paths that mint
-   * balance from nothing, against the currency's `max_admin_credit` (0162).
-   * The column and the check were removed at the owner's request on 29 Sep
-   * 2026: the desk does not work to a per-action ceiling, and a limit that is
-   * raised whenever it binds is a dialog rather than a control.
-   *
-   * What that gives up, recorded so it is a decision and not a regression:
-   * the DTO accepts twenty digits (`money.dto.ts`) and permission checks ask
-   * WHO may credit, never HOW MUCH, so an extra keystroke now reaches the
-   * ledger. That ledger is append-only, so the correction is a compensating
-   * entry a human writes AFTER the client has seen the balance.
-   *
-   * The audit row is what remains: every credit and funding records actor,
-   * amount and reason, so an over-credit is traceable after the fact even
-   * though nothing refuses it as it happens. If a bound is ever wanted back,
-   * it belongs here — in the SERVICE, not the DTO, because a per-currency
-   * policy value in that currency's own units is not something a decorator
-   * can express.
-   */
-
   /**
    * Put money into a client's wallet, by hand.
    *

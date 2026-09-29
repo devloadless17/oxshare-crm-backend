@@ -2,20 +2,9 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { readProofDetails, type ProofDetail } from '../../common/payments/proof-fields';
 import Decimal from 'decimal.js';
 import { randomBytes } from 'crypto';
+import { and, asc, desc, eq, isNull, sql, type SQL, type SQLWrapper, lte } from 'drizzle-orm';
 import {
-  and,
-  asc,
-  desc,
-  eq,
-  gte,
-  isNull,
-  ne,
-  sql,
-  type SQL,
-  type SQLWrapper,
-  lte,
-} from 'drizzle-orm';
-import {
+  paymentProviders,
   tradingAccounts,
   transactionDirectionEnum,
   transactions,
@@ -171,6 +160,13 @@ export interface AdminMovementsFilter {
    * transfer arms carry no flag, so they never match.
    */
   attention?: boolean;
+  /**
+   * Only movements a PERSON decides (0168): deposits on a route the desk
+   * confirms (paid outside the platform) and every withdrawal. What the
+   * deposits desk lists — a deposit on a provider's hosted page is settled by
+   * the provider, and offering Approve on it only earned a refusal.
+   */
+  deskDecided?: boolean;
 }
 
 /**
@@ -186,6 +182,12 @@ interface MovementArm {
   id: SQL;
   /** True for `transactions` — the one table a deposit's evidence lives in. */
   payments: boolean;
+  /**
+   * `(direction, provider_code, channel_code)` on the payments arm (0168): the
+   * route a movement took, for filters that ask who settles it. Null on the arms
+   * that carry no route.
+   */
+  route: SQL | null;
 }
 
 /**
@@ -202,7 +204,7 @@ interface MovementArm {
  *    own rows instead (see `adminMovements`).
  */
 export function movementTotalsSource(filter: AdminMovementsFilter): 'daily' | 'client' | undefined {
-  if (filter.q?.trim() || filter.attention) return undefined;
+  if (filter.q?.trim() || filter.attention || filter.deskDecided) return undefined;
   if (filter.scope.unrestricted && filter.userId === undefined) return 'daily';
   if (!filter.from && !filter.to) return 'client';
   return undefined;
@@ -450,7 +452,6 @@ import type { SortOrder } from '../../common/sorting';
 import { sortKey, sortOrder } from '../../common/sorting';
 import { formatLimit } from '../../common/currency-limits';
 import { PaymentMethodsService } from './payment-methods.service';
-import { wishDestinationIssue } from './rival/wish-phone';
 import { isPayerReachableUrl } from './rival/payer-reachable-url';
 import { Currency, Executor, WalletService } from '../wallet/wallet.service';
 import { CurrenciesService } from '../currencies/currencies.service';
@@ -463,7 +464,14 @@ import {
   NOTIFICATION_DISPATCH,
   type NotificationDispatchPort,
 } from '../../common/provisioning/notification-dispatch.port';
-import { PaymentGateways } from './payment-gateways.service';
+import { depositNamespace, PaymentProviderRegistry } from './providers/payment-provider-registry';
+import {
+  PaymentProviderEventsStore,
+  type ProviderEventOutcome,
+  type ProviderEventSource,
+  type ProviderEventType,
+} from '../../store/payment-provider-events.store';
+import type { PaymentRoute } from './providers/payment-provider';
 import type { DepositAttentionReason } from '../../common/notifications/admin-notification-catalogue';
 import { AuditLogStore } from '../../store/audit-log.store';
 import { SYSTEM_ACTOR } from '../../common/security/actor';
@@ -707,6 +715,13 @@ export interface ApproveWithdrawalOptions {
   awaitsProviderPayout: boolean;
 }
 
+/** Rival's deposit event names, in the provider event log's vocabulary. */
+const RIVAL_DEPOSIT_EVENT_TYPES: Record<'completed' | 'failed' | 'reversed', ProviderEventType> = {
+  completed: 'payment.succeeded',
+  failed: 'payment.failed',
+  reversed: 'payment.reversed',
+};
+
 @Injectable()
 export class TransactionsService {
   private readonly logger = new Logger(TransactionsService.name);
@@ -755,7 +770,7 @@ export class TransactionsService {
      * class is constructed positionally in the test suite, so inserting one in
      * the middle silently shifts the rest.
      */
-    private readonly gateways: PaymentGateways,
+    private readonly providers: PaymentProviderRegistry,
     private readonly config: ConfigService,
     /*
      * The deposit-outcome mail (FR-CORE-07). Appended for the positional-
@@ -791,7 +806,28 @@ export class TransactionsService {
      * in the middle silently shifts every one after it.
      */
     private readonly auditLog: AuditLogStore,
-  ) {}
+  ) {
+    // Built here rather than injected: a store over the same db, and the eleven
+    // positional parameters above are constructed by hand in every money spec.
+    this.providerEvents = new PaymentProviderEventsStore(db);
+  }
+
+  /** What each provider reported and what was done about it (0168). */
+  private readonly providerEvents: PaymentProviderEventsStore;
+
+  /**
+   * The environment a provider runs in right now — recorded on every new
+   * transaction (0168), so a sandbox payment can never pass for real money in
+   * an export or a reconciliation. A provider with no row reads as `live`.
+   */
+  private async environmentOf(providerCode: string, executor: Executor = this.db) {
+    const [row] = await executor
+      .select({ environment: paymentProviders.environment })
+      .from(paymentProviders)
+      .where(eq(paymentProviders.code, providerCode))
+      .limit(1);
+    return row?.environment ?? 'live';
+  }
 
   /**
    * The payout rails on offer — what the portal's method picker renders.
@@ -811,11 +847,25 @@ export class TransactionsService {
         key: withdrawalPaymentMethods.key,
         name: withdrawalPaymentMethods.name,
         logoUrl: withdrawalPaymentMethods.logoUrl,
+        providerCode: withdrawalPaymentMethods.providerCode,
+        channelCode: withdrawalPaymentMethods.channelCode,
       })
       .from(withdrawalPaymentMethods)
       .where(eq(withdrawalPaymentMethods.enabled, true))
       .orderBy(asc(withdrawalPaymentMethods.sortOrder), asc(withdrawalPaymentMethods.name));
-    return rows;
+    // What the client must give, from the method's payout channel (0168) — the
+    // portal renders the field by its kind, never by the method's key.
+    return rows.map(({ providerCode, channelCode, ...method }) => {
+      const destination = this.providers.findChannel(
+        { providerCode, channelCode },
+        'payout',
+      )?.destination;
+      return {
+        ...method,
+        destinationKind: destination?.kind ?? 'text',
+        destinationNetwork: destination?.network ?? null,
+      };
+    });
   }
 
   async requestWithdrawal(params: {
@@ -941,7 +991,17 @@ export class TransactionsService {
      * silent dust. This check is what stops the client meeting that refusal at
      * approval time, hours after they asked.
      */
-    const railScale = this.gateways.settlementScale(method.key);
+    /*
+     * The method's payout channel answers for the rail (0168): the decimals its
+     * provider settles in, and what a destination must look like. Nothing here
+     * names a provider — Whish's phone rule is Rival's channel's own validator.
+     */
+    const payoutRoute: PaymentRoute = {
+      providerCode: method.providerCode,
+      channelCode: method.channelCode,
+    };
+    const payoutChannel = this.providers.channel(payoutRoute, 'payout');
+    const railScale = payoutChannel.settlementScale;
     const payableDecimals = railScale === null ? decimals : Math.min(decimals, railScale);
     if (amount.decimalPlaces() > payableDecimals) {
       /*
@@ -970,10 +1030,16 @@ export class TransactionsService {
      * they can fix it, instead of days later as a failed submission on an
      * approval the admin cannot explain.
      */
-    if (method.key === 'whish') {
-      const issue = wishDestinationIssue(params.destination);
-      if (issue) throw new ValidationError(issue);
+    // What the channel needs from the client (0168): a cash pickup needs
+    // nothing; every other payout needs somewhere to send the money.
+    const destination = params.destination.trim();
+    const destinationKind = payoutChannel.destination?.kind ?? 'text';
+    if (destinationKind !== 'none' && destination === '') {
+      throw new ValidationError('Enter where the money should be sent.');
     }
+    const destinationIssue =
+      destination === '' ? undefined : payoutChannel.destination?.validate?.(destination);
+    if (destinationIssue) throw new ValidationError(destinationIssue);
 
     const db = this.db;
     const [user] = await db.select().from(users).where(eq(users.id, params.userId)).limit(1);
@@ -984,33 +1050,9 @@ export class TransactionsService {
     }
 
     /*
-     * A rolling 24-hour cap, on top of the per-request one.
-     *
-     * A per-request limit alone is trivially defeated by making N requests, so
-     * it caps the paperwork rather than the exposure. Counted over everything
-     * not rejected — a pending withdrawal is money already on its way out.
+     * NO DAILY CAP (owner, 29 Sep 2026): the rolling 24-hour withdrawal limit
+     * was removed; a withdrawal is bounded by the per-request range above.
      */
-    const dayCap = toDecimal(limits.maxWithdrawalDaily);
-    const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    const recent = await db
-      .select({ amount: transactions.amount })
-      .from(transactions)
-      .where(
-        and(
-          eq(transactions.userId, params.userId),
-          eq(transactions.direction, 'withdrawal'),
-          eq(transactions.currency, currency),
-          gte(transactions.createdAt, since),
-          ne(transactions.state, 'rejected'),
-        ),
-      );
-    const already = recent.reduce((sum, row) => sum.plus(toDecimal(row.amount)), toDecimal('0'));
-    if (already.plus(amount).greaterThan(dayCap)) {
-      throw new ValidationError(
-        `This would exceed the ${formatLimit(dayCap)} ${currency} rolling 24-hour ` +
-          `withdrawal limit — ${formatLimit(already)} has already been requested in that window.`,
-      );
-    }
 
     /*
      * DEBIT ON REQUEST, not a hold. Changed from the version this restores.
@@ -1060,7 +1102,11 @@ export class TransactionsService {
              */
             provider: method.key,
             withdrawalMethodKey: method.key,
-            destination: params.destination,
+            // The route it is filed on, recorded once (0168).
+            providerCode: payoutRoute.providerCode,
+            channelCode: payoutRoute.channelCode,
+            providerEnvironment: await this.environmentOf(payoutRoute.providerCode, dbTx),
+            destination: destination === '' ? null : destination,
           })
           .returning();
 
@@ -1273,6 +1319,9 @@ export class TransactionsService {
         rivalSubmittedAt: transactions.rivalSubmittedAt,
         rivalNeedsAttention: transactions.rivalNeedsAttention,
         rivalAttentionReason: transactions.rivalAttentionReason,
+        providerCode: transactions.providerCode,
+        channelCode: transactions.channelCode,
+        providerEnvironment: transactions.providerEnvironment,
         userId: transactions.userId,
         userPortalId: users.id,
         userEmail: users.email,
@@ -1386,12 +1435,24 @@ export class TransactionsService {
       sortKey,
     );
 
+    // Who pays each request NOW (0168): the provider for an automated payout
+    // it can take, the desk otherwise — what the approve dialog tells the desk.
+    const providerStates = await this.providers.states(
+      await this.db.select().from(paymentProviders),
+    );
     const items = paged.items.map((r) => ({
       id: r.id,
       amount: money(r.amount), // money crosses the boundary as a string
       currency: r.currency,
       state: r.state,
       provider: r.provider,
+      providerCode: r.providerCode,
+      channelCode: r.channelCode,
+      providerEnvironment: r.providerEnvironment,
+      paidBy:
+        this.providers.isAutomatedPayout(r) && providerStates.get(r.providerCode)?.usable
+          ? ('provider' as const)
+          : ('desk' as const),
       providerRef: r.providerRef,
       destination: r.destination,
       /*
@@ -1737,7 +1798,7 @@ export class TransactionsService {
            * above warn. This comment had them and broke the parse.
            */
           ON b.id::text = le.reference_id AND le.reference_type = 'accrual_batch'
-        ${armWhere({ owner: sql`w.user_id`, id: sql`le.id`, payments: false })}
+        ${armWhere({ owner: sql`w.user_id`, id: sql`le.id`, payments: false, route: null })}
       `
       : sql``;
 
@@ -1787,7 +1848,12 @@ export class TransactionsService {
           'payment'::text                         AS kind,
           NULL::uuid                              AS trading_account_id
         FROM transactions t
-        ${armWhere({ owner: sql`t.user_id`, id: sql`t.id`, payments: true })}
+        ${armWhere({
+          owner: sql`t.user_id`,
+          id: sql`t.id`,
+          payments: true,
+          route: sql`(t.direction::text, t.provider_code, t.channel_code)`,
+        })}
 
         UNION ALL
 
@@ -1841,7 +1907,7 @@ export class TransactionsService {
           'transfer'::text                        AS kind,
           tr.trading_account_id
         FROM transfers tr
-        ${armWhere({ owner: sql`tr.user_id`, id: sql`tr.id`, payments: false })}
+        ${armWhere({ owner: sql`tr.user_id`, id: sql`tr.id`, payments: false, route: null })}
 
         UNION ALL
 
@@ -1909,7 +1975,7 @@ export class TransactionsService {
           'commission_transfer'::text             AS kind,
           NULL::uuid                              AS trading_account_id
         FROM ib_wallet_transfers iwt
-        ${armWhere({ owner: sql`iwt.user_id`, id: sql`iwt.id`, payments: false })}
+        ${armWhere({ owner: sql`iwt.user_id`, id: sql`iwt.id`, payments: false, route: null })}
 
         ${rebateArm}
       )
@@ -2189,9 +2255,19 @@ export class TransactionsService {
       ? sql`searched AS MATERIALIZED (SELECT users.id FROM users WHERE ${clientIdentitySearch(q)})`
       : undefined;
 
+    const deskRoutes = filter.deskDecided
+      ? sql.join(
+          this.providers
+            .deskDecidedRoutes()
+            .map((r) => sql`(${r.direction}, ${r.providerCode}, ${r.channelCode})`),
+          sql`, `,
+        )
+      : undefined;
     const cte = this.movementsCte(
-      ({ owner, id, payments }) => {
+      ({ owner, id, payments, route }) => {
         const conditions: SQL[] = [];
+        // A person decides it (0168) — only a payment can be one.
+        if (deskRoutes) conditions.push(route ? sql`${route} IN (${deskRoutes})` : sql`FALSE`);
         /*
          * In the ARM's WHERE clause: an out-of-scope movement never enters the
          * union, so it also cannot appear in the counts, the summary or the
@@ -3024,7 +3100,19 @@ export class TransactionsService {
      * as manual here would file a bank-transfer declaration against a provider
      * with no bank account.
      */
-    const isGateway = this.gateways.isImplemented(paymentMethod.key);
+    /*
+     * The method's ROUTE decides the flow (0168) — not its key. A deposit on a
+     * `redirect` channel opens the provider's hosted page and settles from the
+     * provider; anything else is paid outside and confirmed by the desk.
+     */
+    const route: PaymentRoute = {
+      providerCode: paymentMethod.providerCode,
+      channelCode: paymentMethod.channelCode,
+    };
+    const depositChannel = this.providers.channel(route, 'deposit');
+    const isGateway = depositChannel.flow === 'redirect';
+    // `provider`, the idempotency namespace of UNIQUE(provider, provider_ref).
+    const namespace = depositNamespace(route, paymentMethod.key);
 
     /*
      * ── OFFLINE METHODS: the receipt is not optional ────────────────────────
@@ -3094,7 +3182,7 @@ export class TransactionsService {
      * A MANUAL method has no rail and is bounded by the currency alone — an
      * operator reconciling a bank statement can handle whatever it expresses.
      */
-    const railScale = this.gateways.settlementScale(paymentMethod.key);
+    const railScale = depositChannel.settlementScale;
     const payableDecimals = railScale === null ? decimals : Math.min(decimals, railScale);
     if (amount.decimalPlaces() > payableDecimals) {
       /*
@@ -3192,13 +3280,17 @@ export class TransactionsService {
          */
         methodKey: paymentMethod.key,
         /*
-         * A GATEWAY row carries the bare provider key; a manual declaration
-         * keeps its `manual_` prefix. The comment above records why: the two
-         * eras must stay tellable apart in a reconciliation, and
-         * UNIQUE(provider, provider_ref) is scoped on this column.
+         * The idempotency namespace — `whish` for Rival's Whish, `manual_<key>`
+         * for a deposit paid outside, as before 0168 (see `depositNamespace`).
+         * UNIQUE(provider, provider_ref) is scoped on this column; nothing
+         * routes on it any more.
          */
-        provider: isGateway ? paymentMethod.key : `manual_${paymentMethod.key}`,
+        provider: namespace,
         providerRef: reference,
+        // The route it is filed on, recorded once (0168).
+        providerCode: route.providerCode,
+        channelCode: route.channelCode,
+        providerEnvironment: await this.environmentOf(route.providerCode),
         // The receipt, or null on every method that does not ask for one.
         proofFilename: params.proofFilename ?? null,
         // Each answer with its label AS ASKED; immutable from here (0163 trigger).
@@ -3249,7 +3341,7 @@ export class TransactionsService {
     let paymentUrl: string | null = null;
     if (isGateway) {
       try {
-        const started = await this.gateways.startPayment(paymentMethod.key, {
+        const started = await this.providers.startPayment(route, {
           amount: money(params.amount),
           currency,
           invoice: `Deposit ${reference}`,
@@ -3260,8 +3352,11 @@ export class TransactionsService {
            * webhook and the poll backstop, never through an anonymous GET.
            */
           idempotencyKey: reference,
-          successRedirectUrl: this.payerRedirectUrl(paymentMethod.key, reference, 'success'),
-          failureRedirectUrl: this.payerRedirectUrl(paymentMethod.key, reference, 'failure'),
+          // The return link names the NAMESPACE the status and settle routes
+          // match on — not the method key, which differs for any method but
+          // the original `whish`.
+          successRedirectUrl: this.payerRedirectUrl(namespace, reference, 'success'),
+          failureRedirectUrl: this.payerRedirectUrl(namespace, reference, 'failure'),
         });
         paymentUrl = started.paymentUrl;
         /*
@@ -3272,7 +3367,7 @@ export class TransactionsService {
          */
         await this.db
           .update(transactions)
-          .set({ rivalExternalId: started.rivalExternalId })
+          .set({ rivalExternalId: started.externalId })
           .where(eq(transactions.id, tx.id));
       } catch (error) {
         if (error instanceof PaymentIndeterminateError) {
@@ -3470,17 +3565,42 @@ export class TransactionsService {
    * a GET is allowed to be.
    */
   async gatewayDepositState(
-    method: string,
+    method: string | undefined,
     reference: string,
     ownerId: number,
   ): Promise<{ state: string }> {
-    const [tx] = await this.db
-      .select({ state: transactions.state, userId: transactions.userId })
-      .from(transactions)
-      .where(and(eq(transactions.provider, method), eq(transactions.providerRef, reference)))
-      .limit(1);
+    const tx = await this.findDepositByReference(method, reference, ownerId);
     if (!tx || tx.userId !== ownerId) throw new NotFoundError('No deposit matches that reference.');
     return { state: tx.state };
+  }
+
+  /**
+   * A deposit by the reference its payer holds. With the namespace (`?method=`,
+   * what the return link carries) it is the exact UNIQUE(provider, provider_ref)
+   * row; without one (a link from before 0168, or trimmed by a browser) the
+   * reference and its OWNER find it — never a guessed provider, which is what
+   * the old `whish` fallback was.
+   */
+  private async findDepositByReference(
+    method: string | undefined,
+    reference: string,
+    ownerId: number | undefined,
+  ) {
+    const [tx] = await this.db
+      .select()
+      .from(transactions)
+      .where(
+        method
+          ? and(eq(transactions.provider, method), eq(transactions.providerRef, reference))
+          : and(
+              eq(transactions.providerRef, reference),
+              eq(transactions.direction, 'deposit'),
+              ownerId !== undefined ? eq(transactions.userId, ownerId) : undefined,
+            ),
+      )
+      .orderBy(desc(transactions.createdAt))
+      .limit(1);
+    return tx ?? null;
   }
 
   /**
@@ -3533,7 +3653,11 @@ export class TransactionsService {
      * method, and UNIQUE(provider, provider_ref) is scoped on that column, so it
      * is the reliable marker rather than a guess from the method key.
      */
-    if (!tx.provider.startsWith('manual_')) {
+    // Only a deposit paid OUTSIDE the platform is the desk's to decide (0168);
+    // a hosted one settles from its provider.
+    if (
+      !this.providers.isDeskDecided({ providerCode: tx.providerCode, channelCode: tx.channelCode })
+    ) {
       throw new MoneyRuleError(
         'That deposit settles from the payment provider, not by hand. Nothing was credited.',
       );
@@ -3642,7 +3766,11 @@ export class TransactionsService {
     if (tx.direction !== 'deposit') {
       throw new ValidationError('That transaction is not a deposit.');
     }
-    if (!tx.provider.startsWith('manual_')) {
+    // Only a deposit paid OUTSIDE the platform is the desk's to decide (0168);
+    // a hosted one settles from its provider.
+    if (
+      !this.providers.isDeskDecided({ providerCode: tx.providerCode, channelCode: tx.channelCode })
+    ) {
       throw new MoneyRuleError(
         'That deposit settles from the payment provider, so it cannot be rejected by hand.',
       );
@@ -3693,21 +3821,20 @@ export class TransactionsService {
   }
 
   async settleGatewayDeposit(
-    method: string,
+    method: string | undefined,
     reference: string,
     /**
      * The client asking, when one is. The provider callback and the poller
      * pass nothing; the portal's own call MUST, or the route is an oracle for
      * — and a way to drive the settlement of — anybody else's payment. A
      * mismatch is a 404, never a 403: the difference is an existence oracle.
+     *
+     * `source` is who asked, for the provider event log: the webhook, or a
+     * poll (the poller, or the client's own status check).
      */
-    opts: { ownerId?: number } = {},
+    opts: { ownerId?: number; source?: ProviderEventSource } = {},
   ): Promise<{ state: string }> {
-    const [tx] = await this.db
-      .select()
-      .from(transactions)
-      .where(and(eq(transactions.provider, method), eq(transactions.providerRef, reference)))
-      .limit(1);
+    const tx = await this.findDepositByReference(method, reference, opts.ownerId);
 
     // Not found is not an error worth shouting about: a status poll for a
     // reference this system never issued is noise, not an incident.
@@ -3727,7 +3854,10 @@ export class TransactionsService {
      */
     if (!tx.rivalExternalId) return { state: tx.state };
 
-    const result = await this.gateways.checkPayment(method, tx.rivalExternalId);
+    // Asked of the route the deposit was FILED on (0168), never of the query's word.
+    const route: PaymentRoute = { providerCode: tx.providerCode, channelCode: tx.channelCode };
+    if (!this.providers.isRedirect(route)) return { state: tx.state };
+    const result = await this.providers.checkPayment(route, tx.rivalExternalId);
 
     if (!result.settled) {
       /*
@@ -3747,6 +3877,15 @@ export class TransactionsService {
         .where(and(eq(transactions.id, tx.id), eq(transactions.state, 'pending')))
         .returning();
       if (updated[0]?.state === 'failure') {
+        await this.providerEvents.append({
+          providerCode: tx.providerCode,
+          eventType: 'payment.failed',
+          subjectId: tx.rivalExternalId,
+          providerType: result.rawStatus,
+          source: opts.source ?? 'poll',
+          transactionId: tx.id,
+          outcome: 'applied',
+        });
         // FR-CORE-13: the client is told the outcome. Post-write and deduped —
         // a replayed callback that lost the conditional UPDATE race lands here
         // with zero rows and says nothing.
@@ -3813,6 +3952,16 @@ export class TransactionsService {
         },
       );
       this.announceDepositAttention(tx, 'amount_mismatch');
+      await this.providerEvents.append({
+        providerCode: tx.providerCode,
+        eventType: 'payment.succeeded',
+        subjectId: tx.rivalExternalId,
+        providerType: result.rawStatus,
+        source: opts.source ?? 'poll',
+        transactionId: tx.id,
+        outcome: 'rejected',
+        reason: `Reported ${claimed} ${result.currency ?? tx.currency}, created for ${tx.amount} ${tx.currency}; nothing credited.`,
+      });
       return { state: tx.state };
     }
 
@@ -3918,6 +4067,15 @@ export class TransactionsService {
      * "Deposit Confirmed" for the same money.
      */
     if (transitioned) {
+      await this.providerEvents.append({
+        providerCode: tx.providerCode,
+        eventType: 'payment.succeeded',
+        subjectId: tx.rivalExternalId,
+        providerType: result.rawStatus,
+        source: opts.source ?? 'poll',
+        transactionId: tx.id,
+        outcome: 'applied',
+      });
       void this.sendDepositOutcomeEmail(tx.userId, 'succeeded', tx.amount, tx.currency);
 
       /*
@@ -3963,10 +4121,11 @@ export class TransactionsService {
       .where(eq(transactions.id, txId))
       .limit(1);
     if (!tx || tx.state !== 'pending' || tx.rivalExternalId || !tx.providerRef) return false;
-    if (tx.direction !== 'deposit' || !this.gateways.isImplemented(tx.provider)) return false;
+    const route: PaymentRoute = { providerCode: tx.providerCode, channelCode: tx.channelCode };
+    if (tx.direction !== 'deposit' || !this.providers.isRedirect(route)) return false;
 
     try {
-      const started = await this.gateways.startPayment(tx.provider, {
+      const started = await this.providers.startPayment(route, {
         amount: tx.amount,
         currency: tx.currency,
         invoice: `Deposit ${tx.providerRef}`,
@@ -3976,7 +4135,7 @@ export class TransactionsService {
       });
       await this.db
         .update(transactions)
-        .set({ rivalExternalId: started.rivalExternalId })
+        .set({ rivalExternalId: started.externalId })
         .where(and(eq(transactions.id, tx.id), isNull(transactions.rivalExternalId)));
       return true;
     } catch (error) {
@@ -4024,6 +4183,7 @@ export class TransactionsService {
   async applyRivalDepositEvent(
     rivalExternalId: string,
     event: 'completed' | 'failed' | 'reversed',
+    source: ProviderEventSource = 'webhook',
   ): Promise<
     'applied' | 'duplicate' | 'stale' | 'pending' | 'needs-attention' | 'unknown-reference'
   > {
@@ -4032,11 +4192,28 @@ export class TransactionsService {
       .from(transactions)
       .where(eq(transactions.rivalExternalId, rivalExternalId))
       .limit(1);
+    // The event log's row for this report. A deposit that settles or fails is
+    // recorded by `settleGatewayDeposit` itself, with what Rival's stored state
+    // actually said; these are the reports it never reaches.
+    const logged = (outcome: ProviderEventOutcome, reason: string) =>
+      this.providerEvents.append({
+        providerCode: 'rival',
+        eventType: RIVAL_DEPOSIT_EVENT_TYPES[event],
+        subjectId: rivalExternalId,
+        providerType: `transaction.${event}`,
+        source,
+        transactionId: tx?.id ?? null,
+        outcome,
+        reason,
+      });
 
     // The create/webhook race: Rival's first delivery can outrun the UPDATE
     // that stores the externalId. Answered as retryable — Rival's 60-second
     // backoff comfortably outruns the race, and the poller sits behind it.
-    if (!tx) return 'unknown-reference';
+    if (!tx) {
+      await logged('failed', 'No deposit carries this Rival payment yet; Rival retries.');
+      return 'unknown-reference';
+    }
 
     if (event === 'reversed') {
       await this.db
@@ -4058,12 +4235,17 @@ export class TransactionsService {
         { transactionId: tx.id, rivalExternalId, state: tx.state },
       );
       this.announceDepositAttention(tx, 'reversed');
+      await logged('rejected', 'Reversed after it settled; nothing is debited without a person.');
       return 'needs-attention';
     }
 
     if (tx.state === 'pending') {
-      const { state } = await this.settleGatewayDeposit(tx.provider, tx.providerRef ?? '');
-      return state === 'pending' ? 'pending' : 'applied';
+      const { state } = await this.settleGatewayDeposit(tx.provider, tx.providerRef ?? '', {
+        source,
+      });
+      if (state !== 'pending') return 'applied';
+      await logged('failed', 'Rival still reports the payment pending; checked again later.');
+      return 'pending';
     }
 
     if (event === 'completed') {
@@ -4093,11 +4275,13 @@ export class TransactionsService {
         { transactionId: tx.id, rivalExternalId, state: tx.state },
       );
       this.announceDepositAttention(tx, 'paid_after_failure');
+      await logged('rejected', 'Reported paid after it was recorded as failed; a person decides.');
       return 'needs-attention';
     }
 
     // A `failed` event against a terminal row: at-least-once delivery echoing
     // history. Never regress a terminal state.
+    await logged('ignored', `Already ${tx.state}; a terminal deposit never moves back.`);
     return 'stale';
   }
 
@@ -4182,6 +4366,10 @@ export class TransactionsService {
         state: 'success',
         provider: params.provider,
         providerRef: params.providerRef,
+        // The desk's own credit: Manual's `adjustment`, never a client's method (0168).
+        providerCode: 'manual',
+        channelCode: 'adjustment',
+        providerEnvironment: 'live',
         settledAt: new Date(),
       })
       .onConflictDoNothing({ target: [transactions.provider, transactions.providerRef] })

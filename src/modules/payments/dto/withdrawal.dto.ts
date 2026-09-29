@@ -2,7 +2,7 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { ProofDetailDto } from './deposit.dto';
 import { NoClientFields } from '../../../common/security/client-field.decorator';
 import { transactionStateEnum } from '../../../database/schema';
-import { IsNotEmpty, IsNumberString, IsString } from 'class-validator';
+import { IsNotEmpty, IsNumberString, IsOptional, IsString, MaxLength } from 'class-validator';
 
 // Request + response DTOs for the client-facing payments surface.
 // Moved out of payments.controller.ts so the shapes reach /api/docs-json and the
@@ -73,6 +73,22 @@ export class WithdrawalMethodDto {
    */
   @ApiPropertyOptional({ type: String, nullable: true })
   logoUrl?: string | null;
+
+  /**
+   * What the client must give for the money to reach them, from the method's
+   * payout channel (0168): the portal renders exactly this field — a phone for
+   * Whish, an address for a crypto rail, nothing for cash.
+   */
+  @ApiProperty({ enum: ['none', 'phone', 'crypto_address', 'iban', 'text'], example: 'phone' })
+  destinationKind: 'none' | 'phone' | 'crypto_address' | 'iban' | 'text';
+
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    example: 'TRC20',
+    description: 'A crypto rail’s network: an address is valid on one only.',
+  })
+  destinationNetwork: string | null;
 }
 
 /*
@@ -108,10 +124,16 @@ export class RequestWithdrawalDto {
   @IsString()
   currency: string;
 
-  @ApiProperty({ description: DESTINATION_DESCRIPTION })
+  /**
+   * Required unless the method's payout channel asks for nothing (cash
+   * collected in person, backend 0168) — judged by the server against the
+   * method, since only the method knows.
+   */
+  @ApiPropertyOptional({ description: DESTINATION_DESCRIPTION })
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  destination: string;
+  @MaxLength(500)
+  destination?: string;
 
   @ApiProperty({ description: METHOD_KEY_DESCRIPTION, example: 'whish' })
   @IsString()

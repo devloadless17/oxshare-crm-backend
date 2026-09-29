@@ -46,16 +46,19 @@ describe('PaymentsReturnController', () => {
     );
   });
 
-  it('refuses a method that could smuggle a URL and falls back to whish', () => {
+  it('drops a method that could smuggle a URL', () => {
     controller.bounce('OX-846SMQ', 'failure', '//attacker.com/x', res);
-    expect(redirected.url).toBe(
-      'https://portal.oxshare.com/deposit/failure?reference=OX-846SMQ&method=whish',
-    );
+    expect(redirected.url).toBe('https://portal.oxshare.com/deposit/failure?reference=OX-846SMQ');
   });
 
-  it('defaults method to whish when absent (the historical single-gateway case)', () => {
+  /*
+   * No `whish` default any more (0168): a deposit is found by its reference and
+   * its owner alone, so a missing method is simply not passed on — guessing one
+   * would send a second provider's payer to look for a Rival deposit.
+   */
+  it('passes no method when none came back', () => {
     controller.bounce('OX-846SMQ', 'success', undefined, res);
-    expect(redirected.url).toContain('method=whish');
+    expect(redirected.url).toBe('https://portal.oxshare.com/deposit/success?reference=OX-846SMQ');
   });
 
   it('never 301s — the portal address is config, not something to cache into browsers', () => {

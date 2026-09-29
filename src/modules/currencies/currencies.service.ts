@@ -291,7 +291,7 @@ export class CurrenciesService {
       ...pickLimits(row),
     });
 
-    return row;
+    return publicCurrency(row);
   }
 
   async update(code: string, dto: UpdateCurrencyDto, actor: Actor) {
@@ -380,7 +380,7 @@ export class CurrenciesService {
         changed[field] = { before: current[field], after: row[field] };
     }
     this.audit.record(actor.id, 'currency.update', 'currency', normalised, { changed });
-    return row;
+    return publicCurrency(row);
   }
 
   /**
@@ -488,13 +488,12 @@ function isForeignKeyViolation(error: unknown): boolean {
   return (wrapped?.cause?.code ?? wrapped?.code) === '23503';
 }
 
-/** The five limit columns, selected under their DTO names. */
+/** The four limit columns, selected under their DTO names. */
 const LIMIT_COLUMNS = {
   minDeposit: currencies.minDeposit,
   maxDeposit: currencies.maxDeposit,
   minWithdrawal: currencies.minWithdrawal,
   maxWithdrawal: currencies.maxWithdrawal,
-  maxWithdrawalDaily: currencies.maxWithdrawalDaily,
 };
 
 /** The limits a write carries — only the ones it names. */
@@ -514,4 +513,15 @@ function assertLimits(limits: Partial<CurrencyLimits>): void {
   if (Object.keys(problems).length > 0) {
     throw new FieldValidationError(Object.values(problems)[0], problems);
   }
+}
+
+/**
+ * A currency row without its DEAD column (0169) — the daily withdrawal cap is
+ * gone, and `CurrencyDto` does not name it.
+ */
+function publicCurrency<T extends { maxWithdrawalDaily?: unknown }>(
+  row: T,
+): Omit<T, 'maxWithdrawalDaily'> {
+  const { maxWithdrawalDaily: _daily, ...rest } = row;
+  return rest;
 }

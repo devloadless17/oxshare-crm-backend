@@ -1,4 +1,5 @@
 import { ALL_PERMISSIONS } from './support/all-permissions';
+import { legacyRoute } from './support/payment-route';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { actingAs, startHttpTestApp, stopHttpTestApp, type HttpTestContext } from './http-setup';
 import { PasswordService } from '../src/common/security/password.service';
@@ -75,6 +76,7 @@ async function seedSubmitted(state: 'success' | 'failure' | 'pending') {
       currency: 'USD',
       state,
       provider: 'whish',
+      ...legacyRoute('whish', 'withdrawal'),
       destination: '+96170123456',
       // The row IS at Rival — without this `cancelApproved` returns early and
       // the test would pass for the wrong reason.

@@ -91,6 +91,7 @@ export const NON_CLIENT_SUBJECT_TYPES = [
   'kyc_queue',
   'leverages',
   'payment_method',
+  'payment_provider',
   'platform_link',
   'rejection_reason',
   'role',

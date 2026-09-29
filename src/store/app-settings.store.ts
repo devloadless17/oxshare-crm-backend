@@ -1,8 +1,9 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { and, eq, isNull, or, sql } from 'drizzle-orm';
+import { PaymentProvidersStore } from './payment-providers.store';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db } from '../database/db';
-import { rivalSettings, scheduledJobs, smtpSettings, tradingSettings } from '../database/schema';
+import { scheduledJobs, smtpSettings, tradingSettings } from '../database/schema';
 
 /**
  * The singleton settings rows — `smtp_settings`, `trading_settings` and
@@ -135,6 +136,8 @@ export interface RivalSettingsRow {
   webhookKeyCiphertext: string | null;
   webhookKeyFingerprint: string | null;
   enabled: boolean;
+  /** `live` or `sandbox` (0168); absent on a row written before providers existed. */
+  environment?: string;
   lastEventAt: Date | null;
   updatedBy: string | null;
   updatedAt: Date;
@@ -155,7 +158,16 @@ export interface RivalSettingsWrite {
 
 @Injectable()
 export class AppSettingsStore {
-  constructor(@Inject(DRIZZLE_DB) private readonly db: Db) {}
+  /**
+   * Rival's configuration lives with every other provider's since 0168. Built
+   * here rather than injected: the store is stateless, and every spec that
+   * constructs this one with a database keeps working.
+   */
+  private readonly providers: PaymentProvidersStore;
+
+  constructor(@Inject(DRIZZLE_DB) private readonly db: Db) {
+    this.providers = new PaymentProvidersStore(db);
+  }
 
   async getSmtp(): Promise<SmtpSettingsRow | null> {
     const [row] = await this.db.select().from(smtpSettings).limit(1);
@@ -222,58 +234,71 @@ export class AppSettingsStore {
     return row;
   }
 
+  /**
+   * Rival's row, as it read before 0168 — now kept in `payment_providers`.
+   *
+   * A row nobody ever saved (no URL, no key, no webhook key, no editor) reads as
+   * NO row, exactly as before: the environment then decides, which is how an
+   * env-configured deployment keeps working after the migration seeded an empty
+   * `rival` provider.
+   */
   async getRival(): Promise<RivalSettingsRow | null> {
-    const [row] = await this.db.select().from(rivalSettings).limit(1);
-    return row ?? null;
+    const row = await this.providers.get('rival');
+    if (!row) return null;
+    const baseUrl = row.config['baseUrl'] ?? null;
+    const apiKeyCiphertext = row.secrets['apiKey'] ?? null;
+    const webhookKeyCiphertext = row.secrets['webhookKey'] ?? null;
+    if (!baseUrl && !apiKeyCiphertext && !webhookKeyCiphertext && row.updatedBy === null) {
+      return null;
+    }
+    return {
+      baseUrl,
+      apiKeyCiphertext,
+      webhookKeyCiphertext,
+      webhookKeyFingerprint: row.config['webhookKeyFingerprint'] ?? null,
+      enabled: row.enabled,
+      environment: row.environment,
+      lastEventAt: row.lastEventAt,
+      updatedBy: row.updatedBy,
+      updatedAt: row.updatedAt,
+    };
   }
 
   /**
-   * Upsert the single Rival row. Each ciphertext follows the SMTP password's
-   * contract: `undefined` leaves the stored value alone, `null` removes it, a
-   * string replaces it. The webhook key and its fingerprint always travel
-   * together — a fingerprint describing a key that was just replaced would
-   * send an operator chasing a mismatch that does not exist.
+   * Save Rival's row. Each ciphertext keeps the three-state contract:
+   * `undefined` leaves it, `null` removes it, a string replaces it. The webhook
+   * key and its fingerprint always travel together — a fingerprint describing a
+   * key that was just replaced would send an operator chasing a mismatch that
+   * does not exist. Stored in `payment_providers` (0168), mirrored to
+   * `rival_settings` for an older build.
    */
   async setRival(values: RivalSettingsWrite, updatedBy: string): Promise<RivalSettingsRow> {
-    const { apiKeyCiphertext, webhookKeyCiphertext, webhookKeyFingerprint, ...rest } = values;
-    const touchesApiKey = apiKeyCiphertext !== undefined;
-    const touchesWebhookKey = webhookKeyCiphertext !== undefined;
-
-    const [row] = await this.db
-      .insert(rivalSettings)
-      .values({
-        ...rest,
-        id: true,
-        apiKeyCiphertext: apiKeyCiphertext ?? null,
-        webhookKeyCiphertext: webhookKeyCiphertext ?? null,
-        webhookKeyFingerprint: webhookKeyFingerprint ?? null,
-        updatedBy,
-        updatedAt: new Date(),
-      })
-      .onConflictDoUpdate({
-        target: rivalSettings.id,
-        set: {
-          ...rest,
-          ...(touchesApiKey ? { apiKeyCiphertext } : {}),
-          ...(touchesWebhookKey ? { webhookKeyCiphertext, webhookKeyFingerprint } : {}),
-          updatedBy,
-          updatedAt: new Date(),
+    const touchesWebhookKey = values.webhookKeyCiphertext !== undefined;
+    await this.providers.update(
+      'rival',
+      {
+        enabled: values.enabled,
+        config: {
+          baseUrl: values.baseUrl,
+          ...(touchesWebhookKey
+            ? { webhookKeyFingerprint: values.webhookKeyFingerprint ?? null }
+            : {}),
         },
-      })
-      .returning();
+        secrets: {
+          ...(values.apiKeyCiphertext !== undefined ? { apiKey: values.apiKeyCiphertext } : {}),
+          ...(touchesWebhookKey ? { webhookKey: values.webhookKeyCiphertext ?? null } : {}),
+        },
+      },
+      updatedBy,
+    );
+    const row = await this.getRival();
+    if (!row) throw new Error('Rival settings were saved but cannot be read back.');
     return row;
   }
 
-  /**
-   * Bump the liveness stamp on a verified inbound event.
-   *
-   * A bare UPDATE, not an upsert: an event verified against a stored webhook
-   * key proves the row exists. `sql\`now()\`` rather than `new Date()` so the
-   * stamp is the database's clock — the same clock `updated_at` defaults use —
-   * and two app instances cannot disagree about which event was "latest".
-   */
+  /** The liveness stamp on a verified inbound event — see `PaymentProvidersStore`. */
   async touchRivalLastEvent(): Promise<void> {
-    await this.db.update(rivalSettings).set({ lastEventAt: sql`now()` });
+    await this.providers.touchLastEvent('rival');
   }
   // ── Scheduled jobs (0167) — see `scheduled_jobs` in schema.ts ────────────
 

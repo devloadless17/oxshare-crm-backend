@@ -111,6 +111,30 @@ beforeEach(async () => {
 });
 
 describe('requesting a withdrawal', () => {
+  /*
+   * What the client must give comes from the method's payout channel (0168):
+   * a cash pickup needs nothing, every other payout needs a destination.
+   */
+  it('needs a destination unless the method is a cash pickup', async () => {
+    const userId = await makeFundedClient('withdraw-destination@test.local');
+    await ctx.db.execute(sql`
+      INSERT INTO withdrawal_payment_methods (key, name, internal_label, enabled, provider_code, channel_code)
+      VALUES ('desk_bank', 'Bank', 'Bank (desk)', true, 'manual', 'desk'),
+             ('cash_pickup', 'Cash', 'Cash pickup', true, 'manual', 'cash')
+      ON CONFLICT (key) DO NOTHING`);
+    const ask = (methodKey: string) =>
+      transactions.requestWithdrawal({
+        userId,
+        currency: 'USD',
+        amount: '10',
+        destination: '  ',
+        methodKey,
+      });
+    await expect(ask('desk_bank')).rejects.toThrow(/where the money should be sent/);
+    const cash = await ask('cash_pickup');
+    expect(cash.destination).toBeNull();
+  });
+
   it('debits the balance immediately', async () => {
     const userId = await makeFundedClient('debit@test.local');
 
@@ -463,28 +487,11 @@ describe('limits', () => {
     await expect(request(userId, '50.10000000')).resolves.toBeDefined();
   });
 
-  it('caps a rolling 24 hours, not just one request', async () => {
+  it('has no rolling-day cap (owner, 29 Sep 2026) — each request is held to the range only', async () => {
     const userId = await makeFundedClient('daycap@test.local', '250000');
-
-    /*
-     * A per-request limit alone is trivially defeated by making N requests, so
-     * it caps the paperwork rather than the exposure. Counted over everything
-     * not rejected — a pending withdrawal is money already on its way out.
-     */
     await request(userId, '50000');
     await request(userId, '50000');
-    await expect(request(userId, '50000')).rejects.toThrow(/24-hour/i);
-  });
-
-  it('does not count a REJECTED withdrawal against the daily cap', async () => {
-    const userId = await makeFundedClient('rejected-cap@test.local', '250000');
-    const first = await request(userId, '50000');
-    await transactions.reject(first.id, ADMIN, 'Not this one');
-
-    // It never left, so it should not consume the client's allowance.
-    await request(userId, '50000');
-    await request(userId, '50000');
-    await expect(request(userId, '10')).rejects.toThrow(/24-hour/i);
+    await expect(request(userId, '50000')).resolves.toBeDefined();
   });
 });
 

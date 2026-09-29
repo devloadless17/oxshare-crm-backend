@@ -1,57 +1,37 @@
 import { vi } from 'vitest';
-import type { PaymentGateways } from '../src/modules/payments/payment-gateways.service';
+import { PaymentProviderRegistry } from '../src/modules/payments/providers/payment-provider-registry';
+import { ManualPaymentProvider } from '../src/modules/payments/providers/manual.provider';
+import { RivalPaymentProvider } from '../src/modules/payments/providers/rival.provider';
+import type { RivalClient } from '../src/modules/payments/rival/rival.client';
+import type { RivalConfigService } from '../src/modules/payments/rival/rival-config.service';
 
 /**
- * A stand-in for `PaymentGateways`, for the unit suites.
+ * The payment provider registry the money specs run against (0168).
  *
- * Those suites construct `PaymentMethodsService` and `TransactionsService`
- * directly against a real database rather than through Nest, so they have to
- * supply the registry themselves — the same reason `audit-stub.ts` and
- * `commission-stub.ts` exist beside it.
+ * The REAL registry with the REAL adapters' channel declarations — so a spec
+ * exercises the same route logic production does: which channel is a hosted
+ * page, what a payout destination must look like, the settlement scale. Only
+ * the three calls that would reach a provider over the network are mocks:
  *
- * A stub rather than the real thing because those files test MANUAL deposit and
- * withdrawal rules, and the real registry would reach for a Rival connection
- * that no test environment has. `isConfigured` therefore answers FALSE, which
- * is the honest answer for a deployment with no platform key — and it keeps
- * every manual method in those fixtures behaving exactly as before, since the
- * kind-aware check only consults this for gateway rows.
- *
- * The gateway path itself is covered in `rival-deposit-flow.spec.ts` against a
- * stubbed RivalClient, which is the only form of that test not requiring a
- * live platform.
+ *   rivalUsable   — is Rival configured and on? NOT unless a spec says so
+ *                   (`rivalUsable.mockResolvedValue(true)`), as on a deployment
+ *                   with no Rival credentials. Manual — the desk — is always
+ *                   usable, answered by the real adapter.
+ *   startPayment  — a hosted payment opened: `{ paymentUrl, externalId }`.
+ *   checkPayment  — what the provider says it is now.
  */
 export function gatewayStub() {
-  return {
-    /*
-     * `isImplemented` answers TRUE for whish and `isConfigured` answers FALSE —
-     * the same split the real registry makes, and the reason both exist.
-     *
-     * Implemented is a fact about the BUILD: the whish key routes through
-     * Rival, so a method with that key behaves as a `gateway` and must not
-     * fall back to manual. Configured is a fact about the CONFIGURATION: no
-     * test environment holds a Rival key, so it is correctly not offered.
-     *
-     * Collapsing the two here would hide exactly the bug the pair prevents — a
-     * gateway silently serving bank-transfer instructions for a provider that
-     * has no bank account.
-     */
-    isImplemented: vi.fn((key: string) => key === 'whish'),
-    /*
-     * The rail's settlement scale, mirroring the real registry — 2 for whish,
-     * null for anything settled by a human.
-     *
-     * Not stubbed to a constant: the withdrawal door validates against the
-     * SMALLER of this and the currency's own decimals, so a stub that always
-     * answered null would quietly stop testing that half of the rule, and a
-     * stub that always answered 2 would apply a rail's limit to manual methods
-     * that have none.
-     */
-    settlementScale: vi.fn((key: string) => (key === 'whish' ? 2 : null)),
-    // Async, like the real registry: the answer now lives in rival_settings.
-    isConfigured: vi.fn().mockResolvedValue(false),
+  const rivalUsable = vi.fn().mockResolvedValue(false);
+  const rival = new RivalPaymentProvider(
+    {} as RivalClient,
+    { isEnabled: rivalUsable } as unknown as RivalConfigService,
+  );
+  const registry = new PaymentProviderRegistry([new ManualPaymentProvider(), rival]);
+  return Object.assign(registry, {
+    rivalUsable,
     startPayment: vi.fn().mockResolvedValue({
       paymentUrl: 'https://example.test/pay/stub',
-      rivalExternalId: '424242',
+      externalId: '424242',
     }),
     checkPayment: vi.fn().mockResolvedValue({
       settled: false,
@@ -59,10 +39,9 @@ export function gatewayStub() {
       rawStatus: 'PENDING',
       needsAttention: false,
     }),
-  };
+  });
 }
 
-/** The stub, typed as the thing the constructors ask for. */
-export function gatewayStubAs(): PaymentGateways {
-  return gatewayStub() as unknown as PaymentGateways;
+export function gatewayStubAs(): PaymentProviderRegistry {
+  return gatewayStub();
 }

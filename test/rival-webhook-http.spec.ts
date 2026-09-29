@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { legacyRoute } from './support/payment-route';
 import { ConfigService } from '@nestjs/config';
 import request from 'supertest';
 import { eq } from 'drizzle-orm';
@@ -350,6 +351,7 @@ describe("Rival's webhook field spelling: adminNote (singular) carries the reaso
         state: 'approved',
         methodKey: 'whish',
         provider: 'whish',
+        ...legacyRoute('whish', 'withdrawal'),
         destination: '+961 3 123 456',
         rivalWithdrawalId: 'rw-adminnote-1',
         rivalSubmittedAt: new Date(),
@@ -389,6 +391,8 @@ describe('the crown jewel: a signed completed event credits the wallet, exactly 
         internalLabel: 'Whish',
         currency: 'USD',
         enabled: true,
+        providerCode: 'rival',
+        channelCode: 'whish',
       })
       .onConflictDoNothing();
     await ctx.db.db.insert(users).values({
@@ -412,6 +416,7 @@ describe('the crown jewel: a signed completed event credits the wallet, exactly 
       state: 'pending',
       methodKey: 'whish',
       provider: 'whish',
+      ...legacyRoute('whish', 'deposit'),
       providerRef: 'OX-HTTPSPEC1',
       rivalExternalId: EXTERNAL_ID,
     });

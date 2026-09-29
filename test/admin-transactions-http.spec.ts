@@ -1,4 +1,5 @@
 import { ALL_PERMISSIONS } from './support/all-permissions';
+import { legacyRoute } from './support/payment-route';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 import { TransactionsService } from '../src/modules/payments/transactions.service';
@@ -176,6 +177,7 @@ beforeAll(async () => {
       currency: 'USD',
       state: 'success',
       provider: 'manual_test',
+      ...legacyRoute('manual_test', 'deposit'),
       providerRef: 'fin-union-dep',
       createdAt: new Date('2026-08-01T10:00:00Z'),
       settledAt: new Date('2026-08-01T10:05:00Z'),
@@ -188,6 +190,7 @@ beforeAll(async () => {
       currency: 'USD',
       state: 'pending',
       provider: 'manual_test',
+      ...legacyRoute('manual_test', 'withdrawal'),
       destination: 'fin-union-dest',
       createdAt: new Date('2026-08-02T11:00:00Z'),
     },
@@ -251,6 +254,7 @@ beforeAll(async () => {
     currency: 'USD',
     state: 'success',
     provider: 'manual_test',
+    ...legacyRoute('manual_test', 'deposit'),
     providerRef: 'fin-mine-dep',
   });
 
@@ -273,6 +277,7 @@ beforeAll(async () => {
     currency: 'USD',
     state: 'pending',
     provider: 'manual_test',
+    ...legacyRoute('manual_test', 'withdrawal'),
     destination: 'fin-outside-dest',
   });
 });
@@ -371,6 +376,44 @@ describe('filters', () => {
     // The payment deposit and the commission transfer — not the transfer out.
     expect(body.total).toBe(2);
     expect(body.items.every((row) => row.direction === 'deposit')).toBe(true);
+  });
+
+  /*
+   * The deposits desk asks for what a PERSON decides (0168). A deposit on
+   * Rival's hosted page is settled by Rival; listed there, it offered an
+   * Approve the API could only refuse.
+   */
+  it("decidedBy=desk keeps the desk's movements and drops a provider-settled deposit", async () => {
+    const [wallet] = await ctx.db.db
+      .select()
+      .from(wallets)
+      .where(eq(wallets.userId, unionClientId));
+    const [hosted] = await ctx.db.db
+      .insert(transactions)
+      .values({
+        userId: unionClientId,
+        walletId: wallet.id,
+        direction: 'deposit',
+        amount: '5.00000000',
+        currency: 'USD',
+        state: 'pending',
+        provider: 'whish',
+        ...legacyRoute('whish', 'deposit'),
+        providerRef: 'fin-union-hosted',
+        createdAt: new Date('2026-08-06T09:00:00Z'),
+      })
+      .returning({ id: transactions.id });
+    try {
+      const all = await get('kind=payment');
+      expect(all.total).toBe(3);
+      const desk = await get('kind=payment&decidedBy=desk');
+      expect(desk.total).toBe(2);
+      expect(desk.items.map((row) => row.id)).not.toContain(hosted.id);
+      // Transfers are nobody's to approve.
+      expect((await get('decidedBy=desk')).total).toBe(2);
+    } finally {
+      await ctx.db.db.delete(transactions).where(eq(transactions.providerRef, 'fin-union-hosted'));
+    }
   });
 
   it('kind isolates the transfer arms', async () => {
@@ -495,6 +538,7 @@ describe('keyset pagination — R-2.4', () => {
       currency: 'USD',
       state: 'success',
       provider: 'manual_test',
+      ...legacyRoute('manual_test', 'deposit'),
       providerRef: 'fin-union-concurrent',
       createdAt: new Date('2026-08-05T09:00:00Z'),
     });
@@ -874,6 +918,7 @@ describe('the export is frozen at its start and keyset-batched', () => {
       currency: 'USD',
       state: 'success',
       provider: 'manual_test',
+      ...legacyRoute('manual_test', 'deposit'),
       providerRef: 'fin-export-mid',
     });
     try {
