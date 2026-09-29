@@ -262,11 +262,10 @@ describe('a client is found — and named — by Portal ID', () => {
     expect(found.total).toBe(5);
   });
 
-  it('names the client by Portal ID everywhere on the row, and never by uuid', async () => {
+  // Until 0159 this also asserted the client's uuid appeared nowhere; there is no
+  // uuid left (D-83) — the Portal ID IS the client's id.
+  it('names the client by Portal ID everywhere on the row', async () => {
     const found = await find({ scope: UNRESTRICTED, q: String(inScopePortalId) });
-    expect(
-      JSON.stringify(found.items.map(({ actorId, subjectId, ...shown }) => shown)),
-    ).not.toContain(inScopeClientId);
 
     const suspend = found.items.find((r) => r.action === 'client.suspend')!;
     expect(suspend.subjectPortalId).toBe(inScopePortalId);

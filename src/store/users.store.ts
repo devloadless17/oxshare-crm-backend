@@ -267,8 +267,11 @@ const toUser = ({
  * search needs "00012345" to stay an MT5 login — the bridge treats leading
  * zeros as significant — rather than also matching client 12345.
  */
-export function parsePortalId(q: string | undefined): number | undefined {
-  const digits = q?.trim().replace(/^#/, '');
+export function parsePortalId(q: unknown): number | undefined {
+  // Anything but text is not a Portal ID written down — a token claim or a body
+  // field of the wrong type is refused here rather than crashing on `.trim()`.
+  if (typeof q !== 'string') return undefined;
+  const digits = q.trim().replace(/^#/, '');
   if (!digits || !/^[1-9]\d{0,9}$/.test(digits)) return undefined;
   const n = Number(digits);
   return n <= 2_147_483_647 ? n : undefined;

@@ -451,7 +451,8 @@ describe('GET /admin/clients?referredBy=', () => {
      */
     const master = await actingAs(ctx, 'admin', MASTER);
     const res = await master
-      .get(`${CLIENTS}?referredBy=00000000-0000-0000-0000-000000000000&withTotal=true`)
+      // A well-formed Portal ID nobody holds (the sequence starts at 1,000,000).
+      .get(`${CLIENTS}?referredBy=999999999&withTotal=true`)
       .expect(200);
     const body = res.body as { items: unknown[]; total?: number };
 

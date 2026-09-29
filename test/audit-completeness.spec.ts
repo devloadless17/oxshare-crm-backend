@@ -170,7 +170,7 @@ describe('recorded: the admin module', () => {
 
     const row = await latest('client.suspend');
     expect(row?.actorEmail).toBe(MASTER.email);
-    expect(row?.subjectId).toBe(clientId);
+    expect(row?.subjectId).toBe(String(clientId)); // audit_log.subject_id is text
     // `actorKind` distinguishes a person from a scheduled job (R-4.3).
     expect(row?.actorKind).toBe('admin');
   });
@@ -473,7 +473,7 @@ describe('R-6.6 — reading a KYC HISTORY writes a row, like reading the live re
     await waitForCount('kyc.history.view', 1);
 
     const row = await latest('kyc.history.view');
-    expect(row.subjectId).toBe(clientId);
+    expect(row.subjectId).toBe(String(clientId)); // audit_log.subject_id is text
     expect(row.subjectType).toBe('kyc_submission');
   });
 });

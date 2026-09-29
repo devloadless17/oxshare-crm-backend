@@ -52,7 +52,7 @@ function makeController(options: {
   /** RBAC-03 territory. Default unrestricted — see `scopes` below. */
   clientScope?: ClientScope;
   /** Who the document belongs to. `null` models a filename nobody owns. */
-  documentOwner?: string | null;
+  documentOwner?: number | null;
   /** Whether that owner is inside the reader's territory. */
   ownerInScope?: boolean;
   /** The CLIENT's verification state. Default verified — see `users` below. */
@@ -80,7 +80,7 @@ function makeController(options: {
       if (token === ADMIN_TOKEN)
         return { sub: 'admin-1', typ: TOKEN_KIND.access, fam: 'fam-a', iat };
       if (token === CLIENT_TOKEN) {
-        return { sub: 'client-1', typ: TOKEN_KIND.access, fam: 'fam-c', iat };
+        return { sub: '1000001', typ: TOKEN_KIND.access, fam: 'fam-c', iat };
       }
       if (token === REFRESH_TOKEN) return { sub: 'admin-1', typ: TOKEN_KIND.refresh };
       throw new Error('bad token');
@@ -117,7 +117,7 @@ function makeController(options: {
       Promise.resolve(
         options.documentOwner === null
           ? undefined
-          : (options.documentOwner ?? (options.clientOwnsFile === false ? 'client-2' : 'client-1')),
+          : (options.documentOwner ?? (options.clientOwnsFile === false ? 1000002 : 1000001)),
       ),
   };
   const users = {
@@ -126,7 +126,7 @@ function makeController(options: {
     // cannot have submitted a document to read in the first place.
     findById: () =>
       Promise.resolve({
-        id: 'client-1',
+        id: 1000001,
         email: 'client@test.local',
         status: options.clientSuspended ? 'suspended' : 'active',
         // `emailVerified` matters now: the client branch of `authorize()`
@@ -138,7 +138,7 @@ function makeController(options: {
     // looks like from every admin-facing read.
     findForAdmin: () =>
       Promise.resolve(
-        options.ownerInScope === false ? undefined : { id: 'client-1', email: 'client@test.local' },
+        options.ownerInScope === false ? undefined : { id: 1000001, email: 'client@test.local' },
       ),
   };
   const auditLog = {
@@ -332,7 +332,7 @@ describe('R-6.6 — reading a KYC document writes an audit row', () => {
      * query can now exclude the subject themselves by filtering a column.
      */
     expect(recorded[0]).toMatchObject({
-      actorId: 'client-1',
+      actorId: 1000001,
       actorKind: 'client',
       action: 'kyc.document.view',
       subjectId: FILE,

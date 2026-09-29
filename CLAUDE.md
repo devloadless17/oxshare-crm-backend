@@ -1174,10 +1174,20 @@ the key behind the number.
 - **A client id is a `number`** in every signature. Five columns can name an admin OR a client —
   `audit_log.actor_id`, `notifications.recipient_id` / `subject_id`, `stored_objects.uploaded_by_id`,
   `idempotency_keys.actor_id`, `refresh_tokens.subject_id` — and are `text`: an admin's uuid or a
-  client's Portal ID, told apart by the row's own kind column. Write them with `String(id)`.
+  client's Portal ID, told apart by the row's own kind column. Write them with `String(id)`, and
+  compare a COLUMN against them with `::text` (`task.subject_id = ${transfers.id}::text`). Postgres
+  refuses `text = uuid` at run time — the type-checker cannot see inside a `sql` template — and
+  inside a scheduler's catch that is silent: the stuck-transfer task went unannounced this way until
+  `transfer-resume.spec.ts` caught it.
+- **Audit `details` name a client by KEY** (`CLIENT_ID_KEYS` in `audit-log.store.ts`): a Portal ID
+  is a bare number, like a level or a count, so only a listed key is hidden from a scoped reader.
+  A new payload naming a client uses a listed key or extends the list — the census says so.
 - **The edge**: `ClientRefPipe` takes digits (a leading `#` allowed) and returns a number; anything
-  else is a 400, and an unknown number becomes `NO_CLIENT` (0), which reads as not found. The portal
-  JWT `sub` is the Portal ID; `parsePortalId` reads it back, and a token carrying a uuid is refused.
+  else is a 400, and an unknown number finds no row, which reads as not found. Routes declare the
+  parameter `number`, so the global ValidationPipe has usually converted it with `+value` BEFORE the
+  pipe runs (a uuid arrives as NaN, an empty query as 0) — the pipe judges a number and text by one
+  rule; never assume it sees the raw string. The portal JWT `sub` is the Portal ID as a STRING
+  (RFC 7519); `parsePortalId` reads it back and refuses anything but text.
 - **Response field names did not change.** `id`, `userId`, `clientUserId`, `ibUserId`… carry the
   Portal ID; `portalId` stays on responses as the same number (`User.portalId` is an alias of `id`).
 - **Raw SQL** casts a client id `::integer`. Client-list cursors decode their id as an integer
@@ -1217,6 +1227,16 @@ the Claude `Stop` hook skips it here and CI owns it. Run it by hand before any m
 
 ## Gotchas specific to this repo
 
+- **On a FRESH database, every migration after 0111 runs in autocommit.** drizzle runs all pending
+  migrations in one transaction on one connection, but 0111–0119, 0141 and 0142 issue their own
+  `BEGIN;`/`COMMIT;`, which ends it. On an existing database (dev, production) a new migration runs
+  alone inside drizzle's transaction and behaves as written; on a fresh one (CI, every
+  Testcontainers suite, a new environment) each statement commits on its own. So a new migration
+  must not rely on transaction scope: no `ON COMMIT DROP` temp table (0159's map vanished before the
+  next statement read it), no `SET LOCAL` / `set_config(…, true)` meant to span statements. Use a
+  session temp table the migration drops itself. A migration spec that feeds its file to
+  `pool.query` is one implicit transaction and cannot catch this; any ordinary suite can, since they
+  all migrate a fresh database.
 - **A RENUMBERED migration poisons every database that applied the old number, silently.**
   drizzle-kit applies only migrations whose journal `when` exceeds the highest `created_at` in
   `drizzle.__drizzle_migrations`, and it stores the journal's `when` as that `created_at`. So when

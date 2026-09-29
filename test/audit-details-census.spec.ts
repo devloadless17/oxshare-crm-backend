@@ -239,6 +239,10 @@ describe('audit details payloads are declared, not accidental', () => {
         'so `maskAuditRow` can withhold them from a masked reader — otherwise the\n' +
         'value is readable by every operator who can open the audit log, and by\n' +
         'anyone who can download it.\n' +
+        'Does it NAME A CLIENT (a Portal ID)? Then use a key listed in\n' +
+        '`CLIENT_ID_KEYS` (src/store/audit-log.store.ts) — since 0159 a client id\n' +
+        'is a bare number and is recognised by its key alone; under any other key\n' +
+        'a scoped reader is shown the Portal ID of a client outside their territory.\n' +
         'If it does not, add it here and the log stays as it is.',
     ).toEqual([...WRITES_DETAILS]);
   });

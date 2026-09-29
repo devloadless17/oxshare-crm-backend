@@ -912,15 +912,19 @@ describe('no export names a client by uuid — the Portal ID is their identifier
   });
 
   for (const resource of CLIENT_EXPORTS) {
-    it(`${resource}: carries the Portal ID and never the uuid`, async () => {
+    /*
+     * Until 0159 this also asserted the client's uuid was absent. The uuid no
+     * longer exists (D-83) — the Portal ID IS the client's id — so what is left
+     * to prove is that every client export names the client by it.
+     */
+    it(`${resource}: names the client by Portal ID`, async () => {
       const session = await actingAs(ctx, 'admin', MASTER);
       const res = await session.get(`/v1/admin/${resource}/export?format=csv`);
 
       expect(res.status).toBe(200);
-      expect(res.text, `${resource} names no client at all — the check is vacuous`).toMatch(
+      expect(res.text, `${resource} names no client at all`).toMatch(
         new RegExp(`(^|[,"{:\\s])${minePortalId}([,"}\\s]|$)`, 'm'),
       );
-      expect(res.text, `${resource} still prints a client uuid`).not.toContain(mineId);
     });
   }
 });

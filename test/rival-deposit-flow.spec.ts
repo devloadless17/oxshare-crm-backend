@@ -220,7 +220,7 @@ describe('the mapping table, row by row', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].actor_kind).toBe('system');
     expect(rows[0].actor_email).toBe('system@oxshare.internal');
-    expect(rows[0].user_id).toBe(userId);
+    expect(rows[0].user_id).toBe(String(userId)); // `->>` reads the jsonb number as text
 
     /*
      * At-least-once delivery must not double the trail either. The replay is

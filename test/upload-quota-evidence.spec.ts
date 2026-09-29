@@ -35,8 +35,9 @@ async function stored(owner: number, key: string, bytes: number, deleted = false
   await q(
     `INSERT INTO stored_objects (bucket, storage_key, provider, content_type, byte_size, sha256,
                                  owner_user_id, uploaded_by_id, uploaded_by_kind, deleted_at)
-     VALUES ($1, $2, 'disk', 'image/png', $3, repeat('a', 64), $4, $4, 'client', $5)`,
-    [key.split('/')[0], key, bytes, owner, deleted ? new Date() : null],
+     VALUES ($1, $2, 'disk', 'image/png', $3, repeat('a', 64), $4, $5, 'client', $6)`,
+    // The uploader column is text since 0159 (an admin's uuid or a client's Portal ID).
+    [key.split('/')[0], key, bytes, owner, String(owner), deleted ? new Date() : null],
   );
 }
 

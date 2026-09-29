@@ -152,7 +152,7 @@ describe('the boot repair', () => {
       BEGIN RAISE EXCEPTION 'refused for the test'; END $$ LANGUAGE plpgsql`);
     await q(`
       CREATE TRIGGER repair_spec_refuse BEFORE INSERT ON client_verifications
-      FOR EACH ROW WHEN (NEW.user_id = '${stuck}'::uuid) EXECUTE FUNCTION repair_spec_refuse()`);
+      FOR EACH ROW WHEN (NEW.user_id = ${stuck}::integer) EXECUTE FUNCTION repair_spec_refuse()`);
     try {
       const result = await service.repairDrift();
 

@@ -57,14 +57,14 @@ async function rows<T>(query: ReturnType<typeof sql>): Promise<T[]> {
 /** The two invariants, after every step. */
 async function inStep(step: string) {
   expect(
-    await rows(sql`SELECT problem, slot FROM identity_drift WHERE user_id = ${clientId}::uuid`),
+    await rows(sql`SELECT problem, slot FROM identity_drift WHERE user_id = ${clientId}::integer`),
     step,
   ).toEqual([]);
   const [level] = await rows<{ level: number; latest: number | null }>(sql`
     SELECT u.verification_level AS level,
            (SELECT level_after FROM client_verifications v WHERE v.user_id = u.id
              ORDER BY seq DESC LIMIT 1) AS latest
-      FROM users u WHERE u.id = ${clientId}::uuid`);
+      FROM users u WHERE u.id = ${clientId}::integer`);
   expect(level.latest ?? 0, `${step}: the level is not the latest decision`).toBe(level.level);
 }
 
@@ -73,7 +73,7 @@ const identityVersions = () =>
     SELECT d.frozen_at IS NOT NULL AS frozen, d.doc_type,
            (SELECT count(*)::int FROM client_document_pages p WHERE p.document_id = d.id) AS parts
       FROM client_documents d
-     WHERE d.user_id = ${clientId}::uuid AND d.slot = 'identity'
+     WHERE d.user_id = ${clientId}::integer AND d.slot = 'identity'
      ORDER BY d.created_at, d.frozen_at NULLS LAST`);
 
 const decisions = () =>
@@ -86,7 +86,7 @@ const decisions = () =>
   }>(sql`
     SELECT v.outcome, v.level_after, v.method, v.reason,
            (SELECT count(*)::int FROM client_verification_documents c WHERE c.verification_id = v.id) AS covered
-      FROM client_verifications v WHERE v.user_id = ${clientId}::uuid ORDER BY v.seq`);
+      FROM client_verifications v WHERE v.user_id = ${clientId}::integer ORDER BY v.seq`);
 
 beforeAll(async () => {
   ctx = await startHttpTestApp();

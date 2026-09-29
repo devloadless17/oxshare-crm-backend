@@ -57,7 +57,7 @@ const RARE = 5;
 
 let rareSubjectId: string;
 /** One of the rare clients, found by the PORTAL ID cases — see the last block. */
-let portalClient: { id: string; portalId: number };
+let portalClient: { id: number; portalId: number };
 
 async function plan(query: ReturnType<typeof sql>): Promise<string> {
   const { rows } = await ctx.db.execute<{ 'QUERY PLAN': string }>(
@@ -211,10 +211,11 @@ beforeAll(async () => {
    * subject is the transaction). The Portal ID search has to find both, from
    * one index on the expression that knows where to look.
    */
-  const { rows: found } = await ctx.db.execute<{ id: string; portal_id: number }>(sql`
-    SELECT id, portal_id FROM users WHERE email = 'rare-3@oxshare-e2e.test'
+  const { rows: found } = await ctx.db.execute<{ id: number }>(sql`
+    SELECT id FROM users WHERE email = 'rare-3@oxshare-e2e.test'
   `);
-  portalClient = { id: found[0].id, portalId: Number(found[0].portal_id) };
+  // Since 0159 the Portal ID IS the id.
+  portalClient = { id: Number(found[0].id), portalId: Number(found[0].id) };
   await ctx.db.execute(sql`
     INSERT INTO audit_log (actor_id, actor_email, actor_kind, action, subject_type, subject_id, details)
     VALUES
@@ -664,7 +665,7 @@ describe('a PORTAL ID search is a point lookup on every screen', () => {
       SELECT id FROM users WHERE ${clientIdentitySearch(String(portalClient.portalId))}
     `);
     expect(text, `the Portal ID lookup is scanning:\n${text}`).not.toMatch(/Seq Scan on users/);
-    expect(text).toMatch(/users_portal_id_uq/);
+    expect(text).toMatch(/users_pkey/);
   });
 
   it('finds exactly that client — a number is not a substring of anyone', async () => {
@@ -677,9 +678,10 @@ describe('a PORTAL ID search is a point lookup on every screen', () => {
   it('on trading accounts, a number is a login OR a Portal ID, on one table', async () => {
     /*
      * The OR stays inside `trading_accounts` — `login` against the unique
-     * login index, `user_id` against the owner the subquery resolves — so it
-     * can be a BitmapOr of two of this table's own indexes. The version that
-     * OR-ed `users.portal_id` across the join could not, and would read every
+     * login index, `user_id` against the Portal ID, which IS the owner's id
+     * since 0159 (nothing left to resolve through `users`) — so it is a
+     * BitmapOr of two of this table's own indexes. The version that OR-ed
+     * `users.portal_id` across the join could not, and would read every
      * account to find one.
      */
     const text = await planWithoutSeqScan(sql`
@@ -694,7 +696,6 @@ describe('a PORTAL ID search is a point lookup on every screen', () => {
     expect(text).toMatch(/BitmapOr/);
     expect(text).toMatch(/Bitmap Index Scan on trading_accounts_login_(uq|id_idx)/);
     expect(text).toMatch(/Bitmap Index Scan on trading_accounts_user_idx/);
-    expect(text).toMatch(/users_portal_id_uq/);
 
     const { rows } = await ctx.db.execute<{ user_id: string }>(sql`
       SELECT user_id FROM trading_accounts

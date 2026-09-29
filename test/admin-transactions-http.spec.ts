@@ -798,7 +798,7 @@ describe('keyset precision — rows sharing a millisecond are never skipped', ()
         INSERT INTO transactions
           (user_id, wallet_id, direction, amount, currency, state, provider, provider_ref, created_at)
         VALUES
-          (${client.id}::uuid, ${main.id}::uuid, 'deposit', '1.00000000', 'USD', 'success',
+          (${client.id}::integer, ${main.id}::uuid, 'deposit', '1.00000000', 'USD', 'success',
            'manual_test', ${ref}, ${`2026-07-01T09:00:00.${fraction}Z`}::timestamptz)
       `);
     }

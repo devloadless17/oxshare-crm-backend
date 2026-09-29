@@ -91,7 +91,7 @@ beforeAll(async () => {
   // it (0153) in its one spelling.
   await ctx.db.db.execute(sql`
     INSERT INTO kyc_submissions (user_id, status, document)
-    VALUES (${clientId}::uuid, 'in_progress',
+    VALUES (${clientId}::integer, 'in_progress',
             ${JSON.stringify({ docType: 'passport', frontFilePath: `./uploads/kyc/${front}`, frontFileName: 'passport.png' })}::jsonb)`);
   client = await actingAs(ctx, 'portal', CLIENT);
   admin = await actingAs(ctx, 'admin', ADMIN);
@@ -120,7 +120,7 @@ describe('a submission’s evidence, as the API reads it', () => {
     await withoutTriggers(sql`
       UPDATE kyc_submissions
          SET document = jsonb_set(document, '{frontFilePath}', ${JSON.stringify(`uploads/kyc/${replaced}`)}::jsonb)
-       WHERE user_id = ${clientId}::uuid`);
+       WHERE user_id = ${clientId}::integer`);
 
     const before = await client.get('/v1/kyc/status');
     expect((before.body as Status).document?.frontFilePath).toBe(`uploads/kyc/${front}`);

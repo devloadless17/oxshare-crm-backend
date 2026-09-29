@@ -1159,7 +1159,8 @@ export class AuthService {
   // ─── Helpers ──────────────────────────────────────────────────────────────────
   private generateTokens(user: User, familyId: string) {
     const payload = {
-      sub: user.id,
+      // A JWT subject is a string (RFC 7519); the Portal ID travels as its digits.
+      sub: String(user.id),
       email: user.email,
       emailVerified: user.emailVerified,
       type: user.type,

@@ -292,7 +292,7 @@ describe('editing a profile', () => {
       expect(JSON.stringify(row.details), 'an address reached the audit log').not.toContain('@');
       // Still identified — by id, which a reader resolves through the client
       // screens, under their OWN mask.
-      expect(row.subjectId).toBe(clientId);
+      expect(row.subjectId).toBe(String(clientId)); // audit_log.subject_id is text
     }
     // Non-vacuous: the rows still record the changes they exist to record.
     expect(JSON.stringify(rows.map((r) => r.details))).toContain('Nadia');
@@ -329,7 +329,8 @@ describe('editing a profile', () => {
 
   it('is 404, never 403, for a client that does not exist', async () => {
     await master
-      .patch('/v1/admin/clients/00000000-0000-4000-8000-0000000000ff', { firstName: 'X' })
+      // A well-formed Portal ID nobody holds (the sequence starts at 1,000,000).
+      .patch('/v1/admin/clients/999999999', { firstName: 'X' })
       .expect(404);
   });
 });

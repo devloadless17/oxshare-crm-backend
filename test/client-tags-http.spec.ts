@@ -202,7 +202,8 @@ describe('assignment', () => {
   it('404s an unknown client rather than creating an orphan assignment', async () => {
     const session = await actingAs(ctx, 'admin', MASTER);
     const res = await session.post(
-      `${CLIENTS}/00000000-0000-4000-8000-000000000000/tags/${alphaTagId}`,
+      // A well-formed Portal ID nobody holds (the sequence starts at 1,000,000).
+      `${CLIENTS}/999999999/tags/${alphaTagId}`,
     );
     expect(res.status).toBe(404);
   });

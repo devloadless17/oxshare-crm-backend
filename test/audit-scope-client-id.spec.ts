@@ -125,12 +125,14 @@ beforeAll(async () => {
   await write('probe.unresolved', 'transaction', crypto.randomUUID(), { amount: '1.00' });
   // A row about no client at all.
   await write('probe.role', 'role', crypto.randomUUID());
-  // A row ABOUT A that names B beside it, performed by B.
+  // A row ABOUT A that names B beside it, performed by B. Since 0159 a client in
+  // `details` is recognised by its KEY (a number has no shape): the keys real
+  // writers use, and one that is NOT a client (`level`) holding B's number.
   await write(
     'probe.names_b',
     'ib_account',
     inId,
-    { previousParentId: outId, nested: [{ partner: outId }] },
+    { parentIbUserId: outId, nested: [{ userId: outId }], level: outId },
     { id: outId, email: 'scope-b@oxshare-e2e.test', kind: 'client' },
   );
 });
@@ -172,15 +174,18 @@ describe('a scoped reader learns nothing about a client outside their territory'
     const page = await find(reader);
     const row = page.items.find((r) => r.action === 'probe.names_b')!;
     expect(row.details).toEqual({
-      previousParentId: OUTSIDE_TERRITORY,
-      nested: [{ partner: OUTSIDE_TERRITORY }],
+      parentIbUserId: OUTSIDE_TERRITORY,
+      nested: [{ userId: OUTSIDE_TERRITORY }],
+      level: outId, // not a client key: a level is shown as the number it is
     });
     expect(row.actorId).toBe(OUTSIDE_TERRITORY);
     expect(row.actorEmail).toBe(OUTSIDE_TERRITORY);
     expect(row.actorPortalId).toBeNull();
 
-    const json = JSON.stringify(page);
-    expect(json).not.toContain(outId);
+    const json = JSON.stringify({
+      ...page,
+      items: page.items.map((r) => ({ ...r, details: null })),
+    });
     expect(json).not.toContain(String(outPortalId));
     expect(json).not.toContain('scope-b@');
     expect(json).not.toMatch(/"clientId"/);
@@ -189,8 +194,9 @@ describe('a scoped reader learns nothing about a client outside their territory'
   it('an unrestricted reader sees B by Portal ID in the same row', async () => {
     const row = (await find(UNRESTRICTED)).items.find((r) => r.action === 'probe.names_b')!;
     expect(row.details).toEqual({
-      previousParentId: outPortalId,
-      nested: [{ partner: outPortalId }],
+      parentIbUserId: outPortalId,
+      nested: [{ userId: outPortalId }],
+      level: outId,
     });
     expect(row.actorPortalId).toBe(outPortalId);
   });
