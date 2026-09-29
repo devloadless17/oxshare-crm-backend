@@ -1,5 +1,5 @@
 import { FieldValidationError } from '../errors/domain-errors';
-import { toE164 } from '../profile/client-profile';
+import { phoneProblem, toE164 } from '../profile/client-profile';
 
 /**
  * The details a client gives with an OFFLINE deposit — the pure rules (0163).
@@ -83,8 +83,6 @@ function hasControlCharacter(text: string): boolean {
   }
   return false;
 }
-const PHONE_MESSAGE =
-  'Enter a complete phone number, including the country code (for example +961 70 123 456).';
 
 export interface ProofFieldInput {
   id: string;
@@ -218,7 +216,9 @@ export function readProofDetails(
     if (field.type === 'phone') {
       const e164 = toE164(text);
       if (!e164) {
-        errors[at] = PHONE_MESSAGE;
+        // The profile's own sentence: it names what is wrong with the DIGITS,
+        // since the form's picker has already supplied the country code.
+        errors[at] = phoneProblem(text) ?? 'Enter a valid phone number.';
         continue;
       }
       answers.push({ fieldId: field.id, label: field.label, type: field.type, value: e164 });

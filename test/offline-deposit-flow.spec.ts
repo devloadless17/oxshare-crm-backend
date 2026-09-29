@@ -354,8 +354,10 @@ describe('the details that identify an offline payment (0163)', () => {
     await expect(file(userId, {})).rejects.toMatchObject({
       fields: { [`details.${PHONE}`]: 'Phone number you sent from is required.' },
     });
-    await expect(file(userId, { [PHONE]: '70123' })).rejects.toMatchObject({
-      fields: { [`details.${PHONE}`]: expect.stringMatching(/country code/) },
+    await expect(file(userId, { [PHONE]: '+961 7150' })).rejects.toMatchObject({
+      fields: {
+        [`details.${PHONE}`]: 'This phone number is too short. Enter all the digits after +961.',
+      },
     });
     const { rows } = await ctx.db.execute<{ n: number }>(
       sql`SELECT count(*)::int AS n FROM transactions WHERE user_id = ${userId}`,
