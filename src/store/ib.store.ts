@@ -423,9 +423,28 @@ export class IbStore {
         email: users.email,
         firstName: users.firstName,
         lastName: users.lastName,
+        /*
+         * Their own line, as COUNTS (owner, 29 Sep 2026 — "more data for the
+         * partners beneath them"). Counts, never identities: the owner's R2
+         * ruling allows a number across a territory line. Hand-qualified
+         * `"ib_accounts"."user_id"`: inside a correlated subquery a bare
+         * column would resolve to the INNER table (the trap that broke the
+         * levels partner count before 0140).
+         */
+        clientCount: sql<number>`(
+          SELECT count(*)::int FROM users AS referred
+          WHERE referred.referred_by_ib_user_id = "ib_accounts"."user_id"
+        )`,
+        subPartnerCount: sql<number>`(
+          SELECT count(*)::int FROM ib_accounts AS child
+          WHERE child.parent_ib_user_id = "ib_accounts"."user_id"
+        )`,
+        /* The agency they sell under — it decides what their clients may trade. */
+        agencyName: agencies.name,
       })
       .from(ibAccounts)
       .innerJoin(users, eq(users.id, ibAccounts.userId))
+      .leftJoin(agencies, eq(agencies.id, ibAccounts.agencyId))
       /*
        * `leftJoin`, and the nullability is real: `ib_accounts.level` is NOT
        * NULL but carries no foreign key to `ib_levels`, deliberately — a tree

@@ -146,8 +146,16 @@ export class ClientFieldsService {
     if (stored.length === 0) return [];
 
     if (!ClientFieldsService.aliasIndex) {
+      /*
+       * MASKABLE fields only. A stored mask may still name a field the catalog
+       * has since made unmaskable (payout destination, 29 Sep 2026), and it must
+       * stop hiding it the moment the catalog says so — not linger on every role
+       * that ticked it before, invisible in a picker that no longer offers it.
+       */
       ClientFieldsService.aliasIndex = new Map(
-        this.definitions().map((f) => [f.key, [f.key, ...(f.aliases ?? [])]]),
+        this.definitions()
+          .filter((f) => f.maskable)
+          .map((f) => [f.key, [f.key, ...(f.aliases ?? [])]]),
       );
     }
     const index = ClientFieldsService.aliasIndex;

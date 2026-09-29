@@ -81,11 +81,17 @@ import type { AuthenticatedAdmin } from './guards/admin.guard';
  * Destructured by NAME rather than deleted from a copy, so the next deposit-only
  * column is an edit here rather than a silent leak.
  */
-function withdrawalResponse<T extends { proofFilename?: unknown }>(
+function withdrawalResponse<T extends { proofFilename?: unknown; proofDetails?: unknown }>(
   row: T,
   actor: AuthenticatedAdmin,
 ) {
-  const { proofFilename: _proofIsDepositOnly, ...withdrawalFields } = row;
+  // Both are an offline DEPOSIT's evidence: its receipt, and the details that
+  // identify the payment (0163). A withdrawal carries neither.
+  const {
+    proofFilename: _proofIsDepositOnly,
+    proofDetails: _detailsAreDepositOnly,
+    ...withdrawalFields
+  } = row;
   return {
     ...withdrawalFields,
     maskedFields: maskedFieldsFor('withdrawal', actor.fieldMask),

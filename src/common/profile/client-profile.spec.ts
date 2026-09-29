@@ -19,6 +19,7 @@ import {
   PROFILE_MAX_LENGTH,
   toE164,
   type ProfileKey,
+  phoneProblem,
 } from './client-profile';
 
 /**
@@ -387,5 +388,29 @@ describe('adminEditRule — how an admin may change each detail, by where the ve
         expect(sentence).not.toMatch(/KYC review|Correct details|go to|open the/i);
       }
     }
+  });
+});
+
+describe('a phone refusal names what is wrong with the digits', () => {
+  /*
+   * Reported 29 Sep 2026: +961 chosen from the picker, "7150" typed, and the
+   * form said "including the country code" — the one part already given.
+   */
+  it('says the number is too short, after the code the client picked', () => {
+    expect(phoneProblem('+961 7150')).toBe(
+      'This phone number is too short. Enter all the digits after +961.',
+    );
+  });
+
+  it('tells a bare code, too long, an unknown code and a missing code apart', () => {
+    expect(phoneProblem('+961')).toBe('Enter the phone number after +961.');
+    expect(phoneProblem('+961 70 123 4567')).toMatch(/too long.*after \+961/);
+    expect(phoneProblem('+999 123')).toMatch(/country code does not exist/);
+    expect(phoneProblem('70123456')).toMatch(/Choose the country code/);
+    expect(phoneProblem('+961 12345678')).toMatch(/not a valid phone number/);
+  });
+
+  it('finds nothing wrong with a dialable number', () => {
+    expect(phoneProblem('+961 70 123 456')).toBeUndefined();
   });
 });

@@ -1,4 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
+import { ProofDetailDto } from '../../payments/dto/deposit.dto';
 import { ClientField, NotClientField } from '../../../common/security/client-field.decorator';
 
 /**
@@ -83,6 +84,12 @@ export class FinancialExportRowDto extends ExportedPerson {
   @ClientField('client.payoutDestination')
   @ApiProperty({ required: false })
   destination?: string | null;
+
+  @NotClientField(
+    'proof of a payment the CLIENT filed with the receipt; the desk must always see it to approve',
+  )
+  @ApiProperty({ type: ProofDetailDto, isArray: true, required: false, nullable: true })
+  proofDetails?: ProofDetailDto[] | null;
 }
 
 /**

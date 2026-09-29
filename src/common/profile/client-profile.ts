@@ -1,4 +1,8 @@
-import { isValidPhoneNumber, parsePhoneNumberFromString } from 'libphonenumber-js/min';
+import {
+  isValidPhoneNumber,
+  parsePhoneNumberFromString,
+  validatePhoneNumberLength,
+} from 'libphonenumber-js/min';
 import { KYC_COUNTRY_OPTIONS, KYC_NATIONALITY_OPTIONS } from '../kyc/country-options';
 
 /**
@@ -289,6 +293,39 @@ export function ageInYears(dateOfBirth: Date, asOf: Date): number {
   return age;
 }
 
+/**
+ * Why a phone number cannot be stored, in the terms of the forms that send it —
+ * or undefined when it is dialable.
+ *
+ * Every form picks the country code from a list beside the digits. The single
+ * sentence this replaced — "Enter a complete phone number, including the
+ * country code" — blamed the one part the client had already given, when the
+ * digits after it were what was wrong (reported 29 Sep 2026: +961 and "7150").
+ * libphonenumber tells too short from too long from a code that does not exist,
+ * at the same version the portal validates with, so each gets its own sentence.
+ */
+export function phoneProblem(value: string): string | undefined {
+  const text = value.trim();
+  if (!text.startsWith('+')) return 'Choose the country code, then enter the number after it.';
+  if (isValidPhoneNumber(text)) return undefined;
+
+  const bare = /^\+(\d{1,4})$/.exec(text.replace(/\s/g, ''));
+  if (bare) return `Enter the phone number after +${bare[1]}.`;
+
+  const code = parsePhoneNumberFromString(text)?.countryCallingCode;
+  const after = code ? `after +${code}` : 'after the country code';
+  switch (validatePhoneNumberLength(text)) {
+    case 'TOO_SHORT':
+      return `This phone number is too short. Enter all the digits ${after}.`;
+    case 'TOO_LONG':
+      return `This phone number is too long. Check the digits ${after}.`;
+    case 'INVALID_COUNTRY':
+      return 'That country code does not exist. Choose the country from the list.';
+    default:
+      return `This is not a valid phone number. Check the digits ${after}.`;
+  }
+}
+
 /** A phone number in E.164 (`+96170123456`), or undefined when it is not dialable. */
 export function toE164(value: string): string | undefined {
   const text = value.trim();
@@ -372,8 +409,7 @@ export function normaliseProfileValue(key: ProfileKey, raw: string, asOf: Date):
       if (!e164) {
         return {
           ok: false,
-          message:
-            'Enter a complete phone number, including the country code (for example +961 70 123 456).',
+          message: phoneProblem(value) ?? 'Enter a valid phone number.',
           code: 'invalid_phone',
         };
       }

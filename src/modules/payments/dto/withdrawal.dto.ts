@@ -1,4 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { ProofDetailDto } from './deposit.dto';
 import { NoClientFields } from '../../../common/security/client-field.decorator';
 import { transactionStateEnum } from '../../../database/schema';
 import { IsNotEmpty, IsNumberString, IsString } from 'class-validator';
@@ -265,6 +266,14 @@ export class TransactionDto {
    * Null on every other movement.
    */
   @ApiPropertyOptional({ type: String, nullable: true }) proofFilename?: string | null;
+
+  /**
+   * What the client gave with an offline deposit to identify the payment — the
+   * phone it was sent from, a transfer code (0163) — each with the question as
+   * asked. Their own answers, shown back on the deposit's details. Null otherwise.
+   */
+  @ApiPropertyOptional({ type: ProofDetailDto, isArray: true, nullable: true })
+  proofDetails?: ProofDetailDto[] | null;
   @ApiPropertyOptional({ type: String, nullable: true }) rejectionReason?: string | null;
   @ApiPropertyOptional({ type: String, nullable: true }) reviewedBy?: string | null;
   @ApiPropertyOptional({ type: Date, nullable: true }) reviewedAt?: Date | null;

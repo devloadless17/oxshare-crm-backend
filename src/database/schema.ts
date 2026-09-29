@@ -24,6 +24,7 @@ import {
 // Type-only: the stored shape of `mt5_groups.commissions`. Erased at runtime.
 import type { Mt5GroupCommission } from '../common/mt5-group-terms';
 import type { FormPolicy } from '../common/kyc/identity-core';
+import type { ProofDetail, ProofField } from '../common/payments/proof-fields';
 
 // Drizzle schema for the LIVE domain model, aligned with ARCHITECTURE §5 where
 // that section defines the table (users) and with the in-memory stores being
@@ -2428,6 +2429,16 @@ export const paymentMethods = pgTable(
      */
     ownMinAmount: numeric('min_amount', { precision: 28, scale: 8 }),
     ownMaxAmount: numeric('max_amount', { precision: 28, scale: 8 }),
+    /**
+     * The details an OFFLINE method asks the client for with the receipt — the
+     * phone the money was sent from, a transfer code (0163). Ordered; each has a
+     * permanent id, a label, a type, `required` and `enabled` (shown or not).
+     * Asked only while `requiresProof`; the rules are `common/payments/proof-fields.ts`.
+     */
+    proofFields: jsonb('proof_fields')
+      .$type<ProofField[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
     enabled: boolean('enabled').notNull().default(true),
     sortOrder: integer('sort_order').notNull().default(0),
     updatedBy: uuid('updated_by'),
@@ -3278,6 +3289,13 @@ export const transactions = pgTable(
      * money arrive.
      */
     proofFilename: varchar('proof_filename', { length: 255 }),
+    /**
+     * The client's answers to the method's `proofFields`, filed with the receipt
+     * (0163): each carries the label AS ASKED, so a field renamed or deleted later
+     * never orphans an answer. Immutable by trigger — the client's declaration
+     * about money is never rewritten. Null on everything else.
+     */
+    proofDetails: jsonb('proof_details').$type<ProofDetail[]>(),
     rejectionReason: text('rejection_reason'),
     /** The admin who decided. No FK — same reasoning as `audit_log.actor_id`. */
     reviewedBy: uuid('reviewed_by'),
@@ -3327,6 +3345,8 @@ export const transactions = pgTable(
     // The console's "in use" flag and a delete's RESTRICT check look up by these (0161).
     index('transactions_method_key_idx').on(t.methodKey),
     index('transactions_withdrawal_method_key_idx').on(t.withdrawalMethodKey),
+    // The desk finds a deposit by the OX- reference the client quotes (0163).
+    index('transactions_provider_ref_idx').on(t.providerRef),
     uniqueIndex('transactions_provider_ref_uq').on(t.provider, t.providerRef),
     // §6.3 for inbound Rival events: one CRM row per Rival payment/withdrawal,
     // so a replayed or misrouted event can never touch a second row. Partial —

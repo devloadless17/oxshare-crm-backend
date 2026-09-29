@@ -13,6 +13,10 @@ import { notificationsStubAs } from './notifications-stub';
 import { transferExecutorStubAs, transfersStubAs } from './transfer-chain-stub';
 import { gatewayStubAs } from './gateway-stub';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
+import { randomUUID } from 'node:crypto';
+import type { ProofFieldInputDto } from '../src/modules/payments/dto/payment-method.dto';
+import { UNRESTRICTED } from '../src/common/security/client-scope';
+import { clientPaymentMethodView } from '../src/modules/payments/payment-method-view';
 
 /**
  * OFFLINE DEPOSITS — the client paid outside the platform, uploaded a receipt,
@@ -293,5 +297,164 @@ describe('rejecting an offline deposit', () => {
     await expect(transactions.approveDeposit(deposit.id, OTHER_ADMIN)).rejects.toThrow(/rejected/);
     expect(await creditsFor(deposit.id)).toBe(0);
     expect(await balanceOf(userId)).toBe('0.00000000');
+  });
+});
+
+describe('the details that identify an offline payment (0163)', () => {
+  const METHOD = 'offline_details';
+  const PHONE = 'f_phone00001';
+  const CODE = 'f_code000001';
+  const HIDDEN = 'f_hidden0001';
+  const admin = { ...SYSTEM_ACTOR, id: ADMIN };
+  const FIELDS: ProofFieldInputDto[] = [
+    {
+      id: PHONE,
+      label: 'Phone number you sent from',
+      type: 'phone',
+      required: true,
+      enabled: true,
+    },
+    {
+      id: CODE,
+      label: 'Transfer code',
+      type: 'text',
+      required: false,
+      enabled: true,
+      hint: 'On your OMT slip',
+    },
+    { id: HIDDEN, label: 'Old question', type: 'text', required: true, enabled: false },
+  ];
+
+  beforeAll(async () => {
+    await methods.create(
+      { key: METHOD, name: 'OMT', currency: 'USD', requiresProof: true, proofFields: FIELDS },
+      admin,
+    );
+  });
+
+  const file = (userId: number, details: unknown) =>
+    transactions.requestDeposit({
+      userId,
+      amount: '100',
+      currency: 'USD',
+      method: METHOD,
+      proofFilename: `${randomUUID()}.jpg`,
+      details,
+    });
+
+  async function detailsOf(id: string) {
+    const { rows } = await ctx.db.execute<{ proof_details: unknown }>(
+      sql`SELECT proof_details FROM transactions WHERE id = ${id}`,
+    );
+    return rows[0]?.proof_details;
+  }
+
+  it('refuses a missing required detail under its own key, and files nothing', async () => {
+    const userId = await makeClient('details-missing@test.local');
+    await expect(file(userId, {})).rejects.toMatchObject({
+      fields: { [`details.${PHONE}`]: 'Phone number you sent from is required.' },
+    });
+    await expect(file(userId, { [PHONE]: '+961 7150' })).rejects.toMatchObject({
+      fields: {
+        [`details.${PHONE}`]: 'This phone number is too short. Enter all the digits after +961.',
+      },
+    });
+    const { rows } = await ctx.db.execute<{ n: number }>(
+      sql`SELECT count(*)::int AS n FROM transactions WHERE user_id = ${userId}`,
+    );
+    expect(rows[0].n).toBe(0);
+  });
+
+  it('stores each answer with its question as asked — the phone as E.164; blank, hidden and unknown keys left out', async () => {
+    const userId = await makeClient('details-stored@test.local');
+    const deposit = await file(userId, {
+      [PHONE]: '+961 70 123 456',
+      [CODE]: '   ',
+      [HIDDEN]: 'not asked',
+      f_unknown001: 'nobody asked',
+    });
+    expect(await detailsOf(deposit.id)).toEqual([
+      { fieldId: PHONE, label: 'Phone number you sent from', type: 'phone', value: '+96170123456' },
+    ]);
+  });
+
+  it('keeps the question a client answered through a rename, and never lets the answer change', async () => {
+    const userId = await makeClient('details-kept@test.local');
+    const deposit = await file(userId, { [PHONE]: '+96170123456', [CODE]: 'AB-12' });
+    await methods.update(
+      METHOD,
+      { proofFields: FIELDS.map((f) => (f.id === CODE ? { ...f, label: 'Reference' } : f)) },
+      admin,
+    );
+    expect(await detailsOf(deposit.id)).toContainEqual({
+      fieldId: CODE,
+      label: 'Transfer code',
+      type: 'text',
+      value: 'AB-12',
+    });
+    await expect(
+      ctx.db.execute(
+        sql`UPDATE transactions SET proof_details = '[]'::jsonb WHERE id = ${deposit.id}`,
+      ),
+    ).rejects.toThrow();
+    await methods.update(METHOD, { proofFields: FIELDS }, admin);
+  });
+
+  it('shows the desk the answers, and finds the deposit by a spaced phone, a code or its reference', async () => {
+    const userId = await makeClient('details-search@test.local');
+    const deposit = await file(userId, { [PHONE]: '+96171222333', [CODE]: 'ZX-9981' });
+    const find = async (q: string) =>
+      (await transactions.listAllForAdmin({ scope: UNRESTRICTED, q })).items.map((row) => row.id);
+
+    expect(await find('71 222 333')).toContain(deposit.id);
+    expect(await find('zx9981')).toContain(deposit.id);
+    expect(await find(deposit.reference.toLowerCase())).toContain(deposit.id);
+    expect(await find('nothing-like-it-777')).not.toContain(deposit.id);
+
+    const [row] = (await transactions.listAllForAdmin({ scope: UNRESTRICTED, q: 'zx9981' })).items;
+    expect(row?.proofDetails?.map((d) => d.value)).toEqual(['+96171222333', 'ZX-9981']);
+    // The client sees their own answers on the deposit too.
+    const mine = await transactions.listForUser(userId);
+    expect(mine.items[0]?.proofDetails?.map((d) => d.label)).toEqual([
+      'Phone number you sent from',
+      'Transfer code',
+    ]);
+  });
+
+  it('asks a client only the shown fields, and none while the method takes no receipt', async () => {
+    const asked = async () =>
+      (await methods.listAvailable())
+        .map(clientPaymentMethodView)
+        .find((m) => m.key === METHOD)
+        ?.proofFields.map((f) => f.id);
+    expect(await asked()).toEqual([PHONE, CODE]);
+    await methods.update(METHOD, { requiresProof: false }, admin);
+    expect(await asked()).toEqual([]);
+    await methods.update(METHOD, { requiresProof: true }, admin);
+  });
+
+  it('refuses two details with one name, or more than eight, naming each refusal by its row', async () => {
+    await expect(
+      methods.update(
+        METHOD,
+        {
+          proofFields: [
+            { id: 'f_a00000001', label: 'Code', type: 'text', required: false, enabled: true },
+            { id: 'f_b00000001', label: ' code ', type: 'text', required: false, enabled: true },
+          ],
+        },
+        admin,
+      ),
+    ).rejects.toMatchObject({ fields: { 'proofFields.1.label': expect.stringMatching(/Two/) } });
+    const nine: ProofFieldInputDto[] = Array.from({ length: 9 }, (_, i) => ({
+      id: `f_n0000000${i}`,
+      label: `Detail ${i}`,
+      type: 'text',
+      required: false,
+      enabled: true,
+    }));
+    await expect(methods.update(METHOD, { proofFields: nine }, admin)).rejects.toMatchObject({
+      fields: { proofFields: expect.stringMatching(/at most 8/) },
+    });
   });
 });

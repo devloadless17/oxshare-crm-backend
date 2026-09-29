@@ -1,5 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsNumberString, IsOptional, IsString, IsUUID, Length } from 'class-validator';
+import { IsNumberString, IsObject, IsOptional, IsString, IsUUID, Length } from 'class-validator';
+import { NoClientFields } from '../../../common/security/client-field.decorator';
+import { PROOF_FIELD_TYPES, type ProofFieldType } from '../../../common/payments/proof-fields';
 
 /*
  * `DEPOSIT_CURRENCIES` is gone.
@@ -85,6 +87,52 @@ export class RequestDepositDto {
   @IsOptional()
   @IsUUID()
   destinationTradingAccountId?: string;
+}
+
+/**
+ * One answer a client gave with an offline deposit (0163), as filed: the label
+ * is the question AS ASKED, so a field renamed or deleted since still reads.
+ *
+ * Never masked (the owner's ruling): the answers are PROOF of a payment, which
+ * the desk approves the deposit on — like the receipt beside them.
+ */
+@NoClientFields(
+  'proof of a payment the client filed with the receipt, which the desk must always see',
+)
+export class ProofDetailDto {
+  @ApiProperty({ example: 'f_k3m9x2q7ab' })
+  fieldId: string;
+
+  @ApiProperty({ example: 'Phone number you sent from', description: 'The question as asked.' })
+  label: string;
+
+  @ApiProperty({ enum: PROOF_FIELD_TYPES, example: 'phone' })
+  type: ProofFieldType;
+
+  @ApiProperty({ example: '+96170123456', description: 'A phone is E.164.' })
+  value: string;
+}
+
+/**
+ * The OFFLINE form: the same fields, plus the answers to the method's details.
+ *
+ * Sent as multipart `details[<fieldId>]` parts, which multer folds into one
+ * object. Only its SHAPE is checked here; what it must hold — which fields,
+ * required or not, a real phone — is judged against the method's own
+ * configuration by `readProofDetails`, refused per field as `details.<fieldId>`.
+ */
+export class OfflineDepositDto extends RequestDepositDto {
+  @ApiPropertyOptional({
+    type: 'object',
+    additionalProperties: { type: 'string' },
+    example: { f_k3m9x2q7ab: '+961 70 123 456' },
+    description:
+      "Answers to the method's `proofFields`, keyed by field id — e.g. the phone the money " +
+      'was sent from, or a transfer code. Sent as `details[<id>]` form parts.',
+  })
+  @IsOptional()
+  @IsObject()
+  details?: Record<string, string>;
 }
 
 /**

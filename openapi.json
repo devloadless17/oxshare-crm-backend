@@ -3616,6 +3616,13 @@
                   "destinationTradingAccountId": {
                     "type": "string",
                     "format": "uuid"
+                  },
+                  "details": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    },
+                    "description": "Answers to the method's `proofFields`, as `details[<fieldId>]` parts — e.g. the phone the money was sent from. Refused per field as `details.<fieldId>`."
                   }
                 }
               }
@@ -14306,6 +14313,19 @@
           "approvedAt": {
             "format": "date-time",
             "type": "string"
+          },
+          "clientCount": {
+            "type": "number",
+            "description": "How many clients THIS sub-partner introduced — a count, never who (R2), so it spans territories, unlike the partner's own referredClientCount, which is scoped."
+          },
+          "subPartnerCount": {
+            "type": "number",
+            "description": "How many partners sit directly beneath THIS sub-partner."
+          },
+          "agencyName": {
+            "type": "string",
+            "nullable": true,
+            "description": "The agency they sell under; null offers their clients the full catalogue."
           }
         },
         "required": [
@@ -14318,7 +14338,10 @@
           "levelName",
           "referralCode",
           "active",
-          "approvedAt"
+          "approvedAt",
+          "clientCount",
+          "subPartnerCount",
+          "agencyName"
         ]
       },
       "IbPartnerDetailDto": {
@@ -14768,6 +14791,43 @@
           }
         }
       },
+      "AskedProofFieldDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "example": "f_k3m9x2q7ab",
+            "description": "Answers are keyed by it."
+          },
+          "label": {
+            "type": "string",
+            "example": "Phone number you sent from"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "text",
+              "phone"
+            ],
+            "example": "phone"
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "hint": {
+            "type": "string",
+            "nullable": true,
+            "example": "The number on your OMT slip."
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "type",
+          "required",
+          "hint"
+        ]
+      },
       "PaymentMethodDto": {
         "type": "object",
         "properties": {
@@ -14807,6 +14867,13 @@
           "requiresProof": {
             "type": "boolean",
             "description": "The client must attach a receipt: this method is paid outside the platform and an operator approves it by hand. The portal reads this to decide whether to ask for one, rather than branching on the method key."
+          },
+          "proofFields": {
+            "description": "What the client must also give with the receipt, in order — only the fields shown to clients, and only for a method paid outside the platform. Answer them as `details[<id>]` parts of POST /payments/deposits/offline.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AskedProofFieldDto"
+            }
           }
         },
         "required": [
@@ -14818,7 +14885,8 @@
           "maxAmount",
           "enabled",
           "sortOrder",
-          "requiresProof"
+          "requiresProof",
+          "proofFields"
         ]
       },
       "RequestDepositDto": {
@@ -14953,6 +15021,39 @@
           "methodKey"
         ]
       },
+      "ProofDetailDto": {
+        "type": "object",
+        "properties": {
+          "fieldId": {
+            "type": "string",
+            "example": "f_k3m9x2q7ab"
+          },
+          "label": {
+            "type": "string",
+            "example": "Phone number you sent from",
+            "description": "The question as asked."
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "text",
+              "phone"
+            ],
+            "example": "phone"
+          },
+          "value": {
+            "type": "string",
+            "example": "+96170123456",
+            "description": "A phone is E.164."
+          }
+        },
+        "required": [
+          "fieldId",
+          "label",
+          "type",
+          "value"
+        ]
+      },
       "TransactionDto": {
         "type": "object",
         "properties": {
@@ -15021,6 +15122,13 @@
           "proofFilename": {
             "type": "string",
             "nullable": true
+          },
+          "proofDetails": {
+            "nullable": true,
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProofDetailDto"
+            }
           },
           "rejectionReason": {
             "type": "string",
@@ -15237,6 +15345,48 @@
           "createdAt"
         ]
       },
+      "ProofFieldDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "example": "f_k3m9x2q7ab",
+            "description": "Answers are keyed by it."
+          },
+          "label": {
+            "type": "string",
+            "example": "Phone number you sent from"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "text",
+              "phone"
+            ],
+            "example": "phone"
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "hint": {
+            "type": "string",
+            "nullable": true,
+            "example": "The number on your OMT slip."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Shown to clients. A hidden field is kept but never asked."
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "type",
+          "required",
+          "hint",
+          "enabled"
+        ]
+      },
       "AdminPaymentMethodDto": {
         "type": "object",
         "properties": {
@@ -15277,6 +15427,13 @@
             "type": "boolean",
             "description": "The client must attach a receipt: this method is paid outside the platform and an operator approves it by hand. The portal reads this to decide whether to ask for one, rather than branching on the method key."
           },
+          "proofFields": {
+            "description": "Every detail the method asks for, hidden ones included. The details an OFFLINE method asks the client for with the receipt — e.g. the phone the money was sent from, or a transfer code. Ordered; the whole list is replaced on save. Asked only while `requiresProof` is true.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProofFieldDto"
+            }
+          },
           "ownMinAmount": {
             "type": "string",
             "nullable": true,
@@ -15311,11 +15468,53 @@
           "enabled",
           "sortOrder",
           "requiresProof",
+          "proofFields",
           "ownMinAmount",
           "ownMaxAmount",
           "internalLabel",
           "builtIn",
           "inUse"
+        ]
+      },
+      "ProofFieldInputDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "example": "f_k3m9x2q7ab",
+            "description": "Permanent; generated by the console."
+          },
+          "label": {
+            "type": "string",
+            "example": "Phone number you sent from",
+            "maxLength": 60
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "text",
+              "phone"
+            ]
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Shown to clients."
+          },
+          "hint": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 160
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "type",
+          "required",
+          "enabled"
         ]
       },
       "CreatePaymentMethodDto": {
@@ -15369,6 +15568,13 @@
           "requiresProof": {
             "type": "boolean",
             "description": "OFFLINE: the client pays outside the platform and must attach a receipt. Such a deposit is filed through POST /payments/deposits/offline and settles when an operator approves it — the JSON deposit route refuses the method. Cannot be combined with a gateway key."
+          },
+          "proofFields": {
+            "description": "The details an OFFLINE method asks the client for with the receipt — e.g. the phone the money was sent from, or a transfer code. Ordered; the whole list is replaced on save. Asked only while `requiresProof` is true.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProofFieldInputDto"
+            }
           }
         },
         "required": [
@@ -15417,6 +15623,13 @@
             "nullable": true,
             "example": "5000",
             "description": "Optional maximum for this method, tighter than the currency's maximum deposit. Null or omitted: the currency's."
+          },
+          "proofFields": {
+            "description": "The details an OFFLINE method asks the client for with the receipt — e.g. the phone the money was sent from, or a transfer code. Ordered; the whole list is replaced on save. Asked only while `requiresProof` is true.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProofFieldInputDto"
+            }
           }
         }
       },
@@ -21772,6 +21985,14 @@
             "type": "string",
             "nullable": true,
             "description": "The RECEIPT on an offline deposit — the stored filename, served from GET /v1/uploads/deposit-proofs/<file>. Null on every other movement. On the list so the deposit desk can show the image beside the row it decides on, rather than fetching one per row."
+          },
+          "proofDetails": {
+            "nullable": true,
+            "description": "What the client gave with an OFFLINE deposit to identify the payment — the phone it was sent from, a transfer code — each with the question as asked (0163). Null otherwise. Never masked: it is the proof the desk approves the deposit on, like the receipt.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProofDetailDto"
+            }
           },
           "walletId": {
             "type": "string"

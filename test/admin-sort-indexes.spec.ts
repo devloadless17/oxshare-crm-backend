@@ -364,24 +364,25 @@ describeSortIndexes(
 // ib_wallet_transfers`. Postgres can only merge-append an inlined union when
 // EVERY branch is index-ordered; the `transactions` indexes above already
 // exist, so what 0094 adds — and what these assert — is that each transfer
-// arm can serve the union's INDEXABLE sorts alone. The allowlist objects
-// passed here are shaped from ADMIN_TRANSACTION_SORT_COLUMNS so a key added
-// to the union's sort surface arrives in this spec automatically.
+// arm can serve every one of the union's sorts alone. The allowlist is
+// ADMIN_TRANSACTION_SORT_COLUMNS itself, so a key added to the union's sort
+// surface arrives in this spec automatically.
 //
-// `state` is deliberately in NEITHER map, and not because it is unsortable:
-// the union's state is `t.state::text` in one arm and a CASE mapping
-// (settled→success, failed→failure) in another — expressions no plain btree
-// can order, and the CASE is not even monotone over the enum's own order. An
-// earlier revision of this spec asserted `ORDER BY transfers.state` — a
-// query the endpoint never issues — and passed while proving nothing; the
-// index it vouched for (`transfers_state_id_idx`, 0094) was dead on arrival
-// and is dropped by 0102. The state sort legitimately carries a Sort node
-// over the filtered set (three values; fine), and R-2.5's "allowlist may not
-// exceed the indexes" is answered here in words rather than by a vacuous
-// EXPLAIN.
-const { state: _adminStateSort, ...INDEXABLE_ADMIN_TRANSACTION_SORTS } =
-  ADMIN_TRANSACTION_SORT_COLUMNS;
-void _adminStateSort;
+// `state` joined them in 0165. The union's state used to be `t.state::text` in
+// one arm and a CASE mapping to text in another — expressions no btree could
+// order, so the index 0094 built for it (`transfers_state_id_idx`) was dead on
+// arrival and 0102 dropped it, and every status sort read the whole money
+// history. Since 0165 the union's state is a `transaction_state` on every arm:
+// the transactions arm is the bare column (the withdrawal queue's index above),
+// the transfer arm is the CASE below — mapped onto the ENUM, and indexed as that
+// exact expression — and the commission arm is a constant, which orders nothing.
+// The CASE here must match `movementsCte` and 0165 character for character: it
+// is the expression the planner matches to the index.
+const TRANSFER_MOVEMENT_STATE = `CASE transfers.state
+  WHEN 'settled' THEN 'success'::transaction_state
+  WHEN 'failed' THEN 'failure'::transaction_state
+  ELSE 'pending'::transaction_state
+END`;
 describeSortIndexes(
   'the financial union: transfers arm',
   'transfers',
@@ -389,12 +390,13 @@ describeSortIndexes(
   {
     createdAt: { sql: 'transfers.created_at' },
     amount: { sql: 'transfers.amount' },
+    state: { sql: TRANSFER_MOVEMENT_STATE },
   },
-  INDEXABLE_ADMIN_TRANSACTION_SORTS,
+  ADMIN_TRANSACTION_SORT_COLUMNS,
 );
 
-// `ib_wallet_transfers` additionally has NO state column at all — the union
-// states a constant ('success'), and ordering by a constant needs no index.
+// `ib_wallet_transfers` has NO state column at all — the union states a
+// constant ('success'), and ordering by a constant needs no index.
 describeSortIndexes(
   'the financial union: commission-transfer arm',
   'ib_wallet_transfers',
@@ -402,8 +404,9 @@ describeSortIndexes(
   {
     createdAt: { sql: 'ib_wallet_transfers.created_at' },
     amount: { sql: 'ib_wallet_transfers.amount' },
+    state: { sql: `'success'::transaction_state` },
   },
-  INDEXABLE_ADMIN_TRANSACTION_SORTS,
+  ADMIN_TRANSACTION_SORT_COLUMNS,
 );
 
 // ── The commission ledger ────────────────────────────────────────────────────
@@ -452,9 +455,8 @@ describe('the composites are direction-pinned in the shape the queries order by'
     /* `ib_accounts_level_user_idx` went in 0104 with the column it ordered. The
        partner list sorts by the JOINED programme name now, which a composite on
        `ib_accounts` cannot serve. */
-    // Migration 0094 — the financial union's transfer arms. (0094's
-    // transfers_state_id_idx is absent on purpose: dropped by 0102, see the
-    // union-arm block above.)
+    // Migration 0094 — the financial union's transfer arms. (Their state sort is
+    // 0165's expression index — asserted by plan in the union-arm block above.)
     ['transfers_created_at_id_idx', 'created_at DESC', 'id DESC'],
     ['transfers_amount_id_idx', 'amount DESC', 'id DESC'],
     ['ib_wallet_transfers_created_at_id_idx', 'created_at DESC', 'id DESC'],

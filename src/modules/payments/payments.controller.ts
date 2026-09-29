@@ -43,7 +43,7 @@ import { TransactionsService } from './transactions.service';
 import { transactionView } from './transaction-view';
 import { transferView } from './transfer-view';
 import { RequestWithdrawalDto, TransactionDto, WithdrawalMethodDto } from './dto/withdrawal.dto';
-import { DepositRequestDto, RequestDepositDto } from './dto/deposit.dto';
+import { DepositRequestDto, OfflineDepositDto, RequestDepositDto } from './dto/deposit.dto';
 import {
   ListTransactionsQueryDto,
   TransactionPageDto,
@@ -285,6 +285,13 @@ export class PaymentsController {
         currency: { type: 'string', example: 'USD' },
         method: { type: 'string', example: 'offline' },
         destinationTradingAccountId: { type: 'string', format: 'uuid' },
+        details: {
+          type: 'object',
+          additionalProperties: { type: 'string' },
+          description:
+            "Answers to the method's `proofFields`, as `details[<fieldId>]` parts — e.g. the " +
+            'phone the money was sent from. Refused per field as `details.<fieldId>`.',
+        },
       },
     },
   })
@@ -297,7 +304,7 @@ export class PaymentsController {
   })
   @ApiCreatedResponse({ type: DepositRequestDto })
   async requestOfflineDeposit(
-    @Body() dto: RequestDepositDto,
+    @Body() dto: OfflineDepositDto,
     @Req() req: Request & { user: User },
     @UploadedFile(
       new ParseFilePipe({
@@ -327,6 +334,7 @@ export class PaymentsController {
         method: dto.method,
         destinationTradingAccountId: dto.destinationTradingAccountId,
         proofFilename: stored.filename,
+        details: dto.details,
       });
     } catch (error) {
       /*

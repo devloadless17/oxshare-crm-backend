@@ -3,6 +3,7 @@ import type {
   ClientPaymentMethod,
   PaymentMethodRow,
 } from './payment-methods.service';
+import { askedProofFields } from '../../common/payments/proof-fields';
 
 /**
  * A deposit method as the console reads it — exactly the fields
@@ -35,6 +36,15 @@ export function adminPaymentMethodView(row: AdminPaymentMethod) {
     internalLabel: row.internalLabel,
     builtIn: row.builtIn,
     inUse: row.inUse,
+    // Every question, hidden ones included — the console edits them all.
+    proofFields: row.proofFields.map((field) => ({
+      id: field.id,
+      label: field.label,
+      type: field.type,
+      required: field.required,
+      enabled: field.enabled,
+      hint: field.hint ?? null,
+    })),
   };
 }
 
@@ -47,5 +57,11 @@ export function adminPaymentMethodView(row: AdminPaymentMethod) {
  * a method ("BLOM account 1234"), and it must not depend on that backstop.
  */
 export function clientPaymentMethodView(row: ClientPaymentMethod) {
-  return { ...paymentMethodView(row), minAmount: row.minAmount, maxAmount: row.maxAmount };
+  return {
+    ...paymentMethodView(row),
+    minAmount: row.minAmount,
+    maxAmount: row.maxAmount,
+    // Only what the client is ASKED: shown fields, and only for an offline method.
+    proofFields: askedProofFields(row.proofFields, row.requiresProof),
+  };
 }

@@ -117,31 +117,52 @@ export function clientScopePredicate(
    * stored: "untriaged" cannot drift, cannot be deleted, and a client whose
    * last tag is removed RETURNS here rather than becoming invisible to every
    * scoped admin — the orphan class the materialised-tag design allowed.
-   */
-  const untriaged = scope.includesUntriaged
-    ? sql`NOT EXISTS (
-        SELECT 1 FROM ${clientTagAssignments} intake_a
-        WHERE intake_a.user_id = ${clientIdColumn}
-      )`
-    : undefined;
-
-  /*
+   *
    * No territory tags: the "new clients only" admin (intake granted) or the
    * admin who sees no clients at all — both real configurations since 0154.
    * (An empty `IN ()` would also be a SQL syntax error.)
    */
-  if (scope.tagIds.length === 0) return untriaged ?? sql`false`;
+  if (scope.tagIds.length === 0) {
+    return scope.includesUntriaged
+      ? sql`NOT EXISTS (
+          SELECT 1 FROM ${clientTagAssignments} intake_a
+          WHERE intake_a.user_id = ${clientIdColumn}
+        )`
+      : sql`false`;
+  }
 
-  const territory = sql`EXISTS (
-    SELECT 1 FROM ${clientTagAssignments} scope_a
-    WHERE scope_a.user_id = ${clientIdColumn}
-      AND scope_a.tag_id IN (${sql.join(
-        scope.tagIds.map((id) => sql`${id}::uuid`),
-        sql`, `,
-      )})
+  const tagList = sql.join(
+    scope.tagIds.map((id) => sql`${id}::uuid`),
+    sql`, `,
+  );
+
+  if (!scope.includesUntriaged) {
+    return sql`EXISTS (
+      SELECT 1 FROM ${clientTagAssignments} scope_a
+      WHERE scope_a.user_id = ${clientIdColumn}
+        AND scope_a.tag_id IN (${tagList})
+    )`;
+  }
+
+  /*
+   * Territory tags AND new clients, stated as what is HIDDEN: a client who
+   * carries some tag, but none of this actor's. Written as the obvious
+   * `(has a territory tag OR has no tag)` it is the same set — pinned by
+   * `test/client-scope-twin.spec.ts` — but an OR of two subqueries is one
+   * Postgres cannot turn into a join, so it probed both for every row of
+   * every list: ~0.9 s for one Financial page at 160,000 movements (29 Sep
+   * 2026). A single NOT EXISTS becomes an anti-join the planner can run
+   * either way round — by index for a page, by hash for a count (7× faster).
+   */
+  return sql`NOT EXISTS (
+    SELECT 1 FROM ${clientTagAssignments} other_a
+    WHERE other_a.user_id = ${clientIdColumn}
+      AND NOT EXISTS (
+        SELECT 1 FROM ${clientTagAssignments} scope_a
+        WHERE scope_a.user_id = other_a.user_id
+          AND scope_a.tag_id IN (${tagList})
+      )
   )`;
-
-  return untriaged ? sql`(${territory} OR ${untriaged})` : territory;
 }
 
 /**
