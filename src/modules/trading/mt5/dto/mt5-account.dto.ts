@@ -136,6 +136,15 @@ export class CreatedMt5AccountDto {
   @ApiProperty({ enum: ['live', 'demo'] })
   environment!: 'live' | 'demo';
 
+  /**
+   * The name the account was given — the client's own "First Last", with "-2",
+   * "-3"… from their second account on (owner, 29 Sep 2026). A person's name,
+   * masked as one.
+   */
+  @ClientField('client.lastName')
+  @ApiPropertyOptional({ type: String, example: 'Rana Haddad-2' })
+  name?: string;
+
   /*
    * THE NINTH EXPOSURE. This IS the client's email address, under a name no
    * heuristic over field names would ever have matched — which is the whole

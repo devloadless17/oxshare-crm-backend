@@ -340,10 +340,12 @@ export class Mt5AccountsService {
      * the CRM then cannot record.
      */
     const productId = await this.productForGroup(input.group, input.productId);
+    // Named by the rule every opened account follows — see `autoAccountName`.
+    const accountName = await this.autoAccountName(client);
 
     const created = await this.bridge.createAccount({
       group: input.group,
-      name: `${client.firstName} ${client.lastName}`.trim(),
+      name: accountName,
       email: client.email,
       country: client.country ?? undefined,
       phone: client.phone ?? undefined,
@@ -353,59 +355,69 @@ export class Mt5AccountsService {
       externalId: String(client.id),
     });
 
-    const [row] = await this.db
-      .insert(tradingAccounts)
-      .values({
-        userId: client.id,
-        login: String(created.login),
-        /*
-         * THE GROUP, and it was missing.
-         *
-         * Every account opened through here stored NULL, so `mt5_group` was
-         * empty for the entire estate — and the portal's account card, which
-         * renders it, showed an em dash to every client on every account.
-         *
-         * It is not only a label. `trading_product_groups` is UNIQUE on
-         * `mt5_group` precisely so that "which product is this account under"
-         * has an answer, and its schema comment says why that question matters:
-         * it decides whose commission the account pays. With this column null
-         * the question was unanswerable for every account in the system.
-         *
-         * `created.group` rather than `input.group` — what MT5 actually put the
-         * account in, read back from the bridge's own response. The two are
-         * normally the same string; when they are not, the server is right and
-         * we are not, and storing what we ASKED for would record a group the
-         * account is not in.
-         */
-        mt5Group: created.group,
-        /*
-         * THE PRODUCT, snapshotted (0080).
-         *
-         * Resolved from the group MT5 confirmed, not the one requested — same
-         * reasoning as `mt5Group` directly above: if the server put the account
-         * somewhere else, the product is whatever THAT group is sold as.
-         *
-         * Frequently NULL on this path, and legitimately so. An operator types a
-         * group here rather than picking a product, and may open an account
-         * directly into a group the catalogue does not sell — a bespoke
-         * arrangement, an internal test account, a group added on the server this
-         * morning. NULL records that honestly instead of guessing.
-         */
-        productId: await this.recordedProduct(created.group, input.group, productId),
-        /* From the group MT5 confirmed, not from the request — see the helper. */
-        environment: await this.environmentForGroup(
-          created.group,
-          input.environment,
-          created.login,
-        ),
-        currency: created.currency,
-        leverage: created.leverage,
-        // Zero, not the MT5 balance: a new account has none, and writing
-        // anything else here would be inventing a number MT5 did not give us.
-        balance: '0',
-        status: 'active',
-      })
-      .returning();
+    const recordedProductId = await this.recordedProduct(created.group, input.group, productId);
+    const recordedEnvironment = await this.environmentForGroup(
+      created.group,
+      input.environment,
+      created.login,
+    );
+    const { result: row } = await this.insertNamed(
+      client,
+      accountName,
+      String(created.login),
+      (name) =>
+        this.db
+          .insert(tradingAccounts)
+          .values({
+            userId: client.id,
+            login: String(created.login),
+            name,
+            /*
+             * THE GROUP, and it was missing.
+             *
+             * Every account opened through here stored NULL, so `mt5_group` was
+             * empty for the entire estate — and the portal's account card, which
+             * renders it, showed an em dash to every client on every account.
+             *
+             * It is not only a label. `trading_product_groups` is UNIQUE on
+             * `mt5_group` precisely so that "which product is this account under"
+             * has an answer, and its schema comment says why that question matters:
+             * it decides whose commission the account pays. With this column null
+             * the question was unanswerable for every account in the system.
+             *
+             * `created.group` rather than `input.group` — what MT5 actually put the
+             * account in, read back from the bridge's own response. The two are
+             * normally the same string; when they are not, the server is right and
+             * we are not, and storing what we ASKED for would record a group the
+             * account is not in.
+             */
+            mt5Group: created.group,
+            /*
+             * THE PRODUCT, snapshotted (0080).
+             *
+             * Resolved from the group MT5 confirmed, not the one requested — same
+             * reasoning as `mt5Group` directly above: if the server put the account
+             * somewhere else, the product is whatever THAT group is sold as.
+             *
+             * Frequently NULL on this path, and legitimately so. An operator types a
+             * group here rather than picking a product, and may open an account
+             * directly into a group the catalogue does not sell — a bespoke
+             * arrangement, an internal test account, a group added on the server this
+             * morning. NULL records that honestly instead of guessing.
+             */
+            productId: recordedProductId,
+            /* From the group MT5 confirmed, not from the request — see the helper. */
+            environment: recordedEnvironment,
+            currency: created.currency,
+            leverage: created.leverage,
+            // Zero, not the MT5 balance: a new account has none, and writing
+            // anything else here would be inventing a number MT5 did not give us.
+            balance: '0',
+            status: 'active',
+          })
+          .returning()
+          .then((rows) => rows[0]),
+    );
 
     this.audit.record(actor.id, 'trading.account_create', 'trading_account', row.id, {
       login: String(created.login),
@@ -519,7 +531,11 @@ export class Mt5AccountsService {
     productId?: string;
     /** Validated against the offered ladder by the caller. */
     leverage?: number;
-    /** A label for the account. Defaults to the client's own name. */
+    /**
+     * IGNORED (owner, 29 Sep 2026): the client does not name the account — see
+     * `autoAccountName`. Kept on the input so a caller that still sends it is
+     * not refused.
+     */
     name?: string;
     /** DEMO only — refused on a live account rather than ignored. */
     startingBalance?: string;
@@ -598,30 +614,20 @@ export class Mt5AccountsService {
     }
 
     /*
-     * The name is this client's alone to reuse, and they may not.
-     *
-     * LAST of the refusals and FIRST of the writes — deliberately on this side
-     * of the bridge call. MT5 has no rollback and neither does anything below
-     * it: an account created there and then refused here would be a live
-     * trading account the client cannot see, cannot name and did not know was
-     * opened.
-     *
-     * Only when the client actually chose one. An unnamed account stores NULL
-     * (see the insert below), and NULL is not a name that can collide — a
-     * client may open any number of accounts without naming them.
+     * The client does NOT name the account (owner, 29 Sep 2026): it is named
+     * "First Last" for their first, "First Last-2", "-3"… after — see
+     * `autoAccountName`. Derived before the bridge call, so MT5 and the CRM
+     * hold the same name from the start.
      */
-    const chosenName = input.name?.trim() || null;
-    if (chosenName) await this.assertNameFree(client.id, chosenName);
+    const accountName = await this.autoAccountName(client);
 
     // Before the bridge, for the reason the admin path gives.
     const productId = await this.productForGroup(input.group, input.productId);
 
     const created = await this.bridge.createAccount({
       group: input.group,
-      // The client's own name when they did not choose one — that is what MT5
-      // expects in this field and what makes a row in the manager terminal
-      // identifiable.
-      name: chosenName || `${client.firstName} ${client.lastName}`.trim(),
+      // The holder name in the manager terminal — the same one the CRM stores.
+      name: accountName,
       email: client.email,
       country: client.country ?? undefined,
       phone: client.phone ?? undefined,
@@ -667,56 +673,63 @@ export class Mt5AccountsService {
       ? await this.bridge.getAccount(String(created.login)).catch(() => null)
       : null;
 
-    const [row] = await this.db
-      .insert(tradingAccounts)
-      .values({
-        userId: client.id,
-        login: String(created.login),
-        // Stored so the PORTAL can label this account without asking the
-        // bridge. The same string went to MT5 above as the holder name; NULL
-        // when the client chose nothing, so the portal falls back to the login
-        // rather than showing a name nobody picked.
-        name: chosenName,
-        /*
-         * THE GROUP — see the note on the admin path above, which this omitted
-         * for the same reason and with the same consequence.
-         *
-         * It matters more here: this path exists because the client chose a
-         * PRODUCT and a currency, and the group is the only record of which
-         * product that was. Dropping it threw away the one fact the form was
-         * collecting, so an account opened as "Standard" was indistinguishable
-         * afterwards from one opened as anything else.
-         */
-        mt5Group: created.group,
-        /*
-         * THE PRODUCT the client actually chose (0080).
-         *
-         * This is the path the column exists for. The open-account form asks for
-         * a currency and a PRODUCT, `SelfServiceGroups` turns that choice into a
-         * group, and until now the group was the only surviving record of it —
-         * so the choice was readable only for as long as the catalogue kept
-         * pointing that group at the same product. Here it becomes a fact about
-         * the account instead of a fact about the catalogue.
-         *
-         * Resolved from `created.group` rather than carried down from the form,
-         * so both open paths record the product the same way: from the group the
-         * account is actually in. Nothing is offered to a client that is not in
-         * the catalogue, so this is NULL here only if the group was detached
-         * between the picker rendering and the account opening.
-         */
-        productId: await this.recordedProduct(created.group, input.group, productId),
-        /* From the group MT5 confirmed, not from the request — see the helper. */
-        environment: await this.environmentForGroup(
-          created.group,
-          input.environment,
-          created.login,
-        ),
-        currency: created.currency,
-        leverage: created.leverage,
-        balance: snapshot?.balance ?? '0',
-        status: 'active',
-      })
-      .returning();
+    const ownProductId = await this.recordedProduct(created.group, input.group, productId);
+    const ownEnvironment = await this.environmentForGroup(
+      created.group,
+      input.environment,
+      created.login,
+    );
+    const { result: row, name: storedName } = await this.insertNamed(
+      client,
+      accountName,
+      String(created.login),
+      (name) =>
+        this.db
+          .insert(tradingAccounts)
+          .values({
+            userId: client.id,
+            login: String(created.login),
+            // Stored so the PORTAL can label this account without asking the
+            // bridge — the same string MT5 holds as the holder name.
+            name,
+            /*
+             * THE GROUP — see the note on the admin path above, which this omitted
+             * for the same reason and with the same consequence.
+             *
+             * It matters more here: this path exists because the client chose a
+             * PRODUCT and a currency, and the group is the only record of which
+             * product that was. Dropping it threw away the one fact the form was
+             * collecting, so an account opened as "Standard" was indistinguishable
+             * afterwards from one opened as anything else.
+             */
+            mt5Group: created.group,
+            /*
+             * THE PRODUCT the client actually chose (0080).
+             *
+             * This is the path the column exists for. The open-account form asks for
+             * a currency and a PRODUCT, `SelfServiceGroups` turns that choice into a
+             * group, and until now the group was the only surviving record of it —
+             * so the choice was readable only for as long as the catalogue kept
+             * pointing that group at the same product. Here it becomes a fact about
+             * the account instead of a fact about the catalogue.
+             *
+             * Resolved from `created.group` rather than carried down from the form,
+             * so both open paths record the product the same way: from the group the
+             * account is actually in. Nothing is offered to a client that is not in
+             * the catalogue, so this is NULL here only if the group was detached
+             * between the picker rendering and the account opening.
+             */
+            productId: ownProductId,
+            /* From the group MT5 confirmed, not from the request — see the helper. */
+            environment: ownEnvironment,
+            currency: created.currency,
+            leverage: created.leverage,
+            balance: snapshot?.balance ?? '0',
+            status: 'active',
+          })
+          .returning()
+          .then((rows) => rows[0]),
+    );
 
     this.logger.log(
       `Client ${client.id} opened their own MT5 account ${created.login} (${created.group})`,
@@ -734,7 +747,7 @@ export class Mt5AccountsService {
       created.leverage,
       created.masterPassword,
       created.investorPassword,
-      input.name?.trim() || undefined,
+      storedName,
       // What MT5 holds, not what was asked for: if funding failed this is '0'
       // and the mail correctly omits the line rather than promising money that
       // is not there.
@@ -758,6 +771,7 @@ export class Mt5AccountsService {
     return {
       id: row.id,
       login: String(created.login),
+      name: storedName,
       environment: input.environment,
       currency: created.currency,
       leverage: created.leverage,
@@ -891,6 +905,61 @@ export class Mt5AccountsService {
    * divergence, and retrying is safe because both writes are idempotent for the
    * same name.
    */
+  /**
+   * An opened account's name (owner, 29 Sep 2026): the client's "First Last" for
+   * their FIRST account, then "First Last-2", "First Last-3"… — the number is the
+   * account's place among theirs. The client never types it.
+   *
+   * Counted over every account the client holds (named or not), then moved on
+   * past any name already taken, so it is unique per client as
+   * `trading_accounts_user_name_uq` requires.
+   */
+  private async autoAccountName(client: {
+    id: number;
+    firstName: string | null;
+    lastName: string | null;
+    email: string;
+  }): Promise<string> {
+    const base = (
+      `${client.firstName ?? ''} ${client.lastName ?? ''}`.trim() || client.email.split('@')[0]
+    ).slice(0, 120);
+    const rows = await this.db
+      .select({ name: tradingAccounts.name })
+      .from(tradingAccounts)
+      .where(eq(tradingAccounts.userId, client.id));
+    const taken = new Set(
+      rows.map((row) => row.name?.toLowerCase()).filter((name): name is string => Boolean(name)),
+    );
+    const nameFor = (place: number) => (place === 1 ? base : `${base}-${place}`);
+    let place = rows.length + 1;
+    while (taken.has(nameFor(place).toLowerCase())) place += 1;
+    return nameFor(place);
+  }
+
+  /**
+   * Insert the account's row under its derived name — and if a concurrent open
+   * took that name first (the unique index refuses it), take the next one and
+   * rename the account on MT5 to match. The account already EXISTS on MT5 by
+   * now, so refusing here would leave a trading account the client cannot see.
+   */
+  private async insertNamed<T>(
+    client: { id: number; firstName: string | null; lastName: string | null; email: string },
+    first: string,
+    login: string,
+    insert: (name: string) => Promise<T>,
+  ): Promise<{ result: T; name: string }> {
+    let name = first;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return { result: await insert(name), name };
+      } catch (error) {
+        if (attempt >= 4 || constraintOf(error) !== 'trading_accounts_user_name_uq') throw error;
+        name = await this.autoAccountName(client);
+        await this.bridge.updateName(login, name).catch(() => false);
+      }
+    }
+  }
+
   /**
    * Refuse a name this client has already used.
    *
@@ -1548,4 +1617,10 @@ function isUniqueViolation(error: unknown): boolean {
     (error as { code?: string; cause?: { code?: string } })?.code ??
     (error as { cause?: { code?: string } })?.cause?.code;
   return code === '23505';
+}
+
+/** The constraint a Postgres error names — Drizzle wraps the driver's error in `cause`. */
+function constraintOf(error: unknown): string | undefined {
+  const direct = error as { constraint?: string; cause?: { constraint?: string } };
+  return direct?.constraint ?? direct?.cause?.constraint;
 }
