@@ -54,8 +54,8 @@ const COMPLETE_PROFILE = {
 };
 
 let ctx: HttpTestContext;
-let clientId: string;
-let otherId: string;
+let clientId: number;
+let otherId: number;
 
 beforeAll(async () => {
   ctx = await startHttpTestApp();
@@ -213,6 +213,33 @@ describe('the client KYC routes', () => {
     expect(res.body.userId).toBe(otherId);
   });
 
+  /*
+   * `reviewed_by` is an ADMIN's internal id — and, while a review is open, the
+   * one holding the claim. It went to every client in their own status until
+   * 28 Sep 2026. The portal never read it, and it is not the client's to see.
+   */
+  it('never shows the client which admin holds or decided their submission', async () => {
+    const [reviewer] = await ctx.db.db
+      .select({ id: admins.id })
+      .from(admins)
+      .where(eq(admins.email, REVIEWER.email));
+    await ctx.db.db
+      .update(kycSubmissions)
+      .set({ reviewedBy: reviewer.id })
+      .where(eq(kycSubmissions.userId, otherId));
+    try {
+      const session = await actingAs(ctx, 'portal', OTHER);
+      const res = await session.get('/v1/kyc/status').expect(200);
+      expect(res.body).not.toHaveProperty('reviewedBy');
+      expect(JSON.stringify(res.body)).not.toContain(reviewer.id);
+    } finally {
+      await ctx.db.db
+        .update(kycSubmissions)
+        .set({ reviewedBy: null })
+        .where(eq(kycSubmissions.userId, otherId));
+    }
+  });
+
   it('refuse a step edit once the submission is under review', async () => {
     const session = await actingAs(ctx, 'portal', CLIENT);
     const res = await session.post('/v1/kyc/step', {
@@ -368,6 +395,7 @@ describe('the step configurator is a different permission from reviewing', () =>
     const before = (await master.get('/v1/admin/kyc-config')).body as { slug: string }[];
 
     const res = await master.put('/v1/admin/kyc-config', {
+      format: 2,
       steps: [
         {
           slug: 'proof-of-funds',
@@ -386,7 +414,7 @@ describe('the step configurator is a different permission from reviewing', () =>
       ],
     });
     expect(res.status).toBe(400);
-    expect(JSON.stringify(res.body)).toMatch(/cannot be removed/);
+    expect(JSON.stringify(res.body)).toMatch(/cannot be deleted/);
 
     // RE-READ: nothing was written.
     const after = (await master.get('/v1/admin/kyc-config')).body as { slug: string }[];

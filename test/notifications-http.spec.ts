@@ -27,8 +27,8 @@ const CLIENT_A = { email: 'notif-client-a@oxshare-e2e.test', password: 'client-p
 const CLIENT_B = { email: 'notif-client-b@oxshare-e2e.test', password: 'client-password-123' };
 
 let ctx: HttpTestContext;
-let clientAId: string;
-let clientBId: string;
+let clientAId: number;
+let clientBId: number;
 let adminAId: string;
 
 interface NotificationRow {
@@ -41,12 +41,16 @@ interface NotificationRow {
 
 const items = (body: unknown) => (body as { items: NotificationRow[] }).items;
 
-async function seedRow(recipientKind: 'client' | 'admin', recipientId: string, kind: string) {
+async function seedRow(
+  recipientKind: 'client' | 'admin',
+  recipientId: string | number,
+  kind: string,
+) {
   const [row] = await ctx.db.db
     .insert(notifications)
     .values({
       recipientKind,
-      recipientId,
+      recipientId: String(recipientId),
       kind,
       params: { amount: '10.00000000' },
       /*
@@ -55,7 +59,7 @@ async function seedRow(recipientKind: 'client' | 'admin', recipientId: string, k
        * read by unrestricted admins, so any real client serves.
        */
       ...(recipientKind === 'admin'
-        ? { subjectKind: 'kyc' as const, subjectId: clientAId, subjectUserId: clientAId }
+        ? { subjectKind: 'kyc' as const, subjectId: String(clientAId), subjectUserId: clientAId }
         : {}),
     })
     .returning();

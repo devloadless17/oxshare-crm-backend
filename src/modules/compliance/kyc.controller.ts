@@ -204,17 +204,11 @@ export class KycController {
      * whose documents these are would be the whole distance between "my data" and
      * "anyone's data".
      */
-    const stored = await this.files.write(
-      KYC_BUCKET,
-      file.buffer,
-      file.mimetype,
-      {
-        id: req.user.id,
-        kind: 'client',
-        ownerUserId: req.user.id,
-      },
-      file.originalname,
-    );
+    const stored = await this.files.write(KYC_BUCKET, file.buffer, file.mimetype, {
+      id: req.user.id,
+      kind: 'client',
+      ownerUserId: req.user.id,
+    });
 
     try {
       /*
@@ -227,7 +221,6 @@ export class KycController {
         req.user.id,
         dto.field,
         storedPath(KYC_BUCKET.dir, stored.filename),
-        file.originalname,
         dto.docType,
       );
     } catch (error) {

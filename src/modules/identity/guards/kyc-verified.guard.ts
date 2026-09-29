@@ -51,7 +51,7 @@ export class KycVerifiedGuard implements CanActivate {
   constructor(@Inject(UsersStore) private readonly users: UsersStore) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const request = context.switchToHttp().getRequest<{ user?: { id: string } }>();
+    const request = context.switchToHttp().getRequest<{ user?: { id: number } }>();
     const userId = request.user?.id;
 
     /*

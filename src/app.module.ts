@@ -34,6 +34,7 @@ import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { MiddlewareConsumer, NestModule } from '@nestjs/common';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { FieldMaskInterceptor } from './common/security/field-mask.interceptor';
+import { ResponseProjectionInterceptor } from './common/security/response-projection.interceptor';
 import { E2eFixturesModule } from './modules/e2e-fixtures/e2e-fixtures.module';
 import { RequestIdMiddleware } from './common/middleware/request-id.middleware';
 import { CsrfEchoMiddleware } from './common/security/csrf-echo.middleware';
@@ -59,6 +60,8 @@ import { ProductsModule } from './modules/products/products.module';
 import { ComplianceModule } from './modules/compliance/compliance.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { ProfileModule } from './modules/profile/profile.module';
+import { ClientIdentityModule } from './modules/client-identity/client-identity.module';
+import { KycIdentityReviewModule } from './modules/compliance/kyc-identity-review';
 import { HealthModule } from './modules/health/health.module';
 import { SecurityModule } from './common/security/security.module';
 import { CsrfGuard } from './common/security/csrf.guard';
@@ -142,6 +145,8 @@ import { RedisThrottlerStorage } from './common/security/redis-throttler.storage
     StoreModule,
     // The one write path for a client's identity — see client-profile.service.ts.
     ProfileModule,
+    ClientIdentityModule,
+    KycIdentityReviewModule,
     ResourceChangedModule,
     /*
      * @Global(), so the eight `@Cron` jobs spread across five feature modules
@@ -196,6 +201,14 @@ import { RedisThrottlerStorage } from './common/security/redis-throttler.storage
      * mechanism is running.
      */
     { provide: APP_INTERCEPTOR, useClass: FieldMaskInterceptor },
+    /*
+     * Every response holds only the keys its declared DTO names — the rule the
+     * referrer route broke by returning the raw users row, `passwordHash`
+     * included (28 Sep 2026). Registered AFTER the mask so it runs FIRST on the
+     * way out (Nest unwinds interceptors inside-out): the mask then walks a body
+     * already cut to its declared shape. See response-projection.interceptor.ts.
+     */
+    { provide: APP_INTERCEPTOR, useClass: ResponseProjectionInterceptor },
     // Global baseline throttle; sensitive routes tighten it with @Throttle.
     { provide: APP_GUARD, useClass: ThrottlerGuard },
     /*

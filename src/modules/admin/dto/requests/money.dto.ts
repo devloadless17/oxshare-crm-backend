@@ -96,9 +96,10 @@ export class SettleWithdrawalDto {
  * sat `pending` for ever because nothing could confirm it.
  */
 export class CreditWalletDto {
-  @ApiProperty({ format: 'uuid', description: 'The client to credit.' })
-  @IsUUID()
-  userId: string;
+  @ApiProperty({ type: 'integer', description: 'The client to credit.' })
+  @IsInt()
+  @Min(1)
+  userId: number;
 
   /**
    * A positive decimal string, at most eight places — §6.1.
@@ -208,9 +209,10 @@ export class FundTradingAccountDto {
  * decisions.
  */
 export class OpenWalletDto {
-  @ApiProperty({ format: 'uuid' })
-  @IsUUID()
-  userId: string;
+  @ApiProperty({ type: 'integer' })
+  @IsInt()
+  @Min(1)
+  userId: number;
 
   @ApiProperty({
     example: 'USD',

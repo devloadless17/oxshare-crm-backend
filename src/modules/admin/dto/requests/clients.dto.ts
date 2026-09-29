@@ -104,11 +104,34 @@ export class UpdateClientProfileDto {
   @MaxLength(100)
   city?: string;
 
+  @ApiPropertyOptional({ example: 'Mount Lebanon', maxLength: 100 })
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  stateProvince?: string;
+
   @ApiPropertyOptional({ example: '1103 2080', maxLength: 12 })
   @IsOptional()
   @IsString()
   @MaxLength(12)
   postalCode?: string;
+
+  /*
+   * Why a VERIFIED detail changes — required exactly when one does (the
+   * profile's `correctableFields`), and ignored otherwise. It goes on the
+   * verification's audit row beside both values; the client is told which
+   * details changed. Any non-blank length, like every reviewer reason.
+   */
+  @ApiPropertyOptional({
+    example: 'Surname misspelt at registration; the passport reads "Haddad".',
+    maxLength: 500,
+    description: 'Required when a verified detail changes. Recorded on the audit row.',
+  })
+  @Transform(({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() : value))
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  reason?: string;
 }
 
 /**

@@ -29,7 +29,7 @@ import {
   IB_PARTNER_SORT_COLUMNS,
 } from '../../store/ib.store';
 import { ibAccrualKindEnum, ibAccrualStatusEnum } from '../../database/schema';
-import { enumQuery, uuidQuery } from '../../common/query-params';
+import { enumQuery } from '../../common/query-params';
 import { ClientRefPipe } from '../../common/client-ref.pipe';
 import { AdminExportService } from '../admin/admin-export.service';
 import { AdminAuditService } from '../admin/admin-audit.service';
@@ -57,6 +57,7 @@ import {
   IbApplicationListMaskDto,
   IbPartnerListMaskDto,
 } from './dto/ib-list-mask.dto';
+import { ibApplicationView } from './ib-views';
 
 /**
  * Reviewing partner applications.
@@ -233,12 +234,12 @@ export class AdminIbController {
   @ApiOkResponse({ type: IbAccountDto })
   @ScopedToClients('Decides on one client’s application; out-of-scope 404s like a missing one.')
   @Audited('ib.approve')
-  approve(
+  async approve(
     @Req() req: Request & { admin: AuthenticatedAdmin },
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: ApproveIbApplicationDto,
   ) {
-    return this.applications.approve(id, req.admin, req.admin.clientScope, {
+    const account = await this.applications.approve(id, req.admin, req.admin.clientScope, {
       /*
        * Passed THROUGH, never `?? null` — for BOTH fields, and the distinction
        * is the whole bug this line once was. To the service, `undefined` means
@@ -255,6 +256,7 @@ export class AdminIbController {
       parentIbUserId: dto.parentIbUserId,
       agencyId: dto.agencyId,
     });
+    return this.applications.accountViewFor(account, req.admin.clientScope);
   }
 
   @Patch('applications/:id/reject')
@@ -271,12 +273,14 @@ export class AdminIbController {
   @ApiOkResponse({ type: IbApplicationDto })
   @ScopedToClients('Decides on one client’s application; out-of-scope 404s like a missing one.')
   @Audited('ib.reject')
-  reject(
+  async reject(
     @Req() req: Request & { admin: AuthenticatedAdmin },
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: RejectIbApplicationDto,
   ) {
-    return this.applications.reject(id, req.admin, req.admin.clientScope, dto);
+    return ibApplicationView(
+      await this.applications.reject(id, req.admin, req.admin.clientScope, dto),
+    );
   }
 
   // ── partners, once they exist ──────────────────────────────────────────────
@@ -344,8 +348,8 @@ export class AdminIbController {
     @Req() req: Request & { admin: AuthenticatedAdmin },
     @Query('page') page?: string,
     @Query('limit') limit?: string,
-    @Query('ibUserId', ClientRefPipe) ibUserId?: string,
-    @Query('clientUserId', ClientRefPipe) clientUserId?: string,
+    @Query('ibUserId', ClientRefPipe) ibUserId?: number,
+    @Query('clientUserId', ClientRefPipe) clientUserId?: number,
     @Query('q') q?: string,
     @Query('status') status?: string,
     @Query('kind') kind?: string,
@@ -364,8 +368,8 @@ export class AdminIbController {
          * then all it has is a cast error. On a route taking several ids that
          * matters, and the database paid for a round trip to produce it.
          */
-        ibUserId: uuidQuery(ibUserId, 'ibUserId'),
-        clientUserId: uuidQuery(clientUserId, 'clientUserId'),
+        ibUserId: ibUserId,
+        clientUserId: clientUserId,
         q,
         // Validated against the column's own enum, so an unrecognised value is
         // a 400 rather than a filter that silently matches nothing.
@@ -605,7 +609,7 @@ export class AdminIbController {
   @ScopedToClients('Checks the SUBJECT with assertVisible; out-of-scope 404s like a missing one.')
   partnerDetail(
     @Req() req: Request & { admin: AuthenticatedAdmin },
-    @Param('userId', ClientRefPipe) userId: string,
+    @Param('userId', ClientRefPipe) userId: number,
   ) {
     return this.applications.partnerDetailFor(userId, req.admin.clientScope, req.admin.fieldMask);
   }
@@ -638,12 +642,15 @@ export class AdminIbController {
   @ApiOkResponse({ type: IbAccountDto })
   @ScopedToClients('Acts on one client’s partner account; out-of-scope 404s like a missing one.')
   @Audited('ib.level_change')
-  changeLevel(
+  async changeLevel(
     @Req() req: Request & { admin: AuthenticatedAdmin },
-    @Param('userId', ClientRefPipe) userId: string,
+    @Param('userId', ClientRefPipe) userId: number,
     @Body() dto: ChangeIbLevelDto,
   ) {
-    return this.applications.changeLevel(userId, dto.level, req.admin.clientScope, req.admin);
+    return this.applications.accountViewFor(
+      await this.applications.changeLevel(userId, dto.level, req.admin.clientScope, req.admin),
+      req.admin.clientScope,
+    );
   }
 
   @Patch('partners/:userId/parent')
@@ -660,16 +667,19 @@ export class AdminIbController {
   @ApiOkResponse({ type: IbAccountDto })
   @ScopedToClients('Acts on one client’s partner account; out-of-scope 404s like a missing one.')
   @Audited('ib.parent_change')
-  reassignParent(
+  async reassignParent(
     @Req() req: Request & { admin: AuthenticatedAdmin },
-    @Param('userId', ClientRefPipe) userId: string,
+    @Param('userId', ClientRefPipe) userId: number,
     @Body() dto: ReassignIbParentDto,
   ) {
-    return this.applications.reassignParent(
-      userId,
-      dto.parentIbUserId,
+    return this.applications.accountViewFor(
+      await this.applications.reassignParent(
+        userId,
+        dto.parentIbUserId,
+        req.admin.clientScope,
+        req.admin,
+      ),
       req.admin.clientScope,
-      req.admin,
     );
   }
 
@@ -686,12 +696,15 @@ export class AdminIbController {
   @ApiOkResponse({ type: IbAccountDto })
   @ScopedToClients('Acts on one client’s partner account; out-of-scope 404s like a missing one.')
   @Audited('ib.partners.suspend')
-  setActive(
+  async setActive(
     @Req() req: Request & { admin: AuthenticatedAdmin },
-    @Param('userId', ClientRefPipe) userId: string,
+    @Param('userId', ClientRefPipe) userId: number,
     @Body() dto: SetIbActiveDto,
   ) {
-    return this.applications.setActive(userId, dto.active, req.admin.clientScope, req.admin);
+    return this.applications.accountViewFor(
+      await this.applications.setActive(userId, dto.active, req.admin.clientScope, req.admin),
+      req.admin.clientScope,
+    );
   }
 }
 
@@ -700,9 +713,11 @@ function parseStatus(value?: string): IbApplicationStatusDto | undefined {
   return IB_APPLICATION_STATUSES.find((s) => s === value);
 }
 
+/** A page or limit from the query string — a count, never money. */
 function parsePositive(value?: string): number | undefined {
-  const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+  if (!value || !/^\d+$/.test(value)) return undefined;
+  const parsed = Number.parseInt(value, 10);
+  return parsed > 0 ? parsed : undefined;
 }
 
 /**

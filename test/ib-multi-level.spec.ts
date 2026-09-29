@@ -40,10 +40,10 @@ import type { CommissionTypeTerms } from '../src/modules/ib/commission';
 let ctx: MoneyTestContext;
 let commissions: CommissionService;
 
-let ib1: string;
-let ib2: string;
-let ib3: string;
-let clientId: string;
+let ib1: number;
+let ib2: number;
+let ib3: number;
+let clientId: number;
 /**
  * The product's rate card: $100 a lot to the partners (0140).
  *
@@ -55,8 +55,8 @@ let terms: CommissionTypeTerms;
 
 const POSITION_ID = '22222222-2222-4222-8222-222222222222';
 
-async function makeUser(email: string): Promise<string> {
-  const { rows } = await ctx.db.execute<{ id: string }>(sql`
+async function makeUser(email: string): Promise<number> {
+  const { rows } = await ctx.db.execute<{ id: number }>(sql`
     INSERT INTO users (email, password_hash, first_name, last_name)
     VALUES (${email}, 'x', ${email.split('@')[0]}, 'Person')
     RETURNING id
@@ -78,7 +78,7 @@ async function setLadder(shares: string[]): Promise<void> {
 }
 
 /** Move a partner to a rung — what decides their terms. */
-async function place(userId: string, level: number): Promise<void> {
+async function place(userId: number, level: number): Promise<void> {
   await ctx.db.execute(sql`UPDATE ib_accounts SET level = ${level} WHERE user_id = ${userId}`);
 }
 
@@ -97,7 +97,7 @@ async function accrue(sourceId = POSITION_ID): Promise<number> {
 /** Every accrual, shallowest earner first. */
 async function accrualRows() {
   const { rows } = await ctx.db.execute<{
-    ib_user_id: string;
+    ib_user_id: number;
     depth: number;
     level_id: string | null;
     rate_value: string;

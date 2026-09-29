@@ -25,29 +25,30 @@ let heard: NotificationEvent[];
 /** Every `notification_changed` payload — a row read or resolved (0140). */
 let changed: { recipientKind: string; recipientId: string }[];
 
-const CLIENT_A = { kind: 'client' as const, id: '11111111-1111-1111-1111-111111111111' };
-const CLIENT_B = { kind: 'client' as const, id: '22222222-2222-2222-2222-222222222222' };
+const CLIENT_A = { kind: 'client' as const, id: 1000001 };
+const CLIENT_B = { kind: 'client' as const, id: 1000002 };
 const ADMIN_1 = 'a1111111-1111-4111-8111-111111111111';
 const ADMIN_2 = 'a2222222-2222-4222-8222-222222222222';
 const ADMIN_3 = 'a3333333-3333-4333-8333-333333333333';
 
 /** A client whose KYC waits for review — a real item for a task to be about. */
-async function kycSubject(email: string): Promise<{ userId: string; portalId: number }> {
-  const { rows } = await ctx.db.execute<{ id: string; portal_id: number }>(sql`
+async function kycSubject(email: string): Promise<{ userId: number; portalId: number }> {
+  const { rows } = await ctx.db.execute<{ id: number }>(sql`
     INSERT INTO users (email, password_hash, first_name, last_name)
-    VALUES (${email}, 'x', 'Realtime', 'Subject') RETURNING id, portal_id`);
+    VALUES (${email}, 'x', 'Realtime', 'Subject') RETURNING id`);
   await ctx.db.execute(
     sql`INSERT INTO kyc_submissions (user_id, status) VALUES (${rows[0].id}, 'submitted')`,
   );
-  return { userId: rows[0].id, portalId: rows[0].portal_id };
+  // The Portal ID IS the id (0159) — there is no separate column any more.
+  return { userId: rows[0].id, portalId: rows[0].id };
 }
 
-function kycTask(userId: string) {
+function kycTask(userId: number) {
   return {
     kind: 'admin.kyc.submitted',
     params: { userId },
     subjectKind: 'kyc' as const,
-    subjectId: userId,
+    subjectId: String(userId),
     subjectUserId: userId,
     stillOpen: 'awaiting-review' as const,
   };
@@ -108,7 +109,7 @@ describe('the database announces a notification when it becomes real', () => {
     const [event] = await waitForEvents(1);
     expect(event, 'no event was announced for a committed insert').toBeDefined();
     expect(event.recipientKind).toBe('client');
-    expect(event.recipientId).toBe(CLIENT_A.id);
+    expect(event.recipientId).toBe(String(CLIENT_A.id));
     expect(event.kind).toBe('withdrawal.approved');
     expect(event.id).toBeTruthy();
   });

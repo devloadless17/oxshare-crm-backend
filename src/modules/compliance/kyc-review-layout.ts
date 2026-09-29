@@ -38,7 +38,7 @@ import {
 import { isProfileKey, type ProfileKey } from '../../common/profile/client-profile';
 import type { KycStepConfig } from '../../store/kyc-config.store';
 import type { KycFormSnapshot, KycSubmission } from '../../store/kyc.store';
-import { documentFlagLabel } from './kyc-document-rules';
+import { asPageFlags, documentFlagLabel } from './kyc-document-rules';
 import { isStoredFile } from './step-slugs';
 
 export interface KycReviewPage {
@@ -255,4 +255,72 @@ function humanise(key: string): string {
     .replace(/([a-z])([A-Z0-9])/g, '$1 $2')
     .trim();
   return words ? words.charAt(0).toUpperCase() + words.slice(1) : key;
+}
+
+/**
+ * WHAT A REVIEWER MAY RETURN — the choices the review's Return and Re-verify
+ * dialogs offer (the console's `reviewFieldGroups` builds the same list from
+ * this layout): an identity detail; a page ON FILE of the identity document or,
+ * when it is asked for, the proof of address; the selfie, when it is asked for
+ * and on file; a question of the broker's asked on the form. Plus one thing the
+ * dialogs do not offer and the API always took: a whole document, by its field
+ * on its step (`passport`) — when it IS the document on file.
+ *
+ * Anything else was stored as given until 28 Sep 2026 — an unknown id sat in
+ * `rejected_fields`, was shown nowhere and blocked nothing, so a client could
+ * be "returned" for an item nobody could see. Answers to questions no longer
+ * on the form are not offered: the client cannot answer a question the form no
+ * longer asks.
+ */
+export function returnableItems(
+  steps: readonly KycStepConfig[],
+  layout: KycReviewLayout,
+  submission: Pick<KycSubmission, 'document' | 'addressProof' | 'selfie'>,
+): Set<string> {
+  const items = new Set<string>(layout.identity.map((field) => field.key));
+  const onFile: Record<string, string | undefined> = {
+    doc_front: submission.document?.frontFilePath,
+    doc_back: submission.document?.backFilePath,
+    address_proof: submission.addressProof?.filePath,
+    address_proof_2: submission.addressProof?.page2FilePath,
+  };
+  const documentOnFile = (slug: 'document' | 'address', document: KycReviewDocument) => {
+    const pages = document.pages.filter((page) => onFile[page.slot]).map((page) => page.slot);
+    for (const page of pages) items.add(page);
+    const field = steps
+      .find((step) => step.slug === slug)
+      ?.fields.find((f) => document.type !== null && f.type === `doc:${document.type}`);
+    if (field && pages.length > 0) items.add(field.name);
+  };
+  documentOnFile('document', layout.identityDocument);
+  if (layout.proofOfAddress.asked) documentOnFile('address', layout.proofOfAddress);
+  if (layout.selfie.asked && submission.selfie?.filePath) items.add('selfie');
+  for (const section of layout.additional) {
+    if (section.slug === 'unlisted') continue;
+    for (const field of section.fields) items.add(field.name);
+  }
+  return items;
+}
+
+/**
+ * The flags a return stores, from the ids a reviewer sent: each must be in
+ * `returnable`, and a whole document stands for its pages on file
+ * (`asPageFlags`). `unknown` names every id that is not, so the refusal can
+ * say which.
+ */
+export function returnedFlags(
+  ids: readonly string[],
+  steps: readonly KycStepConfig[],
+  returnable: ReadonlySet<string>,
+): { flags: string[]; unknown: string[] } {
+  const flags = new Set<string>();
+  const unknown: string[] = [];
+  for (const id of new Set(ids)) {
+    if (!returnable.has(id)) {
+      unknown.push(id);
+      continue;
+    }
+    for (const flag of asPageFlags([id], steps)) if (returnable.has(flag)) flags.add(flag);
+  }
+  return { flags: [...flags], unknown };
 }

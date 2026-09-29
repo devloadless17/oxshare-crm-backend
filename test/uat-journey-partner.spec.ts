@@ -73,8 +73,8 @@ const HOLD_SECONDS = 3600;
 
 let ctx: HttpTestContext;
 let mail: ReturnType<typeof emailRecorder>;
-let partnerId: string;
-let referredId: string;
+let partnerId: number;
+let referredId: number;
 let referralCode: string;
 let tradingAccountId: string;
 let agencyId: string;
@@ -86,7 +86,7 @@ const PORTAL_ORIGIN = process.env['PORTAL_URL'] ?? 'http://localhost:3000';
 async function onboard(
   credentials: { email: string; password: string },
   extra: Record<string, unknown> = {},
-): Promise<string> {
+): Promise<number> {
   const res = await anonymous(ctx)
     .post('/v1/auth/register')
     .set('Origin', PORTAL_ORIGIN)
@@ -122,7 +122,7 @@ async function onboard(
 /** Take a client to verification level 1, the gate on every money route. */
 async function verifyKyc(
   credentials: { email: string; password: string },
-  userId: string,
+  userId: number,
   phone: string,
 ) {
   const client = await actingAs(ctx, 'portal', credentials);
@@ -372,7 +372,7 @@ describe('§14 J2 — step 1: a partner exists and has a referral link', () => {
      * and the person it is about arrive as two objects rather than one merged
      * shape whose `id` would be ambiguous.
      */
-    const rows = (list.body as { rows: { application: { id: string; userId: string } }[] }).rows;
+    const rows = (list.body as { rows: { application: { id: string; userId: number } }[] }).rows;
     const mine = rows.find((r) => r.application.userId === partnerId);
     expect(
       mine,
@@ -516,8 +516,8 @@ describe('§14 J2 — step 4: the round turn pays the chain and rebates the clie
     expect(run, 'the accrual pass returned nothing').toBeDefined();
 
     const { rows } = await ctx.db.db.execute<{
-      ib_user_id: string;
-      client_user_id: string;
+      ib_user_id: number;
+      client_user_id: number;
       kind: string;
       amount: string;
       status: string;

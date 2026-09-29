@@ -42,8 +42,10 @@ describe('the identity fields', () => {
     expect(new Set(IDENTITY_FIELDS.map((field) => field.id)).size).toBe(IDENTITY_FIELDS.length);
   });
 
-  it('require everything to verify but the postal code', () => {
-    expect(VERIFICATION_REQUIRED).toEqual(PROFILE_FIELD_KEYS.filter((key) => key !== 'postalCode'));
+  it('require everything to verify but the postal code and the state — many addresses have neither', () => {
+    expect(VERIFICATION_REQUIRED).toEqual(
+      PROFILE_FIELD_KEYS.filter((key) => key !== 'postalCode' && key !== 'stateProvince'),
+    );
   });
 
   it('require at sign-up who the person is and how to reach them — a subset of verification', () => {
@@ -60,57 +62,65 @@ describe('the identity fields', () => {
 });
 
 describe('the form as it is SERVED', () => {
-  it('THE REPORTED CONFIGURATION: the identity comes back whatever the row holds', () => {
-    // The dev database, as found: an operator had deleted every identity field
-    // and re-added "firstname" as a custom box.
+  it('serves the identity details the broker PLACED — where and whether required — and no others', () => {
+    // Phase 2: an operator may take a detail out of KYC (sign-up has it) and
+    // decide which of the rest are required.
     const stored = step('personal', {
       fields: [
+        { id: 'f-q', name: 'customField_q', label: 'Occupation', type: 'text', required: false },
         {
-          id: 'field-1790402959161',
-          name: 'customField_1790402959161',
-          label: 'firstname',
-          type: 'text',
-          required: true,
+          id: 'f-6',
+          name: 'country',
+          label: 'Country of Residence',
+          type: 'select',
+          required: false,
         },
+        { id: 'f-1', name: 'firstName', label: 'First Name', type: 'text', required: true },
       ],
     });
     const served = platformStep(stored);
-    expect(served.fields.map((field) => field.name)).toEqual([
-      ...PROFILE_FIELD_KEYS,
-      'customField_1790402959161',
+    expect(served.fields.map((field) => [field.name, field.required])).toEqual([
+      ['customField_q', false],
+      ['country', false],
+      ['firstName', true],
     ]);
-    expect(served.fields.slice(0, 9).every((field) => field.system)).toBe(true);
   });
 
-  it('serves the platform’s version of an identity field, never a stored copy of it', () => {
+  it('serves the platform’s NAME and kind of an identity field, whatever a row says', () => {
     const stored = step('personal', {
       fields: [
         { id: 'f-1', name: 'firstName', label: 'Given', type: 'date', required: false },
-        { id: 'f-q', name: 'customField_q', label: 'Occupation', type: 'text', required: false },
+        { id: 'f-1b', name: 'firstName', label: 'Again', type: 'text', required: true },
       ],
     });
-    const served = platformStep(stored);
-    expect(served.fields.filter((field) => field.name === 'firstName')).toEqual([
-      expect.objectContaining({ label: 'First Name', type: 'text', required: true, system: true }),
+    // Once, with the platform's label and type, and the broker's `required`.
+    expect(platformStep(stored).fields).toEqual([
+      expect.objectContaining({
+        name: 'firstName',
+        label: 'First Name',
+        type: 'text',
+        required: false,
+        system: true,
+      }),
     ]);
-    expect(served.fields.at(-1)?.name).toBe('customField_q');
   });
 
-  it('fixes a built-in step’s name and icon, and keeps an always-on step on', () => {
+  it('keeps a built-in step’s title and switch as the broker set them; the icon is the platform’s', () => {
     const served = platformStep(
       step('document', { title: 'IDs', icon: 'Star', enabled: false, description: 'Mine.' }),
     );
     expect(served).toMatchObject({
-      title: 'Identity Document',
+      title: 'IDs',
       icon: 'FileText',
-      enabled: true,
+      enabled: false,
       core: true,
-      alwaysOn: true,
+      alwaysOn: false,
+      evidenceRequired: true,
       description: 'Mine.',
     });
-    expect(platformStep(step('selfie', { enabled: false }))).toMatchObject({
-      enabled: false,
-      alwaysOn: false,
+    expect(platformStep(step('selfie', { evidenceRequired: false })).fields[0]).toMatchObject({
+      name: 'selfie',
+      required: false,
     });
   });
 
@@ -188,12 +198,12 @@ describe('the form as it is STORED', () => {
 });
 
 describe('the order a client meets the steps in', () => {
-  it('puts Personal Information first and numbers from one', () => {
+  it('keeps the broker’s order and numbers from one', () => {
     const ordered = inFormOrder([step('address'), step('document'), step('personal')]);
     expect(ordered.map((s) => [s.slug, s.stepNumber])).toEqual([
-      ['personal', 1],
-      ['address', 2],
-      ['document', 3],
+      ['address', 1],
+      ['document', 2],
+      ['personal', 3],
     ]);
   });
 });

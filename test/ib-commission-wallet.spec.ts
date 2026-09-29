@@ -42,8 +42,8 @@ afterAll(async () => {
   await stopMoneyTestDb(ctx);
 });
 
-async function makeUser(email: string): Promise<string> {
-  const { rows } = await ctx.db.execute<{ id: string }>(sql`
+async function makeUser(email: string): Promise<number> {
+  const { rows } = await ctx.db.execute<{ id: number }>(sql`
     INSERT INTO users (email, password_hash, first_name, last_name)
     VALUES (${email}, 'x', 'Test', 'Partner')
     RETURNING id
@@ -52,7 +52,7 @@ async function makeUser(email: string): Promise<string> {
 }
 
 /** An APPROVED, active partner — what the transfer endpoint requires. */
-async function makePartner(email: string, active = true): Promise<string> {
+async function makePartner(email: string, active = true): Promise<number> {
   const userId = await makeUser(email);
   await ctx.db.execute(sql`
     INSERT INTO ib_accounts (user_id, referral_code, active, program_id)
@@ -62,7 +62,7 @@ async function makePartner(email: string, active = true): Promise<string> {
   return userId;
 }
 
-async function balanceOf(userId: string, kind: string, currency = 'USD'): Promise<string | null> {
+async function balanceOf(userId: number, kind: string, currency = 'USD'): Promise<string | null> {
   const { rows } = await ctx.db.execute<{ balance: string }>(sql`
     SELECT balance FROM wallets
     WHERE user_id = ${userId} AND currency = ${currency} AND kind = ${kind}
@@ -71,7 +71,7 @@ async function balanceOf(userId: string, kind: string, currency = 'USD'): Promis
 }
 
 /** What `IbOverviewService.earningsFor` sums — spanning BOTH wallet kinds. */
-async function lifetimeEarnings(userId: string, currency = 'USD'): Promise<string> {
+async function lifetimeEarnings(userId: number, currency = 'USD'): Promise<string> {
   const { rows } = await ctx.db.execute<{ total: string }>(sql`
     SELECT COALESCE(SUM(le.amount), 0)::text AS total
     FROM ledger_entries le
@@ -84,7 +84,7 @@ async function lifetimeEarnings(userId: string, currency = 'USD'): Promise<strin
 }
 
 /** The commission credit the confirm loop makes, without the whole pipeline. */
-async function creditCommission(userId: string, amount: string, reference: string) {
+async function creditCommission(userId: number, amount: string, reference: string) {
   await wallets.post({
     userId,
     currency: 'USD',

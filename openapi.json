@@ -2640,7 +2640,7 @@
             "in": "query",
             "description": "Restrict to one partner.",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           },
           {
@@ -2649,7 +2649,7 @@
             "in": "query",
             "description": "Restrict to one client.",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           },
           {
@@ -2934,7 +2934,7 @@
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           }
         ],
@@ -2971,7 +2971,7 @@
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           }
         ],
@@ -3018,7 +3018,7 @@
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           }
         ],
@@ -3065,7 +3065,7 @@
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           }
         ],
@@ -5222,7 +5222,7 @@
             "in": "query",
             "description": "Accounts of one client.",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           },
           {
@@ -5231,7 +5231,7 @@
             "in": "query",
             "description": "Accounts of every client this partner introduced, by the partner’s Portal ID (users.referred_by_ib_user_id). Scoped like every other filter.",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           },
           {
@@ -7143,7 +7143,7 @@
             "in": "query",
             "description": "Clients introduced by this partner, by the partner’s Portal ID (users.referred_by_ib_user_id). Scoped like every other filter — a reader still only sees their own territory. A value that is not a Portal ID is a 400, never a silently unfiltered list.",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           },
           {
@@ -7328,7 +7328,7 @@
             "in": "query",
             "description": "Clients introduced by this partner, by Portal ID — the same filter as the list, so the file matches the screen it was exported from.",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           },
           {
@@ -7407,7 +7407,7 @@
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           }
         ],
@@ -7442,7 +7442,7 @@
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           }
         ],
@@ -7489,7 +7489,7 @@
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           }
         ],
@@ -7536,7 +7536,7 @@
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           }
         ],
@@ -7582,7 +7582,7 @@
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           }
         ],
@@ -7598,7 +7598,14 @@
         },
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientAccountDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -7607,6 +7614,43 @@
           }
         ],
         "summary": "Suspend or reactivate a client account (requires clients.suspend)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/clients/{id}/identity": {
+      "get": {
+        "description": "Documents need kyc.documents.view (or kyc.review) and decisions need kyc.view; a half the reader may not see is ABSENT, not empty.",
+        "operationId": "AdminClientIdentityController_recordFor",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientIdentityRecordDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "A client's identity record: every document version, and every verification decision",
         "tags": [
           "admin"
         ]
@@ -7799,7 +7843,7 @@
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           }
         ],
@@ -7838,7 +7882,7 @@
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           },
           {
@@ -7846,6 +7890,18 @@
             "required": true,
             "in": "path",
             "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "confirmLeavesScope",
+            "required": false,
+            "in": "query",
+            "description": "Required when the change takes the client out of your own territory — without it that answers 409 TAG_CHANGE_LEAVES_SCOPE.",
+            "schema": {
+              "enum": [
+                "true"
+              ],
               "type": "string"
             }
           }
@@ -7856,10 +7912,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/ClientTagAssignmentDto"
-                  }
+                  "$ref": "#/components/schemas/ClientTagChangeResultDto"
                 }
               }
             }
@@ -7870,7 +7923,7 @@
             "cookie": []
           }
         ],
-        "summary": "Attach a tag to a client",
+        "summary": "Attach a tag to a client (any tag, on a client you can see)",
         "tags": [
           "admin"
         ]
@@ -7883,7 +7936,7 @@
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           },
           {
@@ -7891,6 +7944,18 @@
             "required": true,
             "in": "path",
             "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "confirmLeavesScope",
+            "required": false,
+            "in": "query",
+            "description": "Required when the change takes the client out of your own territory — without it that answers 409 TAG_CHANGE_LEAVES_SCOPE.",
+            "schema": {
+              "enum": [
+                "true"
+              ],
               "type": "string"
             }
           }
@@ -7901,10 +7966,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/ClientTagAssignmentDto"
-                  }
+                  "$ref": "#/components/schemas/ClientTagChangeResultDto"
                 }
               }
             }
@@ -7915,7 +7977,7 @@
             "cookie": []
           }
         ],
-        "summary": "Detach a tag from a client",
+        "summary": "Detach a tag from a client (any tag, on a client you can see)",
         "tags": [
           "admin"
         ]
@@ -8092,7 +8154,7 @@
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           }
         ],
@@ -8128,7 +8190,7 @@
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           }
         ],
@@ -8167,7 +8229,7 @@
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           }
         ],
@@ -8204,7 +8266,7 @@
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           }
         ],
@@ -8241,7 +8303,7 @@
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           }
         ],
@@ -8287,7 +8349,7 @@
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           }
         ],
@@ -8323,7 +8385,7 @@
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           }
         ],
@@ -8370,7 +8432,7 @@
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           }
         ],
@@ -8635,6 +8697,37 @@
           }
         ],
         "summary": "Documents a `document` field may accept",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/kyc-config/identity-catalogue": {
+      "get": {
+        "description": "The platform owns their names, kinds and meaning; the builder decides which are asked, where, and whether each is required. `required` here is the default tier.",
+        "operationId": "AdminComplianceController_getIdentityCatalogue",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/KycFieldConfigDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "The identity details Personal Information may ask for",
         "tags": [
           "admin"
         ]
@@ -9893,7 +9986,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TransactionDto"
+                  "$ref": "#/components/schemas/WalletCreditResultDto"
                 }
               }
             }
@@ -9949,7 +10042,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TransactionDto"
+                  "$ref": "#/components/schemas/TradingAccountFundResultDto"
                 }
               }
             }
@@ -10006,7 +10099,7 @@
             "in": "query",
             "description": "Wallets of one client.",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           },
           {
@@ -10542,7 +10635,7 @@
             "required": true,
             "in": "query",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           },
           {
@@ -10812,7 +10905,7 @@
             "in": "query",
             "description": "Narrow to one client (UUID).",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           },
           {
@@ -10939,7 +11032,7 @@
             "in": "query",
             "description": "Narrow to one client (UUID).",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           },
           {
@@ -11065,7 +11158,7 @@
             "in": "query",
             "description": "Narrow to one client (UUID).",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           },
           {
@@ -11365,7 +11458,7 @@
             "in": "query",
             "description": "Wallets of one client.",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           },
           {
@@ -11424,7 +11517,7 @@
             "in": "query",
             "description": "Accounts of one client.",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           },
           {
@@ -11487,7 +11580,7 @@
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           },
           {
@@ -11540,7 +11633,7 @@
             "required": true,
             "in": "path",
             "schema": {
-              "type": "string"
+              "type": "number"
             }
           },
           {
@@ -11801,6 +11894,7 @@
                 "country",
                 "address",
                 "city",
+                "stateProvince",
                 "postalCode"
               ]
             }
@@ -11819,6 +11913,7 @@
                 "country",
                 "address",
                 "city",
+                "stateProvince",
                 "postalCode"
               ]
             }
@@ -12214,7 +12309,7 @@
           },
           "subjectId": {
             "type": "string",
-            "description": "The item's id — for a KYC task, the client's id."
+            "description": "The item's id — for a KYC task the client's Portal ID, for any other item the record's uuid."
           }
         },
         "required": [
@@ -12468,6 +12563,10 @@
             "example": "Sheikh Zayed Road, Tower 2, Apt 1204"
           },
           "city": {
+            "type": "string",
+            "example": "Dubai"
+          },
+          "stateProvince": {
             "type": "string",
             "example": "Dubai"
           },
@@ -13152,14 +13251,19 @@
         "type": "object",
         "properties": {
           "userId": {
-            "type": "string"
+            "type": "integer"
           },
           "level": {
             "type": "number"
           },
           "parentIbUserId": {
-            "type": "string",
-            "nullable": true
+            "type": "integer",
+            "nullable": true,
+            "description": "Null at the top of a chain — or, on an admin response, when the parent is outside your territory (`parentOutsideTerritory`)."
+          },
+          "parentOutsideTerritory": {
+            "type": "boolean",
+            "description": "Admin responses only: true when a parent exists that the reader may not see. The fact, never the id (R1)."
           },
           "referralCode": {
             "type": "string",
@@ -13201,7 +13305,7 @@
             "type": "string"
           },
           "userId": {
-            "type": "string"
+            "type": "number"
           },
           "motivation": {
             "type": "string",
@@ -13368,7 +13472,7 @@
             "description": "Human-friendly wallet number — 12 lowercase Crockford base32 chars. Display and support reference only; `id` remains the key."
           },
           "userId": {
-            "type": "string"
+            "type": "integer"
           },
           "name": {
             "type": "string",
@@ -13425,7 +13529,7 @@
         "type": "object",
         "properties": {
           "userId": {
-            "type": "string"
+            "type": "integer"
           },
           "name": {
             "type": "string",
@@ -13452,7 +13556,7 @@
         "type": "object",
         "properties": {
           "userId": {
-            "type": "string"
+            "type": "integer"
           },
           "name": {
             "type": "string"
@@ -13725,7 +13829,7 @@
         "type": "object",
         "properties": {
           "parentIbUserId": {
-            "type": "string",
+            "type": "integer",
             "nullable": true,
             "description": "The parent to nest the new partner under. OMITTED means \"the reviewer did not say\" — the introducer recorded at registration becomes the parent, which is the ordinary case. An explicit NULL roots them: they deal with the broker directly at level 1, whoever introduced them."
           },
@@ -13768,7 +13872,7 @@
         "type": "object",
         "properties": {
           "userId": {
-            "type": "string"
+            "type": "integer"
           },
           "level": {
             "type": "number",
@@ -13805,7 +13909,9 @@
         "type": "object",
         "properties": {
           "id": {
-            "type": "string"
+            "type": "integer",
+            "example": 1000245,
+            "description": "The client’s Portal ID (0159)."
           },
           "portalId": {
             "type": "integer",
@@ -13922,7 +14028,7 @@
         "type": "object",
         "properties": {
           "userId": {
-            "type": "string"
+            "type": "number"
           },
           "portalId": {
             "type": "integer",
@@ -13953,7 +14059,7 @@
         "type": "object",
         "properties": {
           "userId": {
-            "type": "string"
+            "type": "number"
           },
           "portalId": {
             "type": "integer",
@@ -14010,7 +14116,7 @@
         "type": "object",
         "properties": {
           "userId": {
-            "type": "string"
+            "type": "number"
           },
           "level": {
             "type": "number",
@@ -14076,15 +14182,23 @@
             "description": "True when this partner has a parent the reader may not see. Distinguishes “deals with the broker directly” from “parent outside your territory”."
           },
           "directPartners": {
-            "description": "SCOPED to the reader’s territory. No out-of-territory total accompanies it — a count is itself a disclosure, and there is no row cap here for one to describe.",
+            "description": "SCOPED to the reader’s territory. The ones withheld are counted in `directPartnersOutsideScope` — never named.",
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/IbSubPartnerRowDto"
             }
           },
+          "directPartnersOutsideScope": {
+            "type": "integer",
+            "description": "How many direct sub-partners sit OUTSIDE the reader’s territory, and so are absent from `directPartners`. Zero for an unrestricted reader. A count, no identity (R2): a line that silently dropped them would read as a partner with nobody beneath them."
+          },
           "referredClientCount": {
             "type": "number",
             "description": "How many clients they introduced."
+          },
+          "referredClientsOutsideScope": {
+            "type": "integer",
+            "description": "How many clients this partner introduced sit OUTSIDE the reader’s territory, and so are absent from `referredClientCount`. Zero for an unrestricted reader. A count, no identity."
           },
           "earnings": {
             "description": "One entry per currency they have earned in, sorted by currency. Empty when nothing has accrued yet — never a zero in a currency nobody chose.",
@@ -14116,7 +14230,9 @@
           "parent",
           "parentOutsideTerritory",
           "directPartners",
+          "directPartnersOutsideScope",
           "referredClientCount",
+          "referredClientsOutsideScope",
           "earnings"
         ]
       },
@@ -14139,7 +14255,7 @@
         "type": "object",
         "properties": {
           "parentIbUserId": {
-            "type": "string",
+            "type": "integer",
             "nullable": true,
             "description": "The new parent partner, or null to make them a direct partner."
           }
@@ -14200,7 +14316,12 @@
           "partnerCount": {
             "type": "number",
             "example": 4,
-            "description": "How many partners stand on this rung. Part of the row rather than a second call: it is what makes a delete refusable in the UI before the database refuses it, and what tells an operator how many people a rate change is about to affect."
+            "description": "How many partners stand on this rung in the reader’s territory. Part of the row rather than a second call: with `partnersOutsideScope` it is what makes a delete refusable in the UI before the database refuses it, and what tells an operator how many people a rate change is about to affect."
+          },
+          "partnersOutsideScope": {
+            "type": "integer",
+            "example": 0,
+            "description": "How many partners stand on this rung OUTSIDE the reader’s territory — a count, never who (D-81 R2). Zero for a reader who sees every client. The rung is emptied only when both this and `partnerCount` are zero."
           },
           "createdAt": {
             "format": "date-time",
@@ -14220,6 +14341,7 @@
           "commissionShare",
           "rebateShare",
           "partnerCount",
+          "partnersOutsideScope",
           "createdAt",
           "updatedAt"
         ]
@@ -14629,7 +14751,7 @@
             "type": "string"
           },
           "userId": {
-            "type": "string"
+            "type": "integer"
           },
           "walletId": {
             "type": "string"
@@ -14847,7 +14969,7 @@
             "type": "string"
           },
           "userId": {
-            "type": "string"
+            "type": "integer"
           },
           "walletId": {
             "type": "string"
@@ -15242,7 +15364,7 @@
             "description": "The wallet’s human-friendly number — display only; `walletId` is the key."
           },
           "userId": {
-            "type": "string"
+            "type": "number"
           },
           "userPortalId": {
             "type": "number",
@@ -16157,8 +16279,7 @@
         "type": "object",
         "properties": {
           "userId": {
-            "type": "string",
-            "format": "uuid",
+            "type": "integer",
             "description": "The client this account belongs to."
           },
           "group": {
@@ -16456,7 +16577,12 @@
           "accountCount": {
             "type": "number",
             "example": 12,
-            "description": "How many trading accounts the CRM holds in this group."
+            "description": "How many trading accounts the CRM holds in this group, in the reader’s territory."
+          },
+          "accountsOutsideScope": {
+            "type": "integer",
+            "example": 0,
+            "description": "How many it holds OUTSIDE the reader’s territory — a count, never who (D-81 R2). Zero for a reader who sees every client."
           }
         },
         "required": [
@@ -16468,7 +16594,8 @@
           "marginStopOut",
           "marginStopOutMode",
           "products",
-          "accountCount"
+          "accountCount",
+          "accountsOutsideScope"
         ]
       },
       "KycDocumentPartDto": {
@@ -16644,7 +16771,11 @@
           },
           "alwaysOn": {
             "type": "boolean",
-            "description": "A built-in step that cannot be switched off."
+            "description": "Always false: every step can be switched off."
+          },
+          "evidenceRequired": {
+            "type": "boolean",
+            "description": "Identity document, selfie and proof of address steps: whether the client must provide it, or may skip it. Absent on other steps."
           }
         },
         "required": [
@@ -16666,13 +16797,7 @@
           "frontFilePath": {
             "type": "string"
           },
-          "frontFileName": {
-            "type": "string"
-          },
           "backFilePath": {
-            "type": "string"
-          },
-          "backFileName": {
             "type": "string"
           }
         }
@@ -16681,9 +16806,6 @@
         "type": "object",
         "properties": {
           "filePath": {
-            "type": "string"
-          },
-          "fileName": {
             "type": "string"
           },
           "docType": {
@@ -16775,7 +16897,7 @@
         "type": "object",
         "properties": {
           "userId": {
-            "type": "string"
+            "type": "integer"
           },
           "status": {
             "type": "string",
@@ -16837,9 +16959,6 @@
           },
           "submittedAt": {
             "format": "date-time",
-            "type": "string"
-          },
-          "reviewedBy": {
             "type": "string"
           },
           "reviewedAt": {
@@ -17576,6 +17695,9 @@
           "seesUntriaged": {
             "type": "boolean"
           },
+          "seesAllClients": {
+            "type": "boolean"
+          },
           "avatarUrl": {
             "type": "string",
             "nullable": true,
@@ -17601,6 +17723,7 @@
           "maskedFields",
           "scopedTags",
           "seesUntriaged",
+          "seesAllClients",
           "createdAt"
         ]
       },
@@ -17647,7 +17770,7 @@
             }
           },
           "scopedTagIds": {
-            "description": "Client tags this admin is scoped to. Omit or [] means UNRESTRICTED — every client.",
+            "description": "Client tags this admin is limited to. [] means no territory tags (new clients only, or none) — every client is only ever `seesAllClients` (0154).",
             "type": "array",
             "items": {
               "type": "string"
@@ -17656,6 +17779,10 @@
           "seesUntriaged": {
             "type": "boolean",
             "description": "D-60 — sees the intake pool: clients with no tag assignments yet. Meaningful only for a scoped admin. DEFAULTS TO TRUE — restriction is the explicit act; an inviter who does not see the pool cannot grant it, and their default resolves to false."
+          },
+          "seesAllClients": {
+            "type": "boolean",
+            "description": "Sees EVERY client — the explicit grant (0154). Only an administrator who sees every client may give it, and never together with territory tags. An empty territory no longer means every client."
           }
         },
         "required": [
@@ -17927,7 +18054,8 @@
         "type": "object",
         "properties": {
           "ibUserId": {
-            "type": "string"
+            "type": "number",
+            "description": "Absent when the introducer is outside your territory."
           },
           "portalId": {
             "type": "integer",
@@ -17951,7 +18079,6 @@
           }
         },
         "required": [
-          "ibUserId",
           "outsideTerritory"
         ]
       },
@@ -17959,7 +18086,9 @@
         "type": "object",
         "properties": {
           "id": {
-            "type": "string"
+            "type": "integer",
+            "example": 1000245,
+            "description": "The client’s Portal ID — their one id (0159)."
           },
           "portalId": {
             "type": "number",
@@ -18163,7 +18292,8 @@
         "type": "object",
         "properties": {
           "ibUserId": {
-            "type": "string"
+            "type": "number",
+            "description": "Absent when the introducer is outside your territory."
           },
           "portalId": {
             "type": "integer",
@@ -18187,7 +18317,7 @@
           },
           "active": {
             "type": "boolean",
-            "description": "False when the attribution was switched off."
+            "description": "False when the attribution was switched off. Absent when the introducer is outside your territory: whether a partner you may not see is suspended is not yours to learn."
           },
           "since": {
             "format": "date-time",
@@ -18195,9 +18325,7 @@
           }
         },
         "required": [
-          "ibUserId",
           "outsideTerritory",
-          "active",
           "since"
         ]
       },
@@ -18205,7 +18333,7 @@
         "type": "object",
         "properties": {
           "clientUserId": {
-            "type": "string"
+            "type": "number"
           },
           "clientPortalId": {
             "type": "integer",
@@ -18243,7 +18371,9 @@
         "type": "object",
         "properties": {
           "id": {
-            "type": "string"
+            "type": "integer",
+            "example": 1000245,
+            "description": "The client’s Portal ID — their one id (0159)."
           },
           "portalId": {
             "type": "number",
@@ -18303,6 +18433,9 @@
           "city": {
             "type": "string"
           },
+          "stateProvince": {
+            "type": "string"
+          },
           "postalCode": {
             "type": "string"
           },
@@ -18321,7 +18454,14 @@
             "additionalProperties": {
               "type": "string"
             },
-            "description": "The profile fields the desk may not change right now, each with where it can be changed instead — the verification's lock (`deskLocks`). Present only for a reader holding clients.edit; empty when nothing is locked."
+            "description": "The details THIS admin may not change right now, each with the sentence saying why — a review is checking it, or it was verified and they may not correct verified details (`adminEditRule`). Present only for a reader holding clients.edit; empty when nothing is held."
+          },
+          "correctableFields": {
+            "description": "Verified details THIS admin may correct: they change only with a `reason`, are recorded on the verification, and the client is told. Present only for a reader holding clients.edit.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           },
           "kyc": {
             "description": "Absent without kyc.view.",
@@ -18431,10 +18571,21 @@
             "example": "Beirut",
             "maxLength": 100
           },
+          "stateProvince": {
+            "type": "string",
+            "example": "Mount Lebanon",
+            "maxLength": 100
+          },
           "postalCode": {
             "type": "string",
             "example": "1103 2080",
             "maxLength": 12
+          },
+          "reason": {
+            "type": "string",
+            "example": "Surname misspelt at registration; the passport reads \"Haddad\".",
+            "maxLength": 500,
+            "description": "Required when a verified detail changes. Recorded on the audit row."
           }
         }
       },
@@ -18442,8 +18593,9 @@
         "type": "object",
         "properties": {
           "id": {
-            "type": "string",
-            "format": "uuid"
+            "type": "integer",
+            "example": 1000245,
+            "description": "The client’s Portal ID — their one id (0159)."
           },
           "portalId": {
             "type": "integer",
@@ -18511,6 +18663,10 @@
             "type": "string",
             "nullable": true
           },
+          "stateProvince": {
+            "type": "string",
+            "nullable": true
+          },
           "postalCode": {
             "type": "string",
             "nullable": true
@@ -18543,6 +18699,7 @@
           "nationality",
           "address",
           "city",
+          "stateProvince",
           "postalCode",
           "createdAt",
           "maskedFields"
@@ -18589,6 +18746,202 @@
           "status"
         ]
       },
+      "ClientIdentityPageDto": {
+        "type": "object",
+        "properties": {
+          "part": {
+            "type": "number",
+            "example": 0
+          },
+          "label": {
+            "type": "string",
+            "example": "Photo Page"
+          },
+          "path": {
+            "type": "string",
+            "example": "uploads/kyc/2f0c….jpg",
+            "description": "Opened through GET /uploads/kyc/:file, which checks the reader and audits it."
+          }
+        },
+        "required": [
+          "part",
+          "label",
+          "path"
+        ]
+      },
+      "ClientIdentityVersionDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "docType": {
+            "type": "string",
+            "nullable": true,
+            "example": "passport"
+          },
+          "docLabel": {
+            "type": "string",
+            "nullable": true,
+            "example": "Passport"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "draft",
+              "awaiting_review",
+              "verified",
+              "returned",
+              "reverification_requested"
+            ],
+            "description": "Read from the verification log: a draft; presented and awaiting review; or the outcome of the latest decision that covered it."
+          },
+          "returnedPages": {
+            "example": [
+              "doc_back"
+            ],
+            "description": "Which of its pages that decision returned.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "presentedAt": {
+            "type": "string",
+            "nullable": true,
+            "format": "date-time",
+            "description": "When it was presented for review; null for a draft."
+          },
+          "pages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ClientIdentityPageDto"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "returnedPages",
+          "createdAt",
+          "pages"
+        ]
+      },
+      "ClientIdentityDocumentDto": {
+        "type": "object",
+        "properties": {
+          "slot": {
+            "type": "string",
+            "example": "identity",
+            "description": "identity | address | selfie | other:<field>"
+          },
+          "label": {
+            "type": "string",
+            "example": "Identity document"
+          },
+          "versions": {
+            "description": "Newest first.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ClientIdentityVersionDto"
+            }
+          }
+        },
+        "required": [
+          "slot",
+          "label",
+          "versions"
+        ]
+      },
+      "ClientVerificationDto": {
+        "type": "object",
+        "properties": {
+          "seq": {
+            "type": "number"
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "verified",
+              "returned",
+              "reverification_requested"
+            ]
+          },
+          "levelAfter": {
+            "type": "number",
+            "example": 1
+          },
+          "method": {
+            "type": "string",
+            "example": "manual_review",
+            "description": "manual_review | legacy | fixture | import | provider"
+          },
+          "decidedBy": {
+            "type": "string",
+            "nullable": true,
+            "description": "The reviewer's email as it was when they decided."
+          },
+          "reason": {
+            "type": "string",
+            "nullable": true
+          },
+          "returnedItems": {
+            "example": [
+              "doc_front"
+            ],
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "returnedLabels": {
+            "example": [
+              "Identity document — first page"
+            ],
+            "description": "returnedItems as a person reads them, in the same order.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "decidedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "seq",
+          "outcome",
+          "levelAfter",
+          "method",
+          "returnedItems",
+          "returnedLabels",
+          "decidedAt"
+        ]
+      },
+      "ClientIdentityRecordDto": {
+        "type": "object",
+        "properties": {
+          "documents": {
+            "description": "Absent without kyc.documents.view (or kyc.review).",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ClientIdentityDocumentDto"
+            }
+          },
+          "verifications": {
+            "description": "Newest first. Absent without kyc.view.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ClientVerificationDto"
+            }
+          }
+        }
+      },
       "ClientTagWithCountDto": {
         "type": "object",
         "properties": {
@@ -18614,7 +18967,11 @@
           },
           "clientCount": {
             "type": "number",
-            "description": "How many clients carry this tag."
+            "description": "How many clients carry this tag in the reader’s territory."
+          },
+          "clientsOutsideScope": {
+            "type": "integer",
+            "description": "How many clients carry it OUTSIDE the reader’s territory — a count, never who (D-81 R2). Zero for a reader who sees every client."
           }
         },
         "required": [
@@ -18622,7 +18979,8 @@
           "slug",
           "label",
           "createdAt",
-          "clientCount"
+          "clientCount",
+          "clientsOutsideScope"
         ]
       },
       "CreateClientTagDto": {
@@ -18707,6 +19065,26 @@
           "assignedAt"
         ]
       },
+      "ClientTagChangeResultDto": {
+        "type": "object",
+        "properties": {
+          "assignments": {
+            "description": "The client’s tags after the change. Empty when `stillVisible` is false.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ClientTagAssignmentDto"
+            }
+          },
+          "stillVisible": {
+            "type": "boolean",
+            "description": "False when the change took the client out of the acting admin’s territory — sent only with confirmLeavesScope=true."
+          }
+        },
+        "required": [
+          "assignments",
+          "stillVisible"
+        ]
+      },
       "KycDocumentDto": {
         "type": "object",
         "properties": {
@@ -18718,12 +19096,6 @@
           },
           "backFilePath": {
             "type": "string"
-          },
-          "frontFileName": {
-            "type": "string"
-          },
-          "backFileName": {
-            "type": "string"
           }
         }
       },
@@ -18731,9 +19103,6 @@
         "type": "object",
         "properties": {
           "filePath": {
-            "type": "string"
-          },
-          "fileName": {
             "type": "string"
           }
         }
@@ -18747,13 +19116,7 @@
           "filePath": {
             "type": "string"
           },
-          "fileName": {
-            "type": "string"
-          },
           "page2FilePath": {
-            "type": "string"
-          },
-          "page2FileName": {
             "type": "string"
           }
         }
@@ -18836,6 +19199,7 @@
               "country",
               "address",
               "city",
+              "stateProvince",
               "postalCode"
             ]
           },
@@ -19060,7 +19424,7 @@
         "type": "object",
         "properties": {
           "userId": {
-            "type": "string"
+            "type": "number"
           },
           "status": {
             "type": "string",
@@ -19280,7 +19644,7 @@
           "reason": {
             "type": "string",
             "example": "Surname misspelt at registration; passport reads \"Haddad\".",
-            "minLength": 10,
+            "minLength": 1,
             "maxLength": 500,
             "description": "Why the verified record is being changed. Recorded on the audit row."
           },
@@ -19319,6 +19683,12 @@
             "example": "Beirut",
             "maxLength": 100
           },
+          "stateProvince": {
+            "type": "string",
+            "example": "Mount Lebanon",
+            "maxLength": 100,
+            "description": "Send an empty string to clear it — many addresses have none."
+          },
           "postalCode": {
             "type": "string",
             "example": "1103 2080",
@@ -19339,10 +19709,10 @@
           },
           "reasonId": {
             "type": "string",
-            "description": "Id of a configured rejection reason."
+            "description": "Id of a configured KYC rejection reason."
           },
           "rejectedFields": {
-            "description": "Field names the client must re-submit, e.g. [\"doc_front\"].",
+            "description": "What the client must update: identity details by key, pages on file by slot (e.g. \"doc_front\"), the selfie, or a question on their form. Anything else is refused.",
             "type": "array",
             "items": {
               "type": "string"
@@ -19356,7 +19726,7 @@
           "reason": {
             "type": "string",
             "example": "Your passport on file has expired. Please upload your new one.",
-            "minLength": 10,
+            "minLength": 1,
             "maxLength": 500
           },
           "items": {
@@ -19522,6 +19892,10 @@
           "enabled": {
             "type": "boolean"
           },
+          "evidenceRequired": {
+            "type": "boolean",
+            "description": "Identity document, selfie and proof of address steps: whether the client must provide it (default true) or may skip it."
+          },
           "fields": {
             "type": "array",
             "items": {
@@ -19551,6 +19925,11 @@
             "items": {
               "$ref": "#/components/schemas/KycStepDto"
             }
+          },
+          "format": {
+            "type": "number",
+            "example": 2,
+            "description": "The builder format this save was made in. Since Phase 2 (identity placements, evidence required, every step editable) it must be 2; an older console answers 409 `KYC_BUILDER_OUTDATED` rather than saving a form it cannot represent."
           }
         },
         "required": [
@@ -19770,7 +20149,7 @@
             }
           },
           "scopedTagIds": {
-            "description": "Client tag ids. An EMPTY ARRAY means unrestricted (every client), not none — see D-10.",
+            "description": "Client tag ids. [] means no territory tags (new clients only, or none) — every client is only ever `seesAllClients` (0154).",
             "type": "array",
             "items": {
               "type": "string"
@@ -19779,6 +20158,10 @@
           "seesUntriaged": {
             "type": "boolean",
             "description": "D-60 — sees the intake pool: clients with no tag assignments yet. Meaningful only for a scoped admin. DEFAULTS TO TRUE — restriction is the explicit act; an inviter who does not see the pool cannot grant it, and their default resolves to false."
+          },
+          "seesAllClients": {
+            "type": "boolean",
+            "description": "Sees EVERY client — the explicit grant (0154). Only an administrator who sees every client may give it, and never together with territory tags. An empty territory no longer means every client."
           }
         }
       },
@@ -19916,6 +20299,12 @@
           },
           "limit": {
             "type": "number"
+          },
+          "maskedFields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         },
         "required": [
@@ -19923,7 +20312,8 @@
           "nextCursor",
           "total",
           "page",
-          "limit"
+          "limit",
+          "maskedFields"
         ]
       },
       "ApiKeyDto": {
@@ -20225,7 +20615,7 @@
             "$ref": "#/components/schemas/WithdrawalUserDto"
           },
           "userId": {
-            "type": "string"
+            "type": "integer"
           },
           "walletId": {
             "type": "string"
@@ -20325,8 +20715,7 @@
         "type": "object",
         "properties": {
           "userId": {
-            "type": "string",
-            "format": "uuid",
+            "type": "integer",
             "description": "The client to credit."
           },
           "amount": {
@@ -20349,6 +20738,22 @@
           "amount",
           "currency",
           "reason"
+        ]
+      },
+      "WalletCreditResultDto": {
+        "type": "object",
+        "properties": {
+          "transaction": {
+            "$ref": "#/components/schemas/TransactionDto"
+          },
+          "replayed": {
+            "type": "boolean",
+            "description": "True when the idempotency key replayed an earlier credit — nothing moved again."
+          }
+        },
+        "required": [
+          "transaction",
+          "replayed"
         ]
       },
       "FundTradingAccountDto": {
@@ -20378,12 +20783,54 @@
           "direction"
         ]
       },
+      "TradingAccountFundResultDto": {
+        "type": "object",
+        "properties": {
+          "transaction": {
+            "nullable": true,
+            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/TransactionDto"
+              }
+            ]
+          },
+          "replayed": {
+            "type": "boolean"
+          },
+          "transfer": {
+            "nullable": true,
+            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/TransferDto"
+              }
+            ]
+          },
+          "transferError": {
+            "type": "string",
+            "nullable": true
+          },
+          "destination": {
+            "type": "string",
+            "enum": [
+              "wallet"
+            ],
+            "description": "Where the money went, on a withdrawal."
+          }
+        },
+        "required": [
+          "transaction",
+          "replayed",
+          "transfer",
+          "transferError"
+        ]
+      },
       "OpenWalletDto": {
         "type": "object",
         "properties": {
           "userId": {
-            "type": "string",
-            "format": "uuid"
+            "type": "integer"
           },
           "currency": {
             "type": "string",
@@ -20416,7 +20863,7 @@
             "type": "string"
           },
           "userId": {
-            "type": "string",
+            "type": "number",
             "description": "The client this deposit belongs to."
           },
           "amount": {
@@ -20514,7 +20961,7 @@
             "description": "The wallet’s human-friendly number — display only; `walletId` is the key."
           },
           "userId": {
-            "type": "string"
+            "type": "number"
           },
           "userPortalId": {
             "type": "number",
@@ -21227,11 +21674,11 @@
           },
           "submitted": {
             "type": "number",
-            "description": "Submissions whose submitted_at falls on this day."
+            "description": "Submissions made on this day — every one, including those since decided, replaced or reset: the archived attempts plus the submissions still waiting."
           },
           "approved": {
             "type": "number",
-            "description": "Submissions REVIEWED on this day whose status is approved. A rejection reviewed the same day is not counted here."
+            "description": "Approvals decided on this day by a review, from the decision log. An approval later reversed stays on its day; a rejection is never counted."
           }
         },
         "required": [

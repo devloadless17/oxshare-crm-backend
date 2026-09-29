@@ -65,11 +65,11 @@ const DEPOSIT: RevenueEvent = {
  * `level` defaults to 1 — a partner dealing with the broker directly. Tests
  * about a recruited partner set it, because that is what decides their share.
  */
-function node(overrides: Partial<ChainNode> & { userId: string }): ChainNode {
+function node(overrides: Partial<ChainNode> & { userId: number }): ChainNode {
   return { parentIbUserId: null, active: true, level: 1, ...overrides };
 }
 
-function lookupFrom(nodes: ChainNode[]): (id: string) => ChainNode | undefined {
+function lookupFrom(nodes: ChainNode[]): (id: number) => ChainNode | undefined {
   const map = new Map(nodes.map((n) => [n.userId, n]));
   return (id) => map.get(id);
 }
@@ -106,7 +106,7 @@ function defaultLadder(): Map<number, LevelTerms> {
  * level 1 and their parent a level 2. Tests about the difference between the
  * two pass `level` explicitly.
  */
-function earner(over: Partial<ChainEntry> & { ibUserId: string; depth: number }): ChainEntry {
+function earner(over: Partial<ChainEntry> & { ibUserId: number; depth: number }): ChainEntry {
   return { level: over.depth, ...over };
 }
 
@@ -117,9 +117,9 @@ describe('resolveChain', () => {
   });
 
   it('resolves the introducer alone when they have no parent', () => {
-    const chain = resolveChain('ib-1', lookupFrom([node({ userId: 'ib-1' })]));
+    const chain = resolveChain(1000001, lookupFrom([node({ userId: 1000001 })]));
     expect(chain).toEqual<ChainEntry[]>([
-      { ibUserId: 'ib-1', depth: 1, level: 1, programId: undefined },
+      { ibUserId: 1000001, depth: 1, level: 1, programId: undefined },
     ]);
   });
 
@@ -129,16 +129,16 @@ describe('resolveChain', () => {
    */
   it('carries each partner’s own programme into the chain', () => {
     const chain = resolveChain(
-      'ib-2',
+      1000002,
       lookupFrom([
-        node({ userId: 'ib-2', parentIbUserId: 'ib-1', programId: 'prog-b' }),
-        node({ userId: 'ib-1', programId: 'prog-a' }),
+        node({ userId: 1000002, parentIbUserId: 1000001, programId: 'prog-b' }),
+        node({ userId: 1000001, programId: 'prog-a' }),
       ]),
     );
 
     expect(chain.map((c) => [c.ibUserId, c.depth, c.programId])).toEqual([
-      ['ib-2', 1, 'prog-b'],
-      ['ib-1', 2, 'prog-a'],
+      [1000002, 1, 'prog-b'],
+      [1000001, 2, 'prog-a'],
     ]);
   });
 
@@ -151,18 +151,18 @@ describe('resolveChain', () => {
    */
   it('resolves past two, so a third-level ancestor can be considered at all', () => {
     const chain = resolveChain(
-      'ib-3',
+      1000003,
       lookupFrom([
-        node({ userId: 'ib-3', parentIbUserId: 'ib-2' }),
-        node({ userId: 'ib-2', parentIbUserId: 'ib-1' }),
-        node({ userId: 'ib-1' }),
+        node({ userId: 1000003, parentIbUserId: 1000002 }),
+        node({ userId: 1000002, parentIbUserId: 1000001 }),
+        node({ userId: 1000001 }),
       ]),
     );
 
     expect(chain.map((c) => [c.ibUserId, c.depth])).toEqual([
-      ['ib-3', 1],
-      ['ib-2', 2],
-      ['ib-1', 3],
+      [1000003, 1],
+      [1000002, 2],
+      [1000001, 3],
     ]);
   });
 
@@ -175,12 +175,12 @@ describe('resolveChain', () => {
   it('stops walking at MAX_CHAIN_DEPTH, however deep the tree is', () => {
     const deep = Array.from({ length: MAX_CHAIN_DEPTH + 5 }, (_, index) =>
       node({
-        userId: `ib-${index}`,
-        parentIbUserId: index === MAX_CHAIN_DEPTH + 4 ? null : `ib-${index + 1}`,
+        userId: 1000000 + index,
+        parentIbUserId: index === MAX_CHAIN_DEPTH + 4 ? null : 1000000 + index + 1,
       }),
     );
 
-    const chain = resolveChain('ib-0', lookupFrom(deep));
+    const chain = resolveChain(1000000, lookupFrom(deep));
 
     expect(chain).toHaveLength(MAX_CHAIN_DEPTH);
     expect(chain.at(-1)?.depth).toBe(MAX_CHAIN_DEPTH);
@@ -193,10 +193,10 @@ describe('resolveChain', () => {
    */
   it('stops at a suspended partner, so nobody above them earns through them', () => {
     const chain = resolveChain(
-      'ib-2',
+      1000002,
       lookupFrom([
-        node({ userId: 'ib-2', parentIbUserId: 'ib-1', active: false }),
-        node({ userId: 'ib-1' }),
+        node({ userId: 1000002, parentIbUserId: 1000001, active: false }),
+        node({ userId: 1000001 }),
       ]),
     );
 
@@ -205,18 +205,18 @@ describe('resolveChain', () => {
 
   it('pays the introducer alone when only the parent is suspended', () => {
     const chain = resolveChain(
-      'ib-2',
+      1000002,
       lookupFrom([
-        node({ userId: 'ib-2', parentIbUserId: 'ib-1' }),
-        node({ userId: 'ib-1', active: false }),
+        node({ userId: 1000002, parentIbUserId: 1000001 }),
+        node({ userId: 1000001, active: false }),
       ]),
     );
 
-    expect(chain.map((c) => c.ibUserId)).toEqual(['ib-2']);
+    expect(chain.map((c) => c.ibUserId)).toEqual([1000002]);
   });
 
   it('pays nobody when the referring partner has no account row', () => {
-    expect(resolveChain('ghost', lookupFrom([]))).toEqual([]);
+    expect(resolveChain(1000099, lookupFrom([]))).toEqual([]);
   });
 
   /*
@@ -225,25 +225,25 @@ describe('resolveChain', () => {
    */
   it('terminates on a cycle instead of looping forever', () => {
     const chain = resolveChain(
-      'ib-1',
+      1000001,
       lookupFrom([
-        node({ userId: 'ib-1', parentIbUserId: 'ib-2' }),
-        node({ userId: 'ib-2', parentIbUserId: 'ib-1' }),
+        node({ userId: 1000001, parentIbUserId: 1000002 }),
+        node({ userId: 1000002, parentIbUserId: 1000001 }),
       ]),
     );
 
-    expect(chain.map((c) => c.ibUserId)).toEqual(['ib-1', 'ib-2']);
+    expect(chain.map((c) => c.ibUserId)).toEqual([1000001, 1000002]);
   });
 });
 
 describe('calculate — whose share applies', () => {
   it('pays the introducer their rung’s share of the product’s commission', () => {
-    const result = calculate(DEAL, [earner({ ibUserId: 'ib-1', depth: 1 })], defaultLadder());
+    const result = calculate(DEAL, [earner({ ibUserId: 1000001, depth: 1 })], defaultLadder());
 
     /* 70% of a $20 pool (2 lots × $10). */
     expect(result.accruals).toEqual([
       {
-        ibUserId: 'ib-1',
+        ibUserId: 1000001,
         depth: 1,
         levelId: 'lvl-1',
         programId: undefined,
@@ -268,15 +268,15 @@ describe('calculate — whose share applies', () => {
     const result = calculate(
       DEAL,
       [
-        earner({ ibUserId: 'ib-2', depth: 1, level: 2 }),
-        earner({ ibUserId: 'ib-1', depth: 2, level: 1 }),
+        earner({ ibUserId: 1000002, depth: 1, level: 2 }),
+        earner({ ibUserId: 1000001, depth: 2, level: 1 }),
       ],
       defaultLadder(),
     );
 
     expect(result.accruals.map((a) => [a.ibUserId, a.depth, a.rateValue, a.amount])).toEqual([
-      ['ib-2', 1, '30.0000', '6.00000000'],
-      ['ib-1', 2, '70.0000', '14.00000000'],
+      [1000002, 1, '30.0000', '6.00000000'],
+      [1000001, 2, '70.0000', '14.00000000'],
     ]);
   });
 
@@ -288,20 +288,20 @@ describe('calculate — whose share applies', () => {
   it('pays a rung the same wherever in the chain the trade happened', () => {
     const own = calculate(
       DEAL,
-      [earner({ ibUserId: 'ib-1', depth: 1, level: 1 })],
+      [earner({ ibUserId: 1000001, depth: 1, level: 1 })],
       defaultLadder(),
     );
     const below = calculate(
       DEAL,
       [
-        earner({ ibUserId: 'ib-2', depth: 1, level: 2 }),
-        earner({ ibUserId: 'ib-1', depth: 2, level: 1 }),
+        earner({ ibUserId: 1000002, depth: 1, level: 2 }),
+        earner({ ibUserId: 1000001, depth: 2, level: 1 }),
       ],
       defaultLadder(),
     );
 
-    const mainOwn = own.accruals.find((a) => a.ibUserId === 'ib-1');
-    const mainBelow = below.accruals.find((a) => a.ibUserId === 'ib-1');
+    const mainOwn = own.accruals.find((a) => a.ibUserId === 1000001);
+    const mainBelow = below.accruals.find((a) => a.ibUserId === 1000001);
     expect(mainOwn?.amount).toBe('14.00000000');
     expect(mainBelow?.amount).toBe('14.00000000');
     expect(mainOwn?.depth).toBe(1);
@@ -318,8 +318,8 @@ describe('calculate — whose share applies', () => {
     const result = calculate(
       { ...DEAL, lots: '1' },
       [
-        earner({ ibUserId: 'sub', depth: 1, level: 2 }),
-        earner({ ibUserId: 'main', depth: 2, level: 1 }),
+        earner({ ibUserId: 1000004, depth: 1, level: 2 }),
+        earner({ ibUserId: 1000005, depth: 2, level: 1 }),
       ],
       ladderOf(
         level({ level: 1, commissionShare: '100.0000' }),
@@ -328,20 +328,20 @@ describe('calculate — whose share applies', () => {
     );
 
     expect(result.accruals.map((a) => [a.ibUserId, a.amount])).toEqual([
-      ['sub', '3.00000000'],
-      ['main', '10.00000000'],
+      [1000004, '3.00000000'],
+      [1000005, '10.00000000'],
     ]);
   });
 
   it('scales with volume, because every term is per lot', () => {
     const half = calculate(
       { ...DEAL, lots: '0.5' },
-      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      [earner({ ibUserId: 1000001, depth: 1 })],
       defaultLadder(),
     );
     const ten = calculate(
       { ...DEAL, lots: '10' },
-      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      [earner({ ibUserId: 1000001, depth: 1 })],
       defaultLadder(),
     );
 
@@ -352,7 +352,7 @@ describe('calculate — whose share applies', () => {
   it('keeps full precision on a fractional share', () => {
     const result = calculate(
       { ...DEAL, lots: '1' },
-      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      [earner({ ibUserId: 1000001, depth: 1 })],
       ladderOf(level({ level: 1, commissionShare: '33.3333' })),
     );
 
@@ -368,14 +368,14 @@ describe('calculate — whose share applies', () => {
     const result = calculate(
       DEAL,
       [
-        earner({ ibUserId: 'ib-3', depth: 1, level: 3 }),
-        earner({ ibUserId: 'ib-2', depth: 2, level: 2 }),
-        earner({ ibUserId: 'ib-1', depth: 3, level: 1 }),
+        earner({ ibUserId: 1000003, depth: 1, level: 3 }),
+        earner({ ibUserId: 1000002, depth: 2, level: 2 }),
+        earner({ ibUserId: 1000001, depth: 3, level: 1 }),
       ],
       defaultLadder(),
     );
 
-    expect(result.accruals.map((a) => a.ibUserId)).toEqual(['ib-2', 'ib-1']);
+    expect(result.accruals.map((a) => a.ibUserId)).toEqual([1000002, 1000001]);
     expect(result.skippedReason).toMatch(/level 3/);
     expect(result.unpriceable).toBeUndefined();
   });
@@ -383,7 +383,7 @@ describe('calculate — whose share applies', () => {
   it('pays nothing under a disabled level, and says why', () => {
     const result = calculate(
       DEAL,
-      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      [earner({ ibUserId: 1000001, depth: 1 })],
       ladderOf(level({ level: 1, enabled: false })),
     );
 
@@ -394,7 +394,7 @@ describe('calculate — whose share applies', () => {
   it('pays nothing on a rung whose share is zero', () => {
     const result = calculate(
       DEAL,
-      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      [earner({ ibUserId: 1000001, depth: 1 })],
       ladderOf(level({ level: 1, commissionShare: '0.0000' })),
     );
 
@@ -403,7 +403,7 @@ describe('calculate — whose share applies', () => {
   });
 
   it('refuses to take a share of a deposit, whatever the ladder says', () => {
-    const result = calculate(DEPOSIT, [earner({ ibUserId: 'ib-1', depth: 1 })], defaultLadder());
+    const result = calculate(DEPOSIT, [earner({ ibUserId: 1000001, depth: 1 })], defaultLadder());
 
     expect(result.accruals).toEqual([]);
     expect(result.rebate).toBeUndefined();
@@ -421,7 +421,7 @@ describe('calculate — whose share applies', () => {
   it('skips a leg that rounds to nothing rather than writing an empty accrual', () => {
     const result = calculate(
       { ...DEAL, lots: '0.0001' },
-      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      [earner({ ibUserId: 1000001, depth: 1 })],
       ladderOf(level({ level: 1, commissionShare: '0.0001' })),
     );
 
@@ -441,7 +441,7 @@ describe('calculate — the product’s terms', () => {
   it('refuses a trade on an account linked to no product', () => {
     const result = calculate(
       { ...DEAL, terms: undefined },
-      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      [earner({ ibUserId: 1000001, depth: 1 })],
       defaultLadder(),
     );
 
@@ -457,7 +457,7 @@ describe('calculate — the product’s terms', () => {
   it('pays nobody on a product with no commission type, and says so', () => {
     const result = calculate(
       { ...DEAL, terms: null },
-      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      [earner({ ibUserId: 1000001, depth: 1 })],
       defaultLadder(),
     );
 
@@ -469,7 +469,7 @@ describe('calculate — the product’s terms', () => {
   it('pays nobody on a disabled commission type', () => {
     const result = calculate(
       { ...DEAL, terms: { ...TYPE, enabled: false } },
-      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      [earner({ ibUserId: 1000001, depth: 1 })],
       defaultLadder(),
     );
 
@@ -481,7 +481,7 @@ describe('calculate — the product’s terms', () => {
   it('pays nobody when the type pays nothing per lot, and says which type', () => {
     const result = calculate(
       { ...DEAL, terms: { ...TYPE, commissionPerLot: '0' } },
-      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      [earner({ ibUserId: 1000001, depth: 1 })],
       defaultLadder(),
     );
 
@@ -492,12 +492,12 @@ describe('calculate — the product’s terms', () => {
   it('earns nothing and reports why when the trade has no volume', () => {
     const noLots = calculate(
       { ...DEAL, lots: undefined },
-      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      [earner({ ibUserId: 1000001, depth: 1 })],
       defaultLadder(),
     );
     const zeroLots = calculate(
       { ...DEAL, lots: '0' },
-      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      [earner({ ibUserId: 1000001, depth: 1 })],
       defaultLadder(),
     );
 
@@ -517,8 +517,8 @@ describe('calculate — the product’s terms', () => {
     const result = calculate(
       { ...DEAL, lots: '1.37' },
       [
-        earner({ ibUserId: 'ib-2', depth: 1, level: 2 }),
-        earner({ ibUserId: 'ib-1', depth: 2, level: 1 }),
+        earner({ ibUserId: 1000002, depth: 1, level: 2 }),
+        earner({ ibUserId: 1000001, depth: 2, level: 1 }),
       ],
       defaultLadder(),
     );
@@ -538,11 +538,11 @@ describe('calculate — the product’s terms', () => {
 
 describe('calculate — the client’s rebate', () => {
   it('pays the client their introducer’s share of the product’s rebate', () => {
-    const result = calculate(DEAL, [earner({ ibUserId: 'ib-1', depth: 1 })], defaultLadder());
+    const result = calculate(DEAL, [earner({ ibUserId: 1000001, depth: 1 })], defaultLadder());
 
     /* 50% of a $6 pool (2 lots × $3). */
     expect(result.rebate).toEqual({
-      ibUserId: 'ib-1',
+      ibUserId: 1000001,
       levelId: 'lvl-1',
       programId: undefined,
       commissionTypeId: 'type-standard',
@@ -561,8 +561,8 @@ describe('calculate — the client’s rebate', () => {
     const result = calculate(
       DEAL,
       [
-        earner({ ibUserId: 'ib-2', depth: 1, level: 2 }),
-        earner({ ibUserId: 'ib-1', depth: 2, level: 1 }),
+        earner({ ibUserId: 1000002, depth: 1, level: 2 }),
+        earner({ ibUserId: 1000001, depth: 2, level: 1 }),
       ],
       ladderOf(
         level({ level: 1, rebateShare: '50.0000' }),
@@ -570,24 +570,24 @@ describe('calculate — the client’s rebate', () => {
       ),
     );
 
-    expect(result.rebate?.ibUserId).toBe('ib-2');
+    expect(result.rebate?.ibUserId).toBe(1000002);
     expect(result.rebate?.rateValue).toBe('20.0000');
     expect(result.rebate?.amount).toBe('1.20000000');
   });
 
   it('records the introducer as the source of the rebate, not its recipient', () => {
-    const result = calculate(DEAL, [earner({ ibUserId: 'ib-1', depth: 1 })], defaultLadder());
+    const result = calculate(DEAL, [earner({ ibUserId: 1000001, depth: 1 })], defaultLadder());
 
     /* The beneficiary is the trading client, who is not in the chain at all —
        the caller supplies them. The row must not name the partner as payee. */
-    expect(result.rebate?.ibUserId).toBe('ib-1');
+    expect(result.rebate?.ibUserId).toBe(1000001);
     expect(result.accruals.map((a) => a.ibUserId)).not.toContain('client');
   });
 
   it('pays no rebate when the introducer’s rung has a zero rebate share', () => {
     const result = calculate(
       DEAL,
-      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      [earner({ ibUserId: 1000001, depth: 1 })],
       ladderOf(level({ level: 1, rebateShare: '0.0000' })),
     );
 
@@ -598,7 +598,7 @@ describe('calculate — the client’s rebate', () => {
   it('pays the client and no partner when the rung’s commission share is zero', () => {
     const result = calculate(
       DEAL,
-      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      [earner({ ibUserId: 1000001, depth: 1 })],
       ladderOf(level({ level: 1, commissionShare: '0.0000', rebateShare: '100.0000' })),
     );
 
@@ -609,7 +609,7 @@ describe('calculate — the client’s rebate', () => {
   it('pays no rebate when the type returns nothing to the client', () => {
     const result = calculate(
       { ...DEAL, terms: { ...TYPE, rebatePerLot: '0' } },
-      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      [earner({ ibUserId: 1000001, depth: 1 })],
       defaultLadder(),
     );
 
@@ -619,7 +619,7 @@ describe('calculate — the client’s rebate', () => {
 
   it('pays no rebate on a deposit, exactly as it pays no commission', () => {
     expect(
-      calculate(DEPOSIT, [earner({ ibUserId: 'ib-1', depth: 1 })], defaultLadder()).rebate,
+      calculate(DEPOSIT, [earner({ ibUserId: 1000001, depth: 1 })], defaultLadder()).rebate,
     ).toBeUndefined();
   });
 
@@ -630,7 +630,7 @@ describe('calculate — the client’s rebate', () => {
   it('omits a rebate that rounds away rather than writing an empty one', () => {
     const result = calculate(
       { ...DEAL, lots: '0.0001' },
-      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      [earner({ ibUserId: 1000001, depth: 1 })],
       ladderOf(level({ level: 1, rebateShare: '0.0001' })),
     );
 
@@ -643,21 +643,21 @@ describe('calculate — the client’s rebate', () => {
     const result = calculate(
       DEAL,
       [
-        earner({ ibUserId: 'ib-2', depth: 1, level: 2 }),
-        earner({ ibUserId: 'ib-1', depth: 2, level: 1 }),
+        earner({ ibUserId: 1000002, depth: 1, level: 2 }),
+        earner({ ibUserId: 1000001, depth: 2, level: 1 }),
       ],
       ladderOf(level({ level: 1 }), level({ level: 2, enabled: false })),
     );
 
     expect(result.rebate).toBeUndefined();
-    expect(result.accruals.map((a) => a.ibUserId)).toEqual(['ib-1']);
+    expect(result.accruals.map((a) => a.ibUserId)).toEqual([1000001]);
   });
 });
 
 describe('checkPlausible — the per-lot ceiling', () => {
   const chain = [
-    earner({ ibUserId: 'ib-2', depth: 1, level: 2 }),
-    earner({ ibUserId: 'ib-1', depth: 2, level: 1 }),
+    earner({ ibUserId: 1000002, depth: 1, level: 2 }),
+    earner({ ibUserId: 1000001, depth: 2, level: 1 }),
   ];
 
   it('accepts a chain inside the ceiling', () => {
@@ -719,7 +719,7 @@ describe('the numbers', () => {
   it('rounds a half up at the eighth decimal rather than truncating', () => {
     const result = calculate(
       { ...DEAL, lots: '1', terms: { ...TYPE, commissionPerLot: '0.00000015' } },
-      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      [earner({ ibUserId: 1000001, depth: 1 })],
       ladderOf(level({ level: 1, commissionShare: '50.0000' })),
     );
 
@@ -730,7 +730,7 @@ describe('the numbers', () => {
   it('divides the share by a hundred, so 100% is the whole pool and not 100×', () => {
     const result = calculate(
       DEAL,
-      [earner({ ibUserId: 'ib-1', depth: 1 })],
+      [earner({ ibUserId: 1000001, depth: 1 })],
       ladderOf(level({ level: 1, commissionShare: '100.0000', rebateShare: '100.0000' })),
     );
 
@@ -739,7 +739,7 @@ describe('the numbers', () => {
   });
 
   it('never hands back a JS number', () => {
-    const result = calculate(DEAL, [earner({ ibUserId: 'ib-1', depth: 1 })], defaultLadder());
+    const result = calculate(DEAL, [earner({ ibUserId: 1000001, depth: 1 })], defaultLadder());
 
     for (const leg of [...result.accruals, result.rebate]) {
       expect(typeof leg?.amount).toBe('string');

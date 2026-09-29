@@ -4,7 +4,9 @@ import { users } from '../../database/schema';
 import {
   ageInYears,
   checkProfile,
-  deskLocks,
+  adminEditRule,
+  correctionFields,
+  heldFields,
   firstProfileError,
   isProfileKey,
   KYC_CORRECTABLE_KEYS,
@@ -259,6 +261,36 @@ describe('an address is a place', () => {
   );
 });
 
+/*
+ * State / Province (28 Sep 2026): free text, optional — the owner's call. A
+ * comma is part of real names ("Washington, D.C."), which a city's rule never
+ * needed; a value that names nothing is still refused.
+ */
+describe('a state or province is a named place, typed freely', () => {
+  it.each([
+    'California',
+    'Mount Lebanon',
+    'Île-de-France',
+    'Washington, D.C.',
+    'Newfoundland and Labrador',
+  ])('accepts %s', (typed) => {
+    expect(ok('stateProvince', typed)).toBe(typed);
+  });
+
+  it('refuses what names no place, and what is too long', () => {
+    expect(refused('stateProvince', '12345')).toBe(true);
+    expect(refused('stateProvince', '-Beirut')).toBe(true);
+    expect(refused('stateProvince', 'Bei<rut>')).toBe(true);
+    expect(refused('stateProvince', 'x'.repeat(101))).toBe(true);
+  });
+
+  it('is optional: it can be cleared, like the postal code', () => {
+    const check = checkProfile({ stateProvince: '   ' }, { asOf: AS_OF });
+    expect(check.errors).toEqual({});
+    expect(check.values).toEqual({ stateProvince: null });
+  });
+});
+
 describe('checkProfile — absent is untouched, blank is cleared, names never are', () => {
   it('leaves a field the caller did not send alone', () => {
     const check = checkProfile({ city: 'Beirut' }, { asOf: AS_OF });
@@ -309,33 +341,51 @@ describe('checkProfile — absent is untouched, blank is cleared, names never ar
   });
 });
 
-describe('deskLocks — what the support desk may change, by where the verification is', () => {
+describe('adminEditRule — how an admin may change each detail, by where the verification is', () => {
   const ALL = [...PROFILE_FIELD_KEYS];
 
   it.each([undefined, 'not_started', 'in_progress', 'rejected'])(
-    'locks nothing while the verification is the client’s own (%s)',
+    'leaves every detail free while the verification is the client’s own (%s)',
     (status) => {
-      expect(deskLocks(ALL, status)).toEqual({});
+      expect(heldFields(ALL, status, false)).toEqual({});
+      expect(correctionFields(ALL, status, true)).toEqual([]);
     },
   );
 
   it.each(['submitted', 'under_review'])(
-    'locks everything but the phone while a reviewer is checking it (%s)',
+    'holds everything but the phone while a reviewer is checking it (%s) — even for a corrector',
     (status) => {
-      const locked = deskLocks(ALL, status);
-      expect(Object.keys(locked).sort()).toEqual(ALL.filter((k) => k !== 'phone').sort());
-      expect(locked.firstName).toMatch(/checked against the client's documents/);
+      const held = heldFields(ALL, status, true);
+      expect(Object.keys(held).sort()).toEqual(ALL.filter((k) => k !== 'phone').sort());
+      expect(held.firstName).toMatch(/checked against the client's documents/);
     },
   );
 
-  it('once approved, sends every field but the phone to the reviewer’s correction', () => {
-    const locked = deskLocks(ALL, 'approved');
-    expect(locked.phone).toBeUndefined();
-    for (const key of KYC_CORRECTABLE_KEYS) expect(locked[key], key).toMatch(/Correct details/);
+  it('once verified, makes every detail but the phone a CORRECTION for an admin who may correct', () => {
+    expect(correctionFields(ALL, 'approved', true).sort()).toEqual(
+      [...KYC_CORRECTABLE_KEYS].sort(),
+    );
+    expect(heldFields(ALL, 'approved', true)).toEqual({});
+    expect(adminEditRule('phone', 'approved', true)).toEqual({ kind: 'free' });
   });
 
-  it('only ever judges the fields that are CHANGING', () => {
-    expect(deskLocks(['phone'], 'approved')).toEqual({});
-    expect(Object.keys(deskLocks(['city'], 'submitted'))).toEqual(['city']);
+  it('once verified, holds them for an admin who may NOT correct, and says why', () => {
+    const held = heldFields(ALL, 'approved', false);
+    expect(Object.keys(held).sort()).toEqual([...KYC_CORRECTABLE_KEYS].sort());
+    expect(held.lastName).toMatch(/verified by KYC/);
+    expect(correctionFields(ALL, 'approved', false)).toEqual([]);
+  });
+
+  /*
+   * Reported 28 Sep 2026: a verified detail answered "Use Correct details on
+   * the client's KYC review", and the client page linked away to it. Every
+   * sentence is now about THIS record, in place.
+   */
+  it('never sends anybody to another screen', () => {
+    for (const status of ['submitted', 'under_review', 'approved']) {
+      for (const sentence of Object.values(heldFields(ALL, status, false))) {
+        expect(sentence).not.toMatch(/KYC review|Correct details|go to|open the/i);
+      }
+    }
   });
 });

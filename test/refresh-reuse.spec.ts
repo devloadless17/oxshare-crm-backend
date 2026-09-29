@@ -22,7 +22,7 @@ import { PasswordService } from '../src/common/security/password.service';
 
 let ctx: MoneyTestContext;
 let service: RefreshTokensService;
-let subjectId: string;
+let subjectId: number;
 
 const TTL = 30 * 24 * 60 * 60 * 1000;
 const expires = () => new Date(Date.now() + TTL);

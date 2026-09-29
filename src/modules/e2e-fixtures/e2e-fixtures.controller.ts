@@ -100,7 +100,7 @@ export class E2eFixturesController {
    * caller, so nothing a request says can name an existing client.
    */
   @Post('client')
-  async freshClient(): Promise<{ id: string; email: string; password: string }> {
+  async freshClient(): Promise<{ id: number; email: string; password: string }> {
     return createFreshE2eClient(getDb());
   }
 }

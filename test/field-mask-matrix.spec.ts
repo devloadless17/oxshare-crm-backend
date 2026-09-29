@@ -6,12 +6,16 @@ import { actingAs, startHttpTestApp, stopHttpTestApp, type HttpTestContext } fro
 import { PasswordService } from '../src/common/security/password.service';
 import {
   admins,
+  auditLog,
   clientTagAssignments,
   clientTags,
+  ibApplications,
   kycConfigSteps,
   kycSubmissions,
   roles,
+  transactions,
   users,
+  wallets,
 } from '../src/database/schema';
 import { DEFAULT_KYC_STEPS } from '../src/store/kyc-config.store';
 
@@ -63,6 +67,7 @@ const TARGET = {
   nationality: 'MatrixNationality',
   address: 'MatrixStreet 12',
   city: 'MatrixCity',
+  stateProvince: 'MatrixProvince',
   postalCode: 'MX 9901',
 };
 
@@ -77,6 +82,7 @@ const SENTINEL: Record<string, string> = {
   'client.nationality': TARGET.nationality,
   'client.address': TARGET.address,
   'client.city': TARGET.city,
+  'client.stateProvince': TARGET.stateProvince,
   'client.postalCode': TARGET.postalCode,
   /*
    * A BROKER'S OWN questions, masked as ONE unit rather than per field.
@@ -98,10 +104,19 @@ const SENTINEL: Record<string, string> = {
   // in the fixture is a key this file would silently not be testing.
   'client.tags': 'MatrixTagLabel',
   'client.createdAt': '',
+  /*
+   * D-82's three: where the client is paid (the withdrawal desk and the
+   * Financial page), what they wrote applying to be a partner (the IB desk),
+   * and the address they acted from (the audit trail, on a CLIENT actor's row).
+   */
+  'client.payoutDestination': 'MatrixPayoutIBAN0001',
+  'client.partnerApplication': 'MatrixMotivationText',
+  'client.ipAddress': '203.0.113.77',
 };
 
 let ctx: HttpTestContext;
-let clientId: string;
+let clientId: number;
+let clientPortalId: number;
 let maskableKeys: string[];
 
 /** Every maskable key the catalogue offers, read from the file the API serves. */
@@ -155,18 +170,25 @@ async function reader(masked: string[], where: 'role' | 'override') {
 
 /** Every value the client screens can show, as one string, for one key. */
 async function wireFor(session: Awaited<ReturnType<typeof reader>>): Promise<string> {
-  const [profile, list, kyc] = await Promise.all([
-    session.get(`/v1/admin/clients/${clientId}`),
-    session.get(`/v1/admin/clients?q=matrix-target`),
-    session.get(`/v1/admin/kyc/${clientId}`),
-  ]);
+  // The list by PORTAL ID: an email fragment finds nobody once the email is
+  // hidden (D-82), which would drop the row out of this read under that mask.
+  const paths = [
+    `/v1/admin/clients/${clientId}`,
+    `/v1/admin/clients?q=${clientPortalId}`,
+    `/v1/admin/kyc/${clientId}`,
+    `/v1/admin/withdrawals`,
+    `/v1/admin/transactions`,
+    `/v1/admin/ib/applications`,
+    // Narrowed to the client's OWN row: every KYC read above writes another row
+    // about them, which would push this one off the first page as the loop runs.
+    `/v1/admin/audit-log?q=${clientPortalId}&action=client.profile_update`,
+  ];
+  const reads = await Promise.all(paths.map((path) => session.get(path)));
 
   // A refusal would make every value absent and every assertion below vacuous.
-  expect(profile.status, 'the profile refused').toBe(200);
-  expect(list.status, 'the list refused').toBe(200);
-  expect(kyc.status, 'the KYC detail refused').toBe(200);
+  reads.forEach((res, i) => expect(res.status, `${paths[i]} refused`).toBe(200));
 
-  return JSON.stringify([profile.body, list.body, kyc.body]);
+  return JSON.stringify(reads.map((res) => res.body as unknown));
 }
 
 beforeAll(async () => {
@@ -193,6 +215,36 @@ beforeAll(async () => {
     .values({ ...TARGET, passwordHash: 'x', emailVerified: true })
     .returning();
   clientId = client.id;
+  // 0159: `users.id` IS the Portal ID now — the separate column is gone.
+  clientPortalId = client.id;
+
+  // D-82's three fields, each on the row that carries it.
+  const [wallet] = await db
+    .insert(wallets)
+    .values({ userId: clientId, currency: 'USD' })
+    .returning();
+  await db.insert(transactions).values({
+    userId: clientId,
+    walletId: wallet.id,
+    direction: 'withdrawal',
+    amount: '10.00000000',
+    currency: 'USD',
+    provider: 'manual',
+    destination: SENTINEL['client.payoutDestination'],
+  });
+  await db.insert(ibApplications).values({
+    userId: clientId,
+    motivation: SENTINEL['client.partnerApplication'],
+  });
+  await db.insert(auditLog).values({
+    actorId: String(clientId),
+    actorEmail: TARGET.email,
+    actorKind: 'client',
+    action: 'client.profile_update',
+    subjectType: 'user',
+    subjectId: String(clientId),
+    ipAddress: SENTINEL['client.ipAddress'],
+  });
 
   /*
    * The KYC form, with a broker's own question on the personal step. The
@@ -231,7 +283,12 @@ beforeAll(async () => {
     // guard refuses — a key with no distinguishable value is one it would
     // silently not be testing.
     stepData: { 'compliance-questions': { sourceOfFunds: SENTINEL['kyc.stepData'] } },
-    addressProof: { docType: 'utility_bill', fileName: 'MatrixProofFile.pdf' },
+    // A real page: evidence is read from the client's record, which holds pages
+    // — a name with no file is nothing a client ever presented.
+    addressProof: {
+      docType: 'utility_bill',
+      filePath: 'uploads/kyc/matrix-proof.pdf',
+    },
   });
 
   /*
@@ -299,10 +356,10 @@ describe('every maskable field, hidden on its own', () => {
 
           // 3. The screens still WORK — a document reference beside the address
           //    is not the address, and must survive being near it.
-          if (!wire.includes('MatrixProofFile.pdf')) {
+          if (!wire.includes('uploads/kyc/matrix-proof.pdf')) {
             problems.push(`${key}: masking it also removed the address-proof document`);
           }
-          if (!wire.includes(clientId)) {
+          if (!wire.includes(String(clientId))) {
             problems.push(`${key}: masking it emptied the response`);
           }
         }

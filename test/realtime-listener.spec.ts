@@ -27,7 +27,7 @@ let ctx: MoneyTestContext;
 let store: NotificationsStore;
 let gateways: NotificationsRealtimeGateway[] = [];
 
-const RECIPIENT = { kind: 'client' as const, id: '33333333-3333-3333-3333-333333333333' };
+const RECIPIENT = { kind: 'client' as const, id: 1000003 };
 
 function databaseUrl(): string {
   const uri = new URL(process.env['TEST_PG_URI'] as string);

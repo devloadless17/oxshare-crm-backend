@@ -77,14 +77,14 @@ let seq = 0;
 /** A pending whish deposit with a Rival externalId, plus its owner's wallet. */
 async function makePendingDeposit(amount = '150'): Promise<{
   txId: string;
-  userId: string;
+  userId: number;
   externalId: string;
   reference: string;
 }> {
   seq += 1;
   const externalId = String(500_000 + seq);
   const reference = `OX-RDF${String(seq).padStart(4, '0')}`;
-  const { rows: userRows } = await ctx.db.execute<{ id: string }>(sql`
+  const { rows: userRows } = await ctx.db.execute<{ id: number }>(sql`
     INSERT INTO users (email, password_hash, first_name, last_name, email_verified)
     VALUES (${`rival-flow-${seq}@spec.test`}, 'x', 'Flow', 'Client', true)
     RETURNING id
@@ -127,7 +127,7 @@ async function stateOf(txId: string): Promise<{
   };
 }
 
-async function balanceOf(userId: string): Promise<string> {
+async function balanceOf(userId: number): Promise<string> {
   const { rows } = await ctx.db.execute<{ balance: string }>(
     sql`SELECT balance FROM wallets WHERE user_id = ${userId}`,
   );
@@ -220,7 +220,7 @@ describe('the mapping table, row by row', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].actor_kind).toBe('system');
     expect(rows[0].actor_email).toBe('system@oxshare.internal');
-    expect(rows[0].user_id).toBe(userId);
+    expect(rows[0].user_id).toBe(String(userId)); // `->>` reads the jsonb number as text
 
     /*
      * At-least-once delivery must not double the trail either. The replay is

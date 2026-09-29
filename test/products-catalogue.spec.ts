@@ -9,6 +9,7 @@ import type { Mt5AccountsService } from '../src/modules/trading/mt5/mt5-accounts
 import type { Mt5GroupSyncService } from '../src/modules/trading/mt5/mt5-group-sync.service';
 import { auditStub, auditStubAs, TEST_ACTOR } from './audit-stub';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
+import { UNRESTRICTED } from '../src/common/security/client-scope';
 
 /**
  * The product-type rules migration 0088 introduced, asserted against a real
@@ -91,8 +92,8 @@ async function makeAgency(name: string): Promise<string> {
   return agency.id;
 }
 
-async function makeUser(email: string, referredBy?: string): Promise<string> {
-  const { rows } = await ctx.db.execute<{ id: string }>(sql`
+async function makeUser(email: string, referredBy?: number): Promise<number> {
+  const { rows } = await ctx.db.execute<{ id: number }>(sql`
     INSERT INTO users (email, password_hash, first_name, last_name, referred_by_ib_user_id)
     VALUES (${email}, 'x', 'Test', 'Client', ${referredBy ?? null})
     RETURNING id
@@ -100,7 +101,7 @@ async function makeUser(email: string, referredBy?: string): Promise<string> {
   return rows[0].id;
 }
 
-async function makePartner(email: string, agencyId: string): Promise<string> {
+async function makePartner(email: string, agencyId: string): Promise<number> {
   const partnerId = await makeUser(email);
   await ctx.db.execute(sql`
     INSERT INTO ib_accounts (user_id, referral_code, agency_id, program_id)
@@ -475,7 +476,9 @@ describe('a product is sold on a commission type', () => {
       TEST_ACTOR,
     );
 
-    await expect(types.remove(typeId, TEST_ACTOR)).rejects.toBeInstanceOf(ConflictError);
+    await expect(types.remove(typeId, TEST_ACTOR, UNRESTRICTED)).rejects.toBeInstanceOf(
+      ConflictError,
+    );
     await expect(types.update(typeId, { enabled: false }, TEST_ACTOR)).rejects.toBeInstanceOf(
       ConflictError,
     );

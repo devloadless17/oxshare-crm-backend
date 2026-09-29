@@ -69,13 +69,13 @@ const PASSWORD = 'ClientPass123!';
 let ctx: HttpTestContext;
 let mail: ReturnType<typeof emailRecorder>;
 let admin: Session;
-const ids = new Map<string, string>();
+const ids = new Map<string, number>();
 let withdrawalId: string;
 
 const idem = () => ({ headers: { 'idempotency-key': randomUUID() } });
 const PORTAL_ORIGIN = process.env['PORTAL_URL'] ?? 'http://localhost:3000';
 
-async function onboard(person: (typeof CLIENTS)[number]): Promise<string> {
+async function onboard(person: (typeof CLIENTS)[number]): Promise<number> {
   const res = await anonymous(ctx)
     .post('/v1/auth/register')
     .set('Origin', PORTAL_ORIGIN)
@@ -182,7 +182,7 @@ afterAll(async () => {
 });
 
 interface ClientRow {
-  id: string;
+  id: number;
   email: string;
 }
 const rowsOf = (body: unknown) => (body as { items: ClientRow[] }).items;
@@ -419,7 +419,7 @@ describe('§14 J4 — step 4: reviewing the resulting records', () => {
     expect(res.status).toBe(200);
     const items = (res.body as { items: { action: string; subjectId: string }[] }).items;
     expect(items.length, 'the rejected client has no audit trail').toBeGreaterThan(0);
-    expect(items.every((r) => r.subjectId === carla)).toBe(true);
+    expect(items.every((r) => r.subjectId === String(carla))).toBe(true);
     expect(items.some((r) => /kyc/i.test(r.action))).toBe(true);
   });
 

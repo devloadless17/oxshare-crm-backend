@@ -111,6 +111,9 @@ const KYC_STATUSES = [
   'rejected',
 ] as const;
 
+@NoClientFields(
+  'a question of the KYC FORM — its name, label and type; never an answer, never a person',
+)
 export class KycFieldConfigDto {
   @ApiProperty({ example: 'f-1' }) id: string;
   @ApiProperty({ description: 'Machine name the portal submits.', example: 'firstName' })
@@ -171,25 +174,28 @@ export class KycStepConfigDto {
   @ApiPropertyOptional({ description: 'lucide icon name.', example: 'User' }) icon?: string;
   @ApiProperty() enabled: boolean;
   @ApiProperty({ type: [KycFieldConfigDto] }) fields: KycFieldConfigDto[];
-  /** One of the four built-in steps: it exists once, and keeps its name and address. */
+  /** One of the four built-in steps: it exists once and keeps its address. */
   @ApiPropertyOptional({ description: 'One of the four built-in steps.' })
   core?: boolean;
-  /** A built-in step that cannot be switched off — Personal Information, Identity Document. */
-  @ApiPropertyOptional({ description: 'A built-in step that cannot be switched off.' })
+  /** Always false since Phase 2: every step, built-in or not, can be switched off. */
+  @ApiPropertyOptional({ description: 'Always false: every step can be switched off.' })
   alwaysOn?: boolean;
+  @ApiPropertyOptional({
+    description:
+      'Identity document, selfie and proof of address steps: whether the client must provide ' +
+      'it, or may skip it. Absent on other steps.',
+  })
+  evidenceRequired?: boolean;
 }
 
 export class KycDocumentStateDto {
   @ApiPropertyOptional({ example: 'passport' }) docType?: string;
   @ApiPropertyOptional() frontFilePath?: string;
-  @ApiPropertyOptional() frontFileName?: string;
   @ApiPropertyOptional() backFilePath?: string;
-  @ApiPropertyOptional() backFileName?: string;
 }
 
 export class KycFileStateDto {
   @ApiPropertyOptional() filePath?: string;
-  @ApiPropertyOptional() fileName?: string;
   @ApiPropertyOptional({ example: 'utility_bill' }) docType?: string;
   @ApiPropertyOptional({ description: 'Second page, for multi-page address proof.' })
   page2FilePath?: string;
@@ -237,7 +243,7 @@ export class KycStepStateDto {
 }
 
 export class KycStatusDto {
-  @ApiProperty() userId: string;
+  @ApiProperty({ type: 'integer' }) userId: number;
   @ApiProperty({ enum: KYC_STATUSES }) status: (typeof KYC_STATUSES)[number];
 
   @ApiPropertyOptional({
@@ -265,7 +271,7 @@ export class KycStatusDto {
     additionalProperties: { type: 'object', additionalProperties: { type: 'string' } },
     description: 'Answers for configured steps beyond the four canonical ones, keyed by slug.',
   })
-  stepData?: Record<string, Record<string, string | { filePath: string; fileName: string }>>;
+  stepData?: Record<string, Record<string, string | { filePath: string }>>;
 
   @ApiPropertyOptional({ description: 'Set when status is rejected.' }) rejectionReason?: string;
 
@@ -291,7 +297,7 @@ export class KycStatusDto {
   })
   steps: KycStepStateDto[];
   @ApiPropertyOptional() submittedAt?: Date;
-  @ApiPropertyOptional() reviewedBy?: string;
+  // No `reviewedBy`: an admin's internal id is not the client's to see.
   @ApiPropertyOptional() reviewedAt?: Date;
   @ApiProperty() createdAt: Date;
 }

@@ -19,11 +19,11 @@ import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './mone
  */
 let ctx: MoneyTestContext;
 let holdings: AdminHoldingsService;
-let partnerId: string;
-let otherPartnerId: string;
-let clientA: string;
-let clientB: string;
-let stranger: string;
+let partnerId: number;
+let otherPartnerId: number;
+let clientA: number;
+let clientB: number;
+let stranger: number;
 
 const TRADING_VIEWER = {
   id: '00000000-0000-0000-0000-000000000001',
@@ -34,8 +34,8 @@ const TRADING_VIEWER = {
   fieldMask: [],
 } as unknown as AuthenticatedAdmin;
 
-async function user(email: string, referredBy: string | null = null): Promise<string> {
-  const { rows } = await ctx.db.execute<{ id: string }>(sql`
+async function user(email: string, referredBy: number | null = null): Promise<number> {
+  const { rows } = await ctx.db.execute<{ id: number }>(sql`
     INSERT INTO users (email, password_hash, first_name, last_name, referred_by_ib_user_id)
     VALUES (${email}, 'x', 'Tab', 'Test', ${referredBy})
     RETURNING id
@@ -43,14 +43,14 @@ async function user(email: string, referredBy: string | null = null): Promise<st
   return rows[0].id;
 }
 
-async function partner(userId: string, code: string): Promise<void> {
+async function partner(userId: number, code: string): Promise<void> {
   await ctx.db.execute(sql`
     INSERT INTO ib_accounts (user_id, referral_code, program_id)
     VALUES (${userId}, ${code}, (SELECT id FROM ib_programs ORDER BY sort_order, name LIMIT 1))
   `);
 }
 
-async function account(userId: string, login: string): Promise<void> {
+async function account(userId: number, login: string): Promise<void> {
   await ctx.db.execute(sql`
     INSERT INTO trading_accounts (user_id, login, currency, environment)
     VALUES (${userId}, ${login}, 'USD', 'live')

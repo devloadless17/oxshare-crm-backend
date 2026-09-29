@@ -111,7 +111,7 @@ describe('the keyset seek can use the composite index', () => {
   it('serves the row-comparison seek without a separate sort', async () => {
     const p = await plan(`
       SELECT id FROM users
-      WHERE (created_at, id) < (now(), '00000000-0000-0000-0000-000000000000'::uuid)
+      WHERE (created_at, id) < (now(), 2147483647)
       ORDER BY created_at DESC, id DESC
       LIMIT 26
     `);
@@ -189,10 +189,10 @@ describe('every sortable column can be seeked and ordered by an index', () => {
       // page two a scan.
       const probe =
         key === 'createdAt'
-          ? "(now(), '00000000-0000-0000-0000-000000000000'::uuid)"
+          ? '(now(), 2147483647)'
           : key === 'verificationLevel'
-            ? "(1, '00000000-0000-0000-0000-000000000000'::uuid)"
-            : "('zzz', '00000000-0000-0000-0000-000000000000'::uuid)";
+            ? '(1, 2147483647)'
+            : "('zzz', 2147483647)";
       const column =
         key === 'createdAt' || key === 'verificationLevel' ? expression : `${expression}::text`;
 

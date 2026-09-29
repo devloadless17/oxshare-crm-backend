@@ -44,7 +44,7 @@ import type { FieldMask } from './field-mask';
 const SWAGGER_PROPERTIES = 'swagger/apiModelProperties';
 
 /** The class of property `key` on `type`, if the emitted metadata names one. */
-function propertyType(type: unknown, key: string): unknown {
+export function propertyType(type: unknown, key: string): unknown {
   if (typeof type !== 'function') return undefined;
   return Reflect.getMetadata('design:type', (type as { prototype: object }).prototype, key);
 }
@@ -65,7 +65,7 @@ function propertyType(type: unknown, key: string): unknown {
  * matches, which is precisely how the first version of this silently masked
  * nothing inside arrays while passing every scalar case.
  */
-function declaredType(type: unknown, key: string): unknown {
+export function declaredType(type: unknown, key: string): unknown {
   if (typeof type !== 'function') return undefined;
   const proto = (type as { prototype: object }).prototype;
   const declared = Reflect.getMetadata(SWAGGER_PROPERTIES, proto, key) as
@@ -90,9 +90,49 @@ function declaredType(type: unknown, key: string): unknown {
  *   be visible rather than silently safe-looking.
  */
 export function maskByShape<T>(shape: unknown, value: T, mask: FieldMask): T {
+  return maskByShapeReporting(shape, value, mask).value;
+}
+
+/**
+ * Where an EXPORT has a value the reader's role hides. Never the value, and
+ * never a gap: a CSV cell left empty reads as "this client has none", which is
+ * not what the reader may know either way (D-82). `csvRow` prints
+ * `HIDDEN_TEXT` in every cell whose column read one of these.
+ *
+ * A symbol, so it cannot be mistaken for data, cannot be typed into a field by
+ * a client, and is dropped by `JSON.stringify` if it ever reached a JSON body.
+ */
+export const HIDDEN: unique symbol = Symbol('hidden by the reader’s role');
+
+/** What a reader sees in place of a value their role hides, in a file. */
+export const HIDDEN_TEXT = '[hidden]';
+
+/**
+ * `maskByShape` for a file: the same walk, the same declarations, and every
+ * value it would remove replaced by `HIDDEN` instead — so the CSV writer can
+ * tell "hidden from you" from "empty". The JSON routes keep `maskByShape`,
+ * where an absent key and `maskedFields` say the same thing.
+ */
+export function maskForExport<T>(shape: unknown, value: T, mask: FieldMask): T {
   if (mask.length === 0 || shape === undefined || shape === null) return value;
-  const hidden = new Set(mask);
-  return walk(shape, value, hidden, new Set()) as T;
+  return walk(shape, value, new Set(mask), new Set(), new Set(), HIDDEN) as T;
+}
+
+/**
+ * `maskByShape`, and the catalogue keys it actually removed from THIS value —
+ * what a response's `maskedFields` must report so a screen can say "hidden"
+ * rather than "none" (D-82). A key the mask holds but no row carried is not
+ * reported: nothing was hidden.
+ */
+export function maskByShapeReporting<T>(
+  shape: unknown,
+  value: T,
+  mask: FieldMask,
+): { value: T; removed: string[] } {
+  if (mask.length === 0 || shape === undefined || shape === null) return { value, removed: [] };
+  const removed = new Set<string>();
+  const masked = walk(shape, value, new Set(mask), new Set(), removed) as T;
+  return { value: masked, removed: [...removed] };
 }
 
 function walk(
@@ -100,13 +140,16 @@ function walk(
   value: unknown,
   hidden: ReadonlySet<string>,
   seen: Set<string>,
+  removed: Set<string>,
+  /** What a masked value becomes: removed (`undefined`), or `HIDDEN` for a file. */
+  placeholder: unknown = undefined,
 ): unknown {
   if (value === null || value === undefined || typeof value !== 'object') return value;
 
   if (Array.isArray(value)) {
     let changed = false;
     const next = value.map((entry) => {
-      const masked = walk(shape, entry, hidden, seen);
+      const masked = walk(shape, entry, hidden, seen, removed, placeholder);
       if (masked !== entry) changed = true;
       return masked;
     });
@@ -128,7 +171,10 @@ function walk(
   };
 
   for (const [property, catalogueKey] of fields) {
-    if (hidden.has(catalogueKey) && property in row) replace(property, undefined);
+    if (hidden.has(catalogueKey) && property in row) {
+      replace(property, placeholder);
+      removed.add(catalogueKey);
+    }
   }
 
   /*
@@ -154,10 +200,14 @@ function walk(
       (key) => hidden.has(`${prefix}.${key}`) || (hidesOthers && !others.named.includes(key)),
     );
     if (doomed.length === 0) continue;
+    for (const key of doomed) {
+      removed.add(hidden.has(`${prefix}.${key}`) || !others ? `${prefix}.${key}` : others.others);
+    }
 
     const kept: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(entries)) {
       if (!doomed.includes(key)) kept[key] = value;
+      else if (placeholder !== undefined) kept[key] = placeholder;
     }
     replace(property, kept);
   }
@@ -184,7 +234,7 @@ function walk(
     const token = `${(shape as { name?: string }).name ?? '?'}.${key}`;
     if (seen.has(token)) continue;
     seen.add(token);
-    const masked = walk(childShape, child, hidden, seen);
+    const masked = walk(childShape, child, hidden, seen, removed, placeholder);
     seen.delete(token);
 
     if (masked !== child) replace(key, masked);

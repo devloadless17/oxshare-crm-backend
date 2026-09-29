@@ -1,3 +1,6 @@
+import { ValidationError } from '../common/errors/domain-errors';
+import { currentFieldMask } from '../common/logging/request-context';
+import type { FieldMask } from '../common/security/field-mask';
 import {
   SQL,
   type SQLWrapper,
@@ -157,10 +160,12 @@ export function clientSortOrder(value: string | undefined): 'asc' | 'desc' {
 }
 
 export interface User {
-  id: string;
+  /** The client's Portal ID — their one identifier since 0159 (D-83). */
+  id: number;
   /**
-   * The human number, from 1,000,000 up (0133). Assigned by the database, so it
-   * is absent from `create()`'s input — see `users.portal_id` in the schema.
+   * The SAME number as `id`, under the name every screen and DTO uses. Kept on
+   * the object (not in the table) so a DTO saying `portalId` reads naturally;
+   * it can never disagree with `id` because `toUser` copies it.
    */
   portalId: number;
   email: string;
@@ -195,6 +200,7 @@ export interface User {
   nationality?: string;
   address?: string;
   city?: string;
+  stateProvince?: string;
   postalCode?: string;
   /**
    * The partner who introduced them, or undefined for a direct signup.
@@ -203,7 +209,7 @@ export interface User {
    * mutable attribution is a route for one partner's earnings to move to
    * another.
    */
-  referredByIbUserId?: string;
+  referredByIbUserId?: number;
   createdAt: Date;
 }
 
@@ -230,6 +236,7 @@ const toUser = ({
   ...r
 }: Row): User => ({
   ...r,
+  portalId: r.id,
   verificationLevel: r.verificationLevel === 1 ? 1 : 0,
   emailVerificationTokenHash: r.emailVerificationTokenHash ?? undefined,
   emailVerificationExpiry: r.emailVerificationExpiry ?? undefined,
@@ -244,6 +251,7 @@ const toUser = ({
   nationality: r.nationality ?? undefined,
   address: r.address ?? undefined,
   city: r.city ?? undefined,
+  stateProvince: r.stateProvince ?? undefined,
   postalCode: r.postalCode ?? undefined,
   referredByIbUserId: r.referredByIbUserId ?? undefined,
 });
@@ -259,8 +267,11 @@ const toUser = ({
  * search needs "00012345" to stay an MT5 login — the bridge treats leading
  * zeros as significant — rather than also matching client 12345.
  */
-export function parsePortalId(q: string | undefined): number | undefined {
-  const digits = q?.trim().replace(/^#/, '');
+export function parsePortalId(q: unknown): number | undefined {
+  // Anything but text is not a Portal ID written down — a token claim or a body
+  // field of the wrong type is refused here rather than crashing on `.trim()`.
+  if (typeof q !== 'string') return undefined;
+  const digits = q.trim().replace(/^#/, '');
   if (!digits || !/^[1-9]\d{0,9}$/.test(digits)) return undefined;
   const n = Number(digits);
   return n <= 2_147_483_647 ? n : undefined;
@@ -278,10 +289,9 @@ export function parsePortalId(q: string | undefined): number | undefined {
  * NULL when nobody holds the number, and `= NULL` matches nothing — the right
  * answer, with no second round trip to find it out.
  */
-export function clientIdByPortalId(portalId: number): SQL<string | null> {
-  return sql<
-    string | null
-  >`(SELECT ${users.id} FROM ${users} WHERE ${users.portalId} = ${portalId})`;
+export function clientIdByPortalId(portalId: number): SQL<number> {
+  // The Portal ID IS the client's id since 0159 — nothing to resolve.
+  return sql<number>`${portalId}::integer`;
 }
 
 /**
@@ -323,10 +333,46 @@ export function clientIdByPortalId(portalId: number): SQL<string | null> {
  * An alias does not stop Postgres using either index: the planner matches the
  * expression against the table's columns, not against the name in the FROM.
  */
-export function clientIdentitySearch(q: string, person: typeof users = users): SQL {
+export function clientIdentitySearch(
+  q: string,
+  person: typeof users = users,
+  mask: FieldMask = currentFieldMask(),
+): SQL {
   const portalId = parsePortalId(q);
-  if (portalId !== undefined) return eq(person.portalId, portalId);
-  return sql`(coalesce(${person.email}, '') || ' ' || coalesce(${person.firstName}, '') || ' ' || coalesce(${person.lastName}, '')) ILIKE ${`%${escapeLike(q.trim())}%`}`;
+  if (portalId !== undefined) return eq(person.id, portalId);
+  const fragment = `%${escapeLike(q.trim())}%`;
+
+  const emailHidden = mask.includes('client.email');
+  const nameHidden = mask.includes('client.firstName') || mask.includes('client.lastName');
+  if (!emailHidden && !nameHidden) {
+    return sql`(coalesce(${person.email}, '') || ' ' || coalesce(${person.firstName}, '') || ' ' || coalesce(${person.lastName}, '')) ILIKE ${fragment}`;
+  }
+
+  /*
+   * ── A HIDDEN FIELD IS NEVER MATCHED BY A FRAGMENT (RBAC-03, D-82) ────────
+   *
+   * A substring match over a column the reader may not read is that column,
+   * one keystroke at a time: "a", "ab", "abd"… and the row count answers each
+   * guess. So a fragment is matched against the VISIBLE columns only — each
+   * form is indexed in 0157, like 0010's — and a hidden email is found by its
+   * COMPLETE address alone (the owner's rule: support must be able to find the
+   * client whose address they already hold; the lookup is audited by
+   * `HiddenEmailLookupInterceptor`). Emails are stored lower-cased, so the
+   * equality reads `users_email_unique`. A hidden NAME gets no exact lookup: a
+   * common name labels many clients.
+   */
+  const matches: SQL[] = [];
+  if (emailHidden && q.includes('@')) {
+    matches.push(eq(person.email, q.trim().toLowerCase()));
+  }
+  // `::text` explicitly: ILIKE casts a varchar, and 0157's index is on the cast (0125's trap).
+  if (!emailHidden) matches.push(sql`coalesce(${person.email}, '')::text ILIKE ${fragment}`);
+  if (!nameHidden) {
+    matches.push(
+      sql`(coalesce(${person.firstName}, '') || ' ' || coalesce(${person.lastName}, '')) ILIKE ${fragment}`,
+    );
+  }
+  return matches.length === 0 ? sql`false` : sql`(${sql.join(matches, sql` OR `)})`;
 }
 
 /**
@@ -351,11 +397,11 @@ export class UsersStore {
    * Unscoped on purpose: it only translates one identifier into the other,
    * and every route it feeds applies the reader's scope to the uuid itself.
    */
-  async idForPortalId(portalId: number): Promise<string | undefined> {
+  async idForPortalId(portalId: number): Promise<number | undefined> {
     const [row] = await this.db
       .select({ id: users.id })
       .from(users)
-      .where(eq(users.portalId, portalId))
+      .where(eq(users.id, portalId))
       .limit(1);
     return row?.id;
   }
@@ -365,7 +411,7 @@ export class UsersStore {
     return toUser(row);
   }
 
-  async findById(id: string, executor?: Executor): Promise<User | undefined> {
+  async findById(id: number, executor?: Executor): Promise<User | undefined> {
     const [row] = await (executor ?? this.db)
       .select(USER_COLUMNS)
       .from(users)
@@ -379,7 +425,7 @@ export class UsersStore {
    * that reads "before", decides, and writes, so a second writer waits instead
    * of deciding against the same stale "before" (`ClientProfileService`).
    */
-  async findByIdForUpdate(id: string, executor: Executor): Promise<User | undefined> {
+  async findByIdForUpdate(id: number, executor: Executor): Promise<User | undefined> {
     const [row] = await executor
       .select(USER_COLUMNS)
       .from(users)
@@ -412,9 +458,9 @@ export class UsersStore {
    * `referrerOf`.
    */
   async introducersInScope(
-    ids: readonly string[],
+    ids: readonly number[],
     scope: ClientScope,
-  ): Promise<Map<string, { portalId: number; firstName: string; lastName: string }>> {
+  ): Promise<Map<number, { portalId: number; firstName: string; lastName: string }>> {
     const unique = [...new Set(ids)];
     if (unique.length === 0) return new Map();
     const scoped = clientScopePredicate(scope, users.id);
@@ -422,7 +468,7 @@ export class UsersStore {
     const rows = await this.db
       .select({
         id: users.id,
-        portalId: users.portalId,
+        portalId: users.id,
         firstName: users.firstName,
         lastName: users.lastName,
       })
@@ -431,7 +477,7 @@ export class UsersStore {
     return new Map(rows.map(({ id, ...introducer }) => [id, introducer]));
   }
 
-  async findByIdInScope(id: string, scope: ClientScope): Promise<User | undefined> {
+  async findByIdInScope(id: number, scope: ClientScope): Promise<User | undefined> {
     const scoped = clientScopePredicate(scope, users.id);
     const where = scoped ? and(eq(users.id, id), scoped) : eq(users.id, id);
     const [row] = await this.db.select(USER_COLUMNS).from(users).where(where).limit(1);
@@ -486,7 +532,7 @@ export class UsersStore {
    * replaced by `referredClients.length` — see `IbOverviewDto`, which says so
    * in capitals about its own capped array.
    */
-  async countReferredBy(ibUserId: string, scope: ClientScope): Promise<number> {
+  async countReferredBy(ibUserId: number, scope: ClientScope): Promise<number> {
     const scoped = clientScopePredicate(scope, users.id);
     const where = eq(users.referredByIbUserId, ibUserId);
     const [{ value }] = await this.db
@@ -516,7 +562,7 @@ export class UsersStore {
    * protect. The reader already knows the partner exists; what they gain is
    * that their own view of them is partial.
    */
-  async countReferredOutsideScope(ibUserId: string, scope: ClientScope): Promise<number> {
+  async countReferredOutsideScope(ibUserId: number, scope: ClientScope): Promise<number> {
     const scoped = clientScopePredicate(scope, users.id);
     // An unrestricted reader is outside nothing, and the extra query would
     // always answer zero.
@@ -538,7 +584,7 @@ export class UsersStore {
    * partner's book grows without bound. The cap is what `referredShown`
    * reports; `countReferredBy` above is what the reader is being shown OUT OF.
    */
-  async listReferredBy(ibUserId: string, limit: number, scope: ClientScope): Promise<User[]> {
+  async listReferredBy(ibUserId: number, limit: number, scope: ClientScope): Promise<User[]> {
     const scoped = clientScopePredicate(scope, users.id);
     const where = eq(users.referredByIbUserId, ibUserId);
     const rows = await this.db
@@ -565,7 +611,7 @@ export class UsersStore {
    * distinguish "no such client" from "not yours", and that difference is an
    * oracle for enumerating the client base an admin was specifically denied.
    */
-  async findForAdmin(id: string, scope: ClientScope): Promise<User | undefined> {
+  async findForAdmin(id: number, scope: ClientScope): Promise<User | undefined> {
     const scoped = clientScopePredicate(scope, users.id);
     const [row] = await this.db
       .select(USER_COLUMNS)
@@ -640,7 +686,7 @@ export class UsersStore {
    * written nowhere else together, so no reader can observe a row that is
    * consumed but unverified.
    */
-  async consumeEmailVerification(id: string, tokenHash: string, at: Date): Promise<boolean> {
+  async consumeEmailVerification(id: number, tokenHash: string, at: Date): Promise<boolean> {
     const rows = await this.db
       .update(users)
       // Verified by the link: an outstanding code has nothing left to confirm.
@@ -659,7 +705,7 @@ export class UsersStore {
   // ─── The 6-digit email code (0138) ──────────────────────────────────────────
 
   /** A code for a brand-new registration — nothing to cool down from yet. */
-  async issueEmailCode(id: string, codeHash: string, expiresAt: Date, at: Date): Promise<void> {
+  async issueEmailCode(id: number, codeHash: string, expiresAt: Date, at: Date): Promise<void> {
     await this.db
       .update(users)
       .set({
@@ -678,7 +724,7 @@ export class UsersStore {
    * nothing, and tell nobody.
    */
   async issueEmailVerification(
-    id: string,
+    id: number,
     issue: { tokenHash: string; tokenExpiry: Date; codeHash: string; codeExpiresAt: Date },
     at: Date,
     cooldownMs: number,
@@ -719,7 +765,7 @@ export class UsersStore {
    * comparison: five parallel guesses cannot each read "four left".
    */
   async takeEmailCodeAttempt(
-    id: string,
+    id: number,
     maxAttempts: number,
     at: Date,
   ): Promise<string | undefined> {
@@ -747,7 +793,7 @@ export class UsersStore {
    * The link's redemption is marked too, so the same email's link answers
    * "already verified" rather than "invalid" if it is clicked afterwards.
    */
-  async consumeEmailCode(id: string, codeHash: string, at: Date): Promise<User | undefined> {
+  async consumeEmailCode(id: number, codeHash: string, at: Date): Promise<User | undefined> {
     const [row] = await this.db
       .update(users)
       .set({
@@ -788,7 +834,7 @@ export class UsersStore {
    * crash between them used to leave one of two states.
    */
   async update(
-    id: string,
+    id: number,
     patch: Partial<Omit<User, ProfileKey>>,
     executor?: Executor,
   ): Promise<User | undefined> {
@@ -924,7 +970,7 @@ export class UsersStore {
      * which is what makes it the answer to the cap rather than a second capped
      * surface with its own rules.
      */
-    referredBy?: string;
+    referredBy?: number;
     /**
      * Introduced by ANY partner (`true`) or by none (`false`) — the console's
      * Referrals page is this list with `true`. On the attribution column, NOT
@@ -963,7 +1009,14 @@ export class UsersStore {
     if (typeof filter.level === 'number' && !Number.isNaN(filter.level)) {
       conditions.push(eq(users.verificationLevel, filter.level));
     }
-    if (filter.country) conditions.push(eq(users.country, filter.country));
+    if (filter.country) {
+      // Filtering by a hidden field answers "is this client from X?" one guess
+      // at a time — the same refusal `sortKey` makes for a sort (RBAC-03).
+      if (currentFieldMask().includes('client.country')) {
+        throw new ValidationError('Cannot filter by country: that field is hidden from your role.');
+      }
+      conditions.push(eq(users.country, filter.country));
+    }
 
     /*
      * The two filters that make the new columns useful.
@@ -1069,7 +1122,7 @@ export class UsersStore {
           : sql`${sortColumn}::text`;
 
       conditions.push(
-        sql`(${seekColumn}, ${users.id}) ${comparator} (${cast}, ${filter.cursor.id}::uuid)`,
+        sql`(${seekColumn}, ${users.id}) ${comparator} (${cast}, ${filter.cursor.id}::integer)`,
       );
     }
 
@@ -1108,7 +1161,7 @@ export class UsersStore {
        */
       cursorValue: sql<string>`${sortColumn}::text`,
       id: users.id,
-      portalId: users.portalId,
+      portalId: users.id,
       email: users.email,
       firstName: users.firstName,
       lastName: users.lastName,

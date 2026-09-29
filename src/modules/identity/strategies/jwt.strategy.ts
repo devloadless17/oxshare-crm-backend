@@ -12,7 +12,7 @@ import {
 } from '../../../common/security/token-audience';
 import { ConfigService } from '@nestjs/config';
 import { Request } from 'express';
-import { UsersStore } from '../../../store/users.store';
+import { parsePortalId, UsersStore } from '../../../store/users.store';
 import { RefreshTokensService } from '../../../common/security/refresh-tokens.service';
 
 export interface JwtPayload {
@@ -94,7 +94,11 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
     }
     // Identity comes from `sub` only. Falling back to the token's `email` claim
     // let a token naming one account resolve to another.
-    const user = await this.users.findById(payload.sub);
+    // The subject is the client's Portal ID (0159). A token signed before it
+    // carries a uuid: that is a stale session, answered 401 — never a 500.
+    const clientId = parsePortalId(payload.sub);
+    if (clientId === undefined) throw new UnauthorizedException('Please log in again.');
+    const user = await this.users.findById(clientId);
     if (!user) throw new UnauthorizedException('User not found. Please log in again.');
     // Suspension takes effect on the next request — a live token is no shield.
     if (user.status === 'suspended') {

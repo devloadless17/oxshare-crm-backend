@@ -278,7 +278,7 @@ export class AdminHoldingsService {
    */
   async listWallets(
     query: {
-      userId?: string;
+      userId?: number;
       currency?: string;
       q?: string;
       page?: string;
@@ -349,7 +349,7 @@ export class AdminHoldingsService {
   }
 
   private walletConditions(filter: {
-    userId?: string;
+    userId?: number;
     currency?: string;
     q?: string;
     scope?: ClientScope;
@@ -429,7 +429,7 @@ export class AdminHoldingsService {
   }
 
   private async walletPage(filter: {
-    userId?: string;
+    userId?: number;
     q?: string;
     currency?: string;
     page: number;
@@ -476,7 +476,7 @@ export class AdminHoldingsService {
         createdAt: wallets.createdAt,
         updatedAt: wallets.updatedAt,
         userId: wallets.userId,
-        userPortalId: users.portalId,
+        userPortalId: users.id,
         userEmail: users.email,
         userFirstName: users.firstName,
         userLastName: users.lastName,
@@ -573,7 +573,7 @@ export class AdminHoldingsService {
    * `AdminExportService.transactionBatch` already threads one.
    */
   async walletExportBatch(
-    query: { userId?: string; currency?: string },
+    query: { userId?: number; currency?: string },
     actor: AuthenticatedAdmin,
     offset: number,
     limit: number,
@@ -601,7 +601,7 @@ export class AdminHoldingsService {
           createdAt: wallets.createdAt,
           updatedAt: wallets.updatedAt,
           userId: wallets.userId,
-          userPortalId: users.portalId,
+          userPortalId: users.id,
           userEmail: users.email,
           userFirstName: users.firstName,
           userLastName: users.lastName,
@@ -648,7 +648,7 @@ export class AdminHoldingsService {
    * Applying it costs nothing on the path that exists and fails closed on the
    * one that does not exist yet.
    */
-  async accountsForProfile(userId: string, scope: ClientScope) {
+  async accountsForProfile(userId: number, scope: ClientScope) {
     const scoped = clientScopePredicate(scope, tradingAccounts.userId);
     const owner = eq(tradingAccounts.userId, userId);
     return (
@@ -671,8 +671,8 @@ export class AdminHoldingsService {
 
   async listTradingAccounts(
     query: {
-      userId?: string;
-      referredBy?: string;
+      userId?: number;
+      referredBy?: number;
       environment?: string;
       status?: string;
       q?: string;
@@ -747,8 +747,8 @@ export class AdminHoldingsService {
   }
 
   private tradingAccountConditions(filter: {
-    userId?: string;
-    referredBy?: string;
+    userId?: number;
+    referredBy?: number;
     environment?: string;
     status?: string;
     q?: string;
@@ -797,8 +797,8 @@ export class AdminHoldingsService {
   }
 
   private async tradingAccountPage(filter: {
-    userId?: string;
-    referredBy?: string;
+    userId?: number;
+    referredBy?: number;
     q?: string;
     environment?: string;
     status?: string;
@@ -871,7 +871,7 @@ export class AdminHoldingsService {
         createdAt: tradingAccounts.createdAt,
         updatedAt: tradingAccounts.updatedAt,
         userId: tradingAccounts.userId,
-        userPortalId: users.portalId,
+        userPortalId: users.id,
         userEmail: users.email,
         userFirstName: users.firstName,
         userLastName: users.lastName,
@@ -930,7 +930,7 @@ export class AdminHoldingsService {
 
   /** One batch of trading accounts for a CSV export — see `walletExportBatch`. */
   async tradingAccountExportBatch(
-    query: { userId?: string; environment?: string; status?: string },
+    query: { userId?: number; environment?: string; status?: string },
     actor: AuthenticatedAdmin,
     offset: number,
     limit: number,
@@ -975,7 +975,7 @@ export class AdminHoldingsService {
           createdAt: tradingAccounts.createdAt,
           updatedAt: tradingAccounts.updatedAt,
           userId: tradingAccounts.userId,
-          userPortalId: users.portalId,
+          userPortalId: users.id,
           userEmail: users.email,
           userFirstName: users.firstName,
           userLastName: users.lastName,
@@ -1024,7 +1024,7 @@ export class AdminHoldingsService {
    * when the trade opened is not lost from the trade that paid it.
    */
   async listClientClosedPositions(filter: {
-    userId: string;
+    userId: number;
     page?: number;
     limit?: number;
     scope?: ClientScope;
@@ -1158,7 +1158,7 @@ export class AdminHoldingsService {
    * answered by reading three lists in parallel and merging them by eye.
    */
   async listClientTransactions(filter: {
-    userId: string;
+    userId: number;
     page?: number;
     limit?: number;
     scope?: ClientScope;

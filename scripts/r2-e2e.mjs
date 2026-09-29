@@ -273,7 +273,7 @@ async function main() {
     // The path the submission recorded — the shape the frontends' URL builders read.
     const row = await db.query(
       `SELECT storage_key, content_type, byte_size, sha256, owner_user_id, provider,
-              uploaded_by_kind, original_name
+              uploaded_by_kind, to_jsonb(stored_objects)::text AS whole_row
          FROM stored_objects
         WHERE owner_user_id = $1 AND deleted_at IS NULL
         ORDER BY created_at DESC LIMIT 1`,
@@ -305,7 +305,8 @@ async function main() {
     check(`${f.name} attributed to the calling client`, reg.owner_user_id === userId);
     check(`${f.name} provider recorded as r2`, reg.provider === 'r2', reg.provider);
     check(`${f.name} uploader kind is client`, reg.uploaded_by_kind === 'client');
-    check(`${f.name} original filename kept for display`, reg.original_name === f.filename);
+    // The name it had on the uploader's device is not kept anywhere (0160, D-84).
+    check(`${f.name} original filename not kept`, !reg.whole_row.includes(f.filename));
 
     // ── The object really is in the bucket, byte-identical ──────────────────
     const head = await s3.send(new HeadObjectCommand({ Bucket: BUCKET, Key: reg.storage_key }));

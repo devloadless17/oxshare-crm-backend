@@ -52,7 +52,7 @@ export class CsrfService {
   }
 
   /** A fresh token for a principal. Called on login and on refresh. */
-  issue(subject: string): string {
+  issue(subject: string | number): string {
     const nonce = randomBytes(18).toString('base64url');
     return `${nonce}.${this.sign(subject, nonce)}`;
   }
@@ -63,7 +63,7 @@ export class CsrfService {
    * Returns a boolean rather than throwing: the guard owns the HTTP meaning of a
    * failure, and this stays a pure predicate that is trivial to test.
    */
-  verify(subject: string, token: string | undefined): boolean {
+  verify(subject: string | number, token: string | undefined): boolean {
     if (!token) return false;
 
     const separator = token.indexOf('.');
@@ -76,7 +76,7 @@ export class CsrfService {
     return this.constantTimeEquals(signature, this.sign(subject, nonce));
   }
 
-  private sign(subject: string, nonce: string): string {
+  private sign(subject: string | number, nonce: string): string {
     return createHmac('sha256', this.key()).update(`${subject}.${nonce}`).digest('base64url');
   }
 

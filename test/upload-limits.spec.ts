@@ -66,7 +66,7 @@ function pngOfSize(bytes: number): Buffer {
 const MB = 1024 * 1024;
 
 interface Recorded {
-  attached: { userId: string; field: string; path: string }[];
+  attached: { userId: number; field: string; path: string }[];
   failNext: boolean;
   /** The in-memory `StoredFilesService`, plus the driver to assert against. */
   files: StoredFilesService;
@@ -91,7 +91,7 @@ async function makeApp(recorded: Recorded): Promise<INestApplication> {
       {
         provide: KycService,
         useValue: {
-          attachFile: (userId: string, field: string, path: string) => {
+          attachFile: (userId: number, field: string, path: string) => {
             if (recorded.failNext) {
               recorded.failNext = false;
               return Promise.reject(new Error('simulated store failure'));

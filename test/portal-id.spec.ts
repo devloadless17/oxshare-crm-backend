@@ -1,5 +1,4 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
 import { sql } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
@@ -17,9 +16,12 @@ import { clientIdentitySearch, parsePortalId, UsersStore } from '../src/store/us
  *   - an IMPORT writes the old number explicitly, always below 1,000,000;
  *   - a unique index means the two can never hand out the same number.
  *
- * The uuid stays the primary key and every foreign key — the Portal ID is a
- * label, never an address (and never an access key: it is sequential, so it is
- * guessable by design).
+ * Since 0159 the Portal ID IS the primary key and every foreign key — the uuid
+ * is gone (D-83). It is still never an access key: it is sequential, so it is
+ * guessable by design. (0133's backfill and 0135's sequence grant were proved
+ * here while the column stood beside the uuid; 0159 renamed both into the key,
+ * a rename keeps the grant, and `migration-0159-portal-id-primary-key.spec.ts`
+ * proves the mapping.)
  *
  * These cases pin the properties a client, an importer and every search box
  * rely on. Each one is a thing that would fail quietly if it were wrong: a
@@ -47,7 +49,7 @@ async function newClient(tag: string) {
 /** Insert a raw row, the way an importer would — the old number set explicitly. */
 async function importClient(portalId: number | null) {
   return ctx.db.execute(sql`
-    INSERT INTO users (email, password_hash, first_name, last_name, portal_id)
+    INSERT INTO users (email, password_hash, first_name, last_name, id)
     VALUES (${`import-${portalId}-${Math.random()}@oxshare-e2e.test`}, 'x', 'Old', 'Platform', ${portalId})
   `);
 }
@@ -121,55 +123,6 @@ describe('the database refuses a number that would confuse two people', () => {
   });
 });
 
-describe('0133 numbers existing clients and is safe to run again', () => {
-  const migration = readFileSync('src/database/migrations/0133_client_portal_id.sql', 'utf8');
-
-  it('re-running it changes nothing and raises nothing', async () => {
-    const before = await ctx.db.execute<{ id: string; portal_id: number }>(sql`
-      SELECT id, portal_id FROM users ORDER BY id
-    `);
-    await ctx.db.execute(sql.raw(migration));
-    const after = await ctx.db.execute<{ id: string; portal_id: number }>(sql`
-      SELECT id, portal_id FROM users ORDER BY id
-    `);
-    expect(after.rows).toEqual(before.rows);
-  });
-
-  it('backfills clients who have none in sign-up order, above every existing number', async () => {
-    /*
-     * The state 0133 met in production: rows with no Portal ID. Recreated by
-     * lifting NOT NULL and clearing two numbers, then running the file.
-     */
-    const older = await newClient('backfill-older');
-    const newer = await newClient('backfill-newer');
-    await ctx.db.execute(sql`
-      UPDATE users SET created_at = now() - interval '2 days' WHERE id = ${older.id}
-    `);
-    await ctx.db.execute(sql`ALTER TABLE users ALTER COLUMN portal_id DROP NOT NULL`);
-    await ctx.db.execute(sql`
-      UPDATE users SET portal_id = NULL WHERE id IN (${older.id}, ${newer.id})
-    `);
-    const { rows: maxRows } = await ctx.db.execute<{ m: number }>(sql`
-      SELECT max(portal_id) AS m FROM users
-    `);
-    const highest = Number(maxRows[0].m);
-
-    await ctx.db.execute(sql.raw(migration));
-
-    const refreshedOlder = await store.findById(older.id);
-    const refreshedNewer = await store.findById(newer.id);
-    // Above every number already held, the older sign-up first.
-    expect(refreshedOlder!.portalId).toBe(highest + 1);
-    expect(refreshedNewer!.portalId).toBe(highest + 2);
-
-    // NOT NULL is back, and the sequence continues AFTER the backfill rather
-    // than handing one of those numbers out again.
-    expect(await pgCode(() => importClient(null))).toBe('23502');
-    const next = await newClient('after-backfill');
-    expect(next.portalId).toBeGreaterThan(highest + 2);
-  });
-});
-
 describe('a search term is a Portal ID only when it is exactly one', () => {
   it.each([
     ['1000245', 1_000_245],
@@ -212,7 +165,7 @@ describe('every client search box reads digits as a Portal ID', () => {
 
   it('sends a Portal ID as an exact comparison, bound as a parameter', () => {
     const query = dialect.sqlToQuery(clientIdentitySearch('#1000245'));
-    expect(query.sql).toBe('"users"."portal_id" = $1');
+    expect(query.sql).toBe('"users"."id" = $1');
     expect(query.params).toEqual([1_000_245]);
   });
 
@@ -238,53 +191,8 @@ describe('every client search box reads digits as a Portal ID', () => {
   it('finds an imported client by their old number', async () => {
     await importClient(31337);
     const { rows } = await ctx.db.execute<{ portal_id: number }>(sql`
-      SELECT ${users.portalId} AS portal_id FROM users WHERE ${clientIdentitySearch('31337')}
+      SELECT ${users.id} AS portal_id FROM users WHERE ${clientIdentitySearch('31337')}
     `);
     expect(rows.map((r) => Number(r.portal_id))).toEqual([31337]);
-  });
-});
-
-describe('0135 lets an API role that does not own the schema number new clients', () => {
-  /*
-   * The hardening 0033 anticipates: the API connecting as `app`, a role that
-   * does not own the schema. Every registration calls `nextval` on the Portal ID
-   * sequence, so without a grant that role could not create a single client.
-   * Proved against a real non-owner role rather than asserted from the SQL.
-   */
-  it('refuses the role before the grant and allows it after', async () => {
-    const { rows } = await ctx.db.execute<{ existed: boolean }>(sql`
-      SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'app') AS existed
-    `);
-    const existed = rows[0].existed;
-    if (!existed) await ctx.db.execute(sql.raw('CREATE ROLE app NOLOGIN'));
-
-    const client = await ctx.pool.connect();
-    const drawAsApp = async (): Promise<string | undefined> => {
-      try {
-        await client.query('SET ROLE app');
-        await client.query(`SELECT nextval('users_portal_id_seq')`);
-        return undefined;
-      } catch (error) {
-        return (error as { code?: string }).code;
-      } finally {
-        await client.query('RESET ROLE');
-      }
-    };
-
-    try {
-      await ctx.db.execute(sql.raw('REVOKE ALL ON SEQUENCE users_portal_id_seq FROM app'));
-      expect(await drawAsApp()).toBe('42501'); // insufficient_privilege
-
-      await ctx.db.execute(
-        sql.raw(readFileSync('src/database/migrations/0135_grant_portal_id_sequence.sql', 'utf8')),
-      );
-      expect(await drawAsApp()).toBeUndefined();
-    } finally {
-      client.release();
-      // Leave the cluster as it was found: roles are cluster-wide, and the next
-      // spec file's migrations branch on whether `app` exists.
-      await ctx.db.execute(sql.raw('REVOKE ALL ON SEQUENCE users_portal_id_seq FROM app'));
-      if (!existed) await ctx.db.execute(sql.raw('DROP ROLE app'));
-    }
   });
 });

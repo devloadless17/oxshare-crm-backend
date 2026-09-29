@@ -89,7 +89,7 @@ export class TransfersService {
    * rules, and a check that lives in a controller does not run for either.
    */
   async request(params: {
-    userId: string;
+    userId: number;
     tradingAccountId: string;
     direction: 'wallet_to_account' | 'account_to_wallet';
     amount: string;
@@ -637,7 +637,7 @@ export class TransfersService {
    * `userId` is a WHERE clause and never a caller-supplied filter — it is the
    * only thing between this and one client reading another's movements.
    */
-  listForUser(userId: string) {
+  listForUser(userId: number) {
     return this.db
       .select()
       .from(transfers)

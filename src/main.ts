@@ -4,6 +4,7 @@ import { SwaggerModule } from '@nestjs/swagger';
 import { ErrorResponseDto } from './common/dto/error-response.dto';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
+import { ClientIdentityService } from './modules/client-identity/client-identity.service';
 import { VALIDATION_PIPE_OPTIONS } from './common/validation.config';
 import { buildSwaggerConfig } from './common/swagger-config';
 import { applyApiPrefix, createHttpAdapter } from './common/api-prefix';
@@ -223,6 +224,11 @@ async function bootstrap() {
   // by a person hitting a 403 in a browser. See database/permission-drift.ts.
   const { reportPermissionDrift } = await import('./database/permission-drift');
   await reportPermissionDrift();
+
+  // The client identity record against the KYC rows — outside the guard too,
+  // for the same reason: what its triggers cannot see (a restore, a level set
+  // by hand) happens in production. Repairs, alerts, never stops the boot.
+  await app.get(ClientIdentityService).repairDrift();
 
   /*
    * The realtime engine, chosen before listen so the gateway is created on it.

@@ -36,7 +36,8 @@ import {
   ApiTags,
 } from '@nestjs/swagger';
 import { WITHDRAWAL_SORT_COLUMNS } from '../payments/transactions.service';
-import { TransactionDto } from '../payments/dto/withdrawal.dto';
+import { transactionView } from '../payments/transaction-view';
+import { transferView } from '../payments/transfer-view';
 import { TransferDto } from '../payments/dto/transfer.dto';
 import {
   IDEMPOTENCY_HEADER,
@@ -66,6 +67,8 @@ import {
   DepositDecisionDto,
   WithdrawalRowDto,
   AttentionResolvedDto,
+  TradingAccountFundResultDto,
+  WalletCreditResultDto,
 } from './dto/responses.dto';
 import {
   PermissionsGuard,
@@ -304,10 +307,13 @@ export class AdminMoneyController {
       "client's own history, and emails them the amount and the reason. Requires a reason: an " +
       'unexplained credit cannot be audited.',
   })
-  @ApiCreatedResponse({ type: TransactionDto })
+  @ApiCreatedResponse({ type: WalletCreditResultDto })
   @ScopedToClients('The client is resolved through ClientVisibilityService before any money moves.')
   @Audited('wallet.credit')
-  creditWallet(@Body() dto: CreditWalletDto, @Req() req: Request & { admin: AuthenticatedAdmin }) {
+  async creditWallet(
+    @Body() dto: CreditWalletDto,
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+  ) {
     /*
      * The header is read here rather than generated in the service, because it
      * is the CALLER's statement of intent — two different requests must be two
@@ -316,7 +322,9 @@ export class AdminMoneyController {
      * it is absent.
      */
     const reference = req.header(IDEMPOTENCY_HEADER) ?? '';
-    return this.money.creditWallet(dto, reference, req.admin);
+    const result = await this.money.creditWallet(dto, reference, req.admin);
+    // The declared shape: the row carries the desk's payout state.
+    return { ...result, transaction: transactionView(result.transaction) };
   }
 
   /**
@@ -391,13 +399,13 @@ export class AdminMoneyController {
       'deposit requires wallets.credit AND trading.deposit; a withdrawal requires ' +
       'trading.withdraw.',
   })
-  @ApiCreatedResponse({ type: TransactionDto })
+  @ApiCreatedResponse({ type: TradingAccountFundResultDto })
   @ScopedToClients(
     'The account is read with the actor client scope joined into the WHERE, so an ' +
       'out-of-scope account is a 404 before any money moves.',
   )
   @Audited('trading.deposit')
-  fundTradingAccount(
+  async fundTradingAccount(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: FundTradingAccountDto,
     @Req() req: Request & { admin: AuthenticatedAdmin },
@@ -405,7 +413,7 @@ export class AdminMoneyController {
     // The CALLER's statement of intent, for the reason given on the credit
     // route above. `@Idempotent()` has already refused a request without it.
     const reference = req.header(IDEMPOTENCY_HEADER) ?? '';
-    return this.money.fundTradingAccount(
+    const result = await this.money.fundTradingAccount(
       {
         tradingAccountId: id,
         amount: dto.amount,
@@ -415,6 +423,12 @@ export class AdminMoneyController {
       reference,
       req.admin,
     );
+    // The declared shapes: both rows carry operator-side state.
+    return {
+      ...result,
+      transaction: result.transaction ? transactionView(result.transaction) : null,
+      transfer: result.transfer ? transferView(result.transfer) : null,
+    };
   }
 
   /**
@@ -827,7 +841,7 @@ export class AdminMoneyController {
   @ScopedToClients('WalletService.listEntries applies the predicate to wallets.user_id.')
   listLedger(
     @Req() req: Request & { admin: AuthenticatedAdmin },
-    @Query('userId', ClientRefPipe) userId?: string,
+    @Query('userId', ClientRefPipe) userId?: number,
     @Query('q') q?: string,
     @Query('walletId') walletId?: string,
     @Query('entryType') entryType?: string,
@@ -845,7 +859,7 @@ export class AdminMoneyController {
          * then all it has is a cast error. On a route taking several ids that
          * matters, and the database paid for a round trip to produce it.
          */
-        userId: uuidQuery(userId, 'userId'),
+        userId: userId,
         q,
         walletId: uuidQuery(walletId, 'walletId'),
         entryType,
@@ -957,12 +971,12 @@ export class AdminMoneyController {
   @ApiOkResponse({ type: TransferDto })
   @ScopedToClients('Checks the transfer’s owner; out-of-scope 404s like a missing one.')
   @Audited('transfer.abandon')
-  abandonTransfer(
+  async abandonTransfer(
     @Param('id', UuidParam) id: string,
     @Body() dto: AbandonTransferDto,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
-    return this.money.abandonTransfer(id, req.admin, dto.reason);
+    return transferView(await this.money.abandonTransfer(id, req.admin, dto.reason));
   }
 
   /**

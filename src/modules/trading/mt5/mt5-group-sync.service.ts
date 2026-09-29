@@ -9,6 +9,7 @@ import {
   tradingProducts,
 } from '../../../database/schema';
 import type { Mt5GroupDto } from './dto/mt5-group.dto';
+import { territoryCounts, type ClientScope } from '../../../common/security/client-scope';
 import { Mt5BridgeClient, type Mt5Group } from './mt5-bridge.client';
 import { amountFrom, commissionsFrom, stopOutModeFrom } from '../../../common/mt5-group-terms';
 
@@ -231,8 +232,13 @@ export class Mt5GroupSyncService {
    * Matched CASE-INSENSITIVELY on the group path, like every other lookup of a
    * group here: MT5 treats `real\Standard` and `Real\standard` as one group,
    * and the mirror's unique index is on `lower(name)`.
+   *
+   * The account count is split by the READER's territory (D-81 R2):
+   * `accountCount` is the accounts they may see, `accountsOutsideScope` the
+   * rest — counted, never named. A trading account belongs to its client.
    */
-  async listForAdmin(): Promise<Mt5GroupDto[]> {
+  async listForAdmin(scope: ClientScope): Promise<Mt5GroupDto[]> {
+    const split = territoryCounts(scope, tradingAccounts.userId);
     const [groups, claims, counts] = await Promise.all([
       this.db
         .select({
@@ -259,7 +265,8 @@ export class Mt5GroupSyncService {
       this.db
         .select({
           group: sql<string>`lower(${tradingAccounts.mt5Group})`,
-          count: sql<number>`count(*)::int`,
+          inScope: split.inScope,
+          outside: split.outside,
         })
         .from(tradingAccounts)
         .where(isNotNull(tradingAccounts.mt5Group))
@@ -274,14 +281,15 @@ export class Mt5GroupSyncService {
       list.push({ id: claim.productId, name: claim.productName, environment: claim.environment });
       soldBy.set(key, list);
     }
-    const accountsIn = new Map(counts.map((row) => [row.group, row.count]));
+    const accountsIn = new Map(counts.map((row) => [row.group, row]));
 
     return groups.map((group) => {
       const key = group.name.toLowerCase();
       return {
         ...group,
         products: (soldBy.get(key) ?? []).sort((a, b) => a.name.localeCompare(b.name)),
-        accountCount: accountsIn.get(key) ?? 0,
+        accountCount: accountsIn.get(key)?.inScope ?? 0,
+        accountsOutsideScope: accountsIn.get(key)?.outside ?? 0,
       };
     });
   }

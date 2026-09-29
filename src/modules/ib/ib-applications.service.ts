@@ -1,3 +1,4 @@
+import { ibAccountView } from './ib-views';
 import { Inject, Injectable } from '@nestjs/common';
 import { randomBytes } from 'node:crypto';
 import { DRIZZLE_DB } from '../../database/database.module';
@@ -188,7 +189,7 @@ export class IbApplicationsService {
    * history to record a fact that is not true, and would silently move a whole
    * sub-tree the day somebody is switched off and on again.
    */
-  private async inheritedParentIbUserIdFor(userId: string): Promise<string | null> {
+  private async inheritedParentIbUserIdFor(userId: number): Promise<number | null> {
     const user = await this.users.findById(userId);
     const introducerId = user?.referredByIbUserId;
     if (!introducerId) return null;
@@ -206,7 +207,7 @@ export class IbApplicationsService {
    * nothing about why. The portal's job is to render the difference; this
    * method's job is to make it available.
    */
-  async statusFor(userId: string): Promise<{
+  async statusFor(userId: number): Promise<{
     account: (IbAccountRow & { agencyName: string | null; products: string[] }) | null;
     application: (IbApplicationRow & { agencyName: string | null }) | null;
     eligible: boolean;
@@ -328,7 +329,7 @@ export class IbApplicationsService {
    * verify), they already have one open (wait). Each says which.
    */
   async apply(
-    userId: string,
+    userId: number,
     input: {
       motivation?: string;
       website?: string;
@@ -637,7 +638,7 @@ export class IbApplicationsService {
        * from who recruited them. So there is nothing to pass here and nothing on
        * the approval screen to get wrong.
        */
-      parentIbUserId?: string | null;
+      parentIbUserId?: number | null;
       agencyId?: string | null;
     } = {},
   ): Promise<IbAccountRow> {
@@ -649,9 +650,15 @@ export class IbApplicationsService {
      * a route that names an application in its PATH has nowhere for that
      * predicate to live, so the question is asked first. It 404s rather than
      * 403s — a 403 would confirm the id names a real application, which is an
-     * enumeration oracle for the exact clients this admin was denied.
+     * enumeration oracle for the exact clients this admin was denied. And the
+     * SAME 404 as a missing application — code and message — or the difference
+     * is the oracle instead.
      */
-    await this.visibility.assertVisible(application.userId, scope);
+    await this.visibility.assertVisible(
+      application.userId,
+      scope,
+      () => new NotFoundError('Application not found.'),
+    );
     if (application.status !== 'pending') {
       throw new ConflictError(
         `Only a pending application can be approved; this one is ${application.status}.`,
@@ -674,12 +681,30 @@ export class IbApplicationsService {
         : await this.inheritedParentIbUserIdFor(application.userId);
 
     if (parentIbUserId) {
-      // The chosen parent is scoped too (#5): a scoped admin approving an
-      // application may only place the new partner under a parent inside their
-      // own territory — an out-of-scope parent is a 404 before
-      // `assertParentHasRoom` can leak its exists/suspended/full state.
-      await this.visibility.assertVisible(parentIbUserId, scope);
-      await this.assertParentHasRoom(parentIbUserId);
+      const parentVisible = await this.canSee(parentIbUserId, scope);
+      if (options.parentIbUserId !== undefined && !parentVisible) {
+        // A CHOSEN parent is scoped (#5): a scoped reviewer places the new
+        // partner only under a parent in their own territory — out of it is a
+        // 404, before `assertParentHasRoom` can describe it.
+        await this.visibility.assertVisible(parentIbUserId, scope);
+      }
+      /*
+       * An INHERITED parent is not the reviewer's choice: it is the platform's
+       * rule that a partner starts under whoever recruited them, and the
+       * reviewer holds the applicant. Refusing it made a reviewer unable to
+       * approve their own client whenever the introducer sat in another
+       * territory. If that hidden introducer cannot take them, say so without
+       * describing a partner the reviewer may not see.
+       */
+      try {
+        await this.assertParentHasRoom(parentIbUserId);
+      } catch (error) {
+        if (parentVisible || !(error instanceof ValidationError)) throw error;
+        throw new ValidationError(
+          'This applicant’s introducer, a partner outside your territory, cannot take a new ' +
+            'sub-partner. Choose a parent in your territory, or place them at the top.',
+        );
+      }
     }
 
     /*
@@ -917,7 +942,7 @@ export class IbApplicationsService {
    * is where somebody reading this should have to think about it.
    */
   private async notifyDecision(
-    userId: string,
+    userId: number,
     decision: 'approved' | 'rejected',
     options: { referralCode?: string; reason?: string },
   ): Promise<void> {
@@ -946,7 +971,11 @@ export class IbApplicationsService {
 
     const application = await this.ib.findById(applicationId);
     if (!application) throw new NotFoundError('Application not found.');
-    await this.visibility.assertVisible(application.userId, scope);
+    await this.visibility.assertVisible(
+      application.userId,
+      scope,
+      () => new NotFoundError('Application not found.'),
+    );
     if (application.status !== 'pending') {
       throw new ConflictError(
         `Only a pending application can be rejected; this one is ${application.status}.`,
@@ -1129,19 +1158,52 @@ export class IbApplicationsService {
    *   controller so it sits with the other applyMask calls, where the census
    *   can see it.
    */
-  async partnerDetailFor(userId: string, scope: ClientScope, fieldMask: FieldMask) {
+  /** Whether this reader may see this client — for a fact, never an error. */
+  private canSee(clientId: number, scope: ClientScope): Promise<boolean> {
+    if (scope.unrestricted) return Promise.resolve(true);
+    return this.visibility.assertVisible(clientId, scope).then(
+      () => true,
+      () => false,
+    );
+  }
+
+  /**
+   * A partner account as THIS reader may see it (`IbAccountDto`): a parent
+   * outside their territory is the fact, never the uuid (R1). Every admin route
+   * answering an account goes through here — approval can place a partner
+   * under an introducer the reviewer may not see.
+   */
+  async accountViewFor(account: Parameters<typeof ibAccountView>[0], scope: ClientScope) {
+    const view = ibAccountView(account);
+    if (view.parentIbUserId && !(await this.canSee(view.parentIbUserId, scope))) {
+      return { ...view, parentIbUserId: null, parentOutsideTerritory: true };
+    }
+    return { ...view, parentOutsideTerritory: false };
+  }
+
+  async partnerDetailFor(userId: number, scope: ClientScope, fieldMask: FieldMask) {
     await this.visibility.assertVisible(userId, scope);
 
     const account = await this.ib.findAccount(userId);
     if (!account) return null;
 
-    const [directPartners, earningsMap, referredCount, agencies, products] = await Promise.all([
+    const [
+      directPartners,
+      directPartnersOutsideScope,
+      earningsMap,
+      referredCount,
+      referredOutsideScope,
+      agencies,
+      products,
+    ] = await Promise.all([
       this.ib.findDirectPartners(userId, scope),
+      this.ib.countDirectPartnersOutside(userId, scope),
       this.ib.earningsByPartner([userId]),
       // Scoped, like every other client read on this route: `assertVisible`
       // above proves the PARTNER is visible and says nothing about their
       // clients. See UsersStore.countReferredBy.
       this.users.countReferredBy(userId, scope),
+      this.users.countReferredOutsideScope(userId, scope),
       account.agencyId ? this.catalogue.listAgencies() : Promise.resolve([]),
       account.agencyId ? this.catalogue.listProducts() : Promise.resolve([]),
     ]);
@@ -1195,7 +1257,7 @@ export class IbApplicationsService {
      * ladder is extended. Reporting the terms as null is how the screen can say
      * so, instead of showing zeroes that look configured.
      */
-    const levelTerms = await this.levels.findOne(account.level);
+    const levelTerms = await this.levels.findTerms(account.level);
 
     const detail = {
       userId,
@@ -1231,13 +1293,14 @@ export class IbApplicationsService {
         : null,
       /** True when a parent exists but sits outside this reader's territory. */
       parentOutsideTerritory,
-      /* SCOPED to the reader's territory, and no total beside it — see
-         `IbStore.findDirectPartners` for why publishing one would give away the
-         fact the rows withhold. */
+      /* SCOPED to the reader's territory; what it withheld is the count beside
+         it — never who (R2, the owner's ruling). */
       directPartners,
+      directPartnersOutsideScope,
       /* How many CLIENTS they introduced — the other half of a partner's line,
          and the number the earnings are a consequence of. */
       referredClientCount: referredCount,
+      referredClientsOutsideScope: referredOutsideScope,
       // One entry per currency; `[]` is "nothing earned yet".
       earnings: earningsMap.get(userId) ?? [],
     };
@@ -1267,8 +1330,8 @@ export class IbApplicationsService {
       limit?: number;
       sort?: string;
       order?: string;
-      ibUserId?: string;
-      clientUserId?: string;
+      ibUserId?: number;
+      clientUserId?: number;
       /** Free text over the PARTNER's email and name — see the store. */
       q?: string;
       status?: string;
@@ -1330,7 +1393,7 @@ export class IbApplicationsService {
    * a series of decisions, each audited.
    */
   async changeLevel(
-    userId: string,
+    userId: number,
     level: number,
     scope: ClientScope,
     actor: Actor,
@@ -1340,7 +1403,7 @@ export class IbApplicationsService {
     const account = await this.ib.findAccount(userId);
     if (!account) throw new NotFoundError('That partner does not exist.');
 
-    const target = await this.levels.findOne(level);
+    const target = await this.levels.findTerms(level);
     if (!target) {
       throw new NotFoundError(
         `Level ${level} is not configured, and a partner on an unconfigured level earns nothing. ` +
@@ -1380,8 +1443,8 @@ export class IbApplicationsService {
    * the new parent exactly as an approval would.
    */
   async reassignParent(
-    userId: string,
-    parentIbUserId: string | null,
+    userId: number,
+    parentIbUserId: number | null,
     scope: ClientScope,
     actor: Actor,
   ): Promise<IbAccountRow> {
@@ -1435,7 +1498,7 @@ export class IbApplicationsService {
    * "remove partner" here at all.
    */
   async setActive(
-    userId: string,
+    userId: number,
     active: boolean,
     scope: ClientScope,
     actor: Actor,
@@ -1508,7 +1571,7 @@ export class IbApplicationsService {
    * The NAME is unchanged on purpose: "has room" still reads correctly at the
    * call site, and a partner who is suspended has no room for anybody.
    */
-  private async assertParentHasRoom(parentIbUserId: string): Promise<void> {
+  private async assertParentHasRoom(parentIbUserId: number): Promise<void> {
     const parent = await this.ib.findAccount(parentIbUserId);
     if (!parent) throw new ValidationError('The chosen parent partner does not exist.');
     if (!parent.active) {
@@ -1540,7 +1603,7 @@ export class IbApplicationsService {
    * for sale.
    */
   private async ladderHasRungBeneath(parentLevel: number): Promise<boolean> {
-    const rung = await this.levels.findOne(parentLevel + 1);
+    const rung = await this.levels.findTerms(parentLevel + 1);
     return Boolean(rung?.enabled);
   }
 
@@ -1556,7 +1619,7 @@ export class IbApplicationsService {
    * A cycle is not a cosmetic problem: the payout walk climbs parents until it
    * runs out, and a loop is a walk that never does.
    */
-  async wouldCreateCycle(userId: string, parentIbUserId: string): Promise<boolean> {
+  async wouldCreateCycle(userId: number, parentIbUserId: number): Promise<boolean> {
     if (userId === parentIbUserId) return true;
     // If the proposed parent already sits BENEATH this partner, pointing at
     // them closes the ring.

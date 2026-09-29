@@ -45,8 +45,8 @@ import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './mone
  */
 let ctx: MoneyTestContext;
 let trading: TradingService;
-let userId: string;
-let otherUserId: string;
+let userId: number;
+let otherUserId: number;
 let accountA: string;
 let accountB: string;
 
@@ -85,8 +85,8 @@ afterAll(async () => {
   await stopMoneyTestDb(ctx);
 });
 
-async function makeClient(email: string): Promise<string> {
-  const { rows } = await ctx.db.execute<{ id: string }>(sql`
+async function makeClient(email: string): Promise<number> {
+  const { rows } = await ctx.db.execute<{ id: number }>(sql`
     INSERT INTO users (email, password_hash, first_name, last_name, verification_level, email_verified)
     VALUES (${email}, 'x', 'Test', 'Client', 1, true)
     RETURNING id
@@ -94,7 +94,7 @@ async function makeClient(email: string): Promise<string> {
   return rows[0].id;
 }
 
-async function makeAccount(owner: string, login: string | null): Promise<string> {
+async function makeAccount(owner: number, login: string | null): Promise<string> {
   const { rows } = await ctx.db.execute<{ id: string }>(sql`
     INSERT INTO trading_accounts (user_id, login, currency, environment, status)
     VALUES (${owner}, ${login}, 'USD', 'live', 'active')

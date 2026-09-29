@@ -4,9 +4,12 @@ import { AdminApiKeysController } from './admin-api-keys.controller';
 import { AdminAuthController } from './admin-auth.controller';
 import { AdminTagsController } from './admin-tags.controller';
 import { AdminClientsController } from './admin-clients.controller';
+import { AdminClientIdentityController } from './admin-client-identity.controller';
+import { AdminClientIdentityService } from './admin-client-identity.service';
 import { AdminComplianceController } from './admin-compliance.controller';
 import { AdminRbacController } from './admin-rbac.controller';
 import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
+import { HiddenEmailLookupInterceptor } from './hidden-email-lookup.interceptor';
 import { DenialAuditInterceptor } from './denial-audit.interceptor';
 import { AdminIpAllowlistController } from './admin-ip-allowlist.controller';
 import { AdminIpAllowlistService } from './admin-ip-allowlist.service';
@@ -46,6 +49,7 @@ import { AdminExportModule } from './admin-export.module';
 
 const ADMIN_SERVICES = [
   AdminIpAllowlistService,
+  AdminClientIdentityService,
   AdminAuthService,
   /*
    * What an administrator may do to their OWN account, kept apart from
@@ -99,6 +103,7 @@ const ADMIN_SERVICES = [
   controllers: [
     AdminAuthController,
     AdminClientsController,
+    AdminClientIdentityController,
     AdminTagsController,
     AdminComplianceController,
     AdminRbacController,
@@ -138,6 +143,7 @@ const ADMIN_SERVICES = [
      * eighty call sites it exists to cover.
      */
     { provide: APP_INTERCEPTOR, useClass: DenialAuditInterceptor },
+    { provide: APP_INTERCEPTOR, useClass: HiddenEmailLookupInterceptor },
   ],
   // Re-exported so importers keep reaching the audit writer through this
   // module, as they did when it was provided here.

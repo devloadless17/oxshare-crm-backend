@@ -11,7 +11,7 @@
     "dev": "nest start --watch",
     "dev:crosshost": "PORT=3011 REALTIME_PORT=3013 PORTAL_URL=http://portal.crm.localhost:3010 ADMIN_URL=http://admin.crm.localhost:3012 nest start --watch",
     "start:debug": "nest start --debug --watch",
-    "lint": "eslint . --max-warnings 1",
+    "lint": "eslint . --max-warnings 0",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "format:check": "prettier --check \"src/**/*.ts\" \"test/**/*.ts\"",
     "type-check": "tsc --noEmit",

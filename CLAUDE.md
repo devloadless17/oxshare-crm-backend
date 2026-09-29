@@ -46,8 +46,16 @@ Services and stores throw the `DomainError` subclasses from `common/errors/domai
 single mapping point and emits `{ statusCode, code, message, requestId, timestamp, path }`.
 
 `HttpException` is legitimate **only at the transport edge** — controllers, guards, strategies,
-pipes, filters. Lint enforces this: it is a `no-restricted-imports` error inside `*.service.ts`,
-`store/**` and `commission.ts`. Adding a new failure mode means adding a `DomainError` subclass
+pipes, filters. Lint enforces this: it is a `@typescript-eslint/no-restricted-imports` error inside
+`*.service.ts`, `store/**` and `modules/ib/commission.ts`.
+
+⚠️ **Flat config keeps only the LAST matching block's options for a rule — it never merges them.**
+Until 28 Sep 2026 every import ban shared `no-restricted-imports`, so the layering block erased this
+ban on every store, this block erased the `getDb` ban on every money service, and three blocks still
+named `modules/partners/` (gone since f5e257a, 6 Aug) — the commission seam had no protection at
+all. Path bans now sit on the typescript-eslint rule, pattern bans on the base rule, and a file
+where two path bans meet gets ONE block stating both. `test/lint-composition.spec.ts` lints a real
+violation in each place: add a case when you add a ban. Adding a new failure mode means adding a `DomainError` subclass
 with a `code`, not a new HTTP throw.
 
 ## The two client-facing reads added for the portal
@@ -119,10 +127,11 @@ This one computes from what the system actually has: an **ingested MT5 deal**, a
 keyed on `ib_accounts.level`).
 
 **WHAT it computes on is the level's own `revenue_basis`, defaulting to MT5's charged commission
-+ swap.**
+
+- swap.**
 
 It was `trading_settings.ib_revenue_basis` for a while, on the reasoning that FR-IB-16 asks for
-the agreed method to be *configured*. The control went in 0104 with the rest of the IB block on
+the agreed method to be _configured_. The control went in 0104 with the rest of the IB block on
 that form: commission is configured on the Commission Levels page, and a Trading-settings field
 that re-prices every partner is a second place for two answers to disagree. Every deployment was
 already on the default, so removing the choice moved nobody's money.
@@ -140,13 +149,13 @@ recorded in migration 0112's header rather than left as a contradiction.
 
 `ib_accounts.level` is NOT NULL, and one `ib_levels` row carries everything about a rung:
 
-| column                                        | meaning                                                    |
-| --------------------------------------------- | ---------------------------------------------------------- |
-| `level`                                       | the rung, and the row's whole identity — UNIQUE            |
-| `commission_mode` + `rate` / `amount_per_lot` | what the **partner** earns, as a % or as money per lot     |
-| `rebate_mode` + `rate` / `amount_per_lot`     | what goes back to the **trading client**, same two shapes  |
-| `revenue_basis`                               | WHICH revenue a percentage here is a share of (FR-IB-16)   |
-| `enabled`                                     | a disabled rung pays nobody standing on it                 |
+| column                                        | meaning                                                   |
+| --------------------------------------------- | --------------------------------------------------------- |
+| `level`                                       | the rung, and the row's whole identity — UNIQUE           |
+| `commission_mode` + `rate` / `amount_per_lot` | what the **partner** earns, as a % or as money per lot    |
+| `rebate_mode` + `rate` / `amount_per_lot`     | what goes back to the **trading client**, same two shapes |
+| `revenue_basis`                               | WHICH revenue a percentage here is a share of (FR-IB-16)  |
+| `enabled`                                     | a disabled rung pays nobody standing on it                |
 
 **The rate is keyed on the earner's POSITION, not on the trade's depth.** A partner with no parent
 deals with the broker directly and is level 1; a partner they recruit is level 2. A level 1 partner
@@ -191,15 +200,15 @@ which is a second place standing between an operator and a decision the IB Level
 expresses — remove the rung and it stops paying. `test/ib-applications.spec.ts` carries the note
 in full, under a heading reading "THERE IS NO CONFIGURABLE CEILING ANY MORE".
 
-Committed scope is still TWO — Feature List Rev 9, IB-17: *"no level beyond L2"* — and it is now
+Committed scope is still TWO — Feature List Rev 9, IB-17: _"no level beyond L2"_ — and it is now
 expressed by which rungs EXIST rather than by a ceiling above them.
 
 Three bounds, and they are not the same thing:
 
-| bound | value | what it is |
-| ----- | ----- | ---------- |
-| `trading_settings.ib_max_total_payout_pct` | 100 | COST — the most ONE TRADE may pay out across every percentage leg |
-| `trading_settings.ib_max_payout_per_lot` | 50 | COST — the same, in the units per-lot terms are quoted in (0111) |
+| bound                                       | value | what it is                                                                  |
+| ------------------------------------------- | ----- | --------------------------------------------------------------------------- |
+| `trading_settings.ib_max_total_payout_pct`  | 100   | COST — the most ONE TRADE may pay out across every percentage leg           |
+| `trading_settings.ib_max_payout_per_lot`    | 50    | COST — the same, in the units per-lot terms are quoted in (0111)            |
 | `ib_levels_level_range` / `MAX_CHAIN_DEPTH` | 1..10 | STRUCTURE and CYCLE GUARD — what the column holds, and where the walk stops |
 
 The first two bound how MUCH and the last how DEEP, and they fail differently: an over-deep rung is
@@ -338,7 +347,6 @@ A change applies to the next trade only. Accruals record the rate AND the rung t
 (`ib_accruals.rate_value`, `ib_accruals.level_id`), so nothing already credited is restated — which
 is why this is an ordinary update rather than an operation that has to reason about history.
 
-
 ### The client's rebate is an accrual row, not a direct credit
 
 `ib_accruals.kind` is `commission` or `rebate`. A rebate row is produced by the same trade, matures
@@ -438,7 +446,6 @@ it replaced: 60% at depth 1 and 40% at depth 2 paid out the entire revenue and n
 because `checkPlausible` only ever refused a total ABOVE the revenue and 100% is not above it.
 
 **Nothing else about the backlog guard changed**, which is what made dropping its column safe.
-
 
 ### The backlog is a DECISION — `IB_ACCRUAL_START`
 
@@ -546,7 +553,8 @@ journal entry by hand.
 
 ## Money code — read ARCHITECTURE §6 and §8.6 first
 
-`src/modules/wallet/`, `src/modules/partners/`, `src/modules/payments/`.
+`src/modules/wallet/`, `src/modules/ib/` (the commission engine; `partners/` until 6 Aug),
+`src/modules/payments/`.
 
 - **`money.ts` and `commission.ts` are pure seams.** No Nest, no Drizzle, no `database/`, no
   `store/` — lint blocks those imports. `resolveChain`, `calculate`, `wouldCreateCycle` and
@@ -925,8 +933,8 @@ different port is fine; `__Host-` cookies are host-scoped by design, so a realti
 would receive no cookie and every handshake would be refused with nothing to explain why. Route
 `wss://api…` to the realtime port at the ingress.
 
-`modules/notifications/realtime.gateway.ts` holds the rooms (`admin:<id>` / `client:<id>` — the
-kind is part of the name so two audiences cannot collide on a shared uuid) and the Postgres
+`modules/notifications/realtime.gateway.ts` holds the rooms (`admin:<uuid>` / `client:<portalId>` —
+the kind is part of the name, so the two audiences can never share a room) and the Postgres
 `LISTEN`. **The bus is the database, not the application**: `pg_notify` fires from an AFTER INSERT
 trigger (migration 0047) and is delivered only on COMMIT, so a rolled-back money transaction
 cannot announce itself. That also removes the need for a Redis adapter — every instance LISTENs.
@@ -1053,29 +1061,145 @@ because new uploads are interleaved with old orphans.
 
 The dev database was reset this way on 10 Sep 2026.
 
-## KYC: the identity core (migration 0147, 26 Sep 2026)
+## KYC: the identity core (0147, 26 Sep 2026) and the broker's form (0158, 29 Sep 2026)
 
 The rules are cross-repo and live in `../CLAUDE.md` ("The identity core is the PLATFORM's"). Where
 they live here:
 
-| file | owns |
-|---|---|
-| `common/kyc/identity-core.ts` | the pure seam: `IDENTITY_FIELDS`, the tiers, `CORE_STEPS`, reserved slugs and names, `newCustomSlug`, label normalising |
-| `store/kyc-config.store.ts` | injects the identity into Personal Information on READ, strips it on WRITE; the `ETag` version |
-| `modules/admin/kyc-config-integrity.ts` | every refusal, keyed `steps.i[.fields.j]` — run by EVERY config write |
-| `modules/compliance/kyc-step-state.ts` | the one judge; `approvalBlockers` is what approval re-asks |
-| `modules/compliance/kyc-review-layout.ts` | the review's `layout`, from `form_snapshot` then the config |
-| `KycService.requestReverification` | `POST /admin/kyc/:id/reverify` — level 0, the stamp, its own email |
-| `kyc_field_labels` (0148) | every question's name, written by `setSteps` and never deleted — so an answer to a question since removed is named in the review, not printed as its key |
+| file                                      | owns                                                                                                                                                                                                                                                                         |
+| ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `common/kyc/identity-core.ts`             | the pure seam: `IDENTITY_FIELDS`, the tiers, `CORE_STEPS`, reserved slugs and names, `newCustomSlug`, label normalising; `platformStep`/`storedStep` (a placement read back as the platform's detail, written as `{name, required}`); `FormPolicy`, `policyOf`, `withPolicy` |
+| `store/kyc-config.store.ts`               | stores Personal Information's identity PLACEMENTS and rebuilds them on read (it injected and stripped all of them until 0158); `evidence_required`; the `ETag` version                                                                                                       |
+| `modules/admin/kyc-config-integrity.ts`   | every refusal, keyed `steps.i[.fields.j]` — run by EVERY config write                                                                                                                                                                                                        |
+| `modules/compliance/kyc-step-state.ts`    | the one judge; `approvalBlockers` is what approval re-asks, against the submission's `form_policy`; `answerElsewhere`/`answersInPlace` find an answer by its key on whichever step holds the question now                                                                    |
+| `modules/compliance/kyc-review-layout.ts` | the review's `layout`, from `form_snapshot` then the config                                                                                                                                                                                                                  |
+| `KycService.requestReverification`        | `POST /admin/kyc/:id/reverify` — level 0, the stamp, its own email                                                                                                                                                                                                           |
+| `kyc_field_labels` (0148)                 | every question's name, written by `setSteps` and never deleted — so an answer to a question since removed is named in the review, not printed as its key                                                                                                                     |
 
+- **`format: 2` is required on `PUT /admin/kyc-config`** (`KYC_BUILDER_FORMAT`); anything else is 409
+  `KYC_BUILDER_OUTDATED`, because a pre-0158 console would save the form without its identity
+  placements. The per-step routes (`/admin/kyc-config/steps…`) do not ask for it: no console uses them.
 - **`If-Match` is optional on `PUT /admin/kyc-config`.** The builder always sends it; a caller that
   omits it gets last-write-wins, which is what the e2e restore relies on. Sent and stale, it is 409
   `KYC_CONFIG_STALE`, decided under `pg_advisory_xact_lock`.
+- ⚠️ **The version never comes back as it was sent, in production.** Caddy's `encode zstd gzip`
+  appends the encoding to a strong ETag it compresses (`"<digest>-zstd"` to a browser) and does not
+  strip it from `If-Match`. Compared as sent, EVERY production save answered 409 "someone else
+  changed this form" (reported 28 Sep 2026; localhost has no proxy, so no test saw it). `If-Match`
+  is read with `versionFromIfMatch` (`common/http/if-match.ts`), which FINDS the digest inside
+  whatever a proxy wrapped around it. Pinned by `if-match.spec.ts` and the If-Match block of
+  `test/kyc-config-round-trip.spec.ts`. Any new strong ETag used for `If-Match` goes through it.
 - **Approval re-asks the judge, so an e2e fixture must satisfy it.** `fixtureEvidence` in `seed.ts` gives the
   review pool and the fresh client placeholder page paths. They are never real objects, and the file route
   answers 404 for them.
 - Pinned by `common/kyc/identity-core.spec.ts`, `kyc-config-integrity.spec.ts`,
-  `test/migration-0147-kyc-identity-core.spec.ts` and `test/kyc-reverification.spec.ts`.
+  `test/migration-0147-kyc-identity-core.spec.ts` (0158's placements too), `test/kyc-reverification.spec.ts`
+  and `test/kyc-form-customizable.spec.ts` (details taken off, optional selfie, a tightened form, a
+  moved question).
+
+## The client's identity RECORD (0151–0152, 28 Sep 2026)
+
+The owner's direction: a client's documents, selfie and verification belong to the CLIENT; KYC is
+only the process that collects and checks them, and may one day be an external tool. Built in
+slices; this is the state after the dual write (slice 5).
+
+| table                                        | holds                                                                                                                                                                                                                   |
+| -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `client_documents` + `client_document_pages` | every version of each document, the selfie and each broker upload (`slot`: `identity`, `address`, `selfie`, `other:<field>`) — a DRAFT while the client works, FROZEN (`frozen_at`) once presented, never changed again |
+| `client_verifications`                       | every decision, append-only: `outcome`, `level_after`, `method`, who, why                                                                                                                                               |
+| `client_verification_documents`              | exactly which versions each decision covered                                                                                                                                                                            |
+
+- **Evidence is READ from the record; the KYC columns are still WRITTEN.** Every read of a
+  submission's or attempt's identity document, proof of address and selfie goes through
+  `KycStore`'s `submissionRead`/`attemptRead`, which rebuild the KYC shapes from the version each
+  pointer names (`identity_evidence`, 0152) — paths in the one spelling. The columns are read by
+  nothing but adoption until the contract slice drops them. Two exceptions, both deliberate: the
+  writes that RETURN a row (`update`, `transition`) hand back what they wrote, and a broker's own
+  uploads are still read from `stepData` (no pointer names their versions yet).
+- ONE routine, `identity_adopt(user)` (0152), derives the record from the KYC rows — for the
+  backfill, the dual write, fixtures and the boot repair — so there is no second implementation to
+  drift. Two things run it:
+  - **the KYC code**, inside each transaction that changes evidence or decides
+    (`ClientIdentityService.recordFromKyc`), so the record is current WITHIN that transaction;
+  - **deferred triggers (0153)** on `kyc_submissions` and `kyc_submission_attempts`, at COMMIT, for
+    EVERY writer — an older build during a rollback, raw SQL, a test fixture, a KYC path added
+    later. Deferred because a decision is several writes; adopted after the first, a half-made
+    decision would be "explained" with an invented legacy row. The same stance as the bell (0140):
+    a new path that moves the KYC rows needs no record code.
+- **History is protected by triggers, even from a superuser** (the ledger lesson, 0120): a frozen
+  version, its pages and every decision refuse UPDATE and DELETE. The one escape is
+  `SELECT set_config('oxshare.identity_maintenance', 'on', true)`, local to its transaction.
+- ⚠️ **So deleting a client is no longer a plain `DELETE FROM users`.** Delete the KYC attempts and
+  submission, then UNDER THE ESCAPE `client_verification_documents` → `client_verifications` →
+  `client_documents` (pages cascade), then `stored_objects` (pages reference them), then the user.
+  `docs/scripts/purge-account.sh` and `scripts/seed-load-test.mjs --purge` do exactly this.
+- **`identity_drift` names what is out of step** — eight kinds, listed in 0152 above the view. Empty
+  is healthy. `identity_adopt` must clear EVERY kind: `migration-0152-adopt-identity.spec.ts`
+  creates each one and proves a single adoption clears it (mutation-checked).
+- **Every boot repairs drift, in every environment** (`main.ts` → `repairDrift`, outside the seed
+  guard like `reportPermissionDrift`) — the DETECTOR for what the triggers cannot see: rows written
+  with triggers off (a restore, replication), a verification level set directly, an edit through
+  the escape. One transaction per client, never blocks the boot, and any drift raises
+  `identity.record_drift` (`notify`). `identity_adopt` locks the client's KYC row first, so a
+  repair waits for a KYC change in flight instead of racing it. To simulate such a write in a test,
+  `SET LOCAL session_replication_role = replica` (`identity-drift-repair.spec.ts`).
+- **Whose file is it? The record says** — `GET /uploads/kyc/:file` resolves the owner from the
+  record's pages (`ClientIdentityService.ownerOfKycFile`) for EVERY reader. So an orphan is a 404
+  even for an unrestricted admin (who was handed any file by name until 28 Sep 2026), a client
+  keeps their presented documents after a reset (the live row goes, the record stays), and a file
+  two records claim is served to nobody. A page is stored in ONE spelling, `uploads/kyc/<name>`
+  (0152's `identity_page_key`, enforced by `client_document_pages_key_ck`), whatever the KYC
+  columns held — `./uploads/…`, `/uploads/…`, backslashes and bare names all reached production at
+  some point. Pinned by `test/kyc-file-owner.spec.ts`.
+- **A client is VERIFIED only by a decision** (0153, `users_verified_by_a_decision`): raising
+  `verification_level` — the money gate — is refused at COMMIT unless the client's latest decision
+  verifies them. Lowering it is not refused (a closed gate; adoption records it), nor is an INSERT
+  (registration inserts 0; seeds and imports are recorded as `fixture`/`legacy`). To stage a
+  verified client by hand, record a decision (`scripts/verify-client.mjs` does) or use the escape.
+- **The 50MB upload allowance never counts evidence**: a page of a FROZEN version is kept for ever
+  and nobody can delete it, so counting it made each KYC round shrink the room for the next
+  (`StoredObjectsStore.liveBytesForOwner`; `test/upload-quota-evidence.spec.ts`).
+- **The core never imports the KYC layer** — lint bans `compliance/` and `store/kyc*` in
+  `modules/profile/**`, `modules/client-identity/**`, `store/client-identity.store.ts` and
+  `common/profile/**`. The profile writer reaches the KYC row through the `IDENTITY_REVIEW` port,
+  the same recipe as `COMMISSION_ACCRUAL`.
+
+## A client's key IS the Portal ID (0159, 29 Sep 2026, D-83)
+
+`users.id` is the Portal ID: an integer from `users_id_seq` (1,000,000 up, gaps allowed) that never
+changes (trigger `users_id_immutable`). Every client foreign key is an integer, and no client uuid
+exists anywhere any more — the owner's decision, reversing the 24 Sep ruling that kept the uuid as
+the key behind the number.
+
+- **A client id is a `number`** in every signature. Five columns can name an admin OR a client —
+  `audit_log.actor_id`, `notifications.recipient_id` / `subject_id`, `stored_objects.uploaded_by_id`,
+  `idempotency_keys.actor_id`, `refresh_tokens.subject_id` — and are `text`: an admin's uuid or a
+  client's Portal ID, told apart by the row's own kind column. Write them with `String(id)`, and
+  compare a COLUMN against them with `::text` (`task.subject_id = ${transfers.id}::text`). Postgres
+  refuses `text = uuid` at run time — the type-checker cannot see inside a `sql` template — and
+  inside a scheduler's catch that is silent: the stuck-transfer task went unannounced this way until
+  `transfer-resume.spec.ts` caught it.
+- **Audit `details` name a client by KEY** (`CLIENT_ID_KEYS` in `audit-log.store.ts`): a Portal ID
+  is a bare number, like a level or a count, so only a listed key is hidden from a scoped reader.
+  A new payload naming a client uses a listed key or extends the list — the census says so.
+- **The edge**: `ClientRefPipe` takes digits (a leading `#` allowed) and returns a number; anything
+  else is a 400, and an unknown number finds no row, which reads as not found. Routes declare the
+  parameter `number`, so the global ValidationPipe has usually converted it with `+value` BEFORE the
+  pipe runs (a uuid arrives as NaN, an empty query as 0) — the pipe judges a number and text by one
+  rule; never assume it sees the raw string. The portal JWT `sub` is the Portal ID as a STRING
+  (RFC 7519); `parsePortalId` reads it back and refuses anything but text.
+- **Response field names did not change.** `id`, `userId`, `clientUserId`, `ibUserId`… carry the
+  Portal ID; `portalId` stays on responses as the same number (`User.portalId` is an alias of `id`).
+- **Raw SQL** casts a client id `::integer`. Client-list cursors decode their id as an integer
+  (`decodeCursor(…, 'integer')`).
+- **Import rule** (0133) unchanged: old platform numbers are written explicitly, and the importer
+  must refuse any number at or above 1,000,000.
+- **An API role that does not own the schema** needs `GRANT USAGE, SELECT ON SEQUENCE users_id_seq`
+  to register a client. 0135 made that grant on the sequence's old name, and a rename keeps it; a role
+  created AFTER the migrations must be granted on `users_id_seq` (0135's own comment names the old
+  sequence).
+- Proof: `test/migration-0159-portal-id-primary-key.spec.ts` (mapping, no uuid left but provider
+  references, append-only restored, immutability, money unchanged).
 
 ## Validation
 
@@ -1103,6 +1227,16 @@ the Claude `Stop` hook skips it here and CI owns it. Run it by hand before any m
 
 ## Gotchas specific to this repo
 
+- **On a FRESH database, every migration after 0111 runs in autocommit.** drizzle runs all pending
+  migrations in one transaction on one connection, but 0111–0119, 0141 and 0142 issue their own
+  `BEGIN;`/`COMMIT;`, which ends it. On an existing database (dev, production) a new migration runs
+  alone inside drizzle's transaction and behaves as written; on a fresh one (CI, every
+  Testcontainers suite, a new environment) each statement commits on its own. So a new migration
+  must not rely on transaction scope: no `ON COMMIT DROP` temp table (0159's map vanished before the
+  next statement read it), no `SET LOCAL` / `set_config(…, true)` meant to span statements. Use a
+  session temp table the migration drops itself. A migration spec that feeds its file to
+  `pool.query` is one implicit transaction and cannot catch this; any ordinary suite can, since they
+  all migrate a fresh database.
 - **A RENUMBERED migration poisons every database that applied the old number, silently.**
   drizzle-kit applies only migrations whose journal `when` exceeds the highest `created_at` in
   `drizzle.__drizzle_migrations`, and it stores the journal's `when` as that `created_at`. So when

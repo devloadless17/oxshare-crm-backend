@@ -162,7 +162,7 @@ function reachableShapes(): Map<string, Ctor> {
  * miss costs nothing and a hit is always worth reading.
  */
 const PERSONISH =
-  /email|firstname|lastname|phone|country|address|birth|national|personalinfo|credentials/i;
+  /email|firstname|lastname|phone|country|address|birth|national|personalinfo|credentials|motivation|website/i;
 
 describe('every admin-reachable shape says whose data it holds', () => {
   it('reaches a meaningful number of shapes, so it cannot pass vacuously', () => {

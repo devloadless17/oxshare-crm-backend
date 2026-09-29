@@ -14,6 +14,7 @@ import {
   pgEnum,
   pgTable,
   primaryKey,
+  smallint,
   text,
   timestamp,
   unique,
@@ -22,6 +23,7 @@ import {
 } from 'drizzle-orm/pg-core';
 // Type-only: the stored shape of `mt5_groups.commissions`. Erased at runtime.
 import type { Mt5GroupCommission } from '../common/mt5-group-terms';
+import type { FormPolicy } from '../common/kyc/identity-core';
 
 // Drizzle schema for the LIVE domain model, aligned with ARCHITECTURE §5 where
 // that section defines the table (users) and with the in-memory stores being
@@ -88,24 +90,25 @@ export const rejectionContextEnum = pgEnum('rejection_context', [
 export const users = pgTable(
   'users',
   {
-    id: uuid('id').defaultRandom().primaryKey(),
     /**
-     * The client's PORTAL ID — the human number, from 1,000,000 up (0133).
+     * The client's PORTAL ID — their one identifier, and the key every foreign
+     * key points at (0159, D-83). From 1,000,000 up.
      *
-     * What staff and the client see and search by; the UUID above stays the
-     * key every foreign key points at, and the one URLs and API routes use. A
-     * sequential number is guessable, so it must never become an access key —
-     * it names a client to a person, not to the system.
+     * It was a second number beside a uuid primary key (0133) until the owner
+     * ruled a client has one identifier: the number staff and the client see,
+     * search by, and type. A sequential number is guessable, so it is never an
+     * access key — authorisation stays on the session and the scope.
      *
-     * Drawn from `users_portal_id_seq` by a column DEFAULT, so no insert path
-     * has to remember it. Clients imported from the old platform set it
-     * explicitly to their original number (1 … ~200,000), below the range the
-     * sequence owns; the importer must refuse anything ≥ 1,000,000. Gaps are
-     * expected — a failed registration still consumes its number.
+     * Drawn from `users_id_seq` by the DEFAULT, so no insert path has to
+     * remember it; a trigger refuses to change it (`users_id_immutable`).
+     * Clients imported from the old platform set it explicitly to their
+     * original number (1 … ~200,000), below the range the sequence owns; the
+     * importer must refuse anything ≥ 1,000,000. Gaps are expected — a failed
+     * registration still consumes its number.
      */
-    portalId: integer('portal_id')
-      .notNull()
-      .default(sql`nextval('users_portal_id_seq')`),
+    id: integer('id')
+      .primaryKey()
+      .default(sql`nextval('users_id_seq')`),
     email: varchar('email', { length: 255 }).notNull().unique(),
     passwordHash: varchar('password_hash', { length: 255 }).notNull(),
     firstName: varchar('first_name', { length: 100 }).notNull(),
@@ -282,6 +285,13 @@ export const users = pgTable(
     nationality: varchar('nationality', { length: 100 }),
     address: varchar('address', { length: 200 }),
     city: varchar('city', { length: 100 }),
+    /**
+     * State, province or region — free text, optional (0150, 28 Sep 2026).
+     * Named `state_province`, not `state`: `transactions.state` and
+     * `transfers.state` exist, and an unqualified `state` in a joined raw
+     * query would silently read the wrong table's column.
+     */
+    stateProvince: varchar('state_province', { length: 100 }),
     postalCode: varchar('postal_code', { length: 12 }),
     /**
      * The partner who introduced this client, captured at registration.
@@ -308,11 +318,10 @@ export const users = pgTable(
      * declared far below this table and `.references()` would be a forward
      * reference at module scope.
      */
-    referredByIbUserId: uuid('referred_by_ib_user_id'),
+    referredByIbUserId: integer('referred_by_ib_user_id'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    uniqueIndex('users_portal_id_uq').on(t.portalId),
     index('users_type_idx').on(t.type),
     index('users_status_idx').on(t.status),
     index('users_verification_level_idx').on(t.verificationLevel),
@@ -437,6 +446,13 @@ export const admins = pgTable('admins', {
    * regardless. Honoured as an OR-branch in `clientScopePredicate`.
    */
   seesUntriaged: boolean('sees_untriaged').notNull().default(true),
+  /**
+   * Sees EVERY client — the explicit grant (0154). Territory tags restrict and
+   * only this grants: with no tags and this false, an admin sees new clients
+   * (if `seesUntriaged`) or none. An empty territory used to mean everyone,
+   * which made the widest sight the result of an absence.
+   */
+  seesAllClients: boolean('sees_all_clients').notNull().default(true),
   /*
    * Password recovery, INITIATED BY ANOTHER MASTER ADMIN — never self-service.
    * See DECISIONS D-44.
@@ -538,6 +554,8 @@ export const adminInvites = pgTable('admin_invites', {
   scopedTagIds: jsonb('scoped_tag_ids').$type<string[]>(),
   /** D-60 — intake grant chosen at invite time, for the same window reason. */
   seesUntriaged: boolean('sees_untriaged').notNull().default(true),
+  /** Sees every client, chosen at invite time (0154). See `admins.sees_all_clients`. */
+  seesAllClients: boolean('sees_all_clients').notNull().default(true),
   invitedBy: uuid('invited_by').notNull(),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   accepted: boolean('accepted').notNull().default(false),
@@ -617,6 +635,14 @@ export const apiKeys = pgTable(
     scopedTagIds: jsonb('scoped_tag_ids').$type<string[]>(),
     /** The creator's intake grant, snapshot with the territory above (D-60). */
     seesUntriaged: boolean('sees_untriaged').notNull().default(true),
+    /** The creator's all-clients grant, snapshot with the territory (0154). */
+    seesAllClients: boolean('sees_all_clients').notNull().default(true),
+    /**
+     * The creator's effective FIELD MASK, snapshot like the territory (0155).
+     * A key used to read with an empty mask, so a masked admin could mint one
+     * and read what their role hides.
+     */
+    maskedFields: jsonb('masked_fields').$type<string[]>().notNull().default([]),
     /**
      * NULL means no expiry. Stated rather than defaulted to a date, because a
      * key that silently stops working at 3am is worse than one an operator
@@ -687,7 +713,7 @@ export const clientTagAssignments = pgTable(
   {
     // `restrict`, matching every other FK to `users` here: a client with
     // history is never deleted out from under the rows that reference them.
-    userId: uuid('user_id')
+    userId: integer('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
     // `cascade`, unlike the scope table below. A tag is a label; deleting it
@@ -779,7 +805,7 @@ export const kycSubmissions = pgTable(
      * compliance record with it. Deleting a client is a deliberate act with a
      * retention policy attached (PLATFORM-CONVENTIONS 12.9), not a side effect.
      */
-    userId: uuid('user_id')
+    userId: integer('user_id')
       .primaryKey()
       .references(() => users.id, { onDelete: 'restrict' }),
     status: kycStatusEnum('status').notNull().default('not_started'),
@@ -812,17 +838,18 @@ export const kycSubmissions = pgTable(
      * is not one anything needs to make.
      */
     stepData: jsonb('step_data')
-      .$type<Record<string, Record<string, string | { filePath: string; fileName: string }>>>()
+      .$type<Record<string, Record<string, string | { filePath: string }>>>()
       .notNull()
       .default({}),
     rejectionReason: text('rejection_reason'),
     rejectedFields: jsonb('rejected_fields').$type<string[]>(),
     /**
      * When a reviewer returned an APPROVED verification to the client to redo
-     * the items named in `rejected_fields` (0147). Set with the return, cleared
-     * by the next submission — it is what lets the client be told "please
-     * update your verification" rather than "rejected", and the reviewer see
-     * that this resubmission follows a re-verification.
+     * the items named in `rejected_fields` (0147). Set with the return and
+     * cleared ONLY by the next approval — not by the resubmission, and not by
+     * a rejection of it, so the client keeps being told "please update your
+     * verification" rather than "rejected" for the whole round, and the
+     * reviewer sees that this resubmission follows a re-verification.
      */
     reverificationRequestedAt: timestamp('reverification_requested_at', { withTimezone: true }),
     /**
@@ -835,6 +862,13 @@ export const kycSubmissions = pgTable(
       jsonb('form_snapshot').$type<
         { slug: string; title: string; fields: { name: string; label: string; type: string }[] }[]
       >(),
+    /*
+     * The REQUIREMENTS in force when the client submitted (0158): which steps
+     * were on, which evidence was required, which identity details were asked
+     * and required. Approval re-checks against these, so a form tightened
+     * afterwards never strands a submission already waiting.
+     */
+    formPolicy: jsonb('form_policy').$type<FormPolicy>(),
     submittedAt: timestamp('submitted_at', { withTimezone: true }),
     reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
     /*
@@ -846,6 +880,20 @@ export const kycSubmissions = pgTable(
      * row would not be.
      */
     reviewedBy: uuid('reviewed_by').references(() => admins.id, { onDelete: 'set null' }),
+    /*
+     * The client's document VERSIONS this submission presents (0151): the KYC
+     * layer points at the client's record rather than holding the evidence.
+     * Filled from slice 4 of the identity-core plan; NULL until then.
+     */
+    identityDocumentId: uuid('identity_document_id').references(() => clientDocuments.id, {
+      onDelete: 'restrict',
+    }),
+    addressDocumentId: uuid('address_document_id').references(() => clientDocuments.id, {
+      onDelete: 'restrict',
+    }),
+    selfieDocumentId: uuid('selfie_document_id').references(() => clientDocuments.id, {
+      onDelete: 'restrict',
+    }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -909,7 +957,7 @@ export const kycSubmissionAttempts = pgTable(
   'kyc_submission_attempts',
   {
     id: uuid('id').primaryKey().defaultRandom(),
-    userId: uuid('user_id')
+    userId: integer('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
     attemptNo: integer('attempt_no').notNull(),
@@ -921,7 +969,7 @@ export const kycSubmissionAttempts = pgTable(
     addressProof: jsonb('address_proof').$type<Record<string, string>>(),
     /** Archived alongside the four columns — see `kyc_submissions.step_data`. */
     stepData: jsonb('step_data')
-      .$type<Record<string, Record<string, string | { filePath: string; fileName: string }>>>()
+      .$type<Record<string, Record<string, string | { filePath: string }>>>()
       .notNull()
       .default({}),
     rejectionReason: text('rejection_reason'),
@@ -930,12 +978,123 @@ export const kycSubmissionAttempts = pgTable(
     reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
     reviewedBy: uuid('reviewed_by').references(() => admins.id, { onDelete: 'set null' }),
     archivedAt: timestamp('archived_at', { withTimezone: true }).notNull().defaultNow(),
+    /** The document versions this attempt presented, and its decision in the log (0151). */
+    identityDocumentId: uuid('identity_document_id').references(() => clientDocuments.id, {
+      onDelete: 'restrict',
+    }),
+    addressDocumentId: uuid('address_document_id').references(() => clientDocuments.id, {
+      onDelete: 'restrict',
+    }),
+    selfieDocumentId: uuid('selfie_document_id').references(() => clientDocuments.id, {
+      onDelete: 'restrict',
+    }),
+    verificationId: uuid('verification_id').references(() => clientVerifications.id, {
+      onDelete: 'restrict',
+    }),
+    reasonId: uuid('reason_id').references(() => rejectionReasons.id, { onDelete: 'set null' }),
+    /** A re-verification request, which used to be archived as a plain `rejected`. */
+    reverification: boolean('reverification').notNull().default(false),
+    formSnapshot:
+      jsonb('form_snapshot').$type<
+        { slug: string; title: string; fields: { name: string; label: string; type: string }[] }[]
+      >(),
   },
   (t) => [
     // Read as "this client's history, oldest first" — the only query shape.
     index('kyc_attempts_user_idx').on(t.userId, t.attemptNo),
     uniqueIndex('kyc_attempts_user_attempt_uq').on(t.userId, t.attemptNo),
   ],
+);
+
+/*
+ * THE CLIENT'S IDENTITY RECORD (0151, 28 Sep 2026) — the documents, the selfie
+ * and every verification decision, owned by the CLIENT, not by a KYC
+ * submission. Guarded by triggers in the migration: a frozen version and its
+ * pages never change, only a draft can be deleted, and the verification log is
+ * append-only — even for a superuser, except inside the explicit
+ * `oxshare.identity_maintenance` escape. See the migration's header.
+ */
+export const clientDocuments = pgTable(
+  'client_documents',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: integer('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    /** `identity` | `address` | `selfie` | `other:<field key>`. */
+    slot: text('slot').notNull(),
+    docType: text('doc_type'),
+    source: text('source').notNull().default('client'),
+    providerRef: text('provider_ref'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    /** NULL = a draft being assembled; set = presented, and never changed again. */
+    frozenAt: timestamp('frozen_at', { withTimezone: true }),
+  },
+  (t) => [
+    uniqueIndex('client_documents_one_draft_uq')
+      .on(t.userId, t.slot)
+      .where(sql`frozen_at IS NULL`),
+    index('client_documents_user_slot_idx').on(t.userId, t.slot, t.createdAt),
+  ],
+);
+
+export const clientDocumentPages = pgTable(
+  'client_document_pages',
+  {
+    documentId: uuid('document_id')
+      .notNull()
+      .references(() => clientDocuments.id, { onDelete: 'cascade' }),
+    part: smallint('part').notNull(),
+    storageKey: text('storage_key').notNull(),
+    storedObjectId: uuid('stored_object_id').references(() => storedObjects.id, {
+      onDelete: 'restrict',
+    }),
+    // No `file_name` since 0160 (D-84): a page is its part and its key.
+    addedAt: timestamp('added_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.documentId, t.part] }),
+    index('client_document_pages_storage_key_idx').on(t.storageKey),
+  ],
+);
+
+export const clientVerifications = pgTable(
+  'client_verifications',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: integer('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    seq: integer('seq').notNull(),
+    /** `verified` | `returned` | `reverification_requested`. */
+    outcome: text('outcome').notNull(),
+    levelAfter: smallint('level_after').notNull(),
+    /** `manual_review` | `legacy` | `fixture` | `import` | `provider`. */
+    method: text('method').notNull(),
+    // Plain references, not foreign keys — see the migration.
+    adminId: uuid('admin_id'),
+    adminEmail: text('admin_email'),
+    reasonId: uuid('reason_id'),
+    reason: text('reason'),
+    returnedItems: jsonb('returned_items').$type<string[]>().notNull().default([]),
+    provider: text('provider'),
+    providerRef: text('provider_ref'),
+    decidedAt: timestamp('decided_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [unique('client_verifications_seq_uq').on(t.userId, t.seq)],
+);
+
+export const clientVerificationDocuments = pgTable(
+  'client_verification_documents',
+  {
+    verificationId: uuid('verification_id')
+      .notNull()
+      .references(() => clientVerifications.id, { onDelete: 'restrict' }),
+    documentId: uuid('document_id')
+      .notNull()
+      .references(() => clientDocuments.id, { onDelete: 'restrict' }),
+  },
+  (t) => [primaryKey({ columns: [t.verificationId, t.documentId] })],
 );
 
 export const kycConfigSteps = pgTable('kyc_config_steps', {
@@ -947,6 +1106,8 @@ export const kycConfigSteps = pgTable('kyc_config_steps', {
   icon: varchar('icon', { length: 50 }),
   enabled: boolean('enabled').notNull().default(true),
   fields: jsonb('fields').$type<Record<string, unknown>[]>().notNull().default([]),
+  /** Identity document, selfie, proof of address: must the client provide it (0158). */
+  evidenceRequired: boolean('evidence_required').notNull().default(true),
 });
 
 /*
@@ -2327,7 +2488,7 @@ export const wallets = pgTable(
     walletNumber: varchar('wallet_number', { length: 12 })
       .notNull()
       .default(sql`wallet_number()`),
-    userId: uuid('user_id')
+    userId: integer('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
     /*
@@ -2477,7 +2638,7 @@ export const tradingAccounts = pgTable(
   'trading_accounts',
   {
     id: uuid('id').defaultRandom().primaryKey(),
-    userId: uuid('user_id')
+    userId: integer('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
     /**
@@ -2972,7 +3133,7 @@ export const transactions = pgTable(
   'transactions',
   {
     id: uuid('id').defaultRandom().primaryKey(),
-    userId: uuid('user_id')
+    userId: integer('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
     walletId: uuid('wallet_id')
@@ -3118,7 +3279,7 @@ export const transfers = pgTable(
   'transfers',
   {
     id: uuid('id').defaultRandom().primaryKey(),
-    userId: uuid('user_id')
+    userId: integer('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
     walletId: uuid('wallet_id')
@@ -3202,7 +3363,7 @@ export const ibWalletTransfers = pgTable(
   'ib_wallet_transfers',
   {
     id: uuid('id').defaultRandom().primaryKey(),
-    userId: uuid('user_id')
+    userId: integer('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
     /** The COMMISSION wallet debited. */
@@ -3252,7 +3413,7 @@ export const auditLog = pgTable(
   'audit_log',
   {
     id: uuid('id').defaultRandom().primaryKey(),
-    actorId: uuid('actor_id').notNull(),
+    actorId: text('actor_id').notNull(),
     actorEmail: varchar('actor_email', { length: 255 }).notNull(),
     /**
      * WHAT KIND of principal acted.
@@ -3293,6 +3454,16 @@ export const auditLog = pgTable(
      */
     ipAddress: varchar('ip_address', { length: 45 }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    /**
+     * The CLIENT this row concerns, or NULL for a row about no client (0156).
+     *
+     * Stamped by the `audit_log_stamp_client` trigger on every insert, from
+     * `audit_log_client_of` — the one definition, which also resolves what a
+     * row names only by reference (a file, an accrual, a request line). The
+     * reader's client scope filters on it (D-54). Never sent: a client is shown
+     * by Portal ID. No foreign key — history outlives the client it names.
+     */
+    clientId: integer('client_id'),
   },
   (t) => [
     index('audit_log_created_at_idx').on(t.createdAt),
@@ -3310,9 +3481,9 @@ export const auditLog = pgTable(
      * leading wildcard, which no b-tree can serve, so it carries a pg_trgm GIN
      * index declared in the migration (Drizzle has no expression-index form).
      *
-     * A third lives only in its migration for the same reason: 0134's
-     * `audit_log_client_id_idx`, on `auditRowClientId()` — the client a row is
-     * about, wherever the row keeps it — which the Portal ID search reads.
+     * The client a row is about is `client_id` (0156), partially indexed as
+     * `audit_log_client_id_idx` in its migration — the scope filter and the
+     * Portal ID search read it.
      */
     index('audit_log_subject_id_created_at_idx').on(t.subjectId, t.createdAt.desc()),
   ],
@@ -3347,7 +3518,7 @@ export const idempotencyKeys = pgTable(
     /** `POST /payments/withdrawals` — so one key may be reused across endpoints. */
     endpoint: varchar('endpoint', { length: 255 }).notNull(),
     /** Whose key it is. Two users may pick the same key without colliding. */
-    actorId: uuid('actor_id').notNull(),
+    actorId: text('actor_id').notNull(),
     /**
      * SHA-256 of the request body.
      *
@@ -3407,7 +3578,7 @@ export const refreshTokens = pgTable(
     familyId: uuid('family_id').notNull(),
     /** 'admin' | 'portal'. The two surfaces are separate (R-3.1) and so are their tokens. */
     surface: varchar('surface', { length: 16 }).notNull(),
-    subjectId: uuid('subject_id').notNull(),
+    subjectId: text('subject_id').notNull(),
     /**
      * SHA-256, not bcrypt.
      *
@@ -3877,7 +4048,7 @@ export const ibApplications = pgTable(
   'ib_applications',
   {
     id: uuid('id').defaultRandom().primaryKey(),
-    userId: uuid('user_id')
+    userId: integer('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
     /**
@@ -3953,7 +4124,7 @@ export const ibApplications = pgTable(
 export const ibAccounts = pgTable(
   'ib_accounts',
   {
-    userId: uuid('user_id')
+    userId: integer('user_id')
       .primaryKey()
       .references(() => users.id, { onDelete: 'restrict' }),
     /*
@@ -4004,7 +4175,7 @@ export const ibAccounts = pgTable(
      */
     level: integer('level').notNull().default(1),
     /** NULL means they deal with the broker directly — the top of a chain. */
-    parentIbUserId: uuid('parent_ib_user_id'),
+    parentIbUserId: integer('parent_ib_user_id'),
     /**
      * What a client types at registration to be attributed to this partner.
      *
@@ -4156,11 +4327,11 @@ export const ibAccruals = pgTable(
   {
     id: uuid('id').defaultRandom().primaryKey(),
     /** The partner who earned it. */
-    ibUserId: uuid('ib_user_id')
+    ibUserId: integer('ib_user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
     /** The client whose activity generated it — who this is owed BECAUSE of. */
-    clientUserId: uuid('client_user_id')
+    clientUserId: integer('client_user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
     /**
@@ -4352,7 +4523,7 @@ export const positions = pgTable(
      * reference keeps the row attributable to the specific login it was traded
      * on.
      */
-    userId: uuid('user_id')
+    userId: integer('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'restrict' }),
     tradingAccountId: uuid('trading_account_id')
@@ -4492,7 +4663,7 @@ export const notifications = pgTable(
      * (clients are never deleted, admins are suspended), so orphaning is not a
      * live risk.
      */
-    recipientId: uuid('recipient_id').notNull(),
+    recipientId: text('recipient_id').notNull(),
     /*
      * Catalogue slug, e.g. 'withdrawal.approved'. varchar rather than a
      * pgEnum: adding an event to the catalogue must not need a migration.
@@ -4532,9 +4703,9 @@ export const notifications = pgTable(
      * No foreign keys, for the recipient's reason above: clients are never
      * deleted, and a bell row must not add a failure mode to anyone's write.
      */
-    subjectUserId: uuid('subject_user_id'),
+    subjectUserId: integer('subject_user_id'),
     subjectKind: varchar('subject_kind', { length: 24 }).$type<NotificationSubjectKind>(),
-    subjectId: uuid('subject_id'),
+    subjectId: text('subject_id'),
     /*
      * Set by the item tables' triggers the moment somebody handles the item —
      * for EVERY admin's row about it at once. Never written by application
@@ -4625,15 +4796,15 @@ export const storedObjects = pgTable(
      * two owners would mean deleting one client's document deletes another's.
      */
     sha256: char('sha256', { length: 64 }).notNull(),
-    /** Display only. Never used to build a path or an extension. */
-    originalName: varchar('original_name', { length: 255 }),
+    // No `original_name` since 0160 (D-84): what the file was called on the
+    // uploader's device is not kept — it carried names and document numbers.
     /**
      * The client the object is ABOUT; null for brand marks belonging to nobody.
      * `restrict` matches `kyc_submissions` — deleting a client must fail loudly
      * rather than silently discard the record of what they uploaded.
      */
-    ownerUserId: uuid('owner_user_id').references(() => users.id, { onDelete: 'restrict' }),
-    uploadedById: uuid('uploaded_by_id').notNull(),
+    ownerUserId: integer('owner_user_id').references(() => users.id, { onDelete: 'restrict' }),
+    uploadedById: text('uploaded_by_id').notNull(),
     /** 'client' | 'admin' — the same shape as `audit_log.actor_kind`. */
     uploadedByKind: varchar('uploaded_by_kind', { length: 16 }).notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

@@ -26,6 +26,7 @@ import type { ListTransactionsQueryDto } from './dto/transaction-query.dto';
 import { clientIdentitySearch } from '../../store/users.store';
 import { TransfersService } from './transfers.service';
 import { TransferExecutor } from './transfer-executor.service';
+import type { TransactionView } from './transaction-view';
 
 /** The stored row, as every read here returns it. */
 type TransactionRow = typeof transactions.$inferSelect;
@@ -75,7 +76,7 @@ export const TRANSACTION_KINDS = [
  * Every payment field is null on a transfer; the two fields at the bottom are
  * what tell the two apart.
  */
-export type TransactionListRow = TransactionRow & {
+export type TransactionListRow = TransactionView & {
   /** Resolved server-side so a client and an operator read the same words. */
   methodName: string | null;
   kind: MovementKind;
@@ -86,7 +87,7 @@ export type TransactionListRow = TransactionRow & {
 /** The union's own column names, before they are mapped to the DTO's. */
 interface CombinedRow {
   id: string;
-  user_id: string;
+  user_id: number;
   wallet_id: string;
   direction: TransactionRow['direction'];
   amount: string;
@@ -148,7 +149,7 @@ export interface AdminMovementsFilter {
    */
   scope: ClientScope;
   /** Narrow to one client — already validated as a UUID at the edge. */
-  userId?: string;
+  userId?: number;
   direction?: MovementDirection;
   kind?: MovementKind;
   state?: MovementState;
@@ -181,7 +182,7 @@ export interface AdminTransactionExportRow {
   rivalExternalId: string | null;
   destination: string | null;
   rejectionReason: string | null;
-  userId: string;
+  userId: number;
   userPortalId: number;
   userEmail: string;
   userFirstName: string;
@@ -636,7 +637,7 @@ export class TransactionsService {
   }
 
   async requestWithdrawal(params: {
-    userId: string;
+    userId: number;
     amount: string;
     currency: Currency;
     destination: string;
@@ -923,7 +924,7 @@ export class TransactionsService {
    * invite one of them to read an amount or a state off a row they have not yet
    * established the caller may see.
    */
-  async ownerOf(id: string): Promise<string | undefined> {
+  async ownerOf(id: string): Promise<number | undefined> {
     const [row] = await this.db
       .select({ userId: transactions.userId })
       .from(transactions)
@@ -1084,7 +1085,7 @@ export class TransactionsService {
         rivalNeedsAttention: transactions.rivalNeedsAttention,
         rivalAttentionReason: transactions.rivalAttentionReason,
         userId: transactions.userId,
-        userPortalId: users.portalId,
+        userPortalId: users.id,
         userEmail: users.email,
         userFirstName: users.firstName,
         userLastName: users.lastName,
@@ -1321,7 +1322,7 @@ export class TransactionsService {
         reviewedAt: transactions.reviewedAt,
         settledAt: transactions.settledAt,
         userId: transactions.userId,
-        userPortalId: users.portalId,
+        userPortalId: users.id,
         userEmail: users.email,
         userFirstName: users.firstName,
         userLastName: users.lastName,
@@ -1748,7 +1749,7 @@ export class TransactionsService {
    * value out of the database to compare it.
    */
   async listForUser(
-    userId: string,
+    userId: number,
     query: ListTransactionsQueryDto = {},
   ): Promise<{ items: TransactionListRow[]; total: number; page: number; limit: number }> {
     const page = query.page ?? 1;
@@ -1845,6 +1846,12 @@ export class TransactionsService {
      * by the query builder. Every field is named explicitly: a `SELECT *` spread
      * would quietly start shipping any column added to `transactions` later,
      * including ones a client should not see.
+     *
+     * ⚠️ It named the desk's payout state anyway — `rivalWithdrawalId`,
+     * `rivalSubmittedAt`, `rivalNeedsAttention`, `rivalAttentionReason` — plus
+     * the rail key and a transfer destination, and shipped them to the client.
+     * The shape is `TransactionView` now (transaction-view.ts), so the compiler
+     * refuses a field `TransactionDto` does not declare.
      */
     return {
       items: (rows.rows as unknown as CombinedRow[]).map((row) => ({
@@ -1856,21 +1863,15 @@ export class TransactionsService {
         currency: row.currency,
         state: row.state,
         methodKey: row.method_key,
-        withdrawalMethodKey: row.withdrawal_method_key,
         provider: row.provider,
         providerRef: row.provider_ref,
         destination: row.destination,
-        destinationTradingAccountId: row.destination_trading_account_id,
         proofFilename: row.proof_filename,
         rejectionReason: row.rejection_reason,
         reviewedBy: row.reviewed_by,
         reviewedAt: instantOrNull(row.reviewed_at),
         settledAt: instantOrNull(row.settled_at),
         rivalExternalId: row.rival_external_id,
-        rivalWithdrawalId: row.rival_withdrawal_id,
-        rivalSubmittedAt: instantOrNull(row.rival_submitted_at),
-        rivalNeedsAttention: row.rival_needs_attention,
-        rivalAttentionReason: row.rival_attention_reason,
         createdAt: instantOf(row.created_at),
         methodName: row.method_name,
         kind: row.kind,
@@ -1930,7 +1931,7 @@ export class TransactionsService {
    * R-2.5 names.
    */
   async summaryForUser(
-    userId: string,
+    userId: number,
     query: ListTransactionsQueryDto = {},
   ): Promise<
     { currency: string; direction: string; state: string; count: number; total: string }[]
@@ -1988,7 +1989,7 @@ export class TransactionsService {
       if (scoped) conditions.push(scoped);
       // Validated as a UUID at the edge — an unvalidated value against a uuid
       // column is the 500 common/query-params.ts documents.
-      if (filter.userId) conditions.push(sql`${owner} = ${filter.userId}::uuid`);
+      if (filter.userId) conditions.push(sql`${owner} = ${filter.userId}::integer`);
       return whereOf(conditions);
       /*
        * FALSE — no rebate arm on the admin Financial list.
@@ -2016,7 +2017,7 @@ export class TransactionsService {
         users.email      AS user_email,
         users.first_name AS user_first_name,
         users.last_name  AS user_last_name,
-        users.portal_id  AS user_portal_id
+        users.id  AS user_portal_id
       FROM combined
       JOIN users ON users.id = combined.user_id`;
 
@@ -2710,7 +2711,7 @@ export class TransactionsService {
    * guarantees no two declarations can ever share a reference.
    */
   async requestDeposit(params: {
-    userId: string;
+    userId: number;
     amount: string;
     currency: Currency;
     method: string;
@@ -3216,7 +3217,7 @@ export class TransactionsService {
   async gatewayDepositState(
     method: string,
     reference: string,
-    ownerId: string,
+    ownerId: number,
   ): Promise<{ state: string }> {
     const [tx] = await this.db
       .select({ state: transactions.state, userId: transactions.userId })
@@ -3445,7 +3446,7 @@ export class TransactionsService {
      * — and a way to drive the settlement of — anybody else's payment. A
      * mismatch is a 404, never a 403: the difference is an existence oracle.
      */
-    opts: { ownerId?: string } = {},
+    opts: { ownerId?: number } = {},
   ): Promise<{ state: string }> {
     const [tx] = await this.db
       .select()
@@ -3858,7 +3859,7 @@ export class TransactionsService {
    * Post-write and never-throws, like every fan-out.
    */
   private announceDepositAttention(
-    tx: { id: string; userId: string; amount: string; currency: string },
+    tx: { id: string; userId: number; amount: string; currency: string },
     reason: DepositAttentionReason,
   ): void {
     void this.notifications.notifyAdmins({
@@ -3877,7 +3878,7 @@ export class TransactionsService {
    * rejection about a courtesy.
    */
   private async sendDepositOutcomeEmail(
-    userId: string,
+    userId: number,
     outcome: 'succeeded' | 'failed' | 'rejected',
     amount: string,
     currency: string,
@@ -3908,7 +3909,7 @@ export class TransactionsService {
    * (wallet, reference). Used by the provider webhook when credentials land.
    */
   async creditDeposit(params: {
-    userId: string;
+    userId: number;
     amount: string;
     currency: Currency;
     provider: string;

@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'async_hooks';
+import { EMPTY_MASK, type FieldMask } from '../security/field-mask';
 
 export interface RequestContext {
   requestId: string;
@@ -13,6 +14,13 @@ export interface RequestContext {
    * half an answer.
    */
   ip?: string;
+  /**
+   * The RBAC-03 mask of the admin this request authenticated as — set by
+   * `AdminGuard`. Read by the one client search (`clientIdentitySearch`) and
+   * by `sortKey`, so a hidden field cannot be learned by ASKING (a fragment
+   * search, a sort) as well as not by reading. Absent outside an admin request.
+   */
+  fieldMask?: FieldMask;
 }
 
 /**
@@ -33,4 +41,9 @@ export function currentRequestId(): string | undefined {
 /** The caller's address for the request in flight, if there is one. */
 export function currentClientIp(): string | undefined {
   return requestContext.getStore()?.ip;
+}
+
+/** The authenticated admin's field mask, or nothing hidden outside one. */
+export function currentFieldMask(): FieldMask {
+  return requestContext.getStore()?.fieldMask ?? EMPTY_MASK;
 }

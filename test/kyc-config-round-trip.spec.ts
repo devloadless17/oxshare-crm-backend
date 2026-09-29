@@ -117,7 +117,7 @@ describe('the KYC config round trip', () => {
       'the GET did not hydrate `document`, so this cannot prove the DTO tolerates it',
     ).toBeDefined();
 
-    const write = await session.put('/v1/admin/kyc-config').send({ steps });
+    const write = await session.put('/v1/admin/kyc-config').send({ format: 2, steps });
     expect(
       write.status,
       `PUT refused its own GET: ${JSON.stringify(write.body).slice(0, 300)}`,
@@ -136,7 +136,7 @@ describe('the KYC config round trip', () => {
     // Two steps AFTER Personal Information — which is pinned first (identity core).
     const swapped = [steps[0], steps[2], steps[1], ...steps.slice(3)];
 
-    const write = await session.put('/v1/admin/kyc-config').send({ steps: swapped });
+    const write = await session.put('/v1/admin/kyc-config').send({ format: 2, steps: swapped });
     expect(write.status, `reorder refused: ${JSON.stringify(write.body).slice(0, 200)}`).toBe(200);
 
     /*
@@ -157,20 +157,28 @@ describe('the KYC config round trip', () => {
     ]);
 
     // Leave the config as it was found.
-    await session.put('/v1/admin/kyc-config').send({ steps });
+    await session.put('/v1/admin/kyc-config').send({ format: 2, steps });
   });
 
-  it('refuses moving Personal Information from the front, and changes nothing', async () => {
+  it('persists moving Personal Information anywhere (Phase 2: the order is the broker’s)', async () => {
     const read = await session.get('/v1/admin/kyc-config');
     const steps = read.body as { slug: string }[];
     const moved = [...steps.slice(1), steps[0]];
 
-    const write = await session.put('/v1/admin/kyc-config').send({ steps: moved });
-    expect(write.status).toBe(400);
-    expect(JSON.stringify(write.body)).toMatch(/Personal Information comes first/);
-    expect(((await session.get('/v1/admin/kyc-config')).body as { slug: string }[])[0].slug).toBe(
-      'personal',
-    );
+    const write = await session.put('/v1/admin/kyc-config').send({ format: 2, steps: moved });
+    expect(write.status, JSON.stringify(write.body).slice(0, 300)).toBe(200);
+    const after = (await session.get('/v1/admin/kyc-config')).body as { slug: string }[];
+    expect(after.at(-1)?.slug).toBe('personal');
+
+    // Leave the config as it was found.
+    await session.put('/v1/admin/kyc-config').send({ format: 2, steps });
+  });
+
+  it('refuses a save from an OUTDATED console, and changes nothing', async () => {
+    const read = await session.get('/v1/admin/kyc-config');
+    const write = await session.put('/v1/admin/kyc-config').send({ steps: read.body });
+    expect(write.status).toBe(409);
+    expect((write.body as { code: string }).code).toBe('KYC_BUILDER_OUTDATED');
   });
 });
 
@@ -208,7 +216,7 @@ describe('an empty configuration is refused, and refused BEFORE the delete', () 
       'no steps configured — this case cannot prove anything',
     ).toBeGreaterThan(0);
 
-    const wipe = await session.put('/v1/admin/kyc-config').send({ steps: [] });
+    const wipe = await session.put('/v1/admin/kyc-config').send({ format: 2, steps: [] });
 
     expect(
       wipe.status,
@@ -274,6 +282,7 @@ describe('a step the caller did not name', () => {
      * every form now keeps.
      */
     const write = await session.put('/v1/admin/kyc-config').send({
+      format: 2,
       steps: [
         ...original,
         { id: 'step-audit', slug: 'other', title: 'Other', enabled: true, fields: [field('fa')] },
@@ -305,7 +314,7 @@ describe('a step the caller did not name', () => {
     );
 
     // Leave the config as it was found.
-    await session.put('/v1/admin/kyc-config').send({ steps: original });
+    await session.put('/v1/admin/kyc-config').send({ format: 2, steps: original });
   });
 });
 
@@ -430,6 +439,7 @@ describe('a field goes only on a step that can store it', () => {
     const before = stepsOf((await session.get('/v1/admin/kyc-config')).body);
 
     const write = await session.put('/v1/admin/kyc-config').send({
+      format: 2,
       steps: [...before, { slug: 'extra-docs', title: 'Extra', enabled: true, fields: [passport] }],
     });
     expect(write.status, JSON.stringify(write.body).slice(0, 300)).toBe(400);
@@ -578,7 +588,7 @@ describe('0137 puts every catalogue document on the step that holds its kind', (
     const read = await session.get('/v1/admin/kyc-config');
     const write = await session
       .put('/v1/admin/kyc-config')
-      .send({ steps: Array.isArray(read.body) ? read.body : read.body.steps });
+      .send({ format: 2, steps: Array.isArray(read.body) ? read.body : read.body.steps });
     expect(write.status, JSON.stringify(write.body).slice(0, 300)).toBe(200);
 
     await ctx.db.db.delete(kycConfigSteps).where(eq(kycConfigSteps.id, 'step-0137'));
@@ -716,5 +726,73 @@ describe('a question’s name outlives the question (0148, reported 26 Sep 2026)
     expect(removed?.fields).toEqual([
       expect.objectContaining({ name: 'customField_employer', label: 'Employer name' }),
     ]);
+  });
+});
+
+/*
+ * THE VERSION A SAVE NAMES, AS IT ARRIVES IN PRODUCTION (reported 28 Sep 2026).
+ *
+ * The builder sends back the `ETag` it read the form with (`If-Match`), and a
+ * form somebody else has changed since answers 409 KYC_CONFIG_STALE. Nothing
+ * tested that against the server — the builder's page test mocks the header.
+ * In production Caddy compresses the GET and rewrites the ETag to
+ * `"<digest>-zstd"`; the builder echoed it, and EVERY save answered "someone
+ * else changed this form" when nobody had.
+ */
+describe('the version a save names (If-Match)', () => {
+  type Step = { id: string; slug: string; description?: string };
+
+  const read = async () => {
+    const res = await session.get('/v1/admin/kyc-config');
+    expect(res.status).toBe(200);
+    const etag = res.headers['etag'] as string | undefined;
+    expect(etag, 'the form was served without a strong version').toMatch(/^"[0-9a-f]{64}"$/);
+    return { steps: res.body as Step[], etag: etag as string };
+  };
+  const save = (steps: Step[], ifMatch?: string) =>
+    session.put(
+      '/v1/admin/kyc-config',
+      { format: 2, steps },
+      ifMatch === undefined ? undefined : { headers: { 'If-Match': ifMatch } },
+    );
+
+  it('saves with the version exactly as it was read', async () => {
+    const { steps, etag } = await read();
+    const res = await save(steps, etag);
+    expect(res.status, JSON.stringify(res.body).slice(0, 200)).toBe(200);
+  });
+
+  it('saves with the version as a compressing proxy hands it back — the production bug', async () => {
+    const { steps, etag } = await read();
+    const asProxied = [etag.replace(/"$/, '-zstd"'), etag.replace(/"$/, '-gzip"'), `W/${etag}`];
+    for (const ifMatch of asProxied) {
+      const res = await save(steps, ifMatch);
+      expect(res.status, `If-Match ${ifMatch} answered ${JSON.stringify(res.body)}`).toBe(200);
+    }
+  });
+
+  it('still REFUSES a save over somebody else’s newer change, and keeps theirs', async () => {
+    const mine = await read();
+    const original = structuredClone(mine.steps);
+
+    // A colleague saves first, from the same version.
+    const theirs = structuredClone(mine.steps);
+    const target = theirs[theirs.length - 1];
+    target.description = 'A colleague’s newer wording';
+    expect((await save(theirs, mine.etag)).status).toBe(200);
+
+    // Mine, named at the version I read — even as the proxy decorated it.
+    for (const ifMatch of [mine.etag, mine.etag.replace(/"$/, '-zstd"')]) {
+      const res = await save(mine.steps, ifMatch);
+      expect(res.status, `If-Match ${ifMatch}`).toBe(409);
+      expect((res.body as { code?: string }).code).toBe('KYC_CONFIG_STALE');
+    }
+    const now = (await read()).steps.find((step) => step.id === target.id);
+    expect(now?.description, 'the stale save replaced the colleague’s change').toBe(
+      'A colleague’s newer wording',
+    );
+
+    // Named no version: last write wins — how an operator's restore works.
+    expect((await save(original)).status).toBe(200);
   });
 });

@@ -325,10 +325,17 @@ export class TransferResumeScheduler {
         and(
           eq(transfers.state, 'pending'),
           lt(transfers.createdAt, new Date(Date.now() - STALE_MS)),
+          /*
+           * `subject_id` is TEXT since 0159 (it names a client by Portal ID or a
+           * record by uuid), so the uuid is compared as text. Without the cast
+           * Postgres refuses `text = uuid`, the run's catch logs it, and no
+           * stuck transfer is ever announced — silently. Text to text also keeps
+           * the open-task index usable.
+           */
           sql`NOT EXISTS (
             SELECT 1 FROM ${notifications} task
              WHERE task.subject_kind = 'transfer'
-               AND task.subject_id = ${transfers.id}
+               AND task.subject_id = ${transfers.id}::text
                AND task.resolved_at IS NULL
           )`,
         ),

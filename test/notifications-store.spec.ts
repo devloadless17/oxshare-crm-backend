@@ -7,7 +7,7 @@ import { sql } from 'drizzle-orm';
 import { NotificationsStore } from '../src/store/notifications.store';
 
 /** The generic insert writes client rows only — an admin row is a task (0140). */
-type NotificationRecipient = { kind: 'client'; id: string };
+type NotificationRecipient = { kind: 'client'; id: number };
 
 /**
  * The notifications table's contract, against real Postgres.
@@ -24,23 +24,23 @@ let store: NotificationsStore;
 
 const CLIENT_A: NotificationRecipient = {
   kind: 'client',
-  id: '11111111-1111-1111-1111-111111111111',
+  id: 1000001,
 };
 const CLIENT_B: NotificationRecipient = {
   kind: 'client',
-  id: '22222222-2222-2222-2222-222222222222',
+  id: 1000002,
 };
 const CLIENT_C: NotificationRecipient = {
   kind: 'client',
-  id: '33333333-3333-3333-3333-333333333333',
+  id: 1000003,
 };
 const ADMIN_1 = 'a1111111-1111-4111-8111-111111111111';
 const ADMIN_2 = 'a2222222-2222-4222-8222-222222222222';
 const ADMIN_3 = 'a3333333-3333-4333-8333-333333333333';
 
 /** A client with a KYC submission in `status` — a real item for a task to be about. */
-async function kycSubject(email: string, status: 'submitted' | 'approved'): Promise<string> {
-  const { rows } = await ctx.db.execute<{ id: string }>(sql`
+async function kycSubject(email: string, status: 'submitted' | 'approved'): Promise<number> {
+  const { rows } = await ctx.db.execute<{ id: number }>(sql`
     INSERT INTO users (email, password_hash, first_name, last_name)
     VALUES (${email}, 'x', 'Task', 'Subject') RETURNING id`);
   const id = rows[0].id;
@@ -104,7 +104,7 @@ describe('insertAdminTask — one statement, per-row dedupe, only while still op
       params: { userId },
       dedupeKey: `admin.kyc.submitted:${userId}`,
       subjectKind: 'kyc' as const,
-      subjectId: userId,
+      subjectId: String(userId),
       subjectUserId: userId,
       stillOpen: 'awaiting-review' as const,
     };
@@ -126,7 +126,7 @@ describe('insertAdminTask — one statement, per-row dedupe, only while still op
       kind: 'admin.kyc.submitted',
       params: { userId },
       subjectKind: 'kyc',
-      subjectId: userId,
+      subjectId: String(userId),
       subjectUserId: userId,
       stillOpen: 'awaiting-review',
     });
@@ -191,7 +191,7 @@ describe('read markers', () => {
   it('markAllRead touches only the recipient and only unread rows', async () => {
     const recipient: NotificationRecipient = {
       kind: 'client',
-      id: '44444444-4444-4444-4444-444444444444',
+      id: 1000004,
     };
     await store.insert({ recipient, kind: 'a', params: {} });
     await store.insert({ recipient, kind: 'b', params: {} });
@@ -209,7 +209,7 @@ describe('read markers', () => {
   it('markAllRead never marks past `upTo` — a row that arrived after the panel rendered stays unread', async () => {
     const recipient: NotificationRecipient = {
       kind: 'client',
-      id: '45454545-4545-4545-4545-454545454545',
+      id: 1000005,
     };
     await store.insert({ recipient, kind: 'seen', params: {} });
     const [seen] = (await store.findPage(recipient)).items;
@@ -229,7 +229,7 @@ describe('keyset paging', () => {
   it('pages without gaps or duplicates, newest first', async () => {
     const recipient: NotificationRecipient = {
       kind: 'client',
-      id: '55555555-5555-5555-5555-555555555555',
+      id: 1000006,
     };
     for (let i = 0; i < 7; i++) {
       await store.insert({ recipient, kind: `event.${i}`, params: {} });
@@ -262,7 +262,7 @@ describe('keyset paging', () => {
   it('unreadOnly filters read rows out of the feed', async () => {
     const recipient: NotificationRecipient = {
       kind: 'client',
-      id: '66666666-6666-6666-6666-666666666666',
+      id: 1000007,
     };
     await store.insert({ recipient, kind: 'read.one', params: {} });
     await store.insert({ recipient, kind: 'unread.one', params: {} });
@@ -278,7 +278,7 @@ describe('retention', () => {
   it('prunes only rows older than the window', async () => {
     const recipient: NotificationRecipient = {
       kind: 'client',
-      id: '77777777-7777-7777-7777-777777777777',
+      id: 1000008,
     };
     await store.insert({ recipient, kind: 'fresh', params: {} });
     // Age one row past the window directly — the store exposes no way to
@@ -304,13 +304,13 @@ describe('retention is per audience', () => {
       kind: 'admin.kyc.resubmitted',
       params: { userId },
       subjectKind: 'kyc',
-      subjectId: userId,
+      subjectId: String(userId),
       subjectUserId: userId,
       stillOpen: 'awaiting-review',
     });
     await ctx.db.execute(sql`
       UPDATE notifications SET created_at = now() - interval '200 days'
-       WHERE kind = 'admin.kyc.resubmitted' AND subject_id = ${userId}`);
+       WHERE kind = 'admin.kyc.resubmitted' AND subject_id = ${String(userId)}`);
 
     // A client-window prune never touches admin rows…
     await store.pruneOlderThan('client', 90);
@@ -319,7 +319,7 @@ describe('retention is per audience', () => {
 
     await ctx.db.execute(sql`
       UPDATE notifications SET created_at = now() - interval '400 days'
-       WHERE kind = 'admin.kyc.resubmitted' AND subject_id = ${userId}`);
+       WHERE kind = 'admin.kyc.resubmitted' AND subject_id = ${String(userId)}`);
     expect(await store.pruneOlderThan('admin', 365)).toBe(1);
   });
 });

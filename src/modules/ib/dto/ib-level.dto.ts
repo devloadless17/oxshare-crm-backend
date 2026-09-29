@@ -98,11 +98,22 @@ export class IbLevelDto {
   @ApiProperty({
     example: 4,
     description:
-      'How many partners stand on this rung. Part of the row rather than a second call: it is ' +
-      'what makes a delete refusable in the UI before the database refuses it, and what tells ' +
-      'an operator how many people a rate change is about to affect.',
+      'How many partners stand on this rung in the reader’s territory. Part of the row rather ' +
+      'than a second call: with `partnersOutsideScope` it is what makes a delete refusable in ' +
+      'the UI before the database refuses it, and what tells an operator how many people a rate ' +
+      'change is about to affect.',
   })
   partnerCount: number;
+
+  @ApiProperty({
+    type: 'integer',
+    example: 0,
+    description:
+      'How many partners stand on this rung OUTSIDE the reader’s territory — a count, never who ' +
+      '(D-81 R2). Zero for a reader who sees every client. The rung is emptied only when both ' +
+      'this and `partnerCount` are zero.',
+  })
+  partnersOutsideScope: number;
 
   @ApiProperty()
   createdAt: Date;

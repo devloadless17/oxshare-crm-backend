@@ -164,7 +164,7 @@ export class SelfServiceGroups implements OnModuleInit {
    * introducing broker is offered their partner's agency's products, and a
    * client under nobody is offered every enabled product.
    */
-  async offeredTo(userId: string, environment: 'live' | 'demo'): Promise<OfferedGroup[]> {
+  async offeredTo(userId: number, environment: 'live' | 'demo'): Promise<OfferedGroup[]> {
     return await this.products.offeredTo(userId, environment);
   }
 
@@ -180,7 +180,7 @@ export class SelfServiceGroups implements OnModuleInit {
    * convenience; this is the control.
    */
   async resolve(
-    userId: string,
+    userId: number,
     environment: 'live' | 'demo',
     requested?: string,
     /**

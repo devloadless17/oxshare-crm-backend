@@ -46,6 +46,7 @@ export const PROFILE_FIELD_KEYS = [
   'country',
   'address',
   'city',
+  'stateProvince',
   'postalCode',
 ] as const;
 
@@ -79,6 +80,7 @@ export const PROFILE_FIELD_TYPE: Readonly<Record<ProfileKey, string>> = {
   country: 'select',
   address: 'text',
   city: 'text',
+  stateProvince: 'text',
   postalCode: 'text',
 };
 
@@ -103,6 +105,7 @@ export const PROFILE_MAX_LENGTH: Readonly<Record<ProfileKey, number>> = {
   country: 100,
   address: 200,
   city: 100,
+  stateProvince: 100,
   postalCode: 12,
 };
 
@@ -116,6 +119,7 @@ const LABEL: Readonly<Record<ProfileKey, string>> = {
   country: 'Country of residence',
   address: 'Address',
   city: 'City',
+  stateProvince: 'State / Province',
   postalCode: 'Postal code',
 };
 
@@ -140,41 +144,75 @@ export const KYC_CORRECTABLE_KEYS: readonly ProfileKey[] = PROFILE_FIELD_KEYS.fi
 );
 
 /**
- * WHAT THE SUPPORT DESK'S GENERAL EDIT MAY CHANGE, by where the verification is.
+ * HOW AN ADMIN MAY CHANGE ONE DETAIL, by where the client's verification is.
  *
- * Before a KYC submission leaves the client's hands the profile is theirs to
- * fill in and the desk's to tidy — a typo at registration, a wrong country.
- * Once it is SUBMITTED, every field but the phone is evidence: a reviewer is
- * checking it against documents, or has checked it. So:
+ *  - `free`: edited like any record — the client's own until they submit,
+ *    and always the phone, which is contact rather than identity (no document
+ *    proves it).
+ *  - `held`: a reviewer is checking it against the documents right now, or it
+ *    was verified and this admin may not correct verified details. The
+ *    sentence says which, in place.
+ *  - `correction`: it was VERIFIED and this admin may correct it
+ *    (`kyc.identity.correct`). It changes only with a reason, is re-checked by
+ *    the profile's rules, is recorded on the verification, the client is told,
+ *    and the client STAYS verified.
  *
- *  - submitted / under review → locked until the reviewer decides; a value they
- *    find wrong goes back to the client with the field marked;
- *  - approved → any of them through the reviewer's correction ("Correct
- *    details"), which re-checks the rules, files the change on the verification
- *    with a reason and tells the client; or a re-verification, when the change
- *    is material.
- *
- * The phone is contact, not identity — no document proves it — so the desk can
- * always change it. Returns a sentence per locked field, empty when none is.
+ * ⚠️ No sentence here sends anybody to another screen. Until 28 Sep 2026 a
+ * verified detail answered "Use Correct details on the client's KYC review",
+ * and the client page turned that into a link away from the record the admin
+ * was editing. The owner reported it: editing a client is done ON the client.
  */
-export function deskLocks(
-  changed: readonly ProfileKey[],
+export type AdminEditRule =
+  { kind: 'free' } | { kind: 'correction' } | { kind: 'held'; sentence: string };
+
+export function adminEditRule(
+  key: ProfileKey,
   verification: string | undefined,
-): Partial<Record<ProfileKey, string>> {
-  const locked: Partial<Record<ProfileKey, string>> = {};
-  for (const key of changed) {
-    if (key === 'phone') continue;
-    if (verification === 'submitted' || verification === 'under_review') {
-      locked[key] =
+  mayCorrect: boolean,
+): AdminEditRule {
+  if (key === 'phone') return { kind: 'free' };
+  if (verification === 'submitted' || verification === 'under_review') {
+    return {
+      kind: 'held',
+      sentence:
         `${LABEL[key]} is being checked against the client's documents right now. ` +
-        'It can change once the reviewer decides.';
-    } else if (verification === 'approved') {
-      locked[key] =
-        `${LABEL[key]} was verified by KYC. Use "Correct details" on the client's KYC ` +
-        'review, where the change is checked again, recorded with a reason, and the client is told.';
-    }
+        'It can change once the reviewer decides.',
+    };
   }
-  return locked;
+  if (verification === 'approved') {
+    return mayCorrect
+      ? { kind: 'correction' }
+      : {
+          kind: 'held',
+          sentence:
+            `${LABEL[key]} was verified by KYC. Only an admin who may correct verified ` +
+            'details can change it.',
+        };
+  }
+  return { kind: 'free' };
+}
+
+/** The `held` fields among `keys`, each with its sentence — empty when none is. */
+export function heldFields(
+  keys: readonly ProfileKey[],
+  verification: string | undefined,
+  mayCorrect: boolean,
+): Partial<Record<ProfileKey, string>> {
+  const held: Partial<Record<ProfileKey, string>> = {};
+  for (const key of keys) {
+    const rule = adminEditRule(key, verification, mayCorrect);
+    if (rule.kind === 'held') held[key] = rule.sentence;
+  }
+  return held;
+}
+
+/** The fields among `keys` that change only as a correction, with a reason. */
+export function correctionFields(
+  keys: readonly ProfileKey[],
+  verification: string | undefined,
+  mayCorrect: boolean,
+): ProfileKey[] {
+  return keys.filter((key) => adminEditRule(key, verification, mayCorrect).kind === 'correction');
 }
 
 export function isProfileKey(key: string): key is ProfileKey {
@@ -207,6 +245,12 @@ const NAME = /^\p{L}[\p{L}\p{M}'’. -]*$/u;
 /** A city may carry a number — "6th of October City" — but must name something. */
 const CITY = /^[\p{L}\p{N}][\p{L}\p{M}\p{N}'’.() -]*$/u;
 const HAS_LETTER = /\p{L}/u;
+/**
+ * A state, province or region, typed by the client (free text, the owner's
+ * call): "California", "Île-de-France", "Mount Lebanon", "Washington, D.C.".
+ * Starts with a letter; a comma is allowed, which a city's rule does not need.
+ */
+const STATE_PROVINCE = /^\p{L}[\p{L}\p{M}\p{N}'’.,() -]*$/u;
 /** No control characters anywhere: they hide text from the person reading it. */
 const CONTROL = /\p{Cc}/u;
 /** Letters and digits first, then spaces or hyphens — "10001", "SW1A 1AA", "1100-2080". */
@@ -362,6 +406,13 @@ export function normaliseProfileValue(key: ProfileKey, raw: string, asOf: Date):
     case 'city': {
       if (value.length > PROFILE_MAX_LENGTH.city || !CITY.test(value) || !HAS_LETTER.test(value)) {
         return { ok: false, message: 'Enter the name of your city or town.' };
+      }
+      return { ok: true, value };
+    }
+
+    case 'stateProvince': {
+      if (value.length > PROFILE_MAX_LENGTH.stateProvince || !STATE_PROVINCE.test(value)) {
+        return { ok: false, message: 'Enter your state, province or region.' };
       }
       return { ok: true, value };
     }

@@ -3,12 +3,12 @@ import { documentForFieldType } from '../../common/kyc/document-catalogue';
 import {
   CORE_STEPS,
   coreStepOf,
-  coreTitleMatching,
   customSlugProblem,
   identityField,
   IDENTITY_FIELDS,
   isDocumentField,
   isPlatformField,
+  normaliseLabel,
   platformMeaningOf,
   reservedFieldName,
 } from '../../common/kyc/identity-core';
@@ -57,13 +57,11 @@ const titleOf = (step: KycStepConfig) => step.title || step.slug;
 const labelOf = (field: { label: string; name: string }) => field.label || field.name;
 
 /**
- * THE FOUR BUILT-IN STEPS: each exactly once, never renamed, Personal
- * Information first, and the two that ARE a verification never switched off.
- *
- * Missing, duplicated or retitled, a built-in step breaks what the rest of the
- * system reads by slug — the portal's uploader and camera, the reviewer's
- * document tiles, the columns the answers are stored in. Deleted, it took the
- * client's identity with it: the reported defect.
+ * Each built-in step exists exactly once — Personal Information, Identity
+ * Document, Selfie and Proof of Address are where the platform files a client's
+ * identity and evidence, so a second copy would be a second place for one
+ * answer. Since Phase 2 (29 Sep 2026) the broker decides everything else about
+ * them: the title, the order, whether it is on.
  */
 export function assertCoreSteps(next: readonly KycStepConfig[]): void {
   for (const core of CORE_STEPS) {
@@ -72,9 +70,7 @@ export function assertCoreSteps(next: readonly KycStepConfig[]): void {
       .filter(({ step }) => step.slug === core.slug);
     if (found.length === 0) {
       throw refuse(
-        core.alwaysOn
-          ? `${core.title} is part of every verification and cannot be removed.`
-          : `${core.title} is a built-in step and cannot be removed. Switch it off to stop asking for it.`,
+        `${core.title} is a built-in step and cannot be deleted. Switch it off to stop asking for it.`,
       );
     }
     if (found.length > 1) {
@@ -84,27 +80,24 @@ export function assertCoreSteps(next: readonly KycStepConfig[]): void {
         found[1].index,
       );
     }
-    const { step, index } = found[0];
-    if (core.alwaysOn && step.enabled === false) {
-      throw refuse(`${core.title} is always on: a verification without it verifies nobody.`, index);
-    }
-    if (step.title.trim() !== core.title) {
+  }
+}
+
+/** Every step has a title, and no two steps share one — a client tells them apart by it. */
+export function assertStepTitles(next: readonly KycStepConfig[]): void {
+  const seen = new Map<string, number>();
+  next.forEach((step, index) => {
+    const title = step.title?.trim() ?? '';
+    if (!title) throw refuse('Give this step a title.', index);
+    const key = normaliseLabel(title);
+    if (seen.has(key)) {
       throw refuse(
-        `${core.title} is a built-in step and keeps its name. You can reword its description.`,
+        `Two steps are called "${title}". Give each its own title, so a client can tell them apart.`,
         index,
       );
     }
-  }
-  if (next[0]?.slug !== 'personal') {
-    throw refuse(
-      'Personal Information comes first: every later step is checked against the identity it ' +
-        'collects.',
-      Math.max(
-        0,
-        next.findIndex((step) => step.slug === 'personal'),
-      ),
-    );
-  }
+    seen.set(key, index);
+  });
 }
 
 /**
@@ -155,30 +148,17 @@ export function assertStepAddresses(
         );
       }
     }
-    const core = coreTitleMatching(step.title);
-    if (core) {
-      throw refuse(
-        `"${titleOf(step)}" is the name of a built-in step. Name your step for what it asks, so ` +
-          'nobody confuses the two.',
-        index,
-      );
-    }
   });
 }
 
 /**
- * THE CLIENT'S IDENTITY IS NOT EDITABLE, WHEREVER IT IS SENT.
- *
- * The store never stores the identity fields and serves them on every read, so
- * a save may leave them out entirely — the builder's round trip echoes them back
- * unchanged, which is also fine. What is refused is anything that would make a
- * second copy or a different field of them: moving one to another step, or the
- * same field (by key or by id) with another label, type or required flag, or a
- * new key on an identity field's id — each of which is a server-side check
- * switched off with the form still looking right.
+ * The client's identity details are asked on Personal Information only, and each
+ * at most once there. Where they sit and whether each is required is the
+ * broker's; their names and meaning are the platform's (restored on every save).
  */
-export function assertIdentityUnchanged(next: readonly KycStepConfig[]): void {
+export function assertIdentityPlacements(next: readonly KycStepConfig[]): void {
   next.forEach((step, stepIndex) => {
+    const placed = new Set<string>();
     step.fields.forEach((field, fieldIndex) => {
       const byName = identityField(field.name);
       const byId = IDENTITY_FIELDS.find((candidate) => candidate.id === field.id);
@@ -192,104 +172,69 @@ export function assertIdentityUnchanged(next: readonly KycStepConfig[]): void {
           fieldIndex,
         );
       }
-      if (field.name !== core.name || field.label !== core.label || field.type !== core.type) {
+      if (field.name !== core.name) {
         throw refuse(
-          `${core.label} is part of the client's identity and is fixed by the platform: its ` +
-            'name and kind cannot be changed.',
+          `${core.label} is part of the client's identity: its name is fixed by the platform.`,
           stepIndex,
           fieldIndex,
         );
       }
-      if (field.required !== core.required) {
+      if (placed.has(core.name)) {
         throw refuse(
-          core.required
-            ? `${core.label} is always required: a verification cannot be completed without it.`
-            : `${core.label} is always optional: many addresses have none.`,
+          `${core.label} is already on this step. Each identity detail is asked for once.`,
           stepIndex,
           fieldIndex,
         );
       }
+      placed.add(core.name);
     });
   });
 }
 
 /**
- * EACH BUILT-IN STEP HOLDS WHAT IT IS FOR, AND NOTHING ELSE (the owner's ruling).
- *
- *  - Identity Document holds identity documents; Proof of Address holds address
- *    documents — each document once, at least one. A client has ONE passport:
- *    asking for it twice, or on a step of the broker's own, leaves two files
- *    nobody can tell apart and a second upload that silently replaces the first.
- *  - Selfie holds its camera.
- *  - Personal Information holds the identity and the broker's own QUESTIONS —
- *    never an upload, so a document a client sends is never mixed in with who
- *    they are.
- *
- * Anything else a broker wants — a bank letter, a source-of-funds form, a
- * second photo — goes on a step of their own, where it is reviewed as what it
- * is: additional information, in its own section.
+ * Documents are collected where the platform files them: an identity document on
+ * Identity Document, a proof of address on Proof of Address — once each, so there
+ * is never a second one to tell apart from the first. Any other question, uploads
+ * included, may go on any step (Phase 2). A document step that is on offers at
+ * least one document.
  */
 export function assertStepsHoldWhatTheyAreFor(next: readonly KycStepConfig[]): void {
   next.forEach((step, stepIndex) => {
     const core = coreStepOf(step.slug);
     step.fields.forEach((field, fieldIndex) => {
-      if (isDocumentField(field)) {
-        const document = documentForFieldType(field.type);
-        if (!core?.documents) {
-          throw refuse(
-            `"${labelOf(field)}" is an identity or address document, and those are collected on ` +
-              'the Identity Document and Proof of Address steps only — once each, so there is ' +
-              'never a second one to tell apart from the first. To collect another file here, ' +
-              'add an Upload field.',
-            stepIndex,
-            fieldIndex,
-          );
-        }
-        if (document && document.category !== core.documents) {
-          throw refuse(
-            `"${titleOf(step)}" cannot accept a ${document.label}: it collects ` +
-              `${core.documents === 'identity' ? 'identity documents' : 'proof of address'}, and ` +
-              'the file would be filed as the wrong document.',
-            stepIndex,
-            fieldIndex,
-          );
-        }
-        return;
-      }
-      if (!core || isPlatformField(core.slug, field)) return;
-      if (core.slug !== 'personal') {
+      if (!isDocumentField(field)) return;
+      const document = documentForFieldType(field.type);
+      if (!core?.documents) {
         throw refuse(
-          `"${titleOf(step)}" holds only ${
-            core.slug === 'selfie' ? 'the selfie' : 'its documents'
-          }. Put "${labelOf(field)}" on a step of your own.`,
+          `"${labelOf(field)}" is an identity or address document, and those are collected on ` +
+            'the Identity Document and Proof of Address steps only. To collect another file ' +
+            'here, add an Upload field.',
           stepIndex,
           fieldIndex,
         );
       }
-      if (field.type === 'file' || field.type === 'camera') {
+      if (document && document.category !== core.documents) {
         throw refuse(
-          `"${labelOf(field)}" is an upload. Uploads go on a step of your own, so a document ` +
-            'a client sends is never mixed in with their identity.',
+          `"${titleOf(step)}" cannot accept a ${document.label}: it collects ` +
+            `${core.documents === 'identity' ? 'identity documents' : 'proof of address'}, and ` +
+            'the file would be filed as the wrong document.',
           stepIndex,
           fieldIndex,
         );
       }
     });
-
     if (core?.documents) {
       const types = step.fields.filter(isDocumentField).map((field) => field.type);
-      if (types.length === 0) {
+      if (types.length === 0 && step.enabled !== false) {
         throw refuse(
-          core.alwaysOn
-            ? `${core.title} must accept at least one document.`
-            : `${core.title} must accept at least one document. Switch the step off to stop asking.`,
+          `"${titleOf(step)}" must accept at least one document. Switch the step off to stop asking.`,
           stepIndex,
         );
       }
       const twice = types.find((type, index) => types.indexOf(type) !== index);
       if (twice) {
         throw refuse(
-          `${core.title} lists the ${documentForFieldType(twice)?.label ?? 'same document'} ` +
+          `"${titleOf(step)}" lists the ${documentForFieldType(twice)?.label ?? 'same document'} ` +
             'twice. Each document is accepted once.',
           stepIndex,
         );
@@ -373,8 +318,9 @@ export function assertKycConfigIntegrity(
   next: readonly KycStepConfig[],
 ): void {
   assertCoreSteps(next);
+  assertStepTitles(next);
   assertStepAddresses(previous, next);
-  assertIdentityUnchanged(next);
+  assertIdentityPlacements(next);
   assertStepsHoldWhatTheyAreFor(next);
   assertFieldKeys(next);
   assertNoSecondCopies(next);

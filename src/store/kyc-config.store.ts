@@ -3,6 +3,7 @@ import { documentForFieldType } from '../common/kyc/document-catalogue';
 import { KYC_COUNTRY_OPTIONS, KYC_NATIONALITY_OPTIONS } from '../common/kyc/country-options';
 import {
   CORE_STEPS,
+  DEFAULT_IDENTITY_PLACEMENTS,
   DOCUMENT_CATALOGUE_BY_CATEGORY,
   documentField,
   inFormOrder,
@@ -82,6 +83,8 @@ export interface KycStepConfig {
   core?: boolean;
   /** A built-in step that cannot be switched off. Served on read, never stored. */
   alwaysOn?: boolean;
+  /** Identity document, selfie, proof of address: must the client provide it. */
+  evidenceRequired?: boolean;
 }
 
 /*
@@ -121,12 +124,15 @@ export const DEFAULT_KYC_STEPS: KycStepConfig[] = CORE_STEPS.map((core, index) =
   description: core.description,
   icon: core.icon,
   enabled: true,
+  evidenceRequired: core.slug === 'personal' ? undefined : true,
   fields:
-    core.documents === 'identity'
-      ? identityDocuments
-      : core.documents === 'address'
-        ? addressDocuments
-        : [],
+    core.slug === 'personal'
+      ? DEFAULT_IDENTITY_PLACEMENTS.map((field) => ({ ...field }))
+      : core.documents === 'identity'
+        ? identityDocuments
+        : core.documents === 'address'
+          ? addressDocuments
+          : [],
 }));
 
 /*
@@ -203,6 +209,7 @@ const toStep = (r: Row): KycStepConfig => {
     description: r.description ?? '',
     icon: r.icon ?? 'FileText',
     enabled: r.enabled,
+    evidenceRequired: r.evidenceRequired,
     fields: (r.fields as unknown as KycFieldConfig[]) ?? [],
   });
   return { ...step, fields: withResolvedDocuments(step.fields) };
@@ -235,6 +242,7 @@ const toRow = (s: KycStepConfig) => {
     description: stored.description,
     icon: stored.icon,
     enabled: stored.enabled,
+    evidenceRequired: stored.evidenceRequired !== false,
     fields: stripResolved(stored.fields) as unknown as Record<string, unknown>[],
   };
 };

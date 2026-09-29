@@ -105,6 +105,8 @@ async function build(overrides: { admin?: Partial<Admin>; role?: Role | undefine
   const target = { ...TARGET, ...overrides.admin };
 
   const adminsFake = {
+    // 0154's invariant: at least one active admin still sees every client.
+    countActiveFullSight: vi.fn(() => Promise.resolve(1)),
     findById: vi.fn((id: string) =>
       Promise.resolve(
         id === MASTER.id
@@ -165,7 +167,11 @@ async function build(overrides: { admin?: Partial<Admin>; role?: Role | undefine
         // cases here assert who may suspend whom, not what suspension ends, so
         // a stub reporting nothing revoked is the honest shape.
         provide: ApiKeysStore,
-        useValue: { revokeAllCreatedBy: vi.fn().mockResolvedValue(0) },
+        useValue: {
+          revokeAllCreatedBy: vi.fn().mockResolvedValue(0),
+          // An edit clamps the admin's keys to their new sight; none here.
+          clampToCreator: vi.fn().mockResolvedValue(0),
+        },
       },
       {
         provide: DRIZZLE_DB,
@@ -184,6 +190,8 @@ async function build(overrides: { admin?: Partial<Admin>; role?: Role | undefine
       {
         provide: AdminClientScopesStore,
         useValue: {
+          // The scope a key is clamped to after an edit — unrestricted here.
+          scopeFor: vi.fn().mockResolvedValue(UNRESTRICTED),
           replace: vi.fn().mockResolvedValue(undefined),
           // `sanitize` now reports each admin's territory on the row, so the
           // directory can show it without opening a modal.

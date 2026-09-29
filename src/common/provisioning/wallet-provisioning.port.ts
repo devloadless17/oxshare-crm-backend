@@ -30,7 +30,7 @@ export interface WalletProvisioningPort {
    * nobody can re-create, because the address is taken — so an implementation
    * logs and returns rather than propagating.
    */
-  openAllEnabledWallets(userId: string): Promise<void>;
+  openAllEnabledWallets(userId: number): Promise<void>;
 }
 
 /*

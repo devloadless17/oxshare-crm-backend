@@ -52,7 +52,7 @@ function makeController(options: {
   /** RBAC-03 territory. Default unrestricted — see `scopes` below. */
   clientScope?: ClientScope;
   /** Who the document belongs to. `null` models a filename nobody owns. */
-  documentOwner?: string | null;
+  documentOwner?: number | null;
   /** Whether that owner is inside the reader's territory. */
   ownerInScope?: boolean;
   /** The CLIENT's verification state. Default verified — see `users` below. */
@@ -80,7 +80,7 @@ function makeController(options: {
       if (token === ADMIN_TOKEN)
         return { sub: 'admin-1', typ: TOKEN_KIND.access, fam: 'fam-a', iat };
       if (token === CLIENT_TOKEN) {
-        return { sub: 'client-1', typ: TOKEN_KIND.access, fam: 'fam-c', iat };
+        return { sub: '1000001', typ: TOKEN_KIND.access, fam: 'fam-c', iat };
       }
       if (token === REFRESH_TOKEN) return { sub: 'admin-1', typ: TOKEN_KIND.refresh };
       throw new Error('bad token');
@@ -102,19 +102,22 @@ function makeController(options: {
       ),
   };
   const roles = { resolvePermissions: () => Promise.resolve(options.adminPermissions ?? []) };
-  const kyc = {
-    findByUserId: () =>
+  /*
+   * The filename → owning client lookup, now answered by the client's identity
+   * RECORD for both principals: the admin's scope check and the client's own
+   * ownership check ask the same question.
+   *
+   * `null` is how a case says "no client owns this filename"; `undefined` means
+   * "the case did not care" and gets the default owner. Collapsing the two
+   * through `??` made the orphan case silently test the happy path.
+   * `clientOwnsFile: false` hands the file to somebody else.
+   */
+  const identity = {
+    ownerOfKycFile: () =>
       Promise.resolve(
-        options.clientOwnsFile ? { document: { frontFilePath: `uploads/kyc/${FILE}` } } : undefined,
-      ),
-    // The filename → owning client lookup that makes the scope applicable to a
-    // route whose only parameter is a filename.
-    // `null` is how a case says "no client owns this filename"; `undefined`
-    // means "the case did not care" and gets the default owner. Collapsing the
-    // two through `??` made the orphan case silently test the happy path.
-    ownerOfDocument: () =>
-      Promise.resolve(
-        options.documentOwner === null ? undefined : (options.documentOwner ?? 'client-1'),
+        options.documentOwner === null
+          ? undefined
+          : (options.documentOwner ?? (options.clientOwnsFile === false ? 1000002 : 1000001)),
       ),
   };
   const users = {
@@ -123,7 +126,7 @@ function makeController(options: {
     // cannot have submitted a document to read in the first place.
     findById: () =>
       Promise.resolve({
-        id: 'client-1',
+        id: 1000001,
         email: 'client@test.local',
         status: options.clientSuspended ? 'suspended' : 'active',
         // `emailVerified` matters now: the client branch of `authorize()`
@@ -135,7 +138,7 @@ function makeController(options: {
     // looks like from every admin-facing read.
     findForAdmin: () =>
       Promise.resolve(
-        options.ownerInScope === false ? undefined : { id: 'client-1', email: 'client@test.local' },
+        options.ownerInScope === false ? undefined : { id: 1000001, email: 'client@test.local' },
       ),
   };
   const auditLog = {
@@ -171,7 +174,7 @@ function makeController(options: {
     config as never,
     admins as never,
     roles as never,
-    kyc as never,
+    identity as never,
     users as never,
     auditLog as never,
     files,
@@ -329,7 +332,7 @@ describe('R-6.6 — reading a KYC document writes an audit row', () => {
      * query can now exclude the subject themselves by filtering a column.
      */
     expect(recorded[0]).toMatchObject({
-      actorId: 'client-1',
+      actorId: 1000001,
       actorKind: 'client',
       action: 'kyc.document.view',
       subjectId: FILE,
@@ -533,12 +536,10 @@ describe('R-6.6 — reading a KYC document writes an audit row', () => {
       ).rejects.toBeInstanceOf(NotFoundException);
     });
 
-    it('does not restrict an UNRESTRICTED admin, and pays no lookup for them', async () => {
-      // The common path: a master admin must not pay two extra queries per
-      // document view for a check that cannot refuse them.
+    it('does not apply territory to an UNRESTRICTED admin', async () => {
       const { controller } = makeController({
         adminPermissions: ALL_PERMISSIONS,
-        ownerInScope: false, // would refuse, if the gate ran at all
+        ownerInScope: false, // would refuse, if the territory gate ran at all
       });
       const res = fakeResponse();
 
@@ -548,6 +549,27 @@ describe('R-6.6 — reading a KYC document writes an audit row', () => {
         res as never,
       );
       expect(res.streamed).toBe(true);
+    });
+
+    it('refuses an UNRESTRICTED admin an orphan too — a file no client owns is nobody’s', async () => {
+      // Until 28 Sep 2026 this admin skipped the owner lookup and was handed ANY
+      // file in the documents bucket by name. Full access is to CLIENTS'
+      // documents; a file on no client's record is not one.
+      const { controller, recorded } = makeController({
+        adminPermissions: ALL_PERMISSIONS,
+        documentOwner: null,
+      });
+      const res = fakeResponse();
+
+      await expect(
+        controller.serveKycFile(
+          FILE,
+          requestWith({ oxshare_crm_admin_at: ADMIN_TOKEN }),
+          res as never,
+        ),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      expect(res.streamed).toBe(false);
+      expect(recorded).toHaveLength(0);
     });
   });
 

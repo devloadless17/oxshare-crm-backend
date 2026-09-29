@@ -14,7 +14,7 @@ import {
   WalletRowDto,
   WithdrawalRowDto,
 } from '../src/modules/admin/dto/responses.dto';
-import { IbPartnerDetailDto } from '../src/modules/ib/dto/ib-application.dto';
+import { IbApplicationDto, IbPartnerDetailDto } from '../src/modules/ib/dto/ib-application.dto';
 import { CreatedMt5AccountDto } from '../src/modules/trading/mt5/dto/mt5-account.dto';
 
 /**
@@ -82,6 +82,8 @@ const SHAPE_FOR: Record<string, unknown> = {
   wallet: WalletRowDto,
   tradingAccount: TradingAccountRowDto,
   ibPartner: IbPartnerDetailDto,
+  // The applicant's own words (D-82) — `client.partnerApplication`'s aliases.
+  ibApplication: IbApplicationDto,
   /*
    * The create-account response. It sat in `NO_DECLARED_SHAPE` as "a surface
    * that must KEEP its path-based call until the route gains a DTO" — and the
@@ -117,6 +119,17 @@ const STREAM_ONLY = new Set([
  * diligence and protects nothing".
  */
 const NO_DECLARED_SHAPE = new Set<string>([]);
+
+/**
+ * `client.*` keys whose value lives on ANOTHER record, never on the client
+ * profile (D-82). Planting them on `ClientProfileDto` would test a path no
+ * response carries; each is checked where it does live instead.
+ */
+const NOT_A_PROFILE_PATH: Readonly<Record<string, string>> = {
+  payoutDestination: "a withdrawal's destination — `withdrawal.`/`financial.destination`, below",
+  partnerApplication: "an IB application's free text — `ibApplication.*`, below",
+  ipAddress: "a client actor's audit row, applied per row (field-mask-matrix pins it)",
+};
 
 /** Set `a.b.c` on a nested object, creating arrays where the DTO declares one. */
 function plant(target: Record<string, unknown>, path: string, value: string): void {
@@ -173,7 +186,9 @@ describe('masking by shape removes exactly what masking by path removes', () => 
 
   for (const [resource, shape] of Object.entries(SHAPE_FOR)) {
     it(`agrees on every path of '${resource}'`, () => {
-      const paths = maskedPathsFor(resource, mask);
+      const paths = maskedPathsFor(resource, mask).filter(
+        (path) => resource !== 'client' || NOT_A_PROFILE_PATH[path] === undefined,
+      );
       expect(paths.length, `the catalogue defines no path for ${resource}`).toBeGreaterThan(0);
 
       const row: Record<string, unknown> = { id: 'keep-me', untouched: 'keep-me' };

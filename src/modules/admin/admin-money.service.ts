@@ -210,7 +210,7 @@ export class AdminMoneyService {
    * rather than relying on the HTTP interceptor alone.
    */
   async creditWallet(
-    params: { userId: string; amount: string; currency: string; reason: string },
+    params: { userId: number; amount: string; currency: string; reason: string },
     reference: string,
     actor: AuthenticatedAdmin,
   ) {
@@ -685,7 +685,7 @@ export class AdminMoneyService {
    */
   private async debitTradingAccount(
     params: {
-      account: { id: string; userId: string; currency: string; login: string | null };
+      account: { id: string; userId: number; currency: string; login: string | null };
       amount: string;
       reason: string;
     },
@@ -769,7 +769,7 @@ export class AdminMoneyService {
    * exists returns the existing one rather than failing, which is the right
    * answer for a button somebody pressed twice.
    */
-  async openWallet(params: { userId: string; currency: string }, actor: AuthenticatedAdmin) {
+  async openWallet(params: { userId: number; currency: string }, actor: AuthenticatedAdmin) {
     assertActorCan(actor, 'wallets.create', 'open a client wallet');
     await this.visibility.assertVisible(params.userId, actor.clientScope);
 
@@ -805,8 +805,9 @@ export class AdminMoneyService {
     assertActorCan(actor, 'wallets.delete', 'close a client wallet');
 
     const wallet = await this.wallets.findById(id);
-    if (!wallet) throw new NotFoundError('Wallet not found.');
-    await this.visibility.assertVisible(wallet.userId, actor.clientScope);
+    const walletNotFound = () => new NotFoundError('Wallet not found.');
+    if (!wallet) throw walletNotFound();
+    await this.visibility.assertVisible(wallet.userId, actor.clientScope, walletNotFound);
 
     this.audit.record(actor.id, 'wallet.delete', 'wallet', id, {
       userId: wallet.userId,
@@ -1330,7 +1331,7 @@ export class AdminMoneyService {
    * `void`-dispatched by all three callers, so it must also never reject.
    */
   private async emailWithdrawalDecision(
-    row: { userId: string; amount: string; currency: string },
+    row: { userId: number; amount: string; currency: string },
     decision: 'approved' | 'paid' | 'rejected',
     reason?: string,
   ): Promise<void> {
@@ -1465,7 +1466,7 @@ export class AdminMoneyService {
    */
   private toDepositDecision(row: {
     id: string;
-    userId: string;
+    userId: number;
     amount: string;
     currency: string;
     state: string;
@@ -1500,21 +1501,23 @@ export class AdminMoneyService {
     if (scope.unrestricted) return;
 
     const owner = await this.transactions.ownerOf(id);
-    if (!owner) throw new NotFoundError('Deposit not found.');
-    await this.visibility.assertVisible(owner, scope);
+    const notFound = () => new NotFoundError('Deposit not found.');
+    if (!owner) throw notFound();
+    await this.visibility.assertVisible(owner, scope, notFound);
   }
 
   private async assertWithdrawalVisible(id: string, scope: ClientScope): Promise<void> {
     if (scope.unrestricted) return;
 
     const owner = await this.transactions.ownerOf(id);
-    if (!owner) throw new NotFoundError('Withdrawal not found.');
-    await this.visibility.assertVisible(owner, scope);
+    const notFound = () => new NotFoundError('Withdrawal not found.');
+    if (!owner) throw notFound();
+    await this.visibility.assertVisible(owner, scope, notFound);
   }
 
   async listLedger(
     query: {
-      userId?: string;
+      userId?: number;
       walletId?: string;
       q?: string;
       entryType?: string;
@@ -1753,14 +1756,15 @@ export class AdminMoneyService {
     assertActorCan(actor, 'transfers.abandon', 'abandon a stuck transfer');
 
     const transfer = await this.transfers.findById(id);
-    if (!transfer) throw new NotFoundError('That transfer does not exist.');
+    const transferNotFound = () => new NotFoundError('That transfer does not exist.');
+    if (!transfer) throw transferNotFound();
 
     /*
      * SCOPE, checked against the transfer's owner. A scoped desk may only act
      * on their own clients, and an out-of-scope transfer must 404 exactly like
      * a missing one rather than confirming it exists.
      */
-    await this.visibility.assertVisible(transfer.userId, actor.clientScope);
+    await this.visibility.assertVisible(transfer.userId, actor.clientScope, transferNotFound);
 
     /*
      * Refused unless it is genuinely stuck. `fail` already refuses a
@@ -1813,7 +1817,12 @@ export class AdminMoneyService {
    */
   async resolveAttention(id: string, actor: AuthenticatedAdmin, note: string) {
     const payment = await this.transactions.getById(id);
-    await this.visibility.assertVisible(payment.userId, actor.clientScope);
+    // `getById`'s own answer for a missing transaction, so the two cannot differ.
+    await this.visibility.assertVisible(
+      payment.userId,
+      actor.clientScope,
+      () => new NotFoundError('Transaction not found.'),
+    );
     assertActorCan(
       actor,
       payment.direction === 'deposit' ? 'deposits.approve' : 'withdrawals.settle',

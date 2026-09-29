@@ -3,6 +3,9 @@ import { sql } from 'drizzle-orm';
 import { ConfigService } from '@nestjs/config';
 import { KycService } from '../src/modules/compliance/kyc.service';
 import { ClientProfileService } from '../src/modules/profile/client-profile.service';
+import { KycIdentityReview } from '../src/modules/compliance/kyc-identity-review';
+import { ClientIdentityService } from '../src/modules/client-identity/client-identity.service';
+import { ClientIdentityStore } from '../src/store/client-identity.store';
 import { TransactionsService } from '../src/modules/payments/transactions.service';
 import { TransfersService } from '../src/modules/payments/transfers.service';
 import { WalletService } from '../src/modules/wallet/wallet.service';
@@ -13,7 +16,6 @@ import { KycStore } from '../src/store/kyc.store';
 import { UsersStore } from '../src/store/users.store';
 import { AdminsStore } from '../src/store/admins.store';
 import { KycConfigStore } from '../src/store/kyc-config.store';
-import { StoredObjectsStore } from '../src/store/stored-objects.store';
 import { auditStubAs } from './audit-stub';
 import { AuditLogStore } from '../src/store/audit-log.store';
 import type { EmailService } from '../src/modules/email/email.service';
@@ -125,7 +127,7 @@ beforeAll(async () => {
   kyc = new KycService(
     kycEmail,
     storedFilesStub(),
-    new KycStore(db, new StoredObjectsStore(db)),
+    new KycStore(db),
     new UsersStore(db),
     new KycConfigStore(db),
     db,
@@ -138,8 +140,12 @@ beforeAll(async () => {
       db,
       new UsersStore(db),
       new AuditLogStore(db),
-      new KycStore(db, new StoredObjectsStore(db)),
+      // The review's state, through the port the KYC layer provides.
+      new KycIdentityReview(new KycStore(db)),
     ),
+    // The client's identity record (0151), on the real tables: every decision
+    // here is recorded there in the same transaction.
+    new ClientIdentityService(new ClientIdentityStore(db)),
   );
   const { rows } = await ctx.db.execute<{ id: string }>(sql`
     INSERT INTO admins (email, password_hash, name, role, permissions)
@@ -170,8 +176,8 @@ let ADMIN_ID = '';
 let OTHER_ADMIN_ID = '';
 
 /** A client with a funded wallet and a KYC submission waiting for a decision. */
-async function makeClientAwaitingReview(email: string): Promise<string> {
-  const { rows } = await ctx.db.execute<{ id: string }>(sql`
+async function makeClientAwaitingReview(email: string): Promise<number> {
+  const { rows } = await ctx.db.execute<{ id: number }>(sql`
     INSERT INTO users (email, password_hash, first_name, last_name, verification_level, email_verified)
     VALUES (${email}, 'x', 'Gate', 'Subject', 0, true)
     RETURNING id
@@ -192,7 +198,7 @@ async function makeClientAwaitingReview(email: string): Promise<string> {
   return userId;
 }
 
-const withdraw = (userId: string) =>
+const withdraw = (userId: number) =>
   transactions.requestWithdrawal({
     userId,
     currency: 'USD',
@@ -201,14 +207,14 @@ const withdraw = (userId: string) =>
     methodKey: 'whish',
   });
 
-async function levelOf(userId: string): Promise<number> {
+async function levelOf(userId: number): Promise<number> {
   const { rows } = await ctx.db.execute<{ verification_level: number }>(
     sql`SELECT verification_level FROM users WHERE id = ${userId}`,
   );
   return Number(rows[0].verification_level);
 }
 
-async function statusOf(userId: string): Promise<string> {
+async function statusOf(userId: number): Promise<string> {
   const { rows } = await ctx.db.execute<{ status: string }>(
     sql`SELECT status FROM kyc_submissions WHERE user_id = ${userId}`,
   );
@@ -257,7 +263,7 @@ describe('the KYC gate on wallet-to-account transfers — the SECOND door', () =
    * hidden — without it, "level 0 throws" would be satisfied by a gate that
    * refuses everybody.
    */
-  const transfer = (userId: string) =>
+  const transfer = (userId: number) =>
     transfers.request({
       userId,
       tradingAccountId: '00000000-0000-4000-8000-0000000000ff',
@@ -451,7 +457,12 @@ describe('a rejection AFTER a mistaken approval', () => {
     await ctx.db.execute(
       sql`UPDATE kyc_submissions SET status = 'approved' WHERE user_id = ${userId}`,
     );
-    await ctx.db.execute(sql`UPDATE users SET verification_level = 1 WHERE id = ${userId}`);
+    // Staged by hand: since 0153 a client is verified only by a decision, so
+    // this needs the record's escape.
+    await ctx.db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT set_config('oxshare.identity_maintenance', 'on', true)`);
+      await tx.execute(sql`UPDATE users SET verification_level = 1 WHERE id = ${userId}`);
+    });
     await ctx.db.execute(
       sql`UPDATE kyc_submissions SET status = 'not_started' WHERE user_id = ${userId}`,
     );

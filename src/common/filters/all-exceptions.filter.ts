@@ -15,7 +15,9 @@ import {
   AccountNameTakenError,
   ConflictError,
   KycCorrectionRefusedError,
+  TagChangeLeavesScopeError,
   KycConfigStaleError,
+  KycBuilderOutdatedError,
   ReferralCodeUnknownError,
   ReferralPartnerInactiveError,
   ReferralSelfError,
@@ -67,11 +69,15 @@ const DOMAIN_STATUS = new Map<new (...args: never[]) => DomainError, HttpStatus>
   [EmailNotVerifiedError, HttpStatus.FORBIDDEN],
   [KycNotVerifiedError, HttpStatus.FORBIDDEN],
   [ConflictError, HttpStatus.CONFLICT],
+  // A tag change that would hide the client from the admin making it: the
+  // console asks "hand them over?" and resends confirmed. See the class.
+  [TagChangeLeavesScopeError, HttpStatus.CONFLICT],
   // Its own code (KYC_CORRECTION_REFUSED) but the same status: the caller
   // branches on the code, and 409 is still what happened.
   [KycCorrectionRefusedError, HttpStatus.CONFLICT],
   // The KYC form changed under the operator's edit — reload, not a field to fix.
   [KycConfigStaleError, HttpStatus.CONFLICT],
+  [KycBuilderOutdatedError, HttpStatus.CONFLICT],
   // A field the verification has locked — nothing wrong with the value, the
   // record's state refuses it. Carries `fields`, like a validation error.
   [ProfileLockedError, HttpStatus.CONFLICT],
@@ -190,7 +196,19 @@ export class AllExceptionsFilter implements ExceptionFilter {
     const requestId = request.id ?? 'unknown';
 
     const classified = this.classify(exception);
-    const { status, code, fields } = classified;
+    const { status, fields } = classified;
+    /*
+     * A 404 from NO ROUTE is a different fact from a 404 from a route: "this
+     * endpoint does not exist" (a frontend ahead of its API) versus "this
+     * record does not exist — or is not yours to see". The consoles rendered
+     * both as "endpoint not built yet", so a scoped admin following a link to
+     * a client outside their territory was told the feature was missing.
+     * Express sets `req.route` only when a route matched.
+     */
+    const code =
+      status === HttpStatus.NOT_FOUND && (request as { route?: unknown }).route === undefined
+        ? 'ROUTE_NOT_FOUND'
+        : classified.code;
     /*
      * ── A RATE LIMIT IS THE ONE ERROR ORDINARY USERS ACTUALLY SEE ───────────
      *

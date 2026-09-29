@@ -6,7 +6,7 @@ import {
   IsISO8601,
   IsOptional,
   IsString,
-  IsUUID,
+  Matches,
   Max,
   MaxLength,
   Min,
@@ -109,8 +109,16 @@ export class AdminNotificationsReadSubjectDto {
   @IsIn(NOTIFICATION_SUBJECT_KINDS)
   subjectKind!: NotificationSubjectKind;
 
-  @ApiProperty({ description: "The item's id — for a KYC task, the client's id." })
-  @IsUUID()
+  @ApiProperty({
+    description:
+      "The item's id — for a KYC task the client's Portal ID, for any other item the record's uuid.",
+  })
+  // Either shape: a KYC task's subject is the client (a Portal ID since 0159), every other
+  // subject a record's uuid. The update matches the reader's own rows by the exact id, so a
+  // well-formed id of the wrong kind marks nothing.
+  @Matches(/^(?:[1-9][0-9]{0,9}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i, {
+    message: "subjectId must be a client's Portal ID or a record's uuid",
+  })
   subjectId!: string;
 }
 

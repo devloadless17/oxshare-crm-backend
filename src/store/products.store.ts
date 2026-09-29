@@ -428,7 +428,7 @@ export class ProductsStore {
    * partner has none assigned. All three mean "no agency narrows this", and the
    * caller offers the full catalogue.
    */
-  async agencyForClient(userId: string): Promise<string | null> {
+  async agencyForClient(userId: number): Promise<string | null> {
     const [row] = await this.db
       .select({ agencyId: ibAccounts.agencyId })
       .from(users)
@@ -458,7 +458,7 @@ export class ProductsStore {
    * its open accounts trading and stops being sold, which is the same rule a
    * disabled currency and a disabled IB level follow.
    */
-  async offeredTo(userId: string, environment: 'live' | 'demo'): Promise<OfferedGroup[]> {
+  async offeredTo(userId: number, environment: 'live' | 'demo'): Promise<OfferedGroup[]> {
     const agencyId = environment === 'live' ? await this.agencyForClient(userId) : null;
 
     const rows = await this.db

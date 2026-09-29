@@ -61,12 +61,12 @@ import { EmailService } from '../src/modules/email/email.service';
 const ADMIN = { email: 'kyc-correct-admin@oxshare.com', password: 'admin-password-123' };
 const REVIEWER = { email: 'kyc-correct-reviewer@oxshare.com', password: 'admin-password-123' };
 
-const ROUTE = (id: string) => `/v1/admin/kyc/${id}/personal-info`;
+const ROUTE = (id: number) => `/v1/admin/kyc/${id}/personal-info`;
 /** Every correction of a verified record says why (the owner's ruling, 26 Sep 2026). */
 const REASON = 'Typed wrongly at registration; the passport reads otherwise.';
 
 let ctx: HttpTestContext;
-let userId: string;
+let userId: number;
 
 const ORIGINAL = {
   firstName: 'Layla',
@@ -289,7 +289,7 @@ describe('correcting an approved submission', () => {
           details: auditLog.details,
         })
         .from(auditLog)
-        .where(eq(auditLog.subjectId, userId));
+        .where(eq(auditLog.subjectId, String(userId)));
       if (rows.length === 0) await new Promise((r) => setTimeout(r, 50));
     }
 
@@ -453,16 +453,67 @@ describe('what the route refuses', () => {
 
   it('refuses a correction with no reason — a verified record never changes silently', async () => {
     const session = await actingAs(ctx, 'admin', ADMIN);
-    for (const body of [{ lastName: 'Smith' }, { reason: 'typo', lastName: 'Smith' }]) {
+    for (const body of [
+      { lastName: 'Smith' },
+      { reason: '', lastName: 'Smith' },
+      // Trimmed first: a reason of spaces is still no reason.
+      { reason: '   ', lastName: 'Smith' },
+    ]) {
       const res = await session.patch(ROUTE(userId)).send(body);
       expect(res.status, `${JSON.stringify(body)} answered ${res.status}`).toBe(400);
     }
     expect(await profile()).toEqual(ORIGINAL);
   });
 
+  /*
+   * Reported 28 Sep 2026: a ten-character floor made a reviewer pad a complete
+   * reason ("Typo") before Save would work. A reason must EXIST; how long it
+   * is, is the reviewer's call.
+   */
+  it('takes a SHORT reason — what matters is that there is one', async () => {
+    const session = await actingAs(ctx, 'admin', ADMIN);
+    const res = await session.patch(ROUTE(userId)).send({ reason: 'Typo', lastName: 'Smith' });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect((await profile())['lastName']).toBe('Smith');
+  });
+
   it('refuses an empty body rather than logging a correction that changed nothing', async () => {
     const session = await actingAs(ctx, 'admin', ADMIN);
     const res = await session.patch(ROUTE(userId)).send({ reason: REASON });
     expect(res.status).toBe(400);
+  });
+});
+
+describe('what a correction may CLEAR follows the requirements the client was verified under', () => {
+  it('refuses clearing what they required, clears what the form left optional (Phase 2)', async () => {
+    const session = await actingAs(ctx, 'admin', ADMIN);
+
+    // No requirements on record: an approval from before 0158, judged by the fixed tier.
+    const legacy = await session.patch(ROUTE(userId)).send({ reason: REASON, address: '' });
+    expect(legacy.status, JSON.stringify(legacy.body)).toBe(400);
+    expect((await profile()).address).toBe(ORIGINAL.address);
+
+    // Verified under a form that asked for the address without requiring it.
+    await ctx.db.db
+      .update(kycSubmissions)
+      .set({
+        formPolicy: {
+          steps: [],
+          identity: [
+            { name: 'address', required: false },
+            { name: 'city', required: true },
+          ],
+        },
+      })
+      .where(eq(kycSubmissions.userId, userId));
+
+    const cleared = await session.patch(ROUTE(userId)).send({ reason: REASON, address: '' });
+    expect(cleared.status, JSON.stringify(cleared.body)).toBe(200);
+    expect((await profile()).address).toBeNull();
+
+    const refused = await session.patch(ROUTE(userId)).send({ reason: REASON, city: '' });
+    expect(refused.status).toBe(400);
+    expect(JSON.stringify(refused.body)).toMatch(/city is required/i);
+    expect((await profile()).city).toBe(ORIGINAL.city);
   });
 });

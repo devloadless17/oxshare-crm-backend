@@ -1,9 +1,21 @@
-import { and, asc, eq, inArray, isNull, ne, or, sql, SQL, type SQLWrapper } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  eq,
+  getTableColumns,
+  inArray,
+  isNull,
+  ne,
+  or,
+  sql,
+  SQL,
+  type SQLWrapper,
+} from 'drizzle-orm';
+import type { FormPolicy } from '../common/kyc/identity-core';
 import { clientIdentitySearch } from './users.store';
 import { Inject, Injectable } from '@nestjs/common';
 import { orderTerms, type SortOrder } from '../common/sorting';
 import { DRIZZLE_DB } from '../database/database.module';
-import { StoredObjectsStore } from './stored-objects.store';
 import type { Db, Executor } from '../database/db';
 import { kycSubmissionAttempts, kycSubmissions, users } from '../database/schema';
 import {
@@ -85,21 +97,16 @@ export interface DocumentInfo {
   docType?: string;
   frontFilePath?: string;
   backFilePath?: string;
-  frontFileName?: string;
-  backFileName?: string;
 }
 
 export interface SelfieInfo {
   filePath?: string;
-  fileName?: string;
 }
 
 export interface AddressInfo {
   docType?: string;
   filePath?: string;
-  fileName?: string;
   page2FilePath?: string;
-  page2FileName?: string;
 }
 
 /**
@@ -122,7 +129,7 @@ export interface KycAttempt {
    * Always an object — the column is `NOT NULL DEFAULT '{}'` (migration 0130) —
    * so consumers never branch on null, only on whether a slug is present.
    */
-  stepData: Record<string, Record<string, string | { filePath: string; fileName: string }>>;
+  stepData: Record<string, Record<string, string | { filePath: string }>>;
   rejectionReason?: string;
   rejectedFields?: string[];
   submittedAt?: Date;
@@ -132,7 +139,7 @@ export interface KycAttempt {
 }
 
 export interface KycSubmission {
-  userId: string;
+  userId: number;
   status: KycStatus;
   rejectionReason?: string;
   rejectedFields?: string[];
@@ -149,7 +156,7 @@ export interface KycSubmission {
    * Always an object — the column is `NOT NULL DEFAULT '{}'` (migration 0130) —
    * so consumers never branch on null, only on whether a slug is present.
    */
-  stepData: Record<string, Record<string, string | { filePath: string; fileName: string }>>;
+  stepData: Record<string, Record<string, string | { filePath: string }>>;
   /**
    * When a reviewer returned an APPROVED verification for the client to redo
    * (0147). Cleared by the approval that follows.
@@ -161,6 +168,8 @@ export interface KycSubmission {
    * view of their own submission.
    */
   formSnapshot?: KycFormSnapshot;
+  /** The requirements in force when the client submitted (0158) — what approval re-checks. */
+  formPolicy?: FormPolicy;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -173,6 +182,46 @@ export type KycFormSnapshot = {
 }[];
 
 type Row = typeof kycSubmissions.$inferSelect;
+type AttemptRow = typeof kycSubmissionAttempts.$inferSelect;
+
+/**
+ * A submission as READ (identity-core plan, slice 6): the platform's three
+ * documents come from the client's identity RECORD — the version each pointer
+ * names, rebuilt in the KYC shape by `identity_evidence` (0152) — not from the
+ * columns the KYC layer still writes. Those are written until the contract
+ * slice drops them, and read by nothing but the adoption routine.
+ *
+ * The same shape, so no reader changes, with each path in its one spelling
+ * (`uploads/kyc/<name>`). The writes that RETURN a row (`update`,
+ * `transition`) still hand back what they wrote: the record catches up with
+ * `recordFromKyc` in the same transaction, after them. A broker's own uploads
+ * (`stepData`) are still read from the answers — no pointer names their
+ * versions yet; the contract slice gives them one.
+ */
+const submissionRead = {
+  ...getTableColumns(kycSubmissions),
+  document: sql<
+    Row['document']
+  >`identity_evidence(${kycSubmissions.identityDocumentId}, 'identity')`,
+  selfie: sql<Row['selfie']>`identity_evidence(${kycSubmissions.selfieDocumentId}, 'selfie')`,
+  addressProof: sql<
+    Row['addressProof']
+  >`identity_evidence(${kycSubmissions.addressDocumentId}, 'address')`,
+};
+
+/** An archived attempt as READ — its evidence from the record, as `submissionRead`. */
+const attemptRead = {
+  ...getTableColumns(kycSubmissionAttempts),
+  document: sql<
+    AttemptRow['document']
+  >`identity_evidence(${kycSubmissionAttempts.identityDocumentId}, 'identity')`,
+  selfie: sql<
+    AttemptRow['selfie']
+  >`identity_evidence(${kycSubmissionAttempts.selfieDocumentId}, 'selfie')`,
+  addressProof: sql<
+    AttemptRow['addressProof']
+  >`identity_evidence(${kycSubmissionAttempts.addressDocumentId}, 'address')`,
+};
 
 const toSubmission = (r: Row): KycSubmission => ({
   userId: r.userId,
@@ -189,6 +238,7 @@ const toSubmission = (r: Row): KycSubmission => ({
   stepData: r.stepData ?? {},
   reverificationRequestedAt: r.reverificationRequestedAt ?? undefined,
   formSnapshot: r.formSnapshot ?? undefined,
+  formPolicy: r.formPolicy ?? undefined,
   createdAt: r.createdAt,
   updatedAt: r.updatedAt,
 });
@@ -213,6 +263,7 @@ const toColumns = (
     ['stepData', 'stepData'],
     ['reverificationRequestedAt', 'reverificationRequestedAt'],
     ['formSnapshot', 'formSnapshot'],
+    ['formPolicy', 'formPolicy'],
   ];
   /*
    * `key in patch`, not a truthiness test: a key present with `null` MEANS
@@ -238,12 +289,9 @@ export function stepDataFilePaths(stepData: KycSubmission['stepData'] | undefine
 
 @Injectable()
 export class KycStore {
-  constructor(
-    @Inject(DRIZZLE_DB) private readonly db: Db,
-    private readonly storedObjects: StoredObjectsStore,
-  ) {}
+  constructor(@Inject(DRIZZLE_DB) private readonly db: Db) {}
 
-  async getOrCreate(userId: string): Promise<KycSubmission> {
+  async getOrCreate(userId: number): Promise<KycSubmission> {
     const existing = await this.findByUserId(userId);
     if (existing) return existing;
     const [row] = await this.db
@@ -255,9 +303,9 @@ export class KycStore {
     return row ? toSubmission(row) : (await this.findByUserId(userId))!;
   }
 
-  async findByUserId(userId: string): Promise<KycSubmission | undefined> {
+  async findByUserId(userId: number): Promise<KycSubmission | undefined> {
     const [row] = await this.db
-      .select()
+      .select(submissionRead)
       .from(kycSubmissions)
       .where(eq(kycSubmissions.userId, userId))
       .limit(1);
@@ -273,9 +321,9 @@ export class KycStore {
    * read the column before the other wrote, and the second write erased the
    * first page. The lock makes the second read wait for the first write.
    */
-  async lockForUpdate(userId: string, executor: Executor): Promise<KycSubmission | undefined> {
+  async lockForUpdate(userId: number, executor: Executor): Promise<KycSubmission | undefined> {
     const [row] = await executor
-      .select()
+      .select(submissionRead)
       .from(kycSubmissions)
       .where(eq(kycSubmissions.userId, userId))
       .for('update')
@@ -284,7 +332,7 @@ export class KycStore {
   }
 
   async update(
-    userId: string,
+    userId: number,
     patch: Partial<KycSubmission>,
     executor?: Executor,
   ): Promise<KycSubmission> {
@@ -334,7 +382,7 @@ export class KycStore {
    *   row that is once again unclaimed.
    */
   async transition(
-    userId: string,
+    userId: number,
     from: readonly KycStatus[],
     patch: Partial<Omit<KycSubmission, 'reviewedBy'>> & { reviewedBy?: string | null },
     executor?: Executor,
@@ -404,7 +452,7 @@ export class KycStore {
   }
 
   async findAll(): Promise<KycSubmission[]> {
-    const rows = await this.db.select().from(kycSubmissions);
+    const rows = await this.db.select(submissionRead).from(kycSubmissions);
     return rows.map(toSubmission);
   }
 
@@ -520,7 +568,7 @@ export class KycStore {
           country: users.country,
           user: {
             id: users.id,
-            portalId: users.portalId,
+            portalId: users.id,
             email: users.email,
             firstName: users.firstName,
             lastName: users.lastName,
@@ -627,7 +675,7 @@ export class KycStore {
 
   async findByStatus(status: KycStatus): Promise<KycSubmission[]> {
     const rows = await this.db
-      .select()
+      .select(submissionRead)
       .from(kycSubmissions)
       .where(eq(kycSubmissions.status, status));
     return rows.map(toSubmission);
@@ -647,7 +695,16 @@ export class KycStore {
    * same attempt twice is a no-op, not an error, because losing a decision to a
    * duplicate-key failure would be far worse than a missing duplicate.
    */
-  async archiveAttempt(submission: KycSubmission, executor?: Executor): Promise<void> {
+  async archiveAttempt(
+    submission: KycSubmission,
+    executor?: Executor,
+    options: {
+      /** A re-verification request, archived as what it is rather than a plain rejection. */
+      reverification?: boolean;
+      /** The configured reason the reviewer chose, kept beside the words the client read. */
+      reasonId?: string;
+    } = {},
+  ): Promise<void> {
     await (executor ?? this.db)
       .insert(kycSubmissionAttempts)
       .values({
@@ -670,14 +727,18 @@ export class KycStore {
         submittedAt: submission.submittedAt ?? null,
         reviewedAt: submission.reviewedAt ?? null,
         reviewedBy: submission.reviewedBy ?? null,
+        reverification: options.reverification ?? false,
+        reasonId: options.reasonId ?? null,
+        // What the broker's own steps asked, kept with the attempt it labels.
+        formSnapshot: submission.formSnapshot ?? null,
       })
       .onConflictDoNothing();
   }
 
   /** This client's decided attempts, oldest first. */
-  async listAttempts(userId: string): Promise<KycAttempt[]> {
+  async listAttempts(userId: number): Promise<KycAttempt[]> {
     const rows = await this.db
-      .select()
+      .select(attemptRead)
       .from(kycSubmissionAttempts)
       .where(eq(kycSubmissionAttempts.userId, userId))
       .orderBy(asc(kycSubmissionAttempts.attemptNo));
@@ -699,73 +760,6 @@ export class KycStore {
   }
 
   /**
-   * The client a KYC document belongs to, live submission or archived attempt.
-   *
-   * Exists so the uploads controller can apply the CLIENT SCOPE to an admin's
-   * document read. That route takes a filename, not a client id, so there was
-   * nothing to scope against: a scoped administrator who held a filename from a
-   * screenshot, a stale tab or a shared ticket could fetch the passport of a
-   * client they are not allowed to see, and the read would even be audited as
-   * legitimate.
-   *
-   * Matched with a jsonb containment test rather than by loading submissions and
-   * comparing in JavaScript — the filename is caller-supplied and the answer
-   * decides whether PII is served, so the comparison belongs in the query where
-   * a later code path cannot skip it.
-   *
-   * Both tables are searched, and the second is not optional: an archived
-   * attempt keeps the documents it was decided on, so a rejected-and-replaced
-   * passport is still that client's. Checking only the live row would make an
-   * out-of-scope admin's read of a superseded document fall through to
-   * "unowned" and be allowed.
-   */
-  async ownerOfDocument(fileName: string): Promise<string | undefined> {
-    /*
-     * The registry first — an indexed lookup on `stored_objects.storage_key`.
-     *
-     * The scan below is what this replaces: three JSONB columns cast to text and
-     * matched with a leading-wildcard ILIKE, twice, on a route that serves identity
-     * documents. It is correct and it does not scale, and it was the only reverse
-     * lookup the system had.
-     *
-     * It is KEPT as the fallback rather than deleted, because there is no backfill
-     * migration: documents uploaded before `stored_objects` existed have no row, and
-     * the client-scope check that calls this must keep working for them. A miss here
-     * means "not in the registry", not "not ours".
-     */
-    const registered = await this.storedObjects.ownerOfFilename(fileName);
-    if (registered) return registered;
-
-    const needle = `%${fileName}%`;
-
-    const [live] = await this.db
-      .select({ userId: kycSubmissions.userId })
-      .from(kycSubmissions)
-      .where(
-        or(
-          sql`${kycSubmissions.document}::text ILIKE ${needle}`,
-          sql`${kycSubmissions.selfie}::text ILIKE ${needle}`,
-          sql`${kycSubmissions.addressProof}::text ILIKE ${needle}`,
-        ),
-      )
-      .limit(1);
-    if (live) return live.userId;
-
-    const [archived] = await this.db
-      .select({ userId: kycSubmissionAttempts.userId })
-      .from(kycSubmissionAttempts)
-      .where(
-        or(
-          sql`${kycSubmissionAttempts.document}::text ILIKE ${needle}`,
-          sql`${kycSubmissionAttempts.selfie}::text ILIKE ${needle}`,
-          sql`${kycSubmissionAttempts.addressProof}::text ILIKE ${needle}`,
-        ),
-      )
-      .limit(1);
-    return archived?.userId;
-  }
-
-  /**
    * Every document path this client has ever had archived.
    *
    * Two callers need it and both would otherwise be wrong: `resetKyc` must not
@@ -773,7 +767,7 @@ export class KycStore {
    * not an orphan), and the uploads controller must let a client fetch a
    * document from their own history rather than 403 them on their own passport.
    */
-  async archivedDocumentPaths(userId: string): Promise<string[]> {
+  async archivedDocumentPaths(userId: number): Promise<string[]> {
     const attempts = await this.listAttempts(userId);
     return attempts.flatMap((a) =>
       [
@@ -796,7 +790,7 @@ export class KycStore {
   // REMOVED: `clearAll()` — an unguarded `DELETE FROM kyc_submissions` with no
   // caller once `KycService.resetAllKyc()` was deleted. See the note there.
 
-  async resetUser(userId: string): Promise<void> {
-    await this.db.delete(kycSubmissions).where(eq(kycSubmissions.userId, userId));
+  async resetUser(userId: number, executor: Executor = this.db): Promise<void> {
+    await executor.delete(kycSubmissions).where(eq(kycSubmissions.userId, userId));
   }
 }

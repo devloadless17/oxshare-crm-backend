@@ -6,6 +6,7 @@ import {
   eq,
   getTableColumns,
   inArray,
+  isNotNull,
   isNull,
   or,
   sql,
@@ -24,135 +25,171 @@ import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db, Executor } from '../database/db';
 import { auditLog, users } from '../database/schema';
-import { currentClientIp } from '../common/logging/request-context';
+import { currentClientIp, currentFieldMask } from '../common/logging/request-context';
 import { clientIdByPortalId, escapeLike, parsePortalId } from './users.store';
+import { HIDDEN_TEXT } from '../common/security/mask-by-shape';
 
 /**
- * Subject types whose `subjectId` is itself a CLIENT's user id — the rows that
- * name a client in the SUBJECT and therefore follow the reader's scope:
- * `'user'` (tag assign/unassign, status changes), `'kyc_submission'` (keyed on
- * the client's own id), and `'ib_account'` (a partner IS a user, so
- * ib.approve / level_change / parent_change / suspend all carry the client's
- * id as the subject). `'kyc_document'` is deliberately NOT here: its subject is
- * the file's random uuid, which names no one.
+ * The subject types whose rows concern ONE client. `audit_log_client_of` (0156)
+ * resolves that client for each and the insert trigger stamps it into
+ * `audit_log.client_id`, which the reader's client scope filters on (D-54).
  *
- * ⚠️ This is only HALF of "which rows name a client". Money and trading rows
- * carry the client's id in `details`, not the subject — see
- * `auditRowClientId()`. Adding a type here without teaching that function is
- * how the D-54 fix leaked money-audit rows to scoped readers (13 Aug walk).
+ * A row of one of these types whose client could NOT be resolved keeps a NULL
+ * `client_id` and is hidden from every scoped reader — a hidden row, never a
+ * leaked one. `test/audit-scope-client-id.spec.ts` writes one row of each type
+ * and fails if the database does not resolve it, so this list and the SQL
+ * function cannot drift apart.
  */
-export const CLIENT_SUBJECT_TYPES = ['user', 'kyc_submission', 'ib_account'] as const;
-
-/** A Postgres regex literal matching the canonical uuid shape. */
-const UUID_SHAPE = sql`'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'`;
+export const CLIENT_SUBJECT_TYPES = [
+  'user',
+  'kyc_submission',
+  'ib_account',
+  'trading_account',
+  'transaction',
+  'wallet',
+  'ib_application',
+  'transfer',
+  'ib_accrual',
+  'kyc_document',
+  'deposit_proof',
+] as const;
 
 /**
- * The CLIENT this audit row concerns, wherever the id lives — or NULL when it
- * concerns no client (a role edit, a settings change, an admin action).
+ * The subject types whose rows concern NO client: administrators, roles,
+ * settings, catalogues and whole-list exports. For these alone a NULL
+ * `client_id` is trusted to mean "about nobody" and the row is shown to every
+ * `audit.view` holder.
  *
- * The trail is scoped on THIS expression, not on `subjectId` alone, because a
- * row names its client in one of three places:
- *   - the SUBJECT, for `CLIENT_SUBJECT_TYPES` (uuid-shape-guarded);
- *   - `details.clientId` OR `details.userId`, for `trading_account` rows — the
- *     subject is the MT5 account uuid, and the three writers of that type do
- *     not agree on which key they use;
- *   - `details.userId`, for `transaction`, `wallet`, `ib_application` and
- *     `transfer` rows (the subject is the transaction / wallet / application /
- *     transfer uuid).
- * Every branch guards the uuid shape, so a malformed value yields NULL and the
- * row FAILS CLOSED (hidden from a scoped reader) rather than aborting the query
- * — the recoverable way to be wrong about the record that must not leak.
+ * `route` (a refused request) is here because the trigger reads the request
+ * line: a line naming a client by uuid or Portal ID is stamped with that client
+ * and scoped like any client row; a line naming none is about nobody.
+ *
+ * Every subject a writer can pass is in exactly one of the two lists —
+ * `AuditSubjectType` is their union and `record()` takes nothing else, so a new
+ * kind of row is a compile error until somebody decides which it is. Before
+ * this, an unlisted type was shown to everyone, which is how every KYC
+ * document read and every commission reversal reached administrators holding
+ * no territory over the client.
  */
-function auditRowClientId(): SQL {
-  /*
-   * ── WHICH ROWS NAME A CLIENT, AND THE TWO WAYS THIS WAS WRONG ───────────
-   *
-   * A type missing from this expression resolves to NULL, and the scope filter
-   * KEEPS a NULL row for everyone — so an omission here is a leak, not a
-   * hidden row. Both of the following were live, and both were measured on the
-   * development database before this was changed.
-   *
-   * 1. `ib_application` and `transfer` name a client in `details.userId` and
-   *    were not listed at all: 7 `ib.reject` rows carrying a client id and the
-   *    reviewer's free-text reason, and 1 `transfer.abandon` row carrying an
-   *    amount, currency and direction, all shown to desks holding no territory
-   *    over those clients. This is precisely the failure the file note above
-   *    warns about — "adding a type here without teaching that function is how
-   *    the D-54 fix leaked money-audit rows".
-   *
-   * 2. THREE writers disagree about the key on `trading_account`.
-   *    `trading.account_create` writes `clientId`; `trading.deposit` and
-   *    `trading.withdraw` write `userId`. Only the first was read, so every
-   *    hand-funding and hand-debiting of a trading account leaked the same way.
-   *    COALESCE reads both, which closes it without editing three writers in
-   *    two modules AND without stranding the rows already written under
-   *    whichever key their writer happened to choose.
-   */
-  return sql`(CASE
-    WHEN ${auditLog.subjectType} IN ('user', 'kyc_submission', 'ib_account')
-         AND ${auditLog.subjectId} ~* ${UUID_SHAPE} THEN ${auditLog.subjectId}::uuid
-    WHEN ${auditLog.subjectType} = 'trading_account'
-         AND COALESCE(${auditLog.details}->>'clientId', ${auditLog.details}->>'userId') ~* ${UUID_SHAPE}
-         THEN COALESCE(${auditLog.details}->>'clientId', ${auditLog.details}->>'userId')::uuid
-    WHEN ${auditLog.subjectType} IN ('transaction', 'wallet', 'ib_application', 'transfer')
-         AND ${auditLog.details}->>'userId' ~* ${UUID_SHAPE}
-         THEN (${auditLog.details}->>'userId')::uuid
-  END)`;
-}
+export const NON_CLIENT_SUBJECT_TYPES = [
+  'admin',
+  'admin_invite',
+  'agencies',
+  'api_key',
+  'app_settings',
+  'audit_log',
+  'client_list',
+  'client_tag',
+  'currency',
+  'external_links',
+  'ib_applications',
+  'ib_commission_type',
+  'ib_level',
+  'ib_partners',
+  'ip_allowlist',
+  'kyc_config',
+  'kyc_queue',
+  'leverages',
+  'payment_method',
+  'platform_link',
+  'rejection_reason',
+  'role',
+  'route',
+  'trading_account_list',
+  'trading_products',
+  'transaction_list',
+  'wallet_list',
+  'withdrawal_method',
+  'withdrawal_queue',
+] as const;
 
-const UUID_TEXT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export type AuditSubjectType =
+  (typeof CLIENT_SUBJECT_TYPES)[number] | (typeof NON_CLIENT_SUBJECT_TYPES)[number];
 
-/** Every uuid-shaped string anywhere inside a details value, lower-cased. */
-export function collectUuids(value: unknown, into: Set<string>): void {
-  if (typeof value === 'string') {
-    if (UUID_TEXT.test(value)) into.add(value.toLowerCase());
-  } else if (Array.isArray(value)) {
-    for (const item of value) collectUuids(item, into);
-  } else if (value !== null && typeof value === 'object') {
-    for (const item of Object.values(value)) collectUuids(item, into);
-  }
+/**
+ * What a scoped reader is shown in place of a client outside their territory,
+ * wherever a row names one beside the client it is about — `details`, a
+ * request line, a client actor. The fact, never the identity (R1/R2): not the
+ * uuid, not the Portal ID, not the email.
+ */
+export const OUTSIDE_TERRITORY = '[client outside your territory]';
+
+/** A client actor's email or IP, for a role whose mask hides it (D-82). */
+export const HIDDEN_FROM_ROLE = HIDDEN_TEXT;
+
+/**
+ * Where an audit row's `details` names a CLIENT — by Portal ID since 0159.
+ *
+ * NAMED, not guessed. While a client id was a uuid its shape gave it away; a
+ * Portal ID is a number like a level, an attempt count or a page size, so the
+ * keys that carry one are listed: these at any depth on every action, plus
+ * `before`/`after` on the two actions whose change IS a client (a new parent,
+ * a new introducer) — on a level change the same two keys are levels.
+ */
+const CLIENT_ID_KEYS: ReadonlySet<string> = new Set([
+  'userId',
+  'clientId',
+  'clientUserId',
+  'ibUserId',
+  'parentIbUserId',
+  'ownerUserId',
+  'introducerId',
+  'referredByIbUserId',
+]);
+const CLIENT_CHANGE_ACTIONS: ReadonlySet<string> = new Set([
+  'ib.parent_change',
+  'client.referrer_set',
+]);
+
+/** Subject types whose `subject_id` IS the client's Portal ID. */
+const SUBJECT_IS_CLIENT: ReadonlySet<string> = new Set(['user', 'kyc_submission', 'ib_account']);
+
+/** A client id: a positive integer, or its digits. */
+function asClientId(value: unknown): number | undefined {
+  if (typeof value === 'number')
+    return Number.isSafeInteger(value) && value > 0 ? value : undefined;
+  if (typeof value === 'string' && /^[1-9][0-9]{0,9}$/.test(value)) return Number(value);
+  return undefined;
 }
 
 /**
- * A denied-route row's subject: the request line, e.g. `PATCH /v1/admin/clients/<id>`.
- * Our OWN path, so a client uuid inside it can be shown as the Portal ID
- * without falsifying anything — the Portal ID form is itself a valid request.
- * Nothing else is rewritten inside a string: a provider reference that happens
- * to embed a uuid is somebody else's identifier and must read exactly as they
- * issued it.
+ * `details` with every client id it names passed through `replace` — keys,
+ * nesting and every other value exactly as stored. Pure: the one definition
+ * both of collecting the ids and of hiding the ones a reader may not see.
  */
-const REQUEST_LINE = /^(GET|POST|PUT|PATCH|DELETE) \//;
-const UUID_ANYWHERE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
-
-/** Every uuid inside a request line, lower-cased — see `REQUEST_LINE`. */
-export function collectRequestLineUuids(subjectId: string, into: Set<string>): void {
-  if (!REQUEST_LINE.test(subjectId)) return;
-  for (const match of subjectId.matchAll(UUID_ANYWHERE)) into.add(match[0].toLowerCase());
-}
-
-/** A request line with each client uuid in it shown as that client's Portal ID. */
-export function requestLineWithPortalIds(
-  subjectId: string,
-  portalIdOf: ReadonlyMap<string, number>,
-): string {
-  if (!REQUEST_LINE.test(subjectId)) return subjectId;
-  return subjectId.replace(UUID_ANYWHERE, (id) => String(portalIdOf.get(id.toLowerCase()) ?? id));
+export function mapClientIdsInDetails(
+  action: string,
+  details: unknown,
+  replace: (id: number) => unknown,
+): unknown {
+  const changes = CLIENT_CHANGE_ACTIONS.has(action);
+  const walk = (value: unknown, key: string | undefined, depth: number): unknown => {
+    if (Array.isArray(value)) return value.map((item) => walk(item, key, depth + 1));
+    if (value !== null && typeof value === 'object') {
+      return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, walk(v, k, depth + 1)]));
+    }
+    const namesClient =
+      key !== undefined &&
+      (CLIENT_ID_KEYS.has(key) ||
+        (changes && depth === 1 && (key === 'before' || key === 'after')));
+    const id = namesClient ? asClientId(value) : undefined;
+    return id === undefined ? value : replace(id);
+  };
+  return walk(details, undefined, 0);
 }
 
 /**
- * A details value with every client uuid replaced by that client's Portal ID —
- * keys, nesting and every other value exactly as stored. Pure, so the rule is
- * one assertion away from a test.
+ * A refused request's line, e.g. `PATCH /v1/admin/clients/1000245/status`: the
+ * Portal ID after a client route names that client. Only there — a bare number
+ * elsewhere in a path is a level, a page, a login.
  */
-export function withPortalIds(value: unknown, portalIdOf: ReadonlyMap<string, number>): unknown {
-  if (typeof value === 'string') return portalIdOf.get(value.toLowerCase()) ?? value;
-  if (Array.isArray(value)) return value.map((item) => withPortalIds(item, portalIdOf));
-  if (value !== null && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [key, withPortalIds(item, portalIdOf)]),
-    );
-  }
-  return value;
+const CLIENT_IN_REQUEST_LINE =
+  /^((?:GET|POST|PUT|PATCH|DELETE) \/.*?\/(?:clients|kyc|partners)\/)([1-9][0-9]{0,9})(?=\/|\?|$)/;
+
+/** The client a request line names, if any. */
+export function clientIdInRequestLine(subjectId: string): number | undefined {
+  const match = CLIENT_IN_REQUEST_LINE.exec(subjectId);
+  return match ? Number(match[2]) : undefined;
 }
 
 /**
@@ -160,14 +197,11 @@ export function withPortalIds(value: unknown, portalIdOf: ReadonlyMap<string, nu
  * every row they performed. Exported so the planner test measures this
  * predicate rather than a copy of it.
  *
- * About: `auditRowClientId()`, the expression the scope filter uses, so "rows
- * about client X" means exactly what "rows a scoped reader may see because of
- * client X" means — nothing more, nothing less. Served by
- * `audit_log_client_id_idx` (0134), an index on that very expression.
- *
- * Performed: `actor_id` for a client actor (`audit_log_actor_idx`). Both
- * branches are on this one table, so Postgres can BitmapOr them, and the client
- * is resolved once, as an InitPlan (`clientIdByPortalId`).
+ * About: `client_id` (0156), the column the scope filter reads, so "rows about
+ * client X" means exactly what "rows a scoped reader may see because of client
+ * X" means. Served by `audit_log_client_id_idx`. Performed: `actor_id` for a
+ * client actor (`audit_log_actor_idx`). The client is resolved once, as an
+ * InitPlan (`clientIdByPortalId`).
  *
  * It does not widen what a scoped reader can learn: the scope predicate is
  * ANDed onto it in `findAll`, so an out-of-territory client's rows stay
@@ -176,7 +210,7 @@ export function withPortalIds(value: unknown, portalIdOf: ReadonlyMap<string, nu
  */
 export function auditClientSearch(portalId: number): SQL {
   const clientId = clientIdByPortalId(portalId);
-  return sql`(${auditRowClientId()} = ${clientId} OR (${auditLog.actorKind} = 'client' AND ${auditLog.actorId} = ${clientId}))`;
+  return sql`(${auditLog.clientId} = ${clientId} OR (${auditLog.actorKind} = 'client' AND ${auditLog.actorId} = ${String(portalId)}))`;
 }
 
 // D-21: admin action log — actor, action, subject, details, timestamp.
@@ -204,6 +238,28 @@ export interface AuditEntry {
   /** Where the action came from; absent for non-request work. */
   ipAddress?: string | null;
   createdAt: Date;
+}
+
+/**
+ * What a writer hands `record()`. The subject type is the closed union, so a
+ * new kind of row cannot be written until it is classified (see
+ * `NON_CLIENT_SUBJECT_TYPES`).
+ */
+export interface AuditWrite extends Omit<
+  AuditEntry,
+  'id' | 'createdAt' | 'subjectType' | 'subjectId' | 'actorId'
+> {
+  subjectType: AuditSubjectType;
+  /** An admin's uuid, or a client's Portal ID (0159) — stored as text. */
+  actorId: string | number;
+  /** The record's id, or a client's Portal ID — stored as text. */
+  subjectId: string | number;
+  /**
+   * The client this row concerns, when the writer knows it better than the
+   * row's own fields say. Absent, the insert trigger resolves it (0156) —
+   * which is what every writer relies on today.
+   */
+  clientId?: number;
 }
 
 /**
@@ -243,14 +299,11 @@ export class AuditLogStore {
    * at all. Omitted, it writes on the pool, which is what every non-money caller
    * wants. Same shape as the money services' `executor ?? this.db` (§6.2).
    */
-  async record(
-    data: Omit<AuditEntry, 'id' | 'createdAt'>,
-    executor?: Executor,
-  ): Promise<AuditEntry> {
+  async record(data: AuditWrite, executor?: Executor): Promise<AuditEntry> {
     const [row] = await (executor ?? this.db)
       .insert(auditLog)
       .values({
-        actorId: data.actorId,
+        actorId: String(data.actorId),
         actorEmail: data.actorEmail,
         /*
          * ⚠️ This line was MISSING while the interface above advertised the
@@ -264,12 +317,13 @@ export class AuditLogStore {
         actorKind: data.actorKind,
         action: data.action,
         subjectType: data.subjectType,
-        subjectId: data.subjectId,
+        subjectId: String(data.subjectId),
         details: data.details,
         // Read from the request scope rather than passed in, so every existing
         // call site records it without change. Null for anything not driven by
         // a request — a scheduled job, a migration, a console.
         ipAddress: data.ipAddress ?? currentClientIp() ?? null,
+        clientId: data.clientId,
       })
       .returning();
     return { ...row, details: row.details ?? undefined, ipAddress: row.ipAddress };
@@ -378,6 +432,17 @@ export class AuditLogStore {
     if (searchedPortalId !== undefined) {
       // A Portal ID: every row about that client, or performed by them.
       conditions.push(auditClientSearch(searchedPortalId));
+      if (filter.scope && !filter.scope.unrestricted) {
+        /*
+         * …and only a client the reader may see. The scope filter below hides
+         * rows ABOUT an outside client, but a visible row that client PERFORMED
+         * would still match the actor branch — confirming they exist and acted.
+         * An outside Portal ID must answer exactly like an unused one.
+         */
+        conditions.push(
+          clientScopePredicate(filter.scope, clientIdByPortalId(searchedPortalId)) ?? sql`false`,
+        );
+      }
     } else if (filter.q?.trim()) {
       /*
        * ⚠️ THE `::text` IS LOAD-BEARING, and leaving it out is how 0124 shipped
@@ -395,24 +460,35 @@ export class AuditLogStore {
       conditions.push(
         sql`(coalesce(${auditLog.actorEmail}, '')::text) ILIKE ${`%${escapeLike(filter.q.trim())}%`}`,
       );
+      // A CLIENT actor's email is client data: a role that hides it must not
+      // be able to spell it out by fragment through this search (D-82).
+      if (currentFieldMask().includes('client.email')) {
+        conditions.push(sql`${auditLog.actorKind} <> 'client'`);
+      }
     }
     if (filter.scope && !filter.scope.unrestricted) {
       /*
-       * Keep a row if it names no client, or if that client is inside the
-       * reader's territory. The predicate lives in the WHERE clause, never
-       * fetch-then-filter — the D-45 rule, for the D-45 reason — and it reads
-       * the client id from wherever the row keeps it (`auditRowClientId`), so
-       * money and trading rows scope the same as tag and KYC rows. The intake
-       * grant is honoured too: a row about an untagged client is visible to a
-       * reader who holds `sees_untriaged` (`clientScopePredicate` adds that
-       * branch), so completing a triage does not blank its own audit trail.
+       * Keep a row about a client inside the reader's territory (the intake
+       * grant included — completing a triage does not blank its own trail), or
+       * a row about NO client — and "no client" is believed only for the types
+       * declared to concern none. A client-type row whose client could not be
+       * resolved stays hidden: 0156 turned the wrong answer from a leak into a
+       * hidden row. In the WHERE clause, never fetch-then-filter (D-45).
        */
-      const rowClientId = auditRowClientId();
-      const inScope = clientScopePredicate(filter.scope, rowClientId);
-      // `inScope` is defined for a restricted scope, but keep the guard so a
-      // future unrestricted-with-tags shape cannot silently drop the NULL branch.
-      const scoped = inScope ? or(isNull(rowClientId), inScope) : undefined;
-      if (scoped) conditions.push(scoped);
+      conditions.push(
+        or(
+          and(
+            isNull(auditLog.clientId),
+            inArray(auditLog.subjectType, [...NON_CLIENT_SUBJECT_TYPES]),
+          ),
+          and(
+            isNotNull(auditLog.clientId),
+            // Defined for every restricted scope; `false` keeps a future shape
+            // that returns undefined from widening instead of narrowing.
+            clientScopePredicate(filter.scope, auditLog.clientId) ?? sql`false`,
+          ),
+        ) as SQL,
+      );
     }
     /*
      * Keyset seek — R-2.4. The audit log is append-only and grows forever, so it
@@ -463,16 +539,14 @@ export class AuditLogStore {
         ...getTableColumns(auditLog),
         cursorValue: sql<string>`${sortColumn}::text`,
         /*
-         * The Portal ID of the client this row concerns — resolved through
-         * `auditRowClientId()`, because a row names its client in one of three
-         * places and the subject id is only one of them. NULL for a row about
-         * no client (a role edit, a setting). A LEFT join on the primary key:
-         * one index probe per row of the page, and never a row lost.
+         * The Portal ID of the client this row concerns (`client_id`, 0156).
+         * NULL for a row about no client (a role edit, a setting). A LEFT join
+         * on the primary key: one index probe per row, and never a row lost.
          */
-        clientPortalId: users.portalId,
+        clientPortalId: users.id,
       })
       .from(auditLog)
-      .leftJoin(users, sql`${users.id} = ${auditRowClientId()}`)
+      .leftJoin(users, eq(users.id, auditLog.clientId))
       .where(where)
       .orderBy(orderBy(sortColumn), orderBy(auditLog.id))
       .limit(limit + 1)
@@ -484,7 +558,7 @@ export class AuditLogStore {
     // different ordering — `decodeCursor` refuses one that was, rather than
     // seeking to a meaningless position and returning the wrong rows silently.
     const page_ = buildCursorPage(
-      (await this.withClientPortalIds(rows)).map((r) => ({
+      (await this.withClientPortalIds(rows, filter.scope)).map((r) => ({
         ...r,
         details: r.details ?? undefined,
       })),
@@ -497,53 +571,101 @@ export class AuditLogStore {
   }
 
   /**
-   * Every CLIENT uuid on the row, shown as that client's Portal ID.
+   * Each row as THIS reader may see it (R1, D-81/D-82).
    *
-   * The console names a client by Portal ID and nothing else, and an audit row
-   * is where a uuid would otherwise still surface: a client ACTOR is recorded
-   * by id, a client SUBJECT by id, and `details` names clients too — money rows
-   * as `userId`, trading rows as `clientId`, IB rows their parents and
-   * partners. So each row gains `actorPortalId` and `subjectPortalId` (null
-   * when that id is not a client's), `details` shows Portal IDs in place of
-   * client uuids, and a denied-route row's request line shows the Portal ID
-   * inside its path (`REQUEST_LINE`). The STORED row is untouched — the table is append-only and
-   * this is a read; only what a reader is shown changes.
+   * A client is named by Portal ID everywhere since 0159, so a visible client
+   * needs no rewriting at all. What changes is a client OUTSIDE the reader's
+   * territory named on a row they may see — the previous partner on a parent
+   * change, a client acting on a record: shown as `OUTSIDE_TERRITORY`, never
+   * their number or email. One query answers, for every client the page names,
+   * whether it exists and whether this reader may see it.
    *
-   * WHETHER a uuid is a client's is answered by `users` itself, not by a list
-   * of types that would drift: every uuid-shaped value on the page is looked up
-   * in ONE query, and a transaction, wallet, tag or administrator id is simply
-   * not found there and stays as written.
+   * A CLIENT actor's email and IP are client data, hidden per the reader's role
+   * like any other (D-82) — the static DTO cannot say so, because the same
+   * columns hold an administrator's on every other row.
    */
   private async withClientPortalIds<
-    T extends { actorId: string; subjectId: string; details: Record<string, unknown> | null },
+    T extends {
+      actorId: string;
+      actorEmail: string;
+      actorKind: AuditActorKind;
+      action: string;
+      subjectType: string;
+      subjectId: string;
+      details: Record<string, unknown> | null;
+      ipAddress: string | null;
+      clientId: number | null;
+    },
   >(
     rows: T[],
-  ): Promise<Array<T & { actorPortalId: number | null; subjectPortalId: number | null }>> {
-    const ids = new Set<string>();
+    scope: ClientScope | undefined,
+  ): Promise<
+    Array<Omit<T, 'clientId'> & { actorPortalId: number | null; subjectPortalId: number | null }>
+  > {
+    const actorOf = (row: T) => (row.actorKind === 'client' ? asClientId(row.actorId) : undefined);
+    const subjectOf = (row: T) =>
+      SUBJECT_IS_CLIENT.has(row.subjectType)
+        ? asClientId(row.subjectId)
+        : clientIdInRequestLine(row.subjectId);
+
+    const ids = new Set<number>();
     for (const row of rows) {
-      collectUuids(row.actorId, ids);
-      collectUuids(row.subjectId, ids);
-      collectRequestLineUuids(row.subjectId, ids);
-      collectUuids(row.details, ids);
+      const actor = actorOf(row);
+      const subject = subjectOf(row);
+      if (actor !== undefined) ids.add(actor);
+      if (subject !== undefined) ids.add(subject);
+      mapClientIdsInDetails(row.action, row.details, (id) => ids.add(id));
     }
+    const restricted = scope !== undefined && !scope.unrestricted;
+    const visible = restricted
+      ? sql<boolean>`coalesce(${clientScopePredicate(scope, users.id) ?? sql`false`}, false)`
+      : sql<boolean>`true`;
     const found =
       ids.size === 0
         ? []
         : await this.db
-            .select({ id: users.id, portalId: users.portalId })
+            .select({ id: users.id, visible })
             .from(users)
             .where(inArray(users.id, [...ids]));
-    const portalIdOf = new Map(found.map((u) => [u.id, u.portalId]));
+    const known = new Set(found.map((u) => u.id));
+    const hidden = new Set(found.filter((u) => !u.visible).map((u) => u.id));
 
-    return rows.map((row) => ({
-      ...row,
-      actorPortalId: portalIdOf.get(row.actorId.toLowerCase()) ?? null,
-      subjectPortalId: portalIdOf.get(row.subjectId.toLowerCase()) ?? null,
-      subjectId: requestLineWithPortalIds(row.subjectId, portalIdOf),
-      details:
-        row.details === null
-          ? null
-          : (withPortalIds(row.details, portalIdOf) as Record<string, unknown>),
-    }));
+    const mask = currentFieldMask();
+    const hideClientEmail = mask.includes('client.email');
+    const hideClientIp = mask.includes('client.ipAddress');
+
+    // `clientId` is the row's internal scope key — the scope already used it.
+    return rows.map(({ clientId: _clientId, ...rest }) => {
+      const row = rest as unknown as T;
+      const actor = actorOf(row);
+      const subject = subjectOf(row);
+      const clientActor = row.actorKind === 'client';
+      const hiddenActor = actor !== undefined && hidden.has(actor);
+      const hiddenSubject = subject !== undefined && hidden.has(subject);
+      return {
+        ...rest,
+        actorId: hiddenActor ? OUTSIDE_TERRITORY : row.actorId,
+        actorEmail: hiddenActor
+          ? OUTSIDE_TERRITORY
+          : clientActor && hideClientEmail
+            ? HIDDEN_FROM_ROLE
+            : row.actorEmail,
+        ipAddress: clientActor && (hiddenActor || hideClientIp) ? null : row.ipAddress,
+        actorPortalId: actor !== undefined && known.has(actor) && !hiddenActor ? actor : null,
+        subjectPortalId:
+          subject !== undefined && known.has(subject) && !hiddenSubject ? subject : null,
+        subjectId: hiddenSubject
+          ? SUBJECT_IS_CLIENT.has(row.subjectType)
+            ? OUTSIDE_TERRITORY
+            : row.subjectId.replace(CLIENT_IN_REQUEST_LINE, `$1${OUTSIDE_TERRITORY}`)
+          : row.subjectId,
+        details:
+          row.details === null
+            ? null
+            : (mapClientIdsInDetails(row.action, row.details, (id) =>
+                hidden.has(id) ? OUTSIDE_TERRITORY : id,
+              ) as Record<string, unknown>),
+      };
+    });
   }
 }

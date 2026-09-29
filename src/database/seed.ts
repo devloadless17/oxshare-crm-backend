@@ -17,8 +17,9 @@ import {
   users,
   wallets,
 } from './schema';
-import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { DEFAULT_KYC_STEPS } from '../store/kyc-config.store';
+import { ClientIdentityStore } from '../store/client-identity.store';
 import permissionsCatalog from '../config/permissions.json';
 
 // Idempotent dev/bootstrap seeds — safe to run on every boot. Idempotency
@@ -1083,6 +1084,16 @@ export async function runSeeds(): Promise<void> {
     }
   }
 
+  /*
+   * THE IDENTITY RECORD FOLLOWS WHAT THE SEEDS WROTE (0152).
+   *
+   * The seeds write KYC rows and verification levels directly, as fixtures do.
+   * Everything the application writes reaches the client's record inside its
+   * own transaction; this is the same routine for what the seeds wrote, run
+   * only where the record is out of step, so a second boot adds nothing.
+   */
+  await adoptIdentityDrift(db);
+
   console.log(
     `🌱 Seeds applied (idempotent): master role/admin, demo client, rejection reasons${
       seedE2eFixtures() ? ', e2e cohort' : ' — e2e fixtures SKIPPED (SEED_E2E_FIXTURES=false)'
@@ -1237,6 +1248,9 @@ export async function reassertReviewPool(db: ReturnType<typeof getDb>): Promise<
           reviewedAt: null,
           reviewedBy: null,
           rejectionReason: null,
+          // The items returned with it, as a resubmission clears them — left
+          // behind, a pending fixture carried a previous run's returned pages.
+          rejectedFields: null,
           // A re-verification request is part of the decision being reset.
           reverificationRequestedAt: null,
           // And the evidence: approval re-asks the judge, which reads pages.
@@ -1245,7 +1259,27 @@ export async function reassertReviewPool(db: ReturnType<typeof getDb>): Promise<
       });
   }
 
+  // The reset evidence and levels, on each client's record (0152).
+  await adoptIdentityDrift(db);
   return REVIEW_POOL.length;
+}
+
+/**
+ * Bring the identity record (0151) in step for every client these fixtures just
+ * wrote the KYC rows of — the record's own repair, which adopts each client
+ * `identity_drift` names. Silent, because a fixture writing the KYC rows is
+ * expected here, unlike at boot; LOUD on a client it cannot adopt, because a
+ * fixture the record disagrees with is a broken fixture.
+ */
+export async function adoptIdentityDrift(db: ReturnType<typeof getDb>): Promise<void> {
+  const { failed } = await new ClientIdentityStore(db).repairDrift();
+  if (failed.length > 0) {
+    throw new Error(
+      `identity_adopt failed for ${failed.length} fixture client(s): ${failed
+        .map(({ userId, message }) => `${userId}: ${message}`)
+        .join('; ')}`,
+    );
+  }
 }
 
 /**
@@ -1261,18 +1295,9 @@ export async function reassertReviewPool(db: ReturnType<typeof getDb>): Promise<
 function fixtureEvidence(tag: string) {
   const page = (name: string) => `uploads/kyc/e2e-fixture-${tag}-${name}.png`;
   return {
-    document: {
-      docType: 'passport',
-      fileName: `${tag}-passport.png`,
-      frontFilePath: page('passport'),
-      frontFileName: `${tag}-passport.png`,
-    },
-    selfie: { fileName: `${tag}-selfie.png`, filePath: page('selfie') },
-    addressProof: {
-      docType: 'utility_bill',
-      fileName: `${tag}-bill.png`,
-      filePath: page('bill'),
-    },
+    document: { docType: 'passport', frontFilePath: page('passport') },
+    selfie: { filePath: page('selfie') },
+    addressProof: { docType: 'utility_bill', filePath: page('bill') },
   };
 }
 
@@ -1318,7 +1343,7 @@ const POOL_PROFILE = {
  */
 export async function createFreshE2eClient(
   db: ReturnType<typeof getDb>,
-): Promise<{ id: string; email: string; password: string }> {
+): Promise<{ id: number; email: string; password: string }> {
   const password = 'client123';
   const stamp = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   const email = `e2e-fresh-${stamp}@${E2E_FRESH_DOMAIN}`;
@@ -1349,6 +1374,8 @@ export async function createFreshE2eClient(
     personalInfo: {},
     ...fixtureEvidence(`fresh-${stamp}`),
   });
+  // Its presented evidence, frozen on its record (0152).
+  await db.execute(sql`SELECT identity_adopt(${client.id}::integer)`);
 
   return { id: client.id, email, password };
 }

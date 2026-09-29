@@ -11,6 +11,8 @@ import { sortKey, sortOrder } from '../../common/sorting';
 import { RejectionContext, RejectionReasonsStore } from '../../store/rejection-reasons.store';
 import { KycService } from '../compliance/kyc.service';
 import {
+  FieldValidationError,
+  KycBuilderOutdatedError,
   KycConfigStaleError,
   NotFoundError,
   ValidationError,
@@ -35,6 +37,12 @@ import { AdminsStore } from '../../store/admins.store';
  * and the configurable rejection reasons both KYC and withdrawals draw on
  * (FR-ADM-03).
  */
+/**
+ * The KYC builder format a whole-form save must declare (Phase 2, 29 Sep 2026):
+ * identity placements, per-step evidence requirements, every step editable.
+ */
+export const KYC_BUILDER_FORMAT = 2;
+
 @Injectable()
 export class AdminComplianceService {
   constructor(
@@ -143,7 +151,7 @@ export class AdminComplianceService {
    * screen they open dozens of times an hour, and the row that matters most —
    * the DECISION — is recorded separately either way.
    */
-  async getKyc(userId: string, actor?: AuthenticatedAdmin) {
+  async getKyc(userId: number, actor?: AuthenticatedAdmin) {
     // Before the submission is read, so an out-of-scope client's details never
     // reach a log line or an error on the way to being refused.
     if (actor) await this.visibility.assertVisible(userId, actor.clientScope);
@@ -172,7 +180,7 @@ export class AdminComplianceService {
    * unlike the three decisions below, which change privilege and are asserted
    * in both places (R-4.3).
    */
-  async getKycHistory(userId: string, actor: AuthenticatedAdmin) {
+  async getKycHistory(userId: number, actor: AuthenticatedAdmin) {
     assertActorCanAny(actor, ['kyc.view', 'kyc.review'], "view a client's KYC history");
     /*
      * The gap `client-scope-enforcement.spec.ts` found.
@@ -308,7 +316,7 @@ export class AdminComplianceService {
    * against the wrong subject is one a reviewer reading the submission's
    * history will not find.
    */
-  async correctKycIdentity(userId: string, dto: CorrectKycIdentityDto, actor: AuthenticatedAdmin) {
+  async correctKycIdentity(userId: number, dto: CorrectKycIdentityDto, actor: AuthenticatedAdmin) {
     assertActorCan(actor, 'kyc.identity.correct', 'correct identity details');
     // FIRST, as everywhere on this surface: an out-of-scope client 404s exactly
     // as a missing one does, so nothing about the response says they exist.
@@ -338,7 +346,7 @@ export class AdminComplianceService {
   }
 
   // ─── KYC: approve ─────────────────────────────────────────────────────────
-  async approveKyc(userId: string, actor: AuthenticatedAdmin) {
+  async approveKyc(userId: number, actor: AuthenticatedAdmin) {
     assertActorCan(actor, 'kyc.review', 'approve a KYC submission');
     // FIRST, before the submission is read: an out-of-scope client 404s exactly
     // as a missing one does, so nothing about the response says they exist.
@@ -367,7 +375,7 @@ export class AdminComplianceService {
     };
   }
   // ─── KYC: claim for review ────────────────────────────────────────────────
-  async claimKyc(userId: string, actor: AuthenticatedAdmin) {
+  async claimKyc(userId: number, actor: AuthenticatedAdmin) {
     assertActorCan(actor, 'kyc.review', 'claim a KYC submission for review');
     await this.visibility.assertVisible(userId, actor.clientScope);
     const result = await this.kycService.claim(userId, actor.id);
@@ -404,7 +412,7 @@ export class AdminComplianceService {
    * guard: that is what makes a release accountable, which is the property
    * this needs, instead of restricted, which is the property that strands work.
    */
-  async releaseKyc(userId: string, actor: AuthenticatedAdmin) {
+  async releaseKyc(userId: number, actor: AuthenticatedAdmin) {
     assertActorCan(actor, 'kyc.review', 'hand a KYC submission back to the queue');
     await this.visibility.assertVisible(userId, actor.clientScope);
     // Read BEFORE the release, or the id it names has already been cleared.
@@ -449,7 +457,7 @@ export class AdminComplianceService {
   }
   // ─── KYC: reject ──────────────────────────────────────────────────────────
   async rejectKyc(
-    userId: string,
+    userId: number,
     actor: AuthenticatedAdmin,
     reason?: string,
     rejectedFields?: string[],
@@ -462,6 +470,17 @@ export class AdminComplianceService {
     if (reasonId) {
       const configured = await this.rejectionReasons.findById(reasonId);
       if (!configured) throw new NotFoundError('Rejection reason not found.');
+      /*
+       * A KYC decision takes a KYC reason. The list is shared with withdrawals
+       * and partner applications, and nothing checked which one was chosen — a
+       * verification could be returned "for" a withdrawal reason. Now that the
+       * id is KEPT on the decision (0151), it must mean what it says.
+       */
+      if (configured.context !== 'kyc') {
+        throw new FieldValidationError('That is not a KYC rejection reason.', {
+          reasonId: 'Choose one of the KYC rejection reasons.',
+        });
+      }
       effectiveReason = effectiveReason
         ? `${configured.label} — ${effectiveReason}`
         : configured.label;
@@ -469,7 +488,13 @@ export class AdminComplianceService {
     if (!effectiveReason) {
       throw new ValidationError('A rejection reason (reasonId or reason text) is required.');
     }
-    const result = await this.kycService.reject(userId, adminId, effectiveReason, rejectedFields);
+    const result = await this.kycService.reject(
+      userId,
+      adminId,
+      effectiveReason,
+      rejectedFields,
+      reasonId,
+    );
     this.audit.record(adminId, 'kyc.reject', 'kyc_submission', userId, {
       status: result.status,
       verificationLevel: result.user?.verificationLevel,
@@ -501,7 +526,7 @@ export class AdminComplianceService {
    * reason and the items asked for.
    */
   async requestReverification(
-    userId: string,
+    userId: number,
     actor: AuthenticatedAdmin,
     reason: string,
     items: string[],
@@ -594,7 +619,18 @@ export class AdminComplianceService {
    * leave a form with no steps at all.
    */
 
-  async updateKycConfig(steps: KycStepConfig[], actor: AuthenticatedAdmin, version?: string) {
+  async updateKycConfig(
+    steps: KycStepConfig[],
+    actor: AuthenticatedAdmin,
+    version?: string,
+    format?: number,
+  ) {
+    if (format !== KYC_BUILDER_FORMAT) {
+      throw new KycBuilderOutdatedError(
+        'This console is out of date. Reload the page to get the current KYC builder, then ' +
+          'make your change again.',
+      );
+    }
     const { after } = await this.changeKycConfig(
       actor,
       { action: 'kyc_config.replace', version },

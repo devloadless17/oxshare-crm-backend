@@ -87,7 +87,7 @@ const DESK_PERMISSIONS = [
 ];
 
 /** A client, optionally in one of the two territories, with a KYC awaiting review. */
-async function client(tag?: 'north' | 'south'): Promise<string> {
+async function client(tag?: 'north' | 'south'): Promise<number> {
   clientSeq += 1;
   const db = ctx.db.db;
   const [row] = await db
@@ -111,7 +111,7 @@ async function client(tag?: 'north' | 'south'): Promise<string> {
 }
 
 /** Move a client into exactly one territory. */
-async function retag(clientId: string, tag: 'north' | 'south') {
+async function retag(clientId: number, tag: 'north' | 'south') {
   const db = ctx.db.db;
   await db.delete(clientTagAssignments).where(eq(clientTagAssignments.userId, clientId));
   await db
@@ -127,7 +127,7 @@ async function retag(clientId: string, tag: 'north' | 'south') {
 async function seedTask(
   adminId: string,
   kind: string,
-  subject: { kind: NotificationSubjectKind; id: string; clientId: string },
+  subject: { kind: NotificationSubjectKind; id: string; clientId: number },
   createdAt?: Date,
 ): Promise<string> {
   const [row] = await ctx.db.db
@@ -146,7 +146,7 @@ async function seedTask(
   return row.id;
 }
 
-const kycOf = (clientId: string) => ({ kind: 'kyc' as const, id: clientId, clientId });
+const kycOf = (clientId: number) => ({ kind: 'kyc' as const, id: String(clientId), clientId });
 
 async function feed(session: Session, query = 'view=history&limit=100'): Promise<Feed> {
   const res = await session.get(`/v1/admin/notifications?${query}`);
@@ -254,12 +254,17 @@ describe('the fan-out rings exactly who could act — and nobody for a handled i
       subject: kycOf(southClient),
     });
 
-    const recipientsOf = async (clientId: string) =>
+    const recipientsOf = async (clientId: number) =>
       (
         await ctx.db.db
           .select({ recipientId: notifications.recipientId })
           .from(notifications)
-          .where(and(eq(notifications.subjectKind, 'kyc'), eq(notifications.subjectId, clientId)))
+          .where(
+            and(
+              eq(notifications.subjectKind, 'kyc'),
+              eq(notifications.subjectId, String(clientId)),
+            ),
+          )
       ).map((r) => r.recipientId);
 
     const north = await recipientsOf(northClient);
@@ -286,7 +291,9 @@ describe('the fan-out rings exactly who could act — and nobody for a handled i
     const [{ n }] = await ctx.db.db
       .select({ n: sql<number>`count(*)::int` })
       .from(notifications)
-      .where(and(eq(notifications.subjectKind, 'kyc'), eq(notifications.subjectId, decided)));
+      .where(
+        and(eq(notifications.subjectKind, 'kyc'), eq(notifications.subjectId, String(decided))),
+      );
     expect(n).toBe(0);
   });
 });
@@ -389,7 +396,7 @@ describe('handled means gone — for everybody, by the database', () => {
     const desk = await actingAs(ctx, 'admin', DESK);
     const master = await actingAs(ctx, 'admin', MASTER);
     const deskTask = (await feed(desk, 'view=inbox&limit=100')).items.find(
-      (t) => t.subject.id === applicant,
+      (t) => t.subject.id === String(applicant),
     );
     expect(deskTask, 'the desk never got the task').toBeDefined();
 
@@ -402,7 +409,7 @@ describe('handled means gone — for everybody, by the database', () => {
     for (const session of [desk, master]) {
       const inbox = await feed(session, 'view=inbox&limit=100');
       expect(
-        inbox.items.some((t) => t.subject.id === applicant),
+        inbox.items.some((t) => t.subject.id === String(applicant)),
         'a handled task kept showing',
       ).toBe(false);
     }
@@ -479,7 +486,7 @@ describe('read means gone — from YOUR inbox, and undoable', () => {
     const desk = await actingAs(ctx, 'admin', DESK);
     const res = await desk.post('/v1/admin/notifications/read-subject', {
       subjectKind: 'kyc',
-      subjectId: subject,
+      subjectId: String(subject),
     });
     expect(res.status).toBe(200);
     expect((res.body as { updated: number }).updated).toBe(1);

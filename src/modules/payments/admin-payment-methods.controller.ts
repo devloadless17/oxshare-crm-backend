@@ -48,6 +48,7 @@ import {
   PaymentMethodDto,
   UpdatePaymentMethodDto,
 } from './dto/payment-method.dto';
+import { paymentMethodView } from './payment-method-view';
 
 /**
  * How clients can put money in — the operator's side.
@@ -87,8 +88,8 @@ export class AdminPaymentMethodsController {
   })
   @ApiOkResponse({ type: PaymentMethodDto, isArray: true })
   @NotClientScoped('Platform payment configuration; names no client and returns no client data.')
-  list() {
-    return this.methods.listAll();
+  async list() {
+    return (await this.methods.listAll()).map(paymentMethodView);
   }
 
   /**
@@ -153,8 +154,11 @@ export class AdminPaymentMethodsController {
   @ApiOkResponse({ type: PaymentMethodDto })
   @NotClientScoped('Platform payment configuration; names no client and returns no client data.')
   @Audited('payment_method.create')
-  create(@Req() req: Request & { admin: AuthenticatedAdmin }, @Body() dto: CreatePaymentMethodDto) {
-    return this.methods.create(dto, req.admin);
+  async create(
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+    @Body() dto: CreatePaymentMethodDto,
+  ) {
+    return paymentMethodView(await this.methods.create(dto, req.admin));
   }
 
   @Patch(':key')
@@ -170,12 +174,12 @@ export class AdminPaymentMethodsController {
   @ApiOkResponse({ type: PaymentMethodDto })
   @NotClientScoped('Platform payment configuration; names no client and returns no client data.')
   @Audited('payment_method.update')
-  update(
+  async update(
     @Req() req: Request & { admin: AuthenticatedAdmin },
     @Param('key') key: string,
     @Body() dto: UpdatePaymentMethodDto,
   ) {
-    return this.methods.update(key, dto, req.admin);
+    return paymentMethodView(await this.methods.update(key, dto, req.admin));
   }
 
   /**
@@ -254,17 +258,11 @@ export class AdminPaymentMethodsController {
      * because an abandoned upload is not a configuration change, and the registry
      * row is what makes an unreferenced logo traceable to whoever wrote it.
      */
-    const stored = await this.files.write(
-      PAYMENT_LOGO_BUCKET,
-      file.buffer,
-      file.mimetype,
-      {
-        id: req.admin.id,
-        kind: 'admin',
-        ownerUserId: null,
-      },
-      file.originalname,
-    );
+    const stored = await this.files.write(PAYMENT_LOGO_BUCKET, file.buffer, file.mimetype, {
+      id: req.admin.id,
+      kind: 'admin',
+      ownerUserId: null,
+    });
     return { logoUrl: `/v1/uploads/payment-logos/${stored.filename}` };
   }
 

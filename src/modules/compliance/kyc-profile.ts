@@ -34,7 +34,7 @@
  * was a hint string and a check in the browser, bypassed by any direct API call
  * — and a broker onboarding a minor is a licensing matter, not a bug report.
  */
-import { IDENTITY_FIELDS } from '../../common/kyc/identity-core';
+import { IDENTITY_FIELDS, identityField } from '../../common/kyc/identity-core';
 import { normaliseProfileValue, type ProfileKey } from '../../common/profile/client-profile';
 import { isBarePhonePrefix } from './kyc-answers';
 
@@ -84,9 +84,22 @@ function scalar(value: unknown): string | undefined {
 export function identityProblems(
   profile: Readonly<Partial<Record<string, unknown>>> | undefined,
   asOf: Date,
+  /**
+   * The details the form ASKS for, each with whether it is required — the
+   * broker's placements on Personal Information (Phase 2). Only these are
+   * judged: a detail the form does not ask for is the one sign-up recorded, and
+   * the form cannot hold it against the client. Omitted: the platform's list.
+   */
+  asked?: readonly { name: string; required: boolean }[],
 ): IdentityProblem[] {
   const problems: IdentityProblem[] = [];
-  for (const field of IDENTITY_FIELDS) {
+  const fields = asked
+    ? asked.flatMap((placed) => {
+        const platform = identityField(placed.name);
+        return platform ? [{ ...platform, required: placed.required }] : [];
+      })
+    : IDENTITY_FIELDS;
+  for (const field of fields) {
     const raw = scalar(profile?.[field.name]);
     // A phone holding only its dial code is a number nobody typed — missing, not wrong.
     const text =

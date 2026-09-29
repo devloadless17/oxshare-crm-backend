@@ -323,7 +323,7 @@ describe("Rival's webhook field spelling: adminNote (singular) carries the reaso
    * default instead of the operator's words. Both spellings are accepted now;
    * this pins the one the webhook actually sends.
    */
-  const USER_ID = '00000000-0000-4000-8000-00000000c1e2';
+  const USER_ID = 1000201;
 
   it('a rejected event with adminNote lands its exact words as the rejection reason', async () => {
     await configureRival();
@@ -372,7 +372,7 @@ describe("Rival's webhook field spelling: adminNote (singular) carries the reaso
 });
 
 describe('the crown jewel: a signed completed event credits the wallet, exactly once', () => {
-  const USER_ID = '00000000-0000-4000-8000-00000000c1e1';
+  const USER_ID = 1000202;
   const EXTERNAL_ID = '777001';
 
   beforeAll(async () => {

@@ -16,12 +16,14 @@ import type { IbApplicationsService } from './ib-applications.service';
  */
 describe('AdminIbController approve mapping', () => {
   const APPLICATION = '5b1c4a48-9adc-4a06-8f28-0e6f7ffbe001';
-  const PARENT = '5b1c4a48-9adc-4a06-8f28-0e6f7ffbe002';
+  const PARENT = 1000002;
 
   function harness() {
     const approve = vi.fn().mockResolvedValue({});
+    // The account as the reader may see it (802bf3a) — not what this spec is about.
+    const accountViewFor = vi.fn().mockResolvedValue({});
     const controller = new AdminIbController(
-      { approve } as unknown as IbApplicationsService,
+      { approve, accountViewFor } as unknown as IbApplicationsService,
       undefined as never,
       undefined as never,
       undefined as never,

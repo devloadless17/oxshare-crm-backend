@@ -70,7 +70,7 @@ export class IbWalletService {
    * moment they are reinstated, which is recoverable — money moved out during a
    * suspension being investigated is not.
    */
-  private async assertActivePartner(userId: string): Promise<void> {
+  private async assertActivePartner(userId: number): Promise<void> {
     const [account] = await this.db
       .select({ active: ibAccounts.active })
       .from(ibAccounts)
@@ -96,7 +96,7 @@ export class IbWalletService {
    * "nothing credited yet" rather than as a zero balance, which is the same rule
    * the wallet screen follows for a currency nobody has opened.
    */
-  async listCommissionWallets(userId: string) {
+  async listCommissionWallets(userId: number) {
     return this.wallets.listWallets(userId, 'commission');
   }
 
@@ -113,7 +113,7 @@ export class IbWalletService {
    * ACTIVE partners only, for the reason `assertActivePartner` gives. Opened
    * EMPTY and idempotent — see `WalletService.openOwnWallet`.
    */
-  async openCommissionWallet(userId: string, currency: string) {
+  async openCommissionWallet(userId: number, currency: string) {
     await this.assertActivePartner(userId);
     return this.wallets.openOwnWallet(userId, currency, 'commission');
   }
@@ -145,7 +145,7 @@ export class IbWalletService {
    * both pass it; one of them then fails on the lock, which is correct.
    */
   async transferToMain(
-    userId: string,
+    userId: number,
     input: IbWalletTransferDto,
   ): Promise<IbWalletTransferResultDto> {
     await this.assertActivePartner(userId);
@@ -302,7 +302,7 @@ export class IbWalletService {
    * `/transactions`, which carries these rows alongside every other movement
    * rather than in a partner-only silo.
    */
-  async listTransfers(userId: string, limit = 200): Promise<IbWalletTransferResultDto[]> {
+  async listTransfers(userId: number, limit = 200): Promise<IbWalletTransferResultDto[]> {
     /*
      * ── WHICH WALLETS the money moved between ────────────────────────────────
      *

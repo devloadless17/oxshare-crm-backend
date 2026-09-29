@@ -43,7 +43,7 @@ export function newEmailCode(): string {
 }
 
 /** The stored form of a code: HMAC-SHA256 under `secret`, bound to the user. */
-export function hashEmailCode(secret: string, userId: string, code: string): string {
+export function hashEmailCode(secret: string, userId: number, code: string): string {
   if (!secret) throw new Error('hashEmailCode: no secret — refusing to hash a code without one.');
   return createHmac('sha256', secret)
     .update(`oxshare/email-code/v1\u0000${userId}\u0000${code}`, 'utf8')

@@ -126,6 +126,18 @@ const envSchema = z
     REALTIME_ENGINE: z.enum(['uws', 'node']).default('uws'),
     REALTIME_PORT: z.coerce.number().int().min(1).max(65535).default(3003),
 
+    /*
+     * What happens to a response key its declared DTO does not name — see
+     * common/security/response-projection.interceptor.ts.
+     *
+     * `enforce` (the default under NODE_ENV=test) answers it with a 500, so every
+     * HTTP spec is also a completeness check. `strip` (the default everywhere
+     * else) removes it and logs once per route and key: a leak prevented, a DTO
+     * gap reported. `report` logs and changes nothing — the census mode, run once
+     * to list every gap before enforcement was switched on.
+     */
+    RESPONSE_PROJECTION: z.enum(['enforce', 'strip', 'report']).optional(),
+
     DATABASE_URL: z.string().url().optional(),
 
     /*

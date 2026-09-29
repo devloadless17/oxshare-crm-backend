@@ -36,14 +36,14 @@ let ctx: MoneyTestContext;
 let store: IbStore;
 
 /** The partner. Tagged to the partner desk only. */
-let partnerId: string;
+let partnerId: number;
 /** Their referred client. Tagged to the client desk only. */
-let clientId: string;
+let clientId: number;
 let partnerTagId: string;
 let clientTagId: string;
 
-async function makeUser(email: string, first: string, last: string): Promise<string> {
-  const { rows } = await ctx.db.execute<{ id: string }>(sql`
+async function makeUser(email: string, first: string, last: string): Promise<number> {
+  const { rows } = await ctx.db.execute<{ id: number }>(sql`
     INSERT INTO users (email, password_hash, first_name, last_name)
     VALUES (${email}, 'x', ${first}, ${last})
     RETURNING id
@@ -85,7 +85,7 @@ function page(tagIds: string[]) {
   return store.findAccrualsPage({
     page: 1,
     limit: 25,
-    scope: scopeOf(tagIds),
+    scope: scopeOf(tagIds, false, false),
   }) as unknown as Promise<{ rows: Row[]; total: number }>;
 }
 

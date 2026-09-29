@@ -1,9 +1,13 @@
 import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
-import type { Db } from '../database/db';
+import type { Db, Executor } from '../database/db';
 import { clientTagAssignments, clientTags } from '../database/schema';
-import { clientScopePredicate, type ClientScope } from '../common/security/client-scope';
+import {
+  clientScopePredicate,
+  territoryCounts,
+  type ClientScope,
+} from '../common/security/client-scope';
 
 export interface ClientTag {
   id: string;
@@ -14,6 +18,13 @@ export interface ClientTag {
   createdAt: Date;
 }
 
+/**
+ * The advisory-lock namespace for per-client tag changes (`lockAssignments`).
+ * An arbitrary constant, distinct from `MANAGER_INVARIANT_LOCK` (715_001); the
+ * two-key form it is used in cannot collide with a one-key lock anyway.
+ */
+const CLIENT_TAGS_LOCK_NAMESPACE = 715_002;
+
 /** A tag ON a client, plus the provenance of that assignment. */
 export interface ClientTagAssignment extends ClientTag {
   /** The admin who assigned it. Null on rows written before it was recorded. */
@@ -23,7 +34,10 @@ export interface ClientTagAssignment extends ClientTag {
 
 /** A tag plus how many clients carry it — the /tags screen's row. */
 export interface ClientTagWithCount extends ClientTag {
+  /** Clients carrying it that the reader may see. */
   clientCount: number;
+  /** Clients carrying it OUTSIDE the reader's territory — a count, never who (D-81 R2). */
+  clientsOutsideScope: number;
 }
 
 /**
@@ -86,9 +100,15 @@ export class ClientTagsStore {
    * the label is the business's taxonomy rather than a fact about any client.
    * What the count adds is a per-cohort POPULATION, which is a fact about
    * clients — so that is the half that follows the territory.
+   *
+   * And the part it withholds is COUNTED, beside it (`clientsOutsideScope`):
+   * the owner's ruling of 28 Sep 2026, "a count, no identity" (D-81 R2). A
+   * narrowed count alone reads as the whole cohort — and a delete refused for
+   * "clients outside your territory" should not surprise the screen that
+   * listed the tag.
    */
   async findAllWithCounts(scope: ClientScope): Promise<ClientTagWithCount[]> {
-    const scoped = clientScopePredicate(scope, clientTagAssignments.userId);
+    const counts = territoryCounts(scope, clientTagAssignments.userId);
     const rows = await this.db
       .select({
         id: clientTags.id,
@@ -98,26 +118,22 @@ export class ClientTagsStore {
         description: clientTags.description,
         createdAt: clientTags.createdAt,
         // LEFT JOIN + count of the joined key, so a tag nobody carries reports
-        // 0 rather than vanishing from the list.
-        clientCount: sql<number>`count(${clientTagAssignments.userId})::int`,
+        // 0 rather than vanishing from the list. The scope splits the count
+        // (FILTER), never the join or a WHERE: either would turn a scoped
+        // COUNT into a scoped LIST, and the vocabulary is meant to stay whole.
+        clientCount: counts.inScope,
+        clientsOutsideScope: counts.outside,
       })
       .from(clientTags)
-      .leftJoin(
-        clientTagAssignments,
-        /*
-         * The scope rides in the JOIN CONDITION, not a WHERE. A WHERE would
-         * drop the tag row itself as soon as no visible client carried it,
-         * which quietly turns a scoped COUNT into a scoped LIST — and the
-         * vocabulary is meant to stay whole.
-         */
-        scoped
-          ? and(eq(clientTagAssignments.tagId, clientTags.id), scoped)
-          : eq(clientTagAssignments.tagId, clientTags.id),
-      )
+      .leftJoin(clientTagAssignments, eq(clientTagAssignments.tagId, clientTags.id))
       .groupBy(clientTags.id)
       .orderBy(asc(clientTags.label));
 
-    return rows.map((r) => ({ ...toTag(r), clientCount: r.clientCount }));
+    return rows.map((r) => ({
+      ...toTag(r),
+      clientCount: r.clientCount,
+      clientsOutsideScope: r.clientsOutsideScope,
+    }));
   }
 
   async findAll(): Promise<ClientTag[]> {
@@ -188,7 +204,7 @@ export class ClientTagsStore {
    * store has no business joining `admins`, and a page of clients needs one
    * lookup rather than one per row.
    */
-  async tagsForClient(userId: string): Promise<ClientTagAssignment[]> {
+  async tagsForClient(userId: number): Promise<ClientTagAssignment[]> {
     const rows = await this.db
       .select({
         id: clientTags.id,
@@ -218,8 +234,8 @@ export class ClientTagsStore {
    * N+1 that ARCHITECTURE §5 names as the actual risk at this table's size —
    * 25 extra round trips per keystroke of the search box.
    */
-  async tagsForClients(userIds: readonly string[]): Promise<Map<string, ClientTag[]>> {
-    const byUser = new Map<string, ClientTag[]>();
+  async tagsForClients(userIds: readonly number[]): Promise<Map<number, ClientTag[]>> {
+    const byUser = new Map<number, ClientTag[]>();
     if (userIds.length === 0) return byUser;
 
     const rows = await this.db
@@ -260,8 +276,13 @@ export class ClientTagsStore {
    * intake tag (D-60). The column was nullable from day one; the signature
    * just never admitted it.
    */
-  async assign(userId: string, tagId: string, assignedBy: string | null): Promise<boolean> {
-    const inserted = await this.db
+  async assign(
+    userId: number,
+    tagId: string,
+    assignedBy: string | null,
+    executor?: Executor,
+  ): Promise<boolean> {
+    const inserted = await (executor ?? this.db)
       .insert(clientTagAssignments)
       .values({ userId, tagId, assignedBy })
       .onConflictDoNothing()
@@ -270,12 +291,62 @@ export class ClientTagsStore {
   }
 
   /** Detach a tag. Returns whether anything was removed — same reasoning. */
-  async unassign(userId: string, tagId: string): Promise<boolean> {
-    const removed = await this.db
+  async unassign(userId: number, tagId: string, executor?: Executor): Promise<boolean> {
+    const removed = await (executor ?? this.db)
       .delete(clientTagAssignments)
       .where(and(eq(clientTagAssignments.userId, userId), eq(clientTagAssignments.tagId, tagId)))
       .returning();
     return removed.length > 0;
+  }
+
+  /**
+   * Make one client's tag changes take turns, for the rest of `executor`'s
+   * transaction.
+   *
+   * A tag change is judged against the client's CURRENT tags ("does the client
+   * stay in the actor's view afterwards?"), and that judgement is a read. Two
+   * concurrent removals each saw the other tag still in place, both passed, and
+   * together they hid the client from the actor with no confirmation. Holding
+   * this lock across read-judge-write makes the second change see the first.
+   *
+   * An ADVISORY lock rather than `FOR UPDATE` on the `users` row: every money
+   * path inserts rows referencing `users`, and a foreign-key check takes KEY
+   * SHARE on the row it references — the conflict that deadlocked concurrent
+   * withdrawals before `lockWallet` moved to NO KEY UPDATE. This lock touches no
+   * row, so it can conflict with nothing but another tag change on this client.
+   * Two keys (namespace, client), released at commit or rollback.
+   */
+  async lockAssignments(userId: number, executor: Executor): Promise<void> {
+    await executor.execute(
+      sql`SELECT pg_advisory_xact_lock(${CLIENT_TAGS_LOCK_NAMESPACE}, hashtext(${userId}))`,
+    );
+  }
+
+  /** The ids of the tags a client carries — what a tag change is judged on. */
+  async tagIdsForClient(userId: number, executor?: Executor): Promise<string[]> {
+    const rows = await (executor ?? this.db)
+      .select({ tagId: clientTagAssignments.tagId })
+      .from(clientTagAssignments)
+      .where(eq(clientTagAssignments.userId, userId));
+    return rows.map((row) => row.tagId);
+  }
+
+  /**
+   * How many clients carrying this tag the reader may NOT see — what refuses a
+   * scoped admin's delete (a delete strips the tag from every client, and a
+   * change to a client outside your territory is not yours to make).
+   *
+   * Zero for an unrestricted reader by construction: the predicate is absent.
+   * The SAME predicate the lists use, negated in the WHERE clause.
+   */
+  async countClientsForTagOutside(tagId: string, scope: ClientScope): Promise<number> {
+    const visible = clientScopePredicate(scope, clientTagAssignments.userId);
+    if (visible === undefined) return 0;
+    const [row] = await this.db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(clientTagAssignments)
+      .where(and(eq(clientTagAssignments.tagId, tagId), sql`NOT (${visible})`));
+    return row?.n ?? 0;
   }
 
   /** How many clients carry a tag — what the delete confirmation quotes. */

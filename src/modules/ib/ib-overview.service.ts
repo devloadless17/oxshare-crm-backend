@@ -26,6 +26,7 @@ const REFERRED_CLIENT_PAGE = 200;
 const SUB_PARTNER_PAGE = 200;
 import { IbWalletService } from './ib-wallet.service';
 import type { IbCommissionRowDto, IbOverviewDto } from './dto/ib-overview.dto';
+import { walletView } from '../wallet/wallet-view';
 
 /**
  * The ledger entry types that represent PARTNER income.
@@ -143,7 +144,7 @@ export class IbOverviewService {
    * render as a partner dashboard belonging to somebody who is not a partner.
    * The portal already branches on `GET /ib/status` before it asks for this.
    */
-  async overviewFor(userId: string): Promise<IbOverviewDto> {
+  async overviewFor(userId: number): Promise<IbOverviewDto> {
     const [account] = await this.db
       .select()
       .from(ibAccounts)
@@ -179,7 +180,8 @@ export class IbOverviewService {
 
     return {
       earnings,
-      commissionWallets,
+      // The declared shape — the store hands back whole rows (wallet-view.ts).
+      commissionWallets: commissionWallets.map(walletView),
       referredClients,
       referredClientCount: referredCounts.total,
       subPartners,
@@ -227,7 +229,7 @@ export class IbOverviewService {
    * Without the cast the driver hands back a JS number for a NUMERIC aggregate,
    * which is precisely the float round-trip the money rules exist to prevent.
    */
-  private async earningsFor(userId: string): Promise<IbOverviewDto['earnings']> {
+  private async earningsFor(userId: number): Promise<IbOverviewDto['earnings']> {
     const since = new Date(Date.now() - RECENT_WINDOW_DAYS * 24 * 60 * 60 * 1000);
 
     /*
@@ -318,7 +320,7 @@ export class IbOverviewService {
    * is the difference between a registration and a client who can actually
    * fund — which is what a partner is really counting.
    */
-  private async referredClientsFor(userId: string): Promise<IbOverviewDto['referredClients']> {
+  private async referredClientsFor(userId: number): Promise<IbOverviewDto['referredClients']> {
     const rows = await this.db
       .select({
         userId: users.id,
@@ -369,7 +371,7 @@ export class IbOverviewService {
    * "how many can actually fund" side by side, and two queries could straddle a
    * verification landing between them.
    */
-  private async referredCountsFor(userId: string): Promise<{ total: number; verified: number }> {
+  private async referredCountsFor(userId: number): Promise<{ total: number; verified: number }> {
     const [row] = await this.db
       .select({
         total: sql<number>`count(*)::int`,
@@ -403,7 +405,7 @@ export class IbOverviewService {
    * a parent has no business reading it off their own screen. FR-IB-17 gives a
    * parent visibility of sub-tree EARNINGS, which is what `earnings` carries.
    */
-  private async subPartnersFor(userId: string): Promise<IbOverviewDto['subPartners']> {
+  private async subPartnersFor(userId: number): Promise<IbOverviewDto['subPartners']> {
     const rows = await this.db
       .select({
         userId: ibAccounts.userId,
@@ -457,7 +459,7 @@ export class IbOverviewService {
    * their rebate in their own wallet statement once it is paid.
    */
   async commissionsFor(
-    userId: string,
+    userId: number,
     limit = COMMISSION_FEED_LIMIT,
   ): Promise<IbCommissionRowDto[]> {
     const rows = await this.db

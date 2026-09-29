@@ -1,3 +1,4 @@
+import { applyDecorators } from '@nestjs/common';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   ArrayNotEmpty,
@@ -8,11 +9,11 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
+  IsUUID,
   MaxLength,
-  MinLength,
   ValidateNested,
 } from 'class-validator';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import type { RejectionContext } from '../../../../store/rejection-reasons.store';
 import type { KycDocumentType } from '../../../../store/kyc-config.store';
 import { DOCUMENT_CATALOGUE, documentFieldType } from '../../../../common/kyc/document-catalogue';
@@ -61,22 +62,53 @@ const KYC_FIELD_TYPES = [
 // ends up with twelve spellings of "the image is unreadable".
 const REJECTION_CONTEXTS = ['kyc', 'withdrawal', 'deposit'] as const;
 
+/** The most a reviewer's reason may hold — it is emailed and shown as written. */
+const KYC_REASON_MAX = 500;
+
+/**
+ * A reviewer's REASON on an approved verification — the correction's audit
+ * note, the re-verification's message to the client. ONE rule for both: any
+ * text that is not blank, trimmed, up to {@link KYC_REASON_MAX} characters.
+ *
+ * It demanded ten characters until it was reported on 28 Sep 2026: a reviewer
+ * had to pad a complete reason ("Expired", "Wrong surname") before the button
+ * would work, with nothing on screen saying why. The rule that
+ * matters is that a reason EXISTS — a verified record never changes, and a
+ * client is never sent back, without one — not how long it is. Whitespace is
+ * trimmed first, so a reason of spaces is still no reason.
+ */
+function KycReason(example: string, description?: string) {
+  return applyDecorators(
+    ApiProperty({ example, minLength: 1, maxLength: KYC_REASON_MAX, description }),
+    Transform(({ value }: { value: unknown }) =>
+      typeof value === 'string' ? value.trim() : value,
+    ),
+    IsString(),
+    IsNotEmpty({ message: 'Give a reason.' }),
+    MaxLength(KYC_REASON_MAX),
+  );
+}
+
 export class RejectDto {
   @ApiPropertyOptional({ description: 'Free-text reason, when not using a configured reasonId.' })
   @IsString()
   @IsOptional()
   reason?: string;
 
-  @ApiPropertyOptional({ description: 'Id of a configured rejection reason.' })
-  @IsString()
+  @ApiPropertyOptional({ description: 'Id of a configured KYC rejection reason.' })
+  @IsUUID()
   @IsOptional()
   reasonId?: string;
 
   @ApiPropertyOptional({
     type: [String],
-    description: 'Field names the client must re-submit, e.g. ["doc_front"].',
+    description:
+      'What the client must update: identity details by key, pages on file by slot ' +
+      '(e.g. "doc_front"), the selfie, or a question on their form. Anything else is refused.',
   })
   @IsArray()
+  @IsString({ each: true })
+  @MaxLength(100, { each: true })
   @IsOptional()
   rejectedFields?: string[];
 }
@@ -88,14 +120,7 @@ export class RejectDto {
  * document), shown on their form and the reviewer's.
  */
 export class ReverifyKycDto {
-  @ApiProperty({
-    example: 'Your passport on file has expired. Please upload your new one.',
-    minLength: 10,
-    maxLength: 500,
-  })
-  @IsString()
-  @MinLength(10)
-  @MaxLength(500)
+  @KycReason('Your passport on file has expired. Please upload your new one.')
   reason: string;
 
   @ApiProperty({ type: [String], example: ['doc_front', 'address'], minItems: 1 })
@@ -233,6 +258,15 @@ export class KycStepDto {
   @IsOptional()
   enabled?: boolean;
 
+  @ApiPropertyOptional({
+    description:
+      'Identity document, selfie and proof of address steps: whether the client must provide it ' +
+      '(default true) or may skip it.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  evidenceRequired?: boolean;
+
   @ApiProperty({ type: [KycFieldDto] })
   @IsArray()
   @ValidateNested({ each: true })
@@ -304,6 +338,17 @@ export class KycConfigDto {
   @ValidateNested({ each: true })
   @Type(() => KycStepDto)
   steps: KycStepDto[];
+
+  @ApiPropertyOptional({
+    example: 2,
+    description:
+      'The builder format this save was made in. Since Phase 2 (identity placements, evidence ' +
+      'required, every step editable) it must be 2; an older console answers 409 ' +
+      '`KYC_BUILDER_OUTDATED` rather than saving a form it cannot represent.',
+  })
+  @IsOptional()
+  @IsInt()
+  format?: number;
 }
 
 /**
@@ -319,17 +364,17 @@ export class KycConfigDto {
  * audit row beside the value on both sides, and the client is emailed which
  * details changed. At least one field besides the reason — an empty correction
  * would write an audit row that changed nothing.
+ *
+ * An empty value CLEARS a detail, unless the client's verification required it
+ * — as the form stood when they submitted, which the broker decides (Phase 2).
+ * That is the service's call (`ClientProfileService.editAsAdmin`), the same one
+ * the client page's Edit dialog gets; a name is never cleared.
  */
 export class CorrectKycIdentityDto {
-  @ApiProperty({
-    example: 'Surname misspelt at registration; passport reads "Haddad".',
-    minLength: 10,
-    maxLength: 500,
-    description: 'Why the verified record is being changed. Recorded on the audit row.',
-  })
-  @IsString()
-  @MinLength(10)
-  @MaxLength(500)
+  @KycReason(
+    'Surname misspelt at registration; passport reads "Haddad".',
+    'Why the verified record is being changed. Recorded on the audit row.',
+  )
   reason: string;
 
   @ApiPropertyOptional({ example: 'Layla', maxLength: 100 })
@@ -355,36 +400,41 @@ export class CorrectKycIdentityDto {
   })
   @IsOptional()
   @IsString()
-  @IsNotEmpty()
   dateOfBirth?: string;
 
   @ApiPropertyOptional({ example: 'Lebanese', maxLength: 100 })
   @IsOptional()
   @IsString()
-  @IsNotEmpty()
   @MaxLength(100)
   nationality?: string;
 
   @ApiPropertyOptional({ example: 'Lebanon', maxLength: 100 })
   @IsOptional()
   @IsString()
-  @IsNotEmpty()
   @MaxLength(100)
   country?: string;
 
   @ApiPropertyOptional({ example: '12 Rue Verdun', maxLength: 200 })
   @IsOptional()
   @IsString()
-  @IsNotEmpty()
   @MaxLength(200)
   address?: string;
 
   @ApiPropertyOptional({ example: 'Beirut', maxLength: 100 })
   @IsOptional()
   @IsString()
-  @IsNotEmpty()
   @MaxLength(100)
   city?: string;
+
+  @ApiPropertyOptional({
+    example: 'Mount Lebanon',
+    maxLength: 100,
+    description: 'Send an empty string to clear it — many addresses have none.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  stateProvince?: string;
 
   @ApiPropertyOptional({
     example: '1103 2080',

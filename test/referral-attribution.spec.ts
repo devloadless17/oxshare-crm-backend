@@ -68,8 +68,8 @@ afterAll(async () => {
 });
 
 /** A partner holding `code`, returned as their user id. */
-async function makePartner(email: string, code: string, active = true): Promise<string> {
-  const { rows } = await ctx.db.execute<{ id: string }>(sql`
+async function makePartner(email: string, code: string, active = true): Promise<number> {
+  const { rows } = await ctx.db.execute<{ id: number }>(sql`
     INSERT INTO users (email, password_hash, first_name, last_name, verification_level)
     VALUES (${email}, 'x', 'Test', 'Partner', 1)
     RETURNING id
@@ -101,7 +101,7 @@ async function makePartner(email: string, code: string, active = true): Promise<
  * proves the account exists in the database rather than trusting what the
  * endpoint said about it.
  */
-async function registerClient(email: string, referralCode?: string): Promise<string> {
+async function registerClient(email: string, referralCode?: string): Promise<number> {
   await auth.register(registration(email, referralCode));
   const created = await users.findByEmail(email);
   if (!created) {

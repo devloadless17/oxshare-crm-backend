@@ -93,7 +93,7 @@ export class FieldValidationError extends ValidationError {
  * A 409 rather than a 400: nothing about the values is wrong — the record's
  * state refuses them. Once a KYC submission leaves the client's hands the
  * identity it carries is what a reviewer is checking, or has checked, against
- * documents; `deskLocks` (`common/profile/client-profile.ts`) holds the rule.
+ * documents; `adminEditRule` (`common/profile/client-profile.ts`) holds the rule.
  */
 export class ProfileLockedError extends DomainError {
   readonly code = 'PROFILE_LOCKED';
@@ -291,6 +291,20 @@ export class ConflictError extends DomainError {
 }
 
 /**
+ * A tag change that would take the client out of the ACTING administrator's
+ * own view, sent without the confirmation that says they meant it. → 409
+ *
+ * Its own code because the console answers it with a question, not an error:
+ * "after this you will no longer see this client — continue?", and the resend
+ * carries `confirmLeavesScope=true`. Handing a client to another desk is a
+ * legitimate act (owner, 28 Sep 2026); doing it by accident, with the client
+ * vanishing from the screen mid-task, is what the confirmation stops.
+ */
+export class TagChangeLeavesScopeError extends DomainError {
+  readonly code = 'TAG_CHANGE_LEAVES_SCOPE';
+}
+
+/**
  * A correction to an APPROVED KYC submission was refused by the same rules that
  * govern submission — the value is impossible, in the future, or under 18. → 409
  *
@@ -324,6 +338,19 @@ export class KycCorrectionRefusedError extends DomainError {
  */
 export class KycConfigStaleError extends DomainError {
   readonly code = 'KYC_CONFIG_STALE';
+}
+
+/**
+ * A KYC form saved by a console older than the form it would replace. → 409
+ * `KYC_BUILDER_OUTDATED`
+ *
+ * An older builder knows nothing of identity placements or optional evidence,
+ * so what it sends would silently erase them (Personal Information without its
+ * placements reads as "ask for no identity details"). It is refused, and the
+ * sentence says to reload.
+ */
+export class KycBuilderOutdatedError extends DomainError {
+  readonly code = 'KYC_BUILDER_OUTDATED';
 }
 
 /**

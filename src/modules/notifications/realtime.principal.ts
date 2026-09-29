@@ -154,14 +154,14 @@ export class RealtimePrincipalResolver {
     }
   }
 
-  private async authenticateClient(token: string): Promise<string | null> {
+  private async authenticateClient(token: string): Promise<number | null> {
     try {
       const payload = this.jwt.verify<{ sub: string }>(token, {
         secret: this.config.getOrThrow<string>('JWT_ACCESS_SECRET'),
       });
       // The strategy owns the token-kind, suspension, revoked-family and
       // password-change checks. Calling it is what keeps this path honest.
-      const user = (await this.clientStrategy.validate(payload as never)) as { id: string };
+      const user = (await this.clientStrategy.validate(payload as never)) as { id: number };
       return user.id;
     } catch {
       return null;

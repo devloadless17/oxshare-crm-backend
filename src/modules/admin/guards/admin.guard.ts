@@ -6,6 +6,7 @@ import {
   SetMetadata,
   UnauthorizedException,
 } from '@nestjs/common';
+import { requestContext } from '../../../common/logging/request-context';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { Reflector } from '@nestjs/core';
@@ -29,7 +30,7 @@ import { AdminClientScopesStore } from '../../../store/admin-client-scopes.store
 import { RefreshTokensService } from '../../../common/security/refresh-tokens.service';
 import { ClientFieldsService } from '../client-fields.service';
 import { scopeOf, type ClientScope } from '../../../common/security/client-scope';
-import { EMPTY_MASK, type FieldMask } from '../../../common/security/field-mask';
+import type { FieldMask } from '../../../common/security/field-mask';
 
 /*
  * `isMaster()` is gone. Nothing is exempt from scoping and masking by identity
@@ -101,6 +102,20 @@ export class AdminAuthenticator {
   ) {}
 
   async authenticate(req: AdminRequest): Promise<AuthenticatedAdmin> {
+    const admin = await this.authenticateRequest(req);
+    /*
+     * The mask travels with the request (`currentFieldMask`), so the one
+     * client search and `sortKey` obey it wherever they run (D-82). Set HERE,
+     * the one door every admin credential passes — both guards, API keys, the
+     * socket handshake (which has no request context, so this is a no-op) —
+     * because a guard that forgot it would silently reopen every oracle.
+     */
+    const store = requestContext.getStore();
+    if (store) store.fieldMask = admin.fieldMask;
+    return admin;
+  }
+
+  private async authenticateRequest(req: AdminRequest): Promise<AuthenticatedAdmin> {
     /*
      * An API key authenticates BEFORE the cookie path, and returns the same
      * `AuthenticatedAdmin` shape.
@@ -287,7 +302,7 @@ export class AdminAuthenticator {
     const [clientScope, storedMask] = await Promise.all([
       // D-60: the intake grant rides the admin row; the territory rides its
       // own table. `scopeOf` combines them under one unrestricted rule.
-      this.scopes.scopeFor(admin.id, admin.seesUntriaged ?? false),
+      this.scopes.scopeFor(admin),
       this.roles.resolveMaskedFields(admin.roleId, admin.maskedFields),
     ]);
 
@@ -395,16 +410,18 @@ export class AdminAuthenticator {
      * on the key, never a live join to the creator, so it neither drifts with
      * the creator's scope nor breaks when they are deleted.
      *
-     * The field MASK stays empty: masking is a per-admin display concern and a
-     * key is a machine reader, not a screen. Territory is access (which rows
-     * exist to it at all); a mask is presentation (which columns a person is
-     * shown). The escalation was in the first, so that is what this closes.
+     * The field MASK travels too (0155). It used to stay empty ("a key is a
+     * machine reader, not a screen"), which was the same laundering the
+     * territory snapshot closed: an administrator whose role hides client
+     * emails could mint a key and read every email through it. Masking is
+     * what a PERSON may read, and a key reads on its creator's behalf.
      */
     return {
       ...identity,
       permissions,
-      clientScope: scopeOf(row.scopedTagIds ?? [], row.seesUntriaged),
-      fieldMask: EMPTY_MASK,
+      clientScope: scopeOf(row.scopedTagIds ?? [], row.seesUntriaged, row.seesAllClients),
+      // The creator's mask, snapshot on the key (0155) — never empty by kind.
+      fieldMask: this.clientFields.expand(row.maskedFields ?? []),
     };
   }
 }

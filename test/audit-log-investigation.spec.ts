@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
-import { AuditLogStore } from '../src/store/audit-log.store';
+import { AuditLogStore, type AuditSubjectType } from '../src/store/audit-log.store';
 import { scopeOf, UNRESTRICTED } from '../src/common/security/client-scope';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
 
@@ -37,12 +37,12 @@ let ctx: MoneyTestContext;
 let store: AuditLogStore;
 let aliceId: string;
 let bobId: string;
-let inScopeClientId: string;
-let outScopeClientId: string;
+let inScopeClientId: number;
+let outScopeClientId: number;
 let tagId: string;
 
-async function makeClient(email: string): Promise<string> {
-  const { rows } = await ctx.db.execute<{ id: string }>(sql`
+async function makeClient(email: string): Promise<number> {
+  const { rows } = await ctx.db.execute<{ id: number }>(sql`
     INSERT INTO users (email, password_hash, first_name, last_name)
     VALUES (${email}, 'x', 'Audit', 'Subject')
     RETURNING id
@@ -51,11 +51,11 @@ async function makeClient(email: string): Promise<string> {
 }
 
 async function entry(
-  actorId: string,
+  actorId: string | number,
   actorEmail: string,
   action: string,
-  subjectType: string,
-  subjectId: string,
+  subjectType: AuditSubjectType,
+  subjectId: string | number,
   details?: Record<string, unknown>,
 ) {
   await store.record({
@@ -121,9 +121,9 @@ describe('narrowing the audit log to one subject', () => {
   });
 
   it('returns everything done to ONE client and nothing about the other', async () => {
-    const found = await find({ scope: UNRESTRICTED, subjectId: inScopeClientId });
+    const found = await find({ scope: UNRESTRICTED, subjectId: String(inScopeClientId) });
     expect(found.items.length).toBe(3);
-    expect(found.items.every((r) => r.subjectId === inScopeClientId)).toBe(true);
+    expect(found.items.every((r) => r.subjectId === String(inScopeClientId))).toBe(true);
     expect(found.total).toBe(3);
   });
 
@@ -198,11 +198,11 @@ describe('the search cannot be turned into a probe for a client', () => {
     // escape wearing a search box — so the scoped desk must see Alice's rows
     // about their own client and NOT Bob's row about the client they may not
     // read, even when searching for Bob by name.
-    const desk = scopeOf([tagId], false);
+    const desk = scopeOf([tagId], false, false);
 
     const mine = await find({ scope: desk, q: 'alice' });
     expect(mine.items.length).toBe(3);
-    expect(mine.items.every((r) => r.subjectId === inScopeClientId)).toBe(true);
+    expect(mine.items.every((r) => r.subjectId === String(inScopeClientId))).toBe(true);
 
     const theirs = await find({ scope: desk, q: 'bob' });
     expect(theirs.items.length).toBe(0);
@@ -210,7 +210,7 @@ describe('the search cannot be turned into a probe for a client', () => {
 
     // And asking for the out-of-scope client BY ID answers nothing, rather than
     // confirming the id names somebody.
-    const byId = await find({ scope: desk, subjectId: outScopeClientId });
+    const byId = await find({ scope: desk, subjectId: String(outScopeClientId) });
     expect(byId.items.length).toBe(0);
     expect(byId.total).toBe(0);
   });
@@ -228,12 +228,10 @@ describe('a client is found — and named — by Portal ID', () => {
   const walletId = crypto.randomUUID();
 
   beforeAll(async () => {
-    const { rows } = await ctx.db.execute<{ id: string; portal_id: number }>(sql`
-      SELECT id, portal_id FROM users WHERE id IN (${inScopeClientId}, ${outScopeClientId})
-    `);
-    const portalIdOf = new Map(rows.map((r) => [r.id, Number(r.portal_id)]));
-    inScopePortalId = portalIdOf.get(inScopeClientId)!;
-    outScopePortalId = portalIdOf.get(outScopeClientId)!;
+    // 0159: `users.id` IS the Portal ID now — the separate column is gone, so
+    // there is nothing left to look up.
+    inScopePortalId = inScopeClientId;
+    outScopePortalId = outScopeClientId;
 
     // A money row: the subject is the transaction, the client only in details.
     await entry(aliceId, 'alice@oxshare.com', 'withdrawal.approve', 'transaction', walletId, {
@@ -246,8 +244,8 @@ describe('a client is found — and named — by Portal ID', () => {
       actorEmail: 'audit-inscope@oxshare-e2e.test',
       actorKind: 'client',
       action: 'client.self_update',
-      subjectType: 'session',
-      subjectId: crypto.randomUUID(),
+      subjectType: 'user',
+      subjectId: inScopeClientId,
       ipAddress: '127.0.0.1',
     });
   });
@@ -264,11 +262,10 @@ describe('a client is found — and named — by Portal ID', () => {
     expect(found.total).toBe(5);
   });
 
-  it('names the client by Portal ID everywhere on the row, and never by uuid', async () => {
+  // Until 0159 this also asserted the client's uuid appeared nowhere; there is no
+  // uuid left (D-83) — the Portal ID IS the client's id.
+  it('names the client by Portal ID everywhere on the row', async () => {
     const found = await find({ scope: UNRESTRICTED, q: String(inScopePortalId) });
-    expect(
-      JSON.stringify(found.items.map(({ actorId, subjectId, ...shown }) => shown)),
-    ).not.toContain(inScopeClientId);
 
     const suspend = found.items.find((r) => r.action === 'client.suspend')!;
     expect(suspend.subjectPortalId).toBe(inScopePortalId);
@@ -330,7 +327,7 @@ describe('a client is found — and named — by Portal ID', () => {
   });
 
   it('finds nothing for a Portal ID outside the reader’s territory — the same as an unused one', async () => {
-    const desk = scopeOf([tagId], false);
+    const desk = scopeOf([tagId], false, false);
     const outside = await find({ scope: desk, q: String(outScopePortalId) });
     const unused = await find({ scope: desk, q: '999999999' });
     expect(outside.total).toBe(0);

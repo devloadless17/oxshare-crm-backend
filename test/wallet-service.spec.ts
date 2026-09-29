@@ -35,8 +35,8 @@ afterAll(async () => {
   await stopMoneyTestDb(ctx);
 });
 
-async function makeUser(email: string): Promise<string> {
-  const { rows } = await ctx.db.execute<{ id: string }>(sql`
+async function makeUser(email: string): Promise<number> {
+  const { rows } = await ctx.db.execute<{ id: number }>(sql`
     INSERT INTO users (email, password_hash, first_name, last_name)
     VALUES (${email}, 'x', 'Test', 'Client')
     RETURNING id
@@ -44,7 +44,7 @@ async function makeUser(email: string): Promise<string> {
   return rows[0].id;
 }
 
-async function balanceOf(userId: string, currency = 'USD'): Promise<string> {
+async function balanceOf(userId: number, currency = 'USD'): Promise<string> {
   const { rows } = await ctx.db.execute<{ balance: string }>(
     sql`SELECT balance FROM wallets WHERE user_id = ${userId} AND currency = ${currency}`,
   );
@@ -604,7 +604,7 @@ describe('the bulk wallet backfill', () => {
   });
 });
 
-async function currenciesOf(userId: string): Promise<string[]> {
+async function currenciesOf(userId: number): Promise<string[]> {
   const { rows } = await ctx.db.execute<{ currency: string }>(
     sql`SELECT currency FROM wallets WHERE user_id = ${userId} ORDER BY currency`,
   );

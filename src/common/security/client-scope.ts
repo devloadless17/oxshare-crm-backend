@@ -30,10 +30,7 @@ import { clientTagAssignments } from '../../database/schema';
  */
 
 export interface ClientScope {
-  /**
-   * True when this actor sees every client: a master admin, or an admin with no
-   * scope rows at all.
-   */
+  /** True when this actor sees every client — the explicit grant (0154). */
   unrestricted: boolean;
   tagIds: readonly string[];
   /**
@@ -48,15 +45,8 @@ export interface ClientScope {
 }
 
 /**
- * The default, and it is DELIBERATELY PERMISSIVE.
- *
- * An empty scope means unrestricted, following RBAC-08's empty allowlist and
- * DECISIONS D-10 for the same reason: the deploy that introduces this feature
- * must not blind every existing sub-admin before anyone has had a chance to
- * assign a territory. Enforcement begins when somebody says who belongs where.
- *
- * The cost of that choice is a real window at invite time, which is why
- * `admin_invites.scoped_tag_ids` exists — see the schema comment.
+ * Every client. What an administrator holding the explicit `sees_all_clients`
+ * grant resolves to — never, since 0154, what an empty territory resolves to.
  */
 export const UNRESTRICTED: ClientScope = Object.freeze({
   unrestricted: true,
@@ -65,17 +55,31 @@ export const UNRESTRICTED: ClientScope = Object.freeze({
 });
 
 /**
- * The intake grant is ADDITIVE, never restrictive: it widens a SCOPED admin's
- * view to include the untriaged pool, and it means nothing to an unrestricted
- * one. Empty territory means unrestricted, full stop — pure D-10.
+ * The one resolution of an administrator's (or invite's, or key's) sight.
  *
- * (An earlier revision read "no tags + grant" as an intake-ONLY admin. That
- * died the moment the grant became TRUE BY DEFAULT (0058): every unrestricted
- * admin carried it, so every unrestricted admin — masters included — silently
- * became intake-only. A default must never be the thing that restricts.)
+ * TAGS RESTRICT, ONLY THE FLAG GRANTS (migration 0154):
+ *
+ *   territory tags present         → only those tags (+ new clients if granted)
+ *   no tags,  seesAllClients       → every client
+ *   no tags, !seesAllClients       → new clients only if granted, otherwise none
+ *
+ * An empty territory used to mean UNRESTRICTED (D-10), which made the widest
+ * sight in the system the result of an absence: clearing an admin's last tag
+ * silently promoted them to every client, and "new clients only" could not be
+ * expressed. A row carrying tags is restricted whatever the flag says, so
+ * nothing can widen by accident.
+ *
+ * Every argument is REQUIRED. A default that is right for one caller and wrong
+ * for another is how the intake grant was once lost in two paths; the caller
+ * holds the row, so the caller passes the flags.
  */
-export function scopeOf(tagIds: readonly string[], includesUntriaged = false): ClientScope {
-  return tagIds.length === 0 ? UNRESTRICTED : { unrestricted: false, tagIds, includesUntriaged };
+export function scopeOf(
+  tagIds: readonly string[],
+  includesUntriaged: boolean,
+  seesAllClients: boolean,
+): ClientScope {
+  if (tagIds.length > 0) return { unrestricted: false, tagIds, includesUntriaged };
+  return seesAllClients ? UNRESTRICTED : { unrestricted: false, tagIds: [], includesUntriaged };
 }
 
 /**
@@ -122,10 +126,9 @@ export function clientScopePredicate(
     : undefined;
 
   /*
-   * FAIL CLOSED when the scope carries neither tags nor the intake grant —
-   * `scopeOf` maps that shape to UNRESTRICTED, so reaching here means the
-   * invariant broke, and of the two ways to be wrong, showing nothing is the
-   * recoverable one. (An empty `IN ()` would also be a SQL syntax error.)
+   * No territory tags: the "new clients only" admin (intake granted) or the
+   * admin who sees no clients at all — both real configurations since 0154.
+   * (An empty `IN ()` would also be a SQL syntax error.)
    */
   if (scope.tagIds.length === 0) return untriaged ?? sql`false`;
 
@@ -139,4 +142,86 @@ export function clientScopePredicate(
   )`;
 
   return untriaged ? sql`(${territory} OR ${untriaged})` : territory;
+}
+
+/**
+ * Would this actor see a client carrying exactly `tagIds`? The in-memory twin
+ * of `clientScopePredicate`.
+ *
+ * It exists for the one question the SQL predicate cannot answer: a tag set
+ * that is not stored yet. "If this tag is added or removed, does the client
+ * stay in the actor's view?" has to be decided BEFORE the write, which is why
+ * `AdminTagsService` asks it here rather than re-reading afterwards.
+ *
+ * Two definitions of visibility are a drift waiting to happen, so this one is
+ * pinned to the other: `test/client-scope-twin.spec.ts` evaluates both over a
+ * matrix of scopes and tag sets against real Postgres and fails on any
+ * disagreement. Change one and that spec makes you change the other.
+ */
+export function seesClientWithTags(scope: ClientScope, tagIds: readonly string[]): boolean {
+  if (scope.unrestricted) return true;
+  // The intake branch: no assignments at all, and the grant to see them.
+  if (tagIds.length === 0) return scope.includesUntriaged === true;
+  return tagIds.some((tagId) => scope.tagIds.includes(tagId));
+}
+
+/**
+ * A set that may cross the reader's territory, counted in ONE aggregate: how
+ * many of its clients the reader may see, and how many they may not — a count,
+ * never who (D-81 R2, "a count, no identity").
+ *
+ * For the configuration screens that count people per setting — clients per
+ * tag, partners per IB level, accounts per MT5 group. A total alone either
+ * describes rows the reader cannot see or, narrowed, reads as the whole story:
+ * "12 partners on this level" to a desk that cannot see the other 30 is how a
+ * disable gets refused with no visible reason. Both halves come from the same
+ * predicate the lists use, so the split can never disagree with them.
+ *
+ * `clientId` is the column (or expression) naming the client a row belongs to;
+ * `count()` skips NULLs, so a LEFT JOIN row with no client counts in neither.
+ * An unrestricted reader has nothing outside: `outside` is a constant 0.
+ */
+export function territoryCounts(
+  scope: ClientScope,
+  clientId: SQLWrapper,
+): { inScope: SQL<number>; outside: SQL<number> } {
+  const visible = clientScopePredicate(scope, clientId);
+  if (!visible) {
+    return { inScope: sql<number>`count(${clientId})::int`, outside: sql<number>`0` };
+  }
+  return {
+    inScope: sql<number>`(count(${clientId}) FILTER (WHERE ${visible}))::int`,
+    outside: sql<number>`(count(${clientId}) FILTER (WHERE NOT (${visible})))::int`,
+  };
+}
+
+/**
+ * A count said in a sentence, split when it crosses the reader's territory:
+ * `3 partners`, or `3 partners (1 in your territory, 2 outside it)`.
+ *
+ * The refusals on the configuration screens quote it, so a scoped desk told
+ * "partners stand on this level" learns why it cannot finish alone — never who.
+ */
+export function describeAcrossTerritory(
+  count: { inScope: number; outside: number },
+  one: string,
+  many: string,
+): string {
+  const total = count.inScope + count.outside;
+  const noun = total === 1 ? one : many;
+  return count.outside === 0
+    ? `${total} ${noun}`
+    : `${total} ${noun} (${count.inScope} in your territory, ${count.outside} outside it)`;
+}
+
+/**
+ * What a refusal adds when part of the set is outside the reader's territory:
+ * they cannot finish it alone, and saying so is the difference between a
+ * refusal and a dead end. Empty when nothing is outside.
+ */
+export function outsideTerritoryRemedy(outside: number): string {
+  if (outside === 0) return '';
+  return outside === 1
+    ? ' The one outside your territory needs an administrator who can see it.'
+    : ` The ${outside} outside your territory need an administrator who can see them.`;
 }

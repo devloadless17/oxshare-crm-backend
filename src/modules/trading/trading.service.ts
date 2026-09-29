@@ -148,7 +148,7 @@ export class TradingService {
    * `demo`, and Postgres orders an enum by its declared order rather than
    * alphabetically — which is the opposite of what the letters would give.
    */
-  async listMine(userId: string): Promise<TradingAccountDto[]> {
+  async listMine(userId: number): Promise<TradingAccountDto[]> {
     /*
      * ── ASK MT5 BEFORE ANSWERING, WHEN THE MIRROR IS OLD ──────────────────
      *
@@ -215,7 +215,7 @@ export class TradingService {
    * OFFERED, and does not become the check. A second opinion about the same
    * question is a second thing to drift.
    */
-  async listTransferable(userId: string): Promise<TradingAccountDto[]> {
+  async listTransferable(userId: number): Promise<TradingAccountDto[]> {
     const rows = await this.listMine(userId);
     return rows.filter((row) => row.environment === 'live' && row.status === 'active');
   }
@@ -239,7 +239,7 @@ export class TradingService {
    * bound, and an uncapped caller would eventually ask for all of it.
    */
   async listPositions(
-    userId: string,
+    userId: number,
     options: { status?: 'open' | 'closed'; limit?: number } = {},
   ): Promise<PositionDto[]> {
     const status = options.status ?? 'open';
@@ -314,7 +314,7 @@ export class TradingService {
    * from the URL, and this is the single place that decides whether the caller
    * may have it.
    */
-  async findMine(userId: string, accountId: string): Promise<TradingAccountDto> {
+  async findMine(userId: number, accountId: string): Promise<TradingAccountDto> {
     const [row] = await this.db
       .select({
         id: tradingAccounts.id,
@@ -370,7 +370,7 @@ export class TradingService {
    * rendering both as "unavailable" tells a client with a working account that
    * their broker is down.
    */
-  async snapshotMine(userId: string, accountId: string): Promise<AccountSnapshotDto | null> {
+  async snapshotMine(userId: number, accountId: string): Promise<AccountSnapshotDto | null> {
     const account = await this.findMine(userId, accountId);
     if (!account.login) return null;
 
@@ -471,7 +471,7 @@ export class TradingService {
    * and an unreachable bridge must cost a stale balance rather than a screen
    * that will not open.
    */
-  private async refreshOwnBalances(userId: string): Promise<void> {
+  private async refreshOwnBalances(userId: number): Promise<void> {
     if (!this.bridge.isConfigured) return;
 
     const cutoff = new Date(Date.now() - BALANCE_REFRESH_AFTER_MS);
@@ -568,7 +568,7 @@ export class TradingService {
    * and returns, so it is cheap enough to be called on a heartbeat by every open
    * account page — which is exactly what the throttle on it is sized for.
    */
-  async watchMine(userId: string, accountId: string): Promise<AccountWatchDto> {
+  async watchMine(userId: number, accountId: string): Promise<AccountWatchDto> {
     const account = await this.findMine(userId, accountId);
 
     /*
@@ -682,7 +682,7 @@ export class TradingService {
    * screen asked. An account with no login at all short-circuits before the
    * bridge is called — there is nothing to ask about.
    */
-  async positionsMine(userId: string, accountId: string): Promise<AccountPositionDto[]> {
+  async positionsMine(userId: number, accountId: string): Promise<AccountPositionDto[]> {
     const account = await this.findMine(userId, accountId);
     if (!account.login) return [];
 
@@ -755,7 +755,7 @@ export class TradingService {
    * are the two things on the screen that are actually still moving.
    */
   async historyMine(
-    userId: string,
+    userId: number,
     accountId: string,
     query: AccountHistoryQueryDto = {},
   ): Promise<AccountHistoryDto> {
@@ -1000,7 +1000,7 @@ export class TradingService {
    * cannot have deals, and that is an ordinary state rather than a fault.
    */
   async balanceMovementsMine(
-    userId: string,
+    userId: number,
     query: AccountHistoryQueryDto = {},
   ): Promise<{ from: Date; to: Date; items: BalanceMovementRow[]; truncated: boolean }> {
     const { from, to } = resolveMovementWindow(query);

@@ -34,8 +34,8 @@ afterAll(async () => {
   await stopMoneyTestDb(ctx);
 });
 
-async function makeUser(email: string, referredBy: string | null = null): Promise<string> {
-  const { rows } = await ctx.db.execute<{ id: string }>(sql`
+async function makeUser(email: string, referredBy: number | null = null): Promise<number> {
+  const { rows } = await ctx.db.execute<{ id: number }>(sql`
     INSERT INTO users (email, password_hash, first_name, last_name, referred_by_ib_user_id)
     VALUES (${email}, 'x', 'Repair', 'Case', ${referredBy})
     RETURNING id
@@ -44,10 +44,10 @@ async function makeUser(email: string, referredBy: string | null = null): Promis
 }
 
 async function makeAccount(
-  userId: string,
+  userId: number,
   code: string,
   level: number,
-  parent: string | null = null,
+  parent: number | null = null,
 ): Promise<void> {
   await ctx.db.execute(sql`
     INSERT INTO ib_accounts (user_id, referral_code, active, level, parent_ib_user_id)
@@ -55,8 +55,8 @@ async function makeAccount(
   `);
 }
 
-async function account(userId: string): Promise<{ level: number; parent: string | null }> {
-  const { rows } = await ctx.db.execute<{ level: number; parent: string | null }>(sql`
+async function account(userId: number): Promise<{ level: number; parent: number | null }> {
+  const { rows } = await ctx.db.execute<{ level: number; parent: number | null }>(sql`
     SELECT level, parent_ib_user_id AS parent FROM ib_accounts WHERE user_id = ${userId}
   `);
   return rows[0];

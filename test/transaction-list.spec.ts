@@ -39,8 +39,8 @@ let ctx: MoneyTestContext;
 let methods: PaymentMethodsService;
 let transactions: TransactionsService;
 let wallets: WalletService;
-let userId: string;
-let otherUserId: string;
+let userId: number;
+let otherUserId: number;
 
 beforeAll(async () => {
   ctx = await startMoneyTestDb();
@@ -73,8 +73,8 @@ afterAll(async () => {
   await stopMoneyTestDb(ctx);
 });
 
-async function makeClient(email: string): Promise<string> {
-  const { rows } = await ctx.db.execute<{ id: string }>(sql`
+async function makeClient(email: string): Promise<number> {
+  const { rows } = await ctx.db.execute<{ id: number }>(sql`
     INSERT INTO users (email, password_hash, first_name, last_name, verification_level, email_verified)
     VALUES (${email}, 'x', 'Test', 'Client', 1, true)
     RETURNING id
@@ -91,7 +91,7 @@ async function makeClient(email: string): Promise<string> {
  * back-dated `created_at` at all, which are exactly what the filters need.
  */
 async function seed(
-  owner: string,
+  owner: number,
   rows: {
     direction: 'deposit' | 'withdrawal';
     amount: string;
@@ -380,7 +380,7 @@ describe('paging', () => {
 describe('a rebate credited straight to the ledger', () => {
   /** Credit the client's wallet the way the accrual pipeline does. */
   async function creditLedger(
-    owner: string,
+    owner: number,
     entryType: 'rebate' | 'commission',
     amount: string,
   ): Promise<void> {

@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { and, eq } from 'drizzle-orm';
 import { ALL_PERMISSIONS } from './support/all-permissions';
 import {
@@ -19,6 +19,7 @@ import {
 } from '../src/database/schema';
 import { DEFAULT_KYC_STEPS } from '../src/store/kyc-config.store';
 import { UsersStore } from '../src/store/users.store';
+import { EmailService } from '../src/modules/email/email.service';
 import { KYC_COUNTRY_OPTIONS, KYC_NATIONALITY_OPTIONS } from '../src/common/kyc/country-options';
 
 /**
@@ -41,6 +42,8 @@ import { KYC_COUNTRY_OPTIONS, KYC_NATIONALITY_OPTIONS } from '../src/common/kyc/
 const ORIGIN = process.env['PORTAL_URL'] ?? 'http://localhost:3000';
 const REGISTER = '/v1/auth/register';
 const MASTER = { email: 'single-home-master@oxshare.com', password: 'admin-password-123' };
+/** Edits client records, and may NOT correct verified details. */
+const DESK = { email: 'single-home-desk@oxshare.com', password: 'admin-password-123' };
 const PASSWORD = 'single-home-password-1';
 
 /** A sign-up the way a person types it — spaces, a lower-case postcode, a spaced phone. */
@@ -72,7 +75,7 @@ const STORED = {
 
 let ctx: HttpTestContext;
 let email: string;
-let clientId: string;
+let clientId: number;
 
 async function profileRow(id = clientId) {
   const [row] = await ctx.db.db
@@ -115,6 +118,20 @@ beforeAll(async () => {
     role: 'master_admin',
     roleId: role.id,
     permissions: ALL_PERMISSIONS,
+    status: 'active',
+  });
+  const DESK_PERMISSIONS = ['clients.view', 'clients.edit'];
+  const [deskRole] = await db
+    .insert(roles)
+    .values({ name: 'Single Home Desk', permissions: DESK_PERMISSIONS, isSystem: false })
+    .returning();
+  await db.insert(admins).values({
+    email: DESK.email,
+    passwordHash: await passwords.hash(DESK.password),
+    name: 'Single Home Desk',
+    role: 'sub_admin',
+    roleId: deskRole.id,
+    permissions: DESK_PERMISSIONS,
     status: 'active',
   });
 
@@ -262,7 +279,9 @@ describe('one record, whoever changes it', () => {
     const rows = await ctx.db.db
       .select({ details: auditLog.details, actorKind: auditLog.actorKind })
       .from(auditLog)
-      .where(and(eq(auditLog.action, 'client.profile_update'), eq(auditLog.subjectId, clientId)));
+      .where(
+        and(eq(auditLog.action, 'client.profile_update'), eq(auditLog.subjectId, String(clientId))),
+      );
     const kyc = rows.find((r) => (r.details as { via?: string })?.via === 'kyc');
     expect(kyc, 'the KYC edit left no audit row').toBeDefined();
     expect(kyc?.actorKind).toBe('client');
@@ -328,27 +347,141 @@ describe('what a reviewer is checking cannot move under them', () => {
     }
   });
 
-  it('once APPROVED: every verified field goes to the reviewer’s correction, with a reason', async () => {
+  /*
+   * Reported 28 Sep 2026: a verified detail answered "Use Correct details on the
+   * client's KYC review", and the client page linked AWAY to it. A verified
+   * detail is now corrected on the client record itself — by an admin who may
+   * correct verified details, with a reason, recorded on the verification, the
+   * client told, and still verified. One rule and one write for both screens.
+   */
+  it('once APPROVED: a corrector changes a verified detail HERE, with a reason — still verified', async () => {
+    await setKycStatus('approved');
+    const told = vi
+      .spyOn(ctx.app.get(EmailService), 'sendKycDetailsCorrectedEmail')
+      .mockResolvedValue(undefined);
+    try {
+      const desk = await actingAs(ctx, 'admin', MASTER);
+
+      // No reason, no change — and the refusal is about the REASON, in place.
+      const bare = await desk.patch(`/v1/admin/clients/${clientId}`, { dateOfBirth: '1991-03-19' });
+      expect(bare.status, JSON.stringify(bare.body)).toBe(400);
+      expect((bare.body as { fields?: Record<string, string> }).fields?.['reason']).toMatch(
+        /reason/i,
+      );
+      expect((await profileRow()).dateOfBirth).toBe(STORED.dateOfBirth);
+
+      const res = await desk.patch(`/v1/admin/clients/${clientId}`, {
+        dateOfBirth: '1991-03-19',
+        reason: 'Typo',
+      });
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect((await profileRow()).dateOfBirth).toBe('1991-03-19');
+
+      // Recorded ON THE VERIFICATION, with the reason and both values.
+      const [row] = await ctx.db.db
+        .select({ details: auditLog.details, subjectType: auditLog.subjectType })
+        .from(auditLog)
+        .where(
+          and(
+            eq(auditLog.action, 'kyc.identity_correct'),
+            eq(auditLog.subjectId, String(clientId)),
+          ),
+        );
+      expect(row?.subjectType).toBe('kyc_submission');
+      expect(row?.details).toMatchObject({
+        before: { dateOfBirth: STORED.dateOfBirth },
+        after: { dateOfBirth: '1991-03-19' },
+        reason: 'Typo',
+        via: 'admin_edit',
+      });
+      expect(told).toHaveBeenCalledWith(email, 'Layla', ['Date of Birth']);
+
+      // Still verified: a correction is not a new verification.
+      const [kyc] = await ctx.db.db
+        .select({ status: kycSubmissions.status })
+        .from(kycSubmissions)
+        .where(eq(kycSubmissions.userId, clientId));
+      expect(kyc?.status).toBe('approved');
+
+      // The review's "Correct details" is the SAME write, and still works.
+      await desk
+        .patch(`/v1/admin/kyc/${clientId}/personal-info`, {
+          reason: 'Back to the passport date.',
+          dateOfBirth: STORED.dateOfBirth,
+        })
+        .expect(200);
+      expect((await profileRow()).dateOfBirth).toBe(STORED.dateOfBirth);
+    } finally {
+      told.mockRestore();
+      await setKycStatus('in_progress');
+    }
+  });
+
+  it('once APPROVED: an admin who may not correct is told why, in place — never sent elsewhere', async () => {
+    await setKycStatus('approved');
+    try {
+      const desk = await actingAs(ctx, 'admin', DESK);
+      const refused = await desk.patch(`/v1/admin/clients/${clientId}`, {
+        nationality: 'Syrian',
+        reason: 'Whatever',
+      });
+      expect(refused.status).toBe(409);
+      const sentence = (refused.body as { fields?: Record<string, string> }).fields?.[
+        'nationality'
+      ];
+      expect(sentence).toMatch(/verified by KYC/);
+      expect(sentence).not.toMatch(/KYC review|Correct details/);
+      expect((await profileRow()).nationality).toBe(STORED.nationality);
+
+      // The phone is contact, not identity: the desk always edits it.
+      await desk.patch(`/v1/admin/clients/${clientId}`, { phone: '+961 71 000 444' }).expect(200);
+    } finally {
+      await setKycStatus('in_progress');
+    }
+  });
+
+  it('refuses a correction that would DISQUALIFY the record as a 409, not a field error', async () => {
     await setKycStatus('approved');
     try {
       const desk = await actingAs(ctx, 'admin', MASTER);
-      for (const patch of [{ dateOfBirth: '1991-03-19' }, { nationality: 'Syrian' }]) {
-        const refused = await desk.patch(`/v1/admin/clients/${clientId}`, patch);
-        expect(refused.status).toBe(409);
-        const [key] = Object.keys(patch);
-        expect((refused.body as { fields?: Record<string, string> }).fields?.[key]).toMatch(
-          /Correct details/,
-        );
-      }
+      const young = new Date(Date.now() - 10 * 365 * 24 * 3600 * 1000).toISOString().slice(0, 10);
+      const res = await desk.patch(`/v1/admin/clients/${clientId}`, {
+        dateOfBirth: young,
+        reason: 'Typo',
+      });
+      expect(res.status).toBe(409);
+      expect((res.body as { code?: string }).code).toBe('KYC_CORRECTION_REFUSED');
+    } finally {
+      await setKycStatus('in_progress');
+    }
+  });
 
-      // The correction route is the door — re-checked and audited on the verification.
-      await desk
-        .patch(`/v1/admin/kyc/${clientId}/personal-info`, {
-          reason: 'Birth date typed wrongly; the passport says the 19th.',
-          dateOfBirth: '1991-03-19',
-        })
-        .expect(200);
-      expect((await profileRow()).dateOfBirth).toBe('1991-03-19');
+  it('says, per admin, which details are held and which are theirs to correct', async () => {
+    await setKycStatus('approved');
+    try {
+      type View = { lockedFields?: Record<string, string>; correctableFields?: string[] };
+      const read = async (who: typeof MASTER) =>
+        (await (await actingAs(ctx, 'admin', who)).get(`/v1/admin/clients/${clientId}`).expect(200))
+          .body as View;
+      const VERIFIED = [
+        'address',
+        'city',
+        'country',
+        'dateOfBirth',
+        'firstName',
+        'lastName',
+        'nationality',
+        'postalCode',
+        'stateProvince',
+      ].sort();
+
+      const corrector = await read(MASTER);
+      expect(corrector.lockedFields).toEqual({});
+      expect([...(corrector.correctableFields ?? [])].sort()).toEqual(VERIFIED);
+
+      const deskOnly = await read(DESK);
+      expect(Object.keys(deskOnly.lockedFields ?? {}).sort()).toEqual(VERIFIED);
+      expect(deskOnly.correctableFields).toEqual([]);
     } finally {
       await setKycStatus('in_progress');
     }
@@ -377,6 +510,7 @@ describe('what a reviewer is checking cannot move under them', () => {
           'lastName',
           'nationality',
           'postalCode',
+          'stateProvince',
         ].sort(),
       );
       expect(fields?.['phone']).toBeUndefined();

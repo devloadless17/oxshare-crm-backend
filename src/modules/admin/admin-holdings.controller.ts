@@ -26,7 +26,7 @@ import {
   RequirePermissions,
   type AuthenticatedAdmin,
 } from './guards/admin.guard';
-import { enumQuery, uuidQuery } from '../../common/query-params';
+import { enumQuery } from '../../common/query-params';
 import { ClientRefPipe } from '../../common/client-ref.pipe';
 import { tradingAccountStatusEnum, tradingEnvironmentEnum } from '../../database/schema';
 import { ScopedToClients } from './guards/client-scope.decorator';
@@ -146,12 +146,12 @@ export class AdminHoldingsController {
     @Req() req: Request & { admin: AuthenticatedAdmin },
     @Res() res: Response,
     @Query('format') format?: string,
-    @Query('userId', ClientRefPipe) userId?: string,
+    @Query('userId', ClientRefPipe) userId?: number,
     @Query('currency') currency?: string,
   ) {
     const chosen = exportFormat(format);
     // Shape-checked, so a typo is a 400 here and on the list alike.
-    const query = { userId: uuidQuery(userId, 'userId'), currency };
+    const query = { userId: userId, currency };
 
     this.audit.record(req.admin.id, 'export.wallets', 'wallet_list', req.admin.id, {
       format: chosen,
@@ -213,7 +213,7 @@ export class AdminHoldingsController {
   )
   listWallets(
     @Req() req: Request & { admin: AuthenticatedAdmin },
-    @Query('userId', ClientRefPipe) userId?: string,
+    @Query('userId', ClientRefPipe) userId?: number,
     @Query('currency') currency?: string,
     @Query('q') q?: string,
     @Query('page') page?: string,
@@ -233,7 +233,7 @@ export class AdminHoldingsController {
          * then all it has is a cast error. On a route taking several ids that
          * matters, and the database paid for a round trip to produce it.
          */
-        userId: uuidQuery(userId, 'userId'),
+        userId: userId,
         currency,
         q,
         page,
@@ -293,7 +293,7 @@ export class AdminHoldingsController {
     @Req() req: Request & { admin: AuthenticatedAdmin },
     @Res() res: Response,
     @Query('format') format?: string,
-    @Query('userId', ClientRefPipe) userId?: string,
+    @Query('userId', ClientRefPipe) userId?: number,
     @Query('environment') environment?: string,
     @Query('status') status?: string,
   ) {
@@ -301,7 +301,7 @@ export class AdminHoldingsController {
     // Validated identically to the list route, so an unrecognised value is the
     // same 400 there and here rather than a silently empty file.
     const query = {
-      userId: uuidQuery(userId, 'userId'),
+      userId: userId,
       environment: enumQuery(environment, tradingEnvironmentEnum.enumValues, 'environment'),
       status: enumQuery(status, tradingAccountStatusEnum.enumValues, 'status'),
     };
@@ -372,8 +372,8 @@ export class AdminHoldingsController {
   )
   listTradingAccounts(
     @Req() req: Request & { admin: AuthenticatedAdmin },
-    @Query('userId', ClientRefPipe) userId?: string,
-    @Query('referredBy', ClientRefPipe) referredBy?: string,
+    @Query('userId', ClientRefPipe) userId?: number,
+    @Query('referredBy', ClientRefPipe) referredBy?: number,
     @Query('q') q?: string,
     @Query('environment') environment?: string,
     @Query('status') status?: string,
@@ -394,8 +394,8 @@ export class AdminHoldingsController {
          * then all it has is a cast error. On a route taking several ids that
          * matters, and the database paid for a round trip to produce it.
          */
-        userId: uuidQuery(userId, 'userId'),
-        referredBy: uuidQuery(referredBy, 'referredBy'),
+        userId: userId,
+        referredBy: referredBy,
         q,
         // Both are Postgres enum columns compared behind a cast in the service,
         // so an unrecognised value surfaced as a 500 carrying a database error
@@ -444,7 +444,7 @@ export class AdminHoldingsController {
   )
   listClientClosedPositions(
     @Req() req: Request & { admin: AuthenticatedAdmin },
-    @Param('id', ClientRefPipe) id: string,
+    @Param('id', ClientRefPipe) id: number,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
   ) {
@@ -480,7 +480,7 @@ export class AdminHoldingsController {
   )
   listClientTransactions(
     @Req() req: Request & { admin: AuthenticatedAdmin },
-    @Param('id', ClientRefPipe) id: string,
+    @Param('id', ClientRefPipe) id: number,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
   ) {

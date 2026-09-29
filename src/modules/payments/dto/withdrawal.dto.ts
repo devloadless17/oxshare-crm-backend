@@ -131,7 +131,7 @@ export class RequestWithdrawalDto {
 )
 export class TransactionDto {
   @ApiProperty() id: string;
-  @ApiProperty() userId: string;
+  @ApiProperty({ type: 'integer' }) userId: number;
   @ApiProperty() walletId: string;
   @ApiProperty({ enum: DIRECTIONS }) direction: (typeof DIRECTIONS)[number];
 

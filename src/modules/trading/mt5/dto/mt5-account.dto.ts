@@ -18,9 +18,10 @@ import {
 
 /** Open an MT5 trading account for a client. */
 export class CreateMt5AccountDto {
-  @ApiProperty({ format: 'uuid', description: 'The client this account belongs to.' })
-  @IsUUID()
-  userId: string;
+  @ApiProperty({ type: 'integer', description: 'The client this account belongs to.' })
+  @IsInt()
+  @Min(1)
+  userId: number;
 
   /**
    * An MT5 group path, e.g. `real\\Standard`.

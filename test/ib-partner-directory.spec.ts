@@ -48,19 +48,19 @@ let deskA: string;
 let deskB: string;
 
 /** A level-1 partner on desk A, with commission in two currencies. */
-const top = { id: '', portalId: 0 };
+const top = { id: 0, portalId: 0 };
 /** Their level-2 recruit, on desk B — whose parent desk B cannot see. */
-const child = { id: '', portalId: 0 };
+const child = { id: 0, portalId: 0 };
 /** A suspended partner on desk A. */
-const dormant = { id: '', portalId: 0 };
+const dormant = { id: 0, portalId: 0 };
 
 async function makeUser(email: string, first: string, last: string, tag?: string) {
-  const { rows } = await ctx.db.execute<{ id: string; portal_id: number }>(sql`
+  const { rows } = await ctx.db.execute<{ id: number }>(sql`
     INSERT INTO users (email, password_hash, first_name, last_name, verification_level, email_verified)
     VALUES (${email}, 'x', ${first}, ${last}, 1, true)
-    RETURNING id, portal_id
+    RETURNING id
   `);
-  const user = { id: rows[0].id, portalId: Number(rows[0].portal_id) };
+  const user = { id: rows[0].id, portalId: rows[0].id };
   if (tag) {
     await ctx.db.execute(sql`
       INSERT INTO client_tag_assignments (user_id, tag_id) VALUES (${user.id}, ${tag})
@@ -174,7 +174,7 @@ describe('the directory and the client list agree on who is a partner', () => {
     ['an unrestricted reader', UNRESTRICTED],
     ['a reader holding desk A only', 'deskA'],
   ] as const)('counts the same partners as the client list, for %s', async (_, which) => {
-    const scope = which === 'deskA' ? scopeOf([deskA]) : which;
+    const scope = which === 'deskA' ? scopeOf([deskA], false, false) : which;
     const directory = await list({}, scope);
     const clients = await users.findPage({
       page: 1,
@@ -216,7 +216,7 @@ describe('searching the directory', () => {
      * operator is most often given, and precisely the thing a scoped desk could
      * guess: the search must narrow what they see, never widen it.
      */
-    const deskBScope = scopeOf([deskB]);
+    const deskBScope = scopeOf([deskB], false, false);
     expect((await list({ q: 'DIRTOP01' }, deskBScope)).total).toBe(0);
     expect((await list({ q: String(top.portalId) }, deskBScope)).total).toBe(0);
     expect(portalIds(await list({ q: 'DIRCHLD2' }, deskBScope))).toEqual([child.portalId]);
@@ -253,7 +253,7 @@ describe('the parent is named, never identified', () => {
   });
 
   it('says a parent exists outside the territory, without saying who', async () => {
-    const [row] = (await list({ q: 'DIRCHLD2' }, scopeOf([deskB]))).rows;
+    const [row] = (await list({ q: 'DIRCHLD2' }, scopeOf([deskB], false, false))).rows;
 
     expect(row.parentPortalId).toBeNull();
     expect(row.parentOutsideTerritory).toBe(true);

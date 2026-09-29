@@ -17,8 +17,8 @@ import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './mone
  */
 let ctx: MoneyTestContext;
 let holdings: AdminHoldingsService;
-let clientId: string;
-let otherId: string;
+let clientId: number;
+let otherId: number;
 
 const BUY = 0;
 const SELL = 1;
@@ -26,7 +26,7 @@ const BALANCE = 2;
 const IN = 0;
 const OUT = 1;
 
-async function account(userId: string, login: string, environment = 'live'): Promise<void> {
+async function account(userId: number, login: string, environment = 'live'): Promise<void> {
   await ctx.db.execute(sql`
     INSERT INTO trading_accounts (user_id, login, currency, environment)
     VALUES (${userId}, ${login}, 'USD', ${environment})
@@ -55,8 +55,8 @@ async function deal(d: {
   `);
 }
 
-async function user(email: string): Promise<string> {
-  const { rows } = await ctx.db.execute<{ id: string }>(sql`
+async function user(email: string): Promise<number> {
+  const { rows } = await ctx.db.execute<{ id: number }>(sql`
     INSERT INTO users (email, password_hash, first_name, last_name)
     VALUES (${email}, 'x', 'Closed', 'Trader')
     RETURNING id

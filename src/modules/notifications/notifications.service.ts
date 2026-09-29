@@ -146,7 +146,7 @@ export class NotificationsService implements NotificationDispatchPort {
    */
   private async resolveAdminRecipients(
     permissionKeys: readonly string[],
-    subjectClientId: string,
+    subjectClientId: number,
   ): Promise<string[]> {
     const wanted = new Set(permissionKeys.map(normalizePermissionKey));
     const { rows } = await this.admins.findAll();
@@ -179,7 +179,7 @@ export class NotificationsService implements NotificationDispatchPort {
       // Pass the admin's OWN intake grant (D-60) — omitting it treated an
       // intake-granted admin as restricted and dropped their bell for an
       // untagged client's event.
-      const scope = await this.scopes.scopeFor(admin.id, admin.seesUntriaged ?? false);
+      const scope = await this.scopes.scopeFor(admin);
       if (!scope.unrestricted) {
         /*
          * Only the DOMAIN answer ("not visible") skips the recipient — an

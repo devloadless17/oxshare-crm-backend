@@ -80,8 +80,8 @@ const EXACT_AMOUNT = '12345678901234567.89012345';
 const HOSTILE_NAME = '=HYPERLINK("http://evil","x"),Robert';
 
 let ctx: HttpTestContext;
-let mineId: string;
-let theirsId: string;
+let mineId: number;
+let theirsId: number;
 /*
  * The same two clients by PORTAL ID — what every export identifies a client by
  * now. The uuid is in no file any more, so a `not.toContain(uuid)` would pass
@@ -230,8 +230,9 @@ beforeAll(async () => {
     .returning();
   mineId = mine.id;
   theirsId = theirs.id;
-  minePortalId = mine.portalId;
-  theirsPortalId = theirs.portalId;
+  // The Portal ID IS the id now (0159) — there is no separate column any more.
+  minePortalId = mine.id;
+  theirsPortalId = theirs.id;
 
   await db.insert(clientTagAssignments).values({ userId: mineId, tagId: mineTag.id });
   // A submission for the in-scope client, so the KYC export has a row whose
@@ -487,6 +488,28 @@ describe('the mask reaches the FILE — an export is not a bypass', () => {
     expect(res.text).not.toContain('export-theirs@oxshare-e2e.test');
   });
 
+  it('a hidden cell reads [hidden] — a blank would say the client has none (D-82)', async () => {
+    const masked = await actingAs(ctx, 'admin', MASKED);
+    for (const path of [
+      '/v1/admin/clients/export',
+      '/v1/admin/kyc/export',
+      '/v1/admin/ib/applications/export',
+      '/v1/admin/ib/partners/export',
+    ]) {
+      const res = await masked.get(path).expect(200);
+      const line = res.text
+        .split('\r\n')
+        .find((row) => row.split(',').includes(String(minePortalId)));
+      expect(line, `${path}: the client's row is missing — the case is vacuous`).toBeDefined();
+      expect(line?.split(','), path).toContain('[hidden]');
+    }
+    // And a reader whose role hides nothing is never told a value is hidden.
+    const master = await actingAs(ctx, 'admin', MASTER);
+    expect((await master.get('/v1/admin/clients/export').expect(200)).text).not.toContain(
+      '[hidden]',
+    );
+  });
+
   it('phone is a COLUMN, and the mask reaches it too', async () => {
     /*
      * The client CSV carried no phone at all — so "call everyone who
@@ -581,12 +604,12 @@ describe('the mask reaches the FILE — an export is not a bypass', () => {
       {
         // A client acting on their own record — the row shape the DTO's
         // "an administrator" sentence denied could exist.
-        actorId: mineId,
+        actorId: String(mineId),
         actorEmail: 'export-mine@oxshare-e2e.test',
         actorKind: 'client',
         action: ACTION,
         subjectType: 'client',
-        subjectId: mineId,
+        subjectId: String(mineId),
       },
       {
         actorId: masterAdmin.id,
@@ -594,7 +617,7 @@ describe('the mask reaches the FILE — an export is not a bypass', () => {
         actorKind: 'admin',
         action: ACTION,
         subjectType: 'client',
-        subjectId: mineId,
+        subjectId: String(mineId),
       },
     ]);
 
@@ -911,15 +934,19 @@ describe('no export names a client by uuid — the Portal ID is their identifier
   });
 
   for (const resource of CLIENT_EXPORTS) {
-    it(`${resource}: carries the Portal ID and never the uuid`, async () => {
+    /*
+     * Until 0159 this also asserted the client's uuid was absent. The uuid no
+     * longer exists (D-83) — the Portal ID IS the client's id — so what is left
+     * to prove is that every client export names the client by it.
+     */
+    it(`${resource}: names the client by Portal ID`, async () => {
       const session = await actingAs(ctx, 'admin', MASTER);
       const res = await session.get(`/v1/admin/${resource}/export?format=csv`);
 
       expect(res.status).toBe(200);
-      expect(res.text, `${resource} names no client at all — the check is vacuous`).toMatch(
+      expect(res.text, `${resource} names no client at all`).toMatch(
         new RegExp(`(^|[,"{:\\s])${minePortalId}([,"}\\s]|$)`, 'm'),
       );
-      expect(res.text, `${resource} still prints a client uuid`).not.toContain(mineId);
     });
   }
 });

@@ -47,7 +47,7 @@ export const MT5_LIVE_EVENT = 'account.live';
  */
 export interface Mt5LiveEvent {
   /** The room to deliver into: this account's owner. */
-  userId: string;
+  userId: number;
   accountId: string;
   currency: string;
   balance: string;

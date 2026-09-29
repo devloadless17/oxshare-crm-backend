@@ -47,7 +47,8 @@ import {
   missingRequiredPages,
   outstandingDocumentFlags,
 } from './kyc-document-rules';
-import { isPlatformField } from '../../common/kyc/identity-core';
+import { isPlatformField, withPolicy, type FormPolicy } from '../../common/kyc/identity-core';
+import { isProfileKey } from '../../common/profile/client-profile';
 import { identityProblems, isAnswered } from './kyc-profile';
 import { isStoredFile } from './step-slugs';
 
@@ -93,6 +94,8 @@ export interface StateStep {
   title: string;
   enabled: boolean;
   fields: readonly StateField[];
+  /** An evidence step whose evidence the client may skip (Phase 2). */
+  evidenceRequired?: boolean;
 }
 
 /** The part of a submission read here. */
@@ -104,6 +107,8 @@ export interface StateSubmission {
   addressProof?: { docType?: string; filePath?: string; page2FilePath?: string } | null;
   stepData?: Record<string, Record<string, unknown>> | null;
   rejectedFields?: readonly string[] | null;
+  /** The requirements the submission was made under (0158) — approval re-checks these. */
+  formPolicy?: FormPolicy | null;
 }
 
 /**
@@ -187,14 +192,17 @@ export function approvalBlockers(
   submission: StateSubmission,
   now: Date,
 ): Owed[] {
+  // The form AS SUBMITTED: a broker who tightened it since (a detail made
+  // required, evidence no longer optional) must not strand what already waits.
+  const asSubmitted = submission.formPolicy ? withPolicy(steps, submission.formPolicy) : steps;
   const brokersOwn = new Set(
-    steps.flatMap((step) =>
+    asSubmitted.flatMap((step) =>
       step.fields
         .filter((field) => !isDocument(field) && !isPlatformField(step.slug, field))
         .map((field) => `${step.slug}:${field.name}`),
     ),
   );
-  return stepStates(steps, submission, now).flatMap((state) =>
+  return stepStates(asSubmitted, submission, now).flatMap((state) =>
     state.missing.filter((item) => !brokersOwn.has(`${state.slug}:${item.id}`)),
   );
 }
@@ -218,10 +226,14 @@ function documentOwed(
   // A submission from before a type was recorded: its first page stands for it,
   // as `missingRequiredPage` has always read it.
   if (!presenting) {
+    // Optional evidence (Phase 2): not started is skipped, and owes nothing.
+    if (step.evidenceRequired === false) return [];
     return files[0] ? [] : [{ id: 'docType', label: step.title, kind: 'choice' }];
   }
   // Pages on file belong to the stored document — never to another one.
   const own = presenting === stored?.docType ? files : [];
+  // A document merely CHOSEN, with no page yet, is not started either.
+  if (step.evidenceRequired === false && !own.some(Boolean)) return [];
   const fallback = category === 'identity' ? 'Identity document' : 'Proof of address';
   const entry = catalogueDocument(presenting);
   return missingRequiredPages({ docType: presenting, files: own }, category).map((page) => ({
@@ -240,11 +252,11 @@ function fieldsOwed(step: StateStep, submission: StateSubmission, now: Date): Ow
   const owed: Owed[] = [];
 
   /*
-   * The selfie is owed whenever the step is ENABLED — whatever its fields say,
-   * even with none. The step exists to take it, and `submit` has always asked
-   * for it on exactly that condition.
+   * The selfie is owed whenever the step is ENABLED and its evidence required —
+   * whatever its fields say, even with none. The step exists to take it; since
+   * Phase 2 the broker may make it optional.
    */
-  if (step.slug === 'selfie' && !submission.selfie?.filePath) {
+  if (step.slug === 'selfie' && step.evidenceRequired !== false && !submission.selfie?.filePath) {
     const label = step.fields.find((field) => isCanonicalSelfie(step, field))?.label;
     owed.push({ id: 'selfie', label: label || 'Selfie', kind: 'upload' });
   }
@@ -255,7 +267,10 @@ function fieldsOwed(step: StateStep, submission: StateSubmission, now: Date): Ow
    * would refuse — all of them, in the order the form shows them.
    */
   if (step.slug === 'personal') {
-    for (const problem of identityProblems(typed ?? undefined, now)) {
+    const asked = step.fields
+      .filter((field) => isProfileKey(field.name))
+      .map((field) => ({ name: field.name, required: field.required }));
+    for (const problem of identityProblems(typed ?? undefined, now, asked)) {
       owed.push(
         problem.kind === 'missing'
           ? { id: problem.key, label: problem.label, kind: 'answer' }
@@ -276,10 +291,10 @@ function fieldsOwed(step: StateStep, submission: StateSubmission, now: Date): Ow
     if (isDocument(field) || isPlatformField(step.slug, field)) continue;
     if (!field.required) continue;
     if (isPlainUpload(field)) {
-      if (!isStoredFile(files?.[field.name])) {
+      if (!isStoredFile(files?.[field.name] ?? answerElsewhere(submission, field.name))) {
         owed.push({ id: field.name, label: field.label || field.name, kind: 'upload' });
       }
-    } else if (!isAnswered(field, typed?.[field.name])) {
+    } else if (!isAnswered(field, typed?.[field.name] ?? answerElsewhere(submission, field.name))) {
       owed.push({ id: field.name, label: field.label || field.name, kind: 'answer' });
     }
   }
@@ -319,4 +334,44 @@ function returnedOn(
         blocking: blocking.has(id),
       }))
   );
+}
+
+/**
+ * An answer given where a question USED to be. The broker may move a question of
+ * theirs to another step (Phase 2); keys are unique across the form, so the
+ * answer the client already gave is still theirs, found by its key.
+ */
+export function answerElsewhere(submission: StateSubmission, name: string): unknown {
+  for (const answers of Object.values(submission.stepData ?? {})) {
+    if (answers && Object.prototype.hasOwnProperty.call(answers, name)) return answers[name];
+  }
+  const personal = submission.personalInfo as Record<string, unknown> | null | undefined;
+  return personal && Object.prototype.hasOwnProperty.call(personal, name)
+    ? personal[name]
+    : undefined;
+}
+
+/**
+ * The submission with every answer where the form asks for it NOW — a moved
+ * question's answer copied to its new step — so the client finds it filled in.
+ */
+export function answersInPlace<S extends StateSubmission>(
+  steps: readonly StateStep[],
+  submission: S,
+): S {
+  const stepData = { ...(submission.stepData ?? {}) };
+  const personalInfo = { ...((submission.personalInfo as Record<string, unknown> | null) ?? {}) };
+  for (const step of steps) {
+    for (const field of step.fields) {
+      if (isDocument(field) || isPlatformField(step.slug, field)) continue;
+      const inPersonal = step.slug === 'personal' && !isPlainUpload(field);
+      const home = inPersonal ? personalInfo : (stepData[step.slug] ?? {});
+      if (Object.prototype.hasOwnProperty.call(home, field.name)) continue;
+      const found = answerElsewhere(submission, field.name);
+      if (found === undefined) continue;
+      if (inPersonal) personalInfo[field.name] = found;
+      else stepData[step.slug] = { ...(stepData[step.slug] ?? {}), [field.name]: found };
+    }
+  }
+  return { ...submission, stepData, personalInfo };
 }

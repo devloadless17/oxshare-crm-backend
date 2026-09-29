@@ -230,7 +230,7 @@ export class CommissionService implements CommissionAccrualPort {
    */
   async accrueForSettledDeposit(deposit: {
     transactionId: string;
-    clientUserId: string;
+    clientUserId: number;
     amount: string;
     currency: string;
   }): Promise<number> {
@@ -293,7 +293,7 @@ export class CommissionService implements CommissionAccrualPort {
    */
   async accrueForClosedPosition(position: {
     positionId: string;
-    clientUserId: string;
+    clientUserId: number;
     lots: string;
     currency: string;
     /** The traded product's rate card — see `RevenueEvent.terms`. */
@@ -389,7 +389,7 @@ export class CommissionService implements CommissionAccrualPort {
     dealRowId: string;
     /** MT5's ticket, for the log line only. */
     ticket: string;
-    clientUserId: string;
+    clientUserId: number;
     /** Lots traded — what every term is priced against. */
     lots: string;
     currency: string;
@@ -457,7 +457,7 @@ export class CommissionService implements CommissionAccrualPort {
     sourceId: string;
     /** How to name this event in a log line, e.g. `deal 90210`. */
     describe: string;
-    clientUserId: string;
+    clientUserId: number;
     /** Lots traded — what every term is priced against. */
     lots: string;
     currency: string;
@@ -692,7 +692,7 @@ export class CommissionService implements CommissionAccrualPort {
   async accrueForDeposit(
     deposit: {
       transactionId: string;
-      clientUserId: string;
+      clientUserId: number;
       amount: string;
       currency: string;
     },
@@ -767,7 +767,7 @@ export class CommissionService implements CommissionAccrualPort {
     const payouts = new Map<
       string,
       {
-        recipientId: string;
+        recipientId: number;
         kind: 'commission' | 'rebate';
         total: Decimal;
         count: number;
@@ -788,7 +788,7 @@ export class CommissionService implements CommissionAccrualPort {
      * at all: it reads as a rate nobody can reproduce.
      */
     const recordPayout = (
-      recipientId: string,
+      recipientId: number,
       kind: 'commission' | 'rebate',
       amount: string,
       currency: string,
@@ -828,7 +828,7 @@ export class CommissionService implements CommissionAccrualPort {
     const groups = new Map<
       string,
       {
-        userId: string;
+        userId: number;
         walletKind: 'main' | 'commission';
         kind: 'commission' | 'rebate';
         currency: string;
@@ -1032,7 +1032,7 @@ export class CommissionService implements CommissionAccrualPort {
     payouts: Map<
       string,
       {
-        recipientId: string;
+        recipientId: number;
         kind: 'commission' | 'rebate';
         total: Decimal;
         count: number;
@@ -1203,6 +1203,7 @@ export class CommissionService implements CommissionAccrualPort {
       await this.visibility.assertVisible(
         accrual.kind === 'rebate' ? accrual.clientUserId : accrual.ibUserId,
         scope,
+        () => new NotFoundError('Accrual not found.'),
       );
 
       /*
@@ -1315,7 +1316,7 @@ export class CommissionService implements CommissionAccrualPort {
    * database's version would silently promote a suspended partner's parent from
    * depth 3 to depth 2 and pay them the wrong tier.
    */
-  private async loadChain(db: Executor, introducerId: string): Promise<Map<string, ChainNode>> {
+  private async loadChain(db: Executor, introducerId: number): Promise<Map<number, ChainNode>> {
     const result = await db.execute(sql`
       WITH RECURSIVE chain AS (
         SELECT a.user_id, a.parent_ib_user_id, a.active, a.level,
@@ -1341,8 +1342,8 @@ export class CommissionService implements CommissionAccrualPort {
      * way out.
      */
     const rows = result.rows as unknown as {
-      user_id: string;
-      parent_ib_user_id: string | null;
+      user_id: number;
+      parent_ib_user_id: number | null;
       active: boolean;
       level: number;
     }[];

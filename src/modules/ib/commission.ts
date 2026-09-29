@@ -61,8 +61,8 @@ export const MAX_CHAIN_DEPTH = 10;
 
 /** One partner in the chain above an earning event. */
 export interface ChainNode {
-  userId: string;
-  parentIbUserId: string | null;
+  userId: number;
+  parentIbUserId: number | null;
   /** A suspended partner keeps their tree and stops earning. */
   active: boolean;
   /**
@@ -79,7 +79,7 @@ export interface ChainNode {
 
 /** A resolved earner: who, and at what depth above the client. */
 export interface ChainEntry {
-  ibUserId: string;
+  ibUserId: number;
   /**
    * How many hops above the trading client this partner stands.
    *
@@ -127,15 +127,15 @@ export interface ChainEntry {
  * loop on the money path.
  */
 export function resolveChain(
-  introducerId: string | null | undefined,
-  lookup: (userId: string) => ChainNode | undefined,
+  introducerId: number | null | undefined,
+  lookup: (userId: number) => ChainNode | undefined,
 ): ChainEntry[] {
   if (!introducerId) return [];
 
   const chain: ChainEntry[] = [];
-  const seen = new Set<string>();
+  const seen = new Set<number>();
 
-  let currentId: string | null = introducerId;
+  let currentId: number | null = introducerId ?? null;
   for (let depth = 1; depth <= MAX_CHAIN_DEPTH && currentId; depth += 1) {
     if (seen.has(currentId)) break;
     seen.add(currentId);
@@ -254,7 +254,7 @@ export interface LevelTerms {
 }
 
 export interface Accrual {
-  ibUserId: string;
+  ibUserId: number;
   depth: number;
   /** Which LEVEL's share paid this — 0112. */
   levelId?: string;
@@ -295,7 +295,7 @@ export interface Accrual {
  * setting the rebate would be altering terms in a relationship they do not own.
  */
 export interface RebateLeg {
-  ibUserId: string;
+  ibUserId: number;
   levelId?: string;
   programId?: string;
   commissionTypeId?: string;

@@ -101,15 +101,27 @@ export class CreateIbApplicationDto {
   website?: string;
 }
 
-@NoClientFields(
-  'the application and its commission terms; the shapes naming a PERSON in this file are marked field by field',
-)
+/*
+ * Field by field since D-82: `motivation` and `website` are the applicant's own
+ * words, and a class-wide "no client fields" waved them through every mask.
+ */
 export class IbApplicationDto {
-  @ApiProperty() id: string;
-  @ApiProperty() userId: string;
-  @ApiProperty({ type: 'string', nullable: true }) motivation: string | null;
-  @ApiProperty({ type: 'string', nullable: true }) website: string | null;
-  @ApiProperty({ enum: IB_APPLICATION_STATUSES }) status: IbApplicationStatusDto;
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty()
+  id: string;
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty()
+  userId: number;
+  @ClientField('client.partnerApplication')
+  @ApiProperty({ type: 'string', nullable: true })
+  motivation: string | null;
+  @ClientField('client.partnerApplication')
+  @ApiProperty({ type: 'string', nullable: true })
+  website: string | null;
+  @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
+  @ApiProperty({ enum: IB_APPLICATION_STATUSES })
+  status: IbApplicationStatusDto;
+  @NotClientField('the desk\u2019s decision about the record, not an attribute of the person')
   @ApiProperty({
     type: 'string',
     nullable: true,
@@ -124,19 +136,40 @@ export class IbApplicationDto {
    * applicant can see what they asked for while they wait — the one detail
    * they cannot otherwise recover once the form is gone.
    */
-  @ApiPropertyOptional({ type: 'string', nullable: true }) agencyName: string | null;
-  @ApiProperty({ type: 'string', nullable: true }) reviewedBy: string | null;
-  @ApiProperty({ type: 'string', format: 'date-time', nullable: true }) reviewedAt: Date | null;
-  @ApiProperty() submittedAt: Date;
+  @NotClientField('a catalogue name on the record, not an attribute of the person')
+  @ApiPropertyOptional({ type: 'string', nullable: true })
+  agencyName: string | null;
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty({ type: 'string', nullable: true })
+  reviewedBy: string | null;
+  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
+  @ApiProperty({ type: 'string', format: 'date-time', nullable: true })
+  reviewedAt: Date | null;
+  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
+  @ApiProperty()
+  submittedAt: Date;
 }
 
 @NoClientFields(
   'the application and its commission terms; the shapes naming a PERSON in this file are marked field by field',
 )
 export class IbAccountDto {
-  @ApiProperty() userId: string;
+  @ApiProperty({ type: 'integer' }) userId: number;
   @ApiProperty() level: number;
-  @ApiProperty({ type: 'string', nullable: true }) parentIbUserId: string | null;
+  @ApiProperty({
+    type: 'integer',
+    nullable: true,
+    description:
+      'Null at the top of a chain — or, on an admin response, when the parent is ' +
+      'outside your territory (`parentOutsideTerritory`).',
+  })
+  parentIbUserId: number | null;
+  @ApiPropertyOptional({
+    description:
+      'Admin responses only: true when a parent exists that the reader may not see. The ' +
+      'fact, never the id (R1).',
+  })
+  parentOutsideTerritory?: boolean;
   @ApiProperty({ description: 'What a client types at registration to be attributed here.' })
   referralCode: string;
   @ApiProperty() active: boolean;
@@ -258,7 +291,7 @@ export class ApproveIbApplicationDto {
    * partner apply past the two-level ladder.
    */
   @ApiPropertyOptional({
-    type: 'string',
+    type: 'integer',
     nullable: true,
     description:
       'The parent to nest the new partner under. OMITTED means "the reviewer did not say" — ' +
@@ -267,8 +300,9 @@ export class ApproveIbApplicationDto {
       'introduced them.',
   })
   @IsOptional()
-  @IsUUID()
-  parentIbUserId?: string | null;
+  @IsInt()
+  @Min(1)
+  parentIbUserId?: number | null;
 
   /**
    * Override the agency the applicant asked for.
@@ -383,13 +417,14 @@ export class ReverseAccrualDto {
  */
 export class ReassignIbParentDto {
   @ApiProperty({
-    type: 'string',
+    type: 'integer',
     nullable: true,
     description: 'The new parent partner, or null to make them a direct partner.',
   })
   @ValidateIf((_, value) => value !== null)
-  @IsUUID()
-  parentIbUserId: string | null;
+  @IsInt()
+  @Min(1)
+  parentIbUserId: number | null;
 }
 
 export class SetIbActiveDto {
@@ -406,7 +441,7 @@ export class SetIbActiveDto {
 export class IbPartnerPersonDto {
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty()
-  userId: string;
+  userId: number;
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty({ type: 'integer', example: 1000245, description: 'Their Portal ID.' })
   portalId: number;
@@ -495,7 +530,7 @@ export class IbPartnerEarningsDto {
 export class IbPartnerDetailDto {
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty()
-  userId: string;
+  userId: number;
   /*
    * The RUNG this partner stands on, and the terms it carries (0112).
    *
@@ -616,15 +651,36 @@ export class IbPartnerDetailDto {
   @ApiProperty({
     type: [IbSubPartnerRowDto],
     description:
-      'SCOPED to the reader’s territory. No out-of-territory total accompanies it — a count ' +
-      'is itself a disclosure, and there is no row cap here for one to describe.',
+      'SCOPED to the reader’s territory. The ones withheld are counted in ' +
+      '`directPartnersOutsideScope` — never named.',
   })
   directPartners: IbSubPartnerRowDto[];
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  @ApiProperty({
+    type: 'integer',
+    description:
+      'How many direct sub-partners sit OUTSIDE the reader’s territory, and so are absent from ' +
+      '`directPartners`. Zero for an unrestricted reader. A count, no identity (R2): a line ' +
+      'that silently dropped them would read as a partner with nobody beneath them.',
+  })
+  directPartnersOutsideScope: number;
   @NotClientField(
     'not a client-owned attribute \u2014 referredClientCount describes the record rather than the person',
   )
   @ApiProperty({ description: 'How many clients they introduced.' })
   referredClientCount: number;
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  @ApiProperty({
+    type: 'integer',
+    description:
+      'How many clients this partner introduced sit OUTSIDE the reader’s territory, and so are ' +
+      'absent from `referredClientCount`. Zero for an unrestricted reader. A count, no identity.',
+  })
+  referredClientsOutsideScope: number;
   @NotClientField(
     'not a client-owned attribute \u2014 earnings describes the record rather than the person',
   )
@@ -666,7 +722,7 @@ export const IB_PARTNER_STATUSES = ['active', 'suspended'] as const;
   'the partner account: rung, code, state and appointment — none of it an attribute of the person',
 )
 export class IbPartnerListAccountDto {
-  @ApiProperty() userId: string;
+  @ApiProperty({ type: 'integer' }) userId: number;
   @ApiProperty({ example: 1, description: 'The rung, which decides their terms (0112).' })
   level: number;
   @ApiProperty({ description: 'What a client types at registration to be attributed here.' })
@@ -686,8 +742,8 @@ export class IbPartnerListAccountDto {
  */
 export class IbPartnerListPersonDto {
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
-  @ApiProperty()
-  id: string;
+  @ApiProperty({ type: 'integer', example: 1000245, description: 'The client’s Portal ID (0159).' })
+  id: number;
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty({ type: 'integer', example: 1000245, description: 'Their Portal ID.' })
   portalId: number;

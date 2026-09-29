@@ -81,7 +81,7 @@ beforeEach(() => {
 describe('saving the whole form', () => {
   it('accepts its own read back, inside one locked transaction, and audits it there', async () => {
     const service = makeService();
-    await service.updateKycConfig(FORM, ADMIN, kycConfigVersion(FORM));
+    await service.updateKycConfig(FORM, ADMIN, kycConfigVersion(FORM), 2);
 
     expect(lockForChange).toHaveBeenCalledWith('tx');
     expect(setSteps).toHaveBeenCalledWith(FORM, 'tx');
@@ -97,15 +97,15 @@ describe('saving the whole form', () => {
 
   it('refuses a save made from a version somebody else has since changed', async () => {
     const service = makeService();
-    await expect(service.updateKycConfig(FORM, ADMIN, 'an-older-version')).rejects.toBeInstanceOf(
-      KycConfigStaleError,
-    );
+    await expect(
+      service.updateKycConfig(FORM, ADMIN, 'an-older-version', 2),
+    ).rejects.toBeInstanceOf(KycConfigStaleError);
     expect(setSteps).not.toHaveBeenCalled();
   });
 
   it('lets a builder that names no version through — deploying the API first breaks no screen', async () => {
     const service = makeService();
-    await service.updateKycConfig(FORM, ADMIN, undefined);
+    await service.updateKycConfig(FORM, ADMIN, undefined, 2);
     expect(setSteps).toHaveBeenCalled();
   });
 
@@ -115,6 +115,8 @@ describe('saving the whole form', () => {
       service.updateKycConfig(
         FORM.filter((step) => step.slug !== 'document'),
         ADMIN,
+        undefined,
+        2,
       ),
     ).rejects.toBeInstanceOf(FieldValidationError);
     expect(setSteps).not.toHaveBeenCalled();
@@ -123,7 +125,7 @@ describe('saving the whole form', () => {
   it('records WHAT changed, in the builder’s words', async () => {
     const service = makeService();
     const off = FORM.map((step) => (step.slug === 'address' ? { ...step, enabled: false } : step));
-    await service.updateKycConfig(off, ADMIN);
+    await service.updateKycConfig(off, ADMIN, undefined, 2);
     expect(recordWithin).toHaveBeenCalledWith(
       'tx',
       'admin-1',
@@ -141,21 +143,23 @@ describe('saving the whole form', () => {
 describe('a whole-form save needs the permission of what it does', () => {
   it('refuses ADDING a step without kyc.create — the per-step route would refuse it too', async () => {
     const service = makeService();
-    await expect(service.updateKycConfig([...FORM, FUNDS], EDITOR)).rejects.toBeInstanceOf(
-      AuthorizationError,
-    );
+    await expect(
+      service.updateKycConfig([...FORM, FUNDS], EDITOR, undefined, 2),
+    ).rejects.toBeInstanceOf(AuthorizationError);
     expect(setSteps).not.toHaveBeenCalled();
   });
 
   it('refuses REMOVING a step without kyc.delete', async () => {
     const service = makeService([...FORM, FUNDS]);
-    await expect(service.updateKycConfig(FORM, EDITOR)).rejects.toBeInstanceOf(AuthorizationError);
+    await expect(service.updateKycConfig(FORM, EDITOR, undefined, 2)).rejects.toBeInstanceOf(
+      AuthorizationError,
+    );
   });
 
   it('lets kyc.edit alone change what is already there', async () => {
     const service = makeService([...FORM, FUNDS]);
     const renamed = [...FORM, { ...FUNDS, title: 'Where your money comes from' }];
-    await service.updateKycConfig(renamed, EDITOR);
+    await service.updateKycConfig(renamed, EDITOR, undefined, 2);
     expect(setSteps).toHaveBeenCalled();
   });
 });
@@ -163,7 +167,7 @@ describe('a whole-form save needs the permission of what it does', () => {
 describe('the per-step routes take the same path', () => {
   it('refuses DELETING a built-in step — that route used to check nothing', async () => {
     const service = makeService();
-    await expect(service.deleteKycStep('step-3', ADMIN)).rejects.toThrow(/cannot be removed/);
+    await expect(service.deleteKycStep('step-3', ADMIN)).rejects.toThrow(/cannot be deleted/);
     expect(setSteps).not.toHaveBeenCalled();
   });
 
@@ -181,20 +185,17 @@ describe('the per-step routes take the same path', () => {
     ).rejects.toBeInstanceOf(NotFoundError);
   });
 
-  it('switches Selfie off, and refuses switching Identity Document off', async () => {
+  it('switches Selfie off — and Identity Document too, since Phase 2', async () => {
     const service = makeService();
     await service.updateKycStep('step-3', { enabled: false }, ADMIN);
-    expect(setSteps).toHaveBeenCalled();
-    await expect(service.updateKycStep('step-2', { enabled: false }, ADMIN)).rejects.toThrow(
-      /always on/,
-    );
+    await service.updateKycStep('step-2', { enabled: false }, ADMIN);
+    expect(setSteps).toHaveBeenCalledTimes(2);
   });
 
-  it('refuses renaming a built-in step', async () => {
+  it('retitles a built-in step (Phase 2)', async () => {
     const service = makeService();
-    await expect(
-      service.updateKycStep('step-4', { title: 'Address check' }, ADMIN),
-    ).rejects.toThrow(/keeps its name/);
+    await service.updateKycStep('step-4', { title: 'Address check' }, ADMIN);
+    expect(setSteps).toHaveBeenCalled();
   });
 
   it('gives a new step an address from its title', async () => {

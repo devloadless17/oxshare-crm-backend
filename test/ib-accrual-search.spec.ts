@@ -31,13 +31,13 @@ import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './mone
 
 let ctx: MoneyTestContext;
 let store: IbStore;
-let alexId: string;
-let bruceId: string;
-let clientId: string;
+let alexId: number;
+let bruceId: number;
+let clientId: number;
 let tagId: string;
 
-async function makeUser(email: string, first: string, last: string): Promise<string> {
-  const { rows } = await ctx.db.execute<{ id: string }>(sql`
+async function makeUser(email: string, first: string, last: string): Promise<number> {
+  const { rows } = await ctx.db.execute<{ id: number }>(sql`
     INSERT INTO users (email, password_hash, first_name, last_name)
     VALUES (${email}, 'x', ${first}, ${last})
     RETURNING id
@@ -45,7 +45,7 @@ async function makeUser(email: string, first: string, last: string): Promise<str
   return rows[0].id;
 }
 
-async function accrue(partnerId: string, sourceId: string) {
+async function accrue(partnerId: number, sourceId: string) {
   await ctx.db.execute(sql`
     INSERT INTO ib_accruals
       (ib_user_id, client_user_id, source_type, source_id, depth, rate_value,
@@ -87,8 +87,8 @@ afterAll(async () => {
 });
 
 interface AccrualRow {
-  accrual: { ibUserId: string };
-  partner: { id: string; email: string | null };
+  accrual: { ibUserId: number };
+  partner: { id: number; email: string | null };
 }
 
 function page(q?: string, scope = UNRESTRICTED) {
@@ -176,7 +176,7 @@ describe('narrowing the commission ledger to a partner by name', () => {
     await ctx.db.execute(sql`
       DELETE FROM client_tag_assignments WHERE user_id = ${bruceId}
     `);
-    const desk = scopeOf([tagId], false);
+    const desk = scopeOf([tagId], false, false);
 
     const mine = await page('alexandra', desk);
     expect(mine.rows.length).toBe(2);

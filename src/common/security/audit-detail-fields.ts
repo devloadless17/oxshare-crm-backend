@@ -1,4 +1,5 @@
 import { PROFILE_FIELD_KEYS } from '../profile/client-profile';
+import { HIDDEN, HIDDEN_TEXT } from './mask-by-shape';
 
 /**
  * Which keys inside `audit_log.details` carry a CLIENT-OWNED value, per action.
@@ -76,7 +77,13 @@ export const AUDIT_DETAIL_FIELDS: Readonly<
  * shared with a cache or a serialiser, and masking in place would make what got
  * hidden depend on which consumer ran first.
  */
-export function maskAuditDetails<T>(action: string, details: T, mask: readonly string[]): T {
+export function maskAuditDetails<T>(
+  action: string,
+  details: T,
+  mask: readonly string[],
+  /** Written where a value was, for a FILE; omitted on a screen, where the key goes. */
+  placeholder?: string,
+): T {
   const declared = AUDIT_DETAIL_FIELDS[action];
   if (!declared || details === null || typeof details !== 'object' || Array.isArray(details)) {
     return details;
@@ -91,8 +98,10 @@ export function maskAuditDetails<T>(action: string, details: T, mask: readonly s
       kept[key] = value;
     } else if (typeof declaration === 'string') {
       // One value, one catalogue key: withheld whole.
-      if (hidden.has(declaration)) narrowed = true;
-      else kept[key] = value;
+      if (hidden.has(declaration)) {
+        narrowed = true;
+        if (placeholder !== undefined) kept[key] = placeholder;
+      } else kept[key] = value;
     } else if (value === null || typeof value !== 'object' || Array.isArray(value)) {
       kept[key] = value;
     } else {
@@ -100,8 +109,10 @@ export function maskAuditDetails<T>(action: string, details: T, mask: readonly s
       const inner: Record<string, unknown> = {};
       for (const [field, fieldValue] of Object.entries(value as Record<string, unknown>)) {
         const catalogueKey = declaration[field];
-        if (catalogueKey !== undefined && hidden.has(catalogueKey)) narrowed = true;
-        else inner[field] = fieldValue;
+        if (catalogueKey !== undefined && hidden.has(catalogueKey)) {
+          narrowed = true;
+          if (placeholder !== undefined) inner[field] = placeholder;
+        } else inner[field] = fieldValue;
       }
       kept[key] = inner;
     }
@@ -114,12 +125,15 @@ export function maskAuditDetails<T>(action: string, details: T, mask: readonly s
  * consult it cannot disagree about its spelling.
  */
 const CLIENT_EMAIL = 'client.email';
+/** …and for the address a client acted from (D-82). */
+const CLIENT_IP = 'client.ipAddress';
 
 /** The parts of an audit row this module is allowed to narrow. */
 export type AuditMaskableRow = {
   action: string;
   actorKind?: string | null;
   actorEmail?: string | null;
+  ipAddress?: string | null;
   details?: unknown;
 };
 
@@ -162,13 +176,28 @@ export type AuditMaskableRow = {
  * hypothetical here — it is how the withdrawal desk leaked for seventeen days
  * after its own list was fixed.
  */
-export function maskAuditRow<T extends AuditMaskableRow>(row: T, mask: readonly string[]): T {
+export function maskAuditRow<T extends AuditMaskableRow>(
+  row: T,
+  mask: readonly string[],
+  /**
+   * `'file'` for the CSV export: a hidden value becomes `HIDDEN` (the actor's
+   * email and IP, which the writer prints `[hidden]`) or the text `[hidden]`
+   * (inside the details JSON), never a gap that reads as "none" (D-82).
+   */
+  target: 'screen' | 'file' = 'screen',
+): T {
+  const file = target === 'file';
   const out: Record<string, unknown> = {
     ...row,
-    details: maskAuditDetails(row.action, row.details, mask),
+    details: maskAuditDetails(row.action, row.details, mask, file ? HIDDEN_TEXT : undefined),
   };
-  if (row.actorKind === 'client' && mask.includes(CLIENT_EMAIL)) {
-    delete out.actorEmail;
+  const clientActor = row.actorKind === 'client';
+  if (clientActor && mask.includes(CLIENT_EMAIL)) {
+    if (file) out.actorEmail = HIDDEN;
+    else delete out.actorEmail;
   }
+  // The screen's read already nulls a hidden client IP (`AuditLogStore`); a file
+  // says it was hidden rather than absent.
+  if (file && clientActor && mask.includes(CLIENT_IP)) out.ipAddress = HIDDEN;
   return out as T;
 }

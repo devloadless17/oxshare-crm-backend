@@ -28,7 +28,7 @@ const alwaysLeads = () =>
  * so there is no unscoped fan-out left to test.
  */
 
-const CLIENT_ID = 'c1111111-1111-1111-1111-111111111111';
+const CLIENT_ID = 1000111;
 
 interface FakeAdmin {
   id: string;
@@ -62,16 +62,20 @@ function build(opts: {
     {
       scopeFor: vi
         .fn()
-        .mockImplementation((adminId: string) =>
+        .mockImplementation(({ id: adminId }: { id: string }) =>
           Promise.resolve(
             (opts.scopeTags?.[adminId] ?? []).length > 0
-              ? scopeOf(opts.scopeTags?.[adminId] ?? [])
+              ? scopeOf(
+                  opts.scopeTags?.[adminId] ?? [],
+                  false,
+                  (opts.scopeTags?.[adminId] ?? []).length === 0,
+                )
               : UNRESTRICTED,
           ),
         ),
     } as unknown as AdminClientScopesStore,
     {
-      assertVisible: vi.fn().mockImplementation((clientId: string, scope) => {
+      assertVisible: vi.fn().mockImplementation((clientId: number, scope) => {
         void clientId;
         void scope;
         return Promise.resolve();
@@ -124,7 +128,7 @@ describe('notifyAdmins', () => {
 
   it('drops scoped admins whose territory does not cover the subject client', async () => {
     const visibility = {
-      assertVisible: vi.fn().mockImplementation((clientId: string, scope) => {
+      assertVisible: vi.fn().mockImplementation((clientId: number, scope) => {
         void clientId;
         // Only the tag 'north' covers this client.
         const tags = (scope as { tagIds: readonly string[] }).tagIds;
@@ -154,9 +158,12 @@ describe('notifyAdmins', () => {
           ),
       } as unknown as RolesStore,
       {
-        scopeFor: vi.fn().mockImplementation((adminId: string) => {
-          if (adminId === 'in-territory') return Promise.resolve(scopeOf(['north']));
-          if (adminId === 'out-of-territory') return Promise.resolve(scopeOf(['south']));
+        // Takes the admin ROW since 0154 — matching on an id string made every admin
+        // unrestricted here, and the refusal this case proves went unobserved.
+        scopeFor: vi.fn().mockImplementation(({ id: adminId }: { id: string }) => {
+          if (adminId === 'in-territory') return Promise.resolve(scopeOf(['north'], false, false));
+          if (adminId === 'out-of-territory')
+            return Promise.resolve(scopeOf(['south'], false, false));
           return Promise.resolve(UNRESTRICTED);
         }),
       } as unknown as AdminClientScopesStore,
@@ -167,7 +174,7 @@ describe('notifyAdmins', () => {
     await service.notifyAdmins({
       kind: 'admin.kyc.submitted',
       params: { userId: CLIENT_ID },
-      subject: { id: CLIENT_ID, clientId: CLIENT_ID },
+      subject: { id: String(CLIENT_ID), clientId: CLIENT_ID },
     });
 
     const recipients = insertAdminTask.mock.calls[0][0] as string[];
@@ -193,7 +200,7 @@ describe('notifyAdmins', () => {
           ),
       } as unknown as RolesStore,
       {
-        scopeFor: vi.fn().mockResolvedValue(scopeOf(['south'])),
+        scopeFor: vi.fn().mockResolvedValue(scopeOf(['south'], false, false)),
       } as unknown as AdminClientScopesStore,
       { assertVisible } as unknown as ClientVisibilityService,
       alwaysLeads(),
@@ -227,7 +234,7 @@ describe('notifyAdmins', () => {
           ),
       } as unknown as RolesStore,
       {
-        scopeFor: vi.fn().mockResolvedValue(scopeOf(['north'])),
+        scopeFor: vi.fn().mockResolvedValue(scopeOf(['north'], false, false)),
       } as unknown as AdminClientScopesStore,
       {
         // NOT a NotFoundError: the database blipped. Swallowing this as
@@ -241,7 +248,7 @@ describe('notifyAdmins', () => {
       service.notifyAdmins({
         kind: 'admin.kyc.submitted',
         params: {},
-        subject: { id: CLIENT_ID, clientId: CLIENT_ID },
+        subject: { id: String(CLIENT_ID), clientId: CLIENT_ID },
       }),
     ).resolves.toBeUndefined();
     // The failure aborted the sweep into the LOGGING catch — nothing was
@@ -265,7 +272,7 @@ describe('notifyAdmins', () => {
       service.notifyAdmins({
         kind: 'admin.kyc.submitted',
         params: {},
-        subject: { id: CLIENT_ID, clientId: CLIENT_ID },
+        subject: { id: String(CLIENT_ID), clientId: CLIENT_ID },
       }),
     ).resolves.toBeUndefined();
   });
@@ -284,7 +291,7 @@ describe('notifyAdmins', () => {
     );
 
     const input = {
-      recipient: { kind: 'client' as const, id: 'u1' },
+      recipient: { kind: 'client' as const, id: 1000112 },
       kind: 'kyc.approved',
       params: {},
     };

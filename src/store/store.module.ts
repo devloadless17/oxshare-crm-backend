@@ -4,6 +4,7 @@ import { AdminClientScopesStore } from './admin-client-scopes.store';
 import { ApiKeysStore } from './api-keys.store';
 import { AppSettingsStore } from './app-settings.store';
 import { ProductsStore } from './products.store';
+import { ClientIdentityStore } from './client-identity.store';
 import { ClientTagsStore } from './client-tags.store';
 import { DepositProofsStore } from './deposit-proofs.store';
 import { AdminsStore, InvitesStore } from './admins.store';
@@ -28,6 +29,7 @@ const STORES = [
   ApiKeysStore,
   AppSettingsStore,
   ProductsStore,
+  ClientIdentityStore,
   ClientTagsStore,
   DepositProofsStore,
   InvitesStore,

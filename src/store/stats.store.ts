@@ -1,10 +1,12 @@
-import { sql, type SQL } from 'drizzle-orm';
+import { sql, type SQL, type SQLWrapper } from 'drizzle-orm';
 import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db } from '../database/db';
 import {
+  clientVerifications,
   ibApplications,
   ibAccounts,
+  kycSubmissionAttempts,
   kycSubmissions,
   transactions,
   users,
@@ -340,51 +342,69 @@ export class StatsStore {
   }
 
   /**
-   * KYC submissions and approvals per day, same zero-filling.
+   * KYC submissions and approvals per day, same zero-filling — counted from
+   * HISTORY, never from the live rows.
    *
-   * TWO date columns over one table, so this cannot be a single LEFT JOIN on a
-   * shared key: a submission made on Monday and approved on Thursday belongs to
-   * Monday's submitted count and Thursday's approved count. Two correlated
-   * aggregates against the calendar keep each on its own date rather than
-   * forcing one of the two to be wrong.
+   * The live table holds ONE row per client, overwritten as they move on. Counted
+   * there, a client's first submission vanished when they resubmitted, an
+   * approval vanished when re-verification was requested, and a reset erased
+   * both. So:
    *
-   * `approved` counts by `reviewed_at` AND `status = 'approved'` — a row
-   * reviewed and REJECTED on a day is not an approval that day, and counting
-   * every review as an approval is the kind of number that reads plausibly on a
-   * dashboard for months.
+   *  - `submitted`: every submission once — the archived attempts (every
+   *    decision archives the submission it decided) plus those still waiting.
+   *    `UNION`, not `UNION ALL`: a re-verification archives the submission its
+   *    approval already archived, with the same `submitted_at`, and it is one
+   *    submission, not two.
+   *  - `approved`: the decision LOG (`client_verifications`, append-only), by
+   *    when each was decided. Only a review's decisions count — manual, or a
+   *    provider's one day. `legacy` and `fixture` rows square a level when the
+   *    log began (0152); they are not decisions anybody made that day.
+   *
+   * A submission and its approval still land on their own dates. Each source is
+   * one grouped pass rather than a subquery per day: these tables grow with
+   * history, where the live one had one row per client. Unaliased tables for the
+   * reason `registrationsByDay` records: the scope predicate names the table.
    */
   async kycTrendByDay(scope: ClientScope, days: number): Promise<KycTrendPoint[]> {
-    const visible = clientScopePredicate(scope, kycSubmissions.userId);
-    const scoped = visible ? sql` AND ${visible}` : sql``;
+    const within = (clientId: SQLWrapper) => {
+      const visible = clientScopePredicate(scope, clientId);
+      return visible ? sql` AND ${visible}` : sql``;
+    };
+    const start = windowStart(days);
 
-    /*
-     * Unaliased for the reason `registrationsByDay` records: the scope predicate
-     * renders `"kyc_submissions"."user_id"`, and an alias would put that name out
-     * of the subquery's scope — a 500 that only a SCOPED admin ever sees.
-     *
-     * The two subqueries are independent scans of the same table rather than one
-     * grouped pass, which is deliberate rather than lazy: a submission made
-     * Monday and approved Thursday belongs to Monday's `submitted` and
-     * Thursday's `approved`, so there is no single GROUP BY key that puts both
-     * on the right day. `kyc_submissions_submitted_at_idx` serves the first and
-     * the table is one row per client, so this is small either way.
-     */
     const result = await this.db.execute<{ day: string; submitted: number; approved: number }>(sql`
-      WITH days AS (${dateSeries(days)})
+      WITH days AS (${dateSeries(days)}),
+      submissions AS (
+        SELECT ${kycSubmissionAttempts.userId} AS user_id, ${kycSubmissionAttempts.submittedAt} AS at
+          FROM ${kycSubmissionAttempts}
+         WHERE ${kycSubmissionAttempts.submittedAt} >= ${start}${within(kycSubmissionAttempts.userId)}
+        UNION
+        SELECT ${kycSubmissions.userId}, ${kycSubmissions.submittedAt}
+          FROM ${kycSubmissions}
+         WHERE ${kycSubmissions.status} IN ('submitted', 'under_review')
+           AND ${kycSubmissions.submittedAt} >= ${start}${within(kycSubmissions.userId)}
+      ),
+      submitted AS (
+        SELECT date_trunc('day', at AT TIME ZONE 'UTC')::date AS day, count(*)::int AS n
+          FROM submissions
+         GROUP BY 1
+      ),
+      approved AS (
+        SELECT date_trunc('day', ${clientVerifications.decidedAt} AT TIME ZONE 'UTC')::date AS day,
+               count(*)::int AS n
+          FROM ${clientVerifications}
+         WHERE ${clientVerifications.outcome} = 'verified'
+           AND ${clientVerifications.method} IN ('manual_review', 'provider')
+           AND ${clientVerifications.decidedAt} >= ${start}${within(clientVerifications.userId)}
+         GROUP BY 1
+      )
       SELECT
         to_char(days.day, 'YYYY-MM-DD') AS day,
-        (
-          SELECT count(*)::int FROM ${kycSubmissions}
-          WHERE date_trunc('day', ${kycSubmissions.submittedAt} AT TIME ZONE 'UTC')::date = days.day
-            AND ${kycSubmissions.submittedAt} >= ${windowStart(days)}${scoped}
-        ) AS submitted,
-        (
-          SELECT count(*)::int FROM ${kycSubmissions}
-          WHERE date_trunc('day', ${kycSubmissions.reviewedAt} AT TIME ZONE 'UTC')::date = days.day
-            AND ${kycSubmissions.reviewedAt} >= ${windowStart(days)}
-            AND ${kycSubmissions.status} = 'approved'${scoped}
-        ) AS approved
+        coalesce(submitted.n, 0) AS submitted,
+        coalesce(approved.n, 0) AS approved
       FROM days
+      LEFT JOIN submitted ON submitted.day = days.day
+      LEFT JOIN approved ON approved.day = days.day
       ORDER BY days.day
     `);
 

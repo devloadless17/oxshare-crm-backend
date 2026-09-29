@@ -8,7 +8,7 @@ import { IbStore } from '../../store/ib.store';
 import { RolesStore } from '../../store/roles.store';
 import { AuthorizationError, ValidationError } from '../../common/errors/domain-errors';
 import { actorHasPermission, assertActorCan, assertActorCanAny } from '../../common/security/actor';
-import { maskByShape } from '../../common/security/mask-by-shape';
+import { maskForExport } from '../../common/security/mask-by-shape';
 import { ClientRowDto, KycSubmissionDto } from './dto/responses.dto';
 import {
   FinancialExportRowDto,
@@ -30,7 +30,6 @@ import {
   emailVerifiedFilter,
   kycStatusFilter,
   referredFilter,
-  UUID_RE,
   withReferrers,
   type ClientRowReferrer,
 } from './admin-clients.service';
@@ -184,11 +183,7 @@ export class AdminExportService {
      * an ignored filter is a file of every client under a heading that says it
      * is one partner's book.
      */
-    if (
-      query.referredBy !== undefined &&
-      query.referredBy !== '' &&
-      !UUID_RE.test(query.referredBy)
-    ) {
+    if (query.referredBy !== undefined && !Number.isSafeInteger(query.referredBy)) {
       throw new ValidationError('referredBy must be a client id.');
     }
     const referredBy = query.referredBy || undefined;
@@ -252,7 +247,7 @@ export class AdminExportService {
      * this would make the export button a documented bypass of the masking
      * feature, which is the same class of defect as skipping the client scope.
      */
-    return maskByShape(ClientRowDto, withTags, actor.fieldMask);
+    return maskForExport(ClientRowDto, withTags, actor.fieldMask);
   }
 
   // ── Withdrawals ───────────────────────────────────────────────────────────
@@ -318,7 +313,7 @@ export class AdminExportService {
      * re-imports it. A CSV has nowhere to put `maskedFields`, so the header is
      * the only place left to say the column exists at all.
      */
-    return maskByShape(WithdrawalExportRowDto, rows, actor.fieldMask);
+    return maskForExport(WithdrawalExportRowDto, rows, actor.fieldMask);
   }
 
   // ── Financial transactions (the platform-wide movement list) ──────────────
@@ -385,7 +380,7 @@ export class AdminExportService {
      * CSV writer renders the removed field as blank, never a dropped column
      * that shifts every later value under the wrong heading.
      */
-    return maskByShape(FinancialExportRowDto, rows, actor.fieldMask);
+    return maskForExport(FinancialExportRowDto, rows, actor.fieldMask);
   }
 
   // ── Wallets ───────────────────────────────────────────────────────────────
@@ -450,7 +445,7 @@ export class AdminExportService {
    * feature — the defect `test/admin-export.spec.ts` exists to catch.
    */
   async walletBatch(
-    query: { userId?: string; currency?: string },
+    query: { userId?: number; currency?: string },
     actor: AuthenticatedAdmin,
     offset: number,
     limit: number,
@@ -474,7 +469,7 @@ export class AdminExportService {
      * DECLARED schemas and not over routes.
      */
     const rows = await this.holdings.walletExportBatch(query, actor, offset, limit, startedAt);
-    return maskByShape(WalletExportRowDto, rows, actor.fieldMask);
+    return maskForExport(WalletExportRowDto, rows, actor.fieldMask);
   }
 
   // ── Trading accounts ──────────────────────────────────────────────────────
@@ -516,7 +511,7 @@ export class AdminExportService {
   ];
 
   async tradingAccountBatch(
-    query: { userId?: string; environment?: string; status?: string },
+    query: { userId?: number; environment?: string; status?: string },
     actor: AuthenticatedAdmin,
     offset: number,
     limit: number,
@@ -546,7 +541,7 @@ export class AdminExportService {
       limit,
       startedAt,
     );
-    return maskByShape(TradingAccountExportRowDto, rows, actor.fieldMask);
+    return maskForExport(TradingAccountExportRowDto, rows, actor.fieldMask);
   }
 
   // ── KYC ───────────────────────────────────────────────────────────────────
@@ -604,7 +599,7 @@ export class AdminExportService {
     // The same mask the queue applies (admin-compliance.service.ts). Without
     // it the export was the one KYC surface that handed a masked reviewer the
     // client email — a downloadable copy of exactly what every screen withheld.
-    return maskByShape(KycSubmissionDto, items, actor.fieldMask);
+    return maskForExport(KycSubmissionDto, items, actor.fieldMask);
   }
 
   // ── Audit log ─────────────────────────────────────────────────────────────
@@ -702,7 +697,7 @@ export class AdminExportService {
      * Same declaration as the list read (`audit-detail-fields.ts`), so the two
      * cannot drift: one definition, two call sites.
      */
-    return items.slice(0, limit).map((row) => maskAuditRow(row, actor.fieldMask));
+    return items.slice(0, limit).map((row) => maskAuditRow(row, actor.fieldMask, 'file'));
   }
 
   // ── IB applications ───────────────────────────────────────────────────────
@@ -760,7 +755,7 @@ export class AdminExportService {
      * The interceptor cannot cover this: the response is a byte stream by the
      * time it exists, which is why every export masks its ROWS instead.
      */
-    return maskByShape(IbApplicationExportRowDto, rows, actor.fieldMask);
+    return maskForExport(IbApplicationExportRowDto, rows, actor.fieldMask);
   }
 
   // ── IB partners ───────────────────────────────────────────────────────────
@@ -802,7 +797,7 @@ export class AdminExportService {
       active: filter.active,
     });
     // Same reasoning as `ibApplicationBatch` above.
-    return maskByShape(IbPartnerExportRowDto, rows, actor.fieldMask);
+    return maskForExport(IbPartnerExportRowDto, rows, actor.fieldMask);
   }
 
   // ── Roles ─────────────────────────────────────────────────────────────────
@@ -872,7 +867,7 @@ export interface ClientExportQuery {
    * filtered by it and the export did not accept it, so "export the clients
    * this partner brought in" produced every client in the scope.
    */
-  referredBy?: string;
+  referredBy?: number;
   /** The Referrals page's `?referred=true` — the file is that page's rows. */
   referred?: string;
   sort?: string;
@@ -880,7 +875,8 @@ export interface ClientExportQuery {
 }
 
 export interface ClientExportRow {
-  id: string;
+  /** The Portal ID — the client's id since 0159. */
+  id: number;
   /** The Portal ID — what a spreadsheet is filtered by; the UUID is never exported. */
   portalId: number;
   email: string;
@@ -912,7 +908,7 @@ export interface WithdrawalExportRow {
   requestedAt: Date;
   reviewedAt: Date | null;
   settledAt: Date | null;
-  userId: string;
+  userId: number;
   userPortalId: number;
   userEmail: string;
   userFirstName: string;
@@ -934,7 +930,7 @@ export interface WalletExportRow {
   kind: string;
   createdAt: Date;
   updatedAt: Date;
-  userId: string;
+  userId: number;
   userPortalId: number;
   userEmail: string;
   userFirstName: string;
@@ -955,7 +951,7 @@ export interface TradingAccountExportRow {
   status: string;
   createdAt: Date;
   updatedAt: Date;
-  userId: string;
+  userId: number;
   userPortalId: number;
   userEmail: string;
   userFirstName: string;
@@ -963,7 +959,7 @@ export interface TradingAccountExportRow {
 }
 
 export interface KycExportRow {
-  userId: string;
+  userId: number;
   status: 'not_started' | 'in_progress' | 'submitted' | 'under_review' | 'approved' | 'rejected';
   /** Only `country` — see the column note. The rest of the profile is not selected. */
   personalInfo?: { country: string };
@@ -971,7 +967,7 @@ export interface KycExportRow {
   reviewedAt?: Date;
   createdAt: Date;
   updatedAt: Date;
-  user: { id: string; portalId: number; email: string; firstName: string; lastName: string };
+  user: { id: number; portalId: number; email: string; firstName: string; lastName: string };
 }
 
 export interface AuditExportRow {
@@ -1002,7 +998,7 @@ export interface AuditExportRow {
 export interface IbApplicationExportRow {
   application: {
     id: string;
-    userId: string;
+    userId: number;
     status: 'pending' | 'approved' | 'rejected';
     motivation: string | null;
     website: string | null;
@@ -1013,7 +1009,7 @@ export interface IbApplicationExportRow {
   /** Null on an application predating the agency requirement. */
   agencyName: string | null;
   user: {
-    id: string;
+    id: number;
     portalId: number;
     email: string;
     firstName: string;
@@ -1024,14 +1020,14 @@ export interface IbApplicationExportRow {
 
 export interface IbPartnerExportRow {
   account: {
-    userId: string;
+    userId: number;
     level: number;
-    parentIbUserId: string | null;
+    parentIbUserId: number | null;
     referralCode: string;
     active: boolean;
     approvedAt: Date;
   };
-  user: { id: string; portalId: number; email: string; firstName: string; lastName: string };
+  user: { id: number; portalId: number; email: string; firstName: string; lastName: string };
   parentPortalId: number | null;
 }
 

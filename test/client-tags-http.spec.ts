@@ -29,8 +29,8 @@ let ctx: HttpTestContext;
 let alphaTagId: string;
 let alphaTagSlug: string;
 let betaTagId: string;
-let alphaClientId: string;
-let betaClientId: string;
+let alphaClientId: number;
+let betaClientId: number;
 let scopedAdminId: string;
 
 interface TagBody {
@@ -38,8 +38,13 @@ interface TagBody {
   slug: string;
   label: string;
 }
+/** What a tag change answers (`ClientTagChangeResultDto`). */
+interface ChangeBody {
+  assignments: TagBody[];
+  stillVisible: boolean;
+}
 interface ListBody {
-  items: { id: string; email?: string; firstName?: string; tags?: TagBody[] }[];
+  items: { id: number; email?: string; firstName?: string; tags?: TagBody[] }[];
   maskedFields: string[];
   nextCursor: string | null;
 }
@@ -173,7 +178,9 @@ describe('assignment', () => {
     const session = await actingAs(ctx, 'admin', MASTER);
     const res = await session.post(`${CLIENTS}/${alphaClientId}/tags/${alphaTagId}`);
     expect(res.status).toBe(201);
-    expect((res.body as TagBody[]).map((t) => t.id)).toContain(alphaTagId);
+    const body = res.body as ChangeBody;
+    expect(body.assignments.map((t) => t.id)).toContain(alphaTagId);
+    expect(body.stillVisible).toBe(true);
   });
 
   it('is idempotent — assigning twice is not an error', async () => {
@@ -183,7 +190,7 @@ describe('assignment', () => {
     const session = await actingAs(ctx, 'admin', MASTER);
     const res = await session.post(`${CLIENTS}/${alphaClientId}/tags/${alphaTagId}`);
     expect(res.status).toBe(201);
-    expect((res.body as TagBody[]).filter((t) => t.id === alphaTagId)).toHaveLength(1);
+    expect((res.body as ChangeBody).assignments.filter((t) => t.id === alphaTagId)).toHaveLength(1);
   });
 
   it('tags the second client with the second tag', async () => {
@@ -195,7 +202,8 @@ describe('assignment', () => {
   it('404s an unknown client rather than creating an orphan assignment', async () => {
     const session = await actingAs(ctx, 'admin', MASTER);
     const res = await session.post(
-      `${CLIENTS}/00000000-0000-4000-8000-000000000000/tags/${alphaTagId}`,
+      // A well-formed Portal ID nobody holds (the sequence starts at 1,000,000).
+      `${CLIENTS}/999999999/tags/${alphaTagId}`,
     );
     expect(res.status).toBe(404);
   });
@@ -426,28 +434,54 @@ describe('row-level client scoping', () => {
     await session.patch(`${CLIENTS}/${alphaClientId}/status`, { status: 'active' });
   });
 
-  it('refuses to apply a tag from outside the actor’s own scope', async () => {
-    // Otherwise scoping is self-service: tag a client into another desk's
-    // territory and you have moved a record you do not own, with your name on
-    // it; tag one of yours with something outside your scope and it leaves your
-    // view.
+  it('lets a scoped admin put a tag from OUTSIDE their territory on a client they can see', async () => {
+    /*
+     * REVERSED on the owner's instruction, 28 Sep 2026: "an admin can put any
+     * tags on the client that is in his territory even if the tags are not in
+     * his territory". This used to answer 400 "only apply tags within your own
+     * client scope", which made handing a client to another desk impossible.
+     *
+     * The client keeps the actor's own tag, so it stays in their view and no
+     * confirmation is asked for — `client-tags-handoff.spec.ts` covers the
+     * change that does take a client out of view.
+     */
     const session = await actingAs(ctx, 'admin', SCOPED);
     const res = await session.post(`${CLIENTS}/${alphaClientId}/tags/${betaTagId}`);
-    expect(res.status).toBe(400);
-    expect((res.body as { message?: string }).message).toMatch(/own client scope/i);
+    expect(res.status).toBe(201);
+    const body = res.body as ChangeBody;
+    expect(body.stillVisible).toBe(true);
+    expect(body.assignments.map((t) => t.id)).toEqual(
+      expect.arrayContaining([alphaTagId, betaTagId]),
+    );
+
+    // Leave the fixture as the blocks below expect it.
+    const master = await actingAs(ctx, 'admin', MASTER);
+    await master.del(`${CLIENTS}/${alphaClientId}/tags/${betaTagId}`).expect(200);
   });
 
-  it('refuses to remove the LAST tag keeping a client in the actor’s view', async () => {
+  it('asks before removing the LAST tag keeping a client in the actor’s view', async () => {
     /*
-     * The direct mirror of RBAC-08's "you may not delete the last rule keeping
-     * you in". The biggest risk in a self-service control is an irreversible
-     * action that removes the screen you would use to undo it — here the client
-     * would vanish mid-task, looking exactly like a bug.
+     * This used to be a flat refusal (400 "the only tag putting this client in
+     * your view"). The risk it guarded is real — an irreversible action that
+     * removes the screen you would undo it from, the client vanishing mid-task
+     * like a bug — and it is now met by a CONFIRMATION instead: 409
+     * TAG_CHANGE_LEAVES_SCOPE until the change is resent with
+     * `confirmLeavesScope=true`. A hand-off is legitimate; an accidental one is
+     * what this stops.
+     *
+     * This fixture admin has no "new clients" grant, so an untagged client
+     * really would leave their view.
      */
     const session = await actingAs(ctx, 'admin', SCOPED);
     const res = await session.del(`${CLIENTS}/${alphaClientId}/tags/${alphaTagId}`);
-    expect(res.status).toBe(400);
-    expect((res.body as { message?: string }).message).toMatch(/only tag putting this client/i);
+    expect(res.status).toBe(409);
+    expect((res.body as { code?: string }).code).toBe('TAG_CHANGE_LEAVES_SCOPE');
+
+    // Refused means NOT written: the tag is still there.
+    const master = await actingAs(ctx, 'admin', MASTER);
+    const tags = (await master.get(`${CLIENTS}/${alphaClientId}/tags`).expect(200))
+      .body as TagBody[];
+    expect(tags.map((t) => t.id)).toContain(alphaTagId);
   });
 
   it('lets a MASTER admin remove that same tag', async () => {
@@ -461,12 +495,11 @@ describe('row-level client scoping', () => {
 });
 
 describe('deleting a tag that is somebody’s territory', () => {
-  it('is refused, naming the escalation it would cause', async () => {
+  it('is refused, naming the consequence', async () => {
     /*
-     * An empty scope means UNRESTRICTED, so cascading this delete would remove
-     * the scoped admin's only scope row and PROMOTE THEM to seeing every client
-     * in the system — privilege escalation performed by a DELETE on a label,
-     * leaving nothing in the audit trail that looks like a permission change.
+     * Cascading this delete would silently change what the scoped admin sees.
+     * Before 0154 it was an escalation — an empty territory meant every client,
+     * so removing their only scope row PROMOTED them to everyone.
      *
      * The FK is ON DELETE RESTRICT and is the real guarantee; this turns its
      * raw 23503 into a sentence that says what would have happened.
@@ -475,7 +508,7 @@ describe('deleting a tag that is somebody’s territory', () => {
     const res = await session.del(`${TAGS}/${alphaTagId}`);
 
     expect(res.status).toBe(409);
-    expect((res.body as { message?: string }).message).toMatch(/every client/i);
+    expect((res.body as { message?: string }).message).toMatch(/in their territory/i);
   });
 
   it('deletes a tag nobody is scoped to', async () => {
@@ -556,12 +589,13 @@ describe('a client’s OWN tag list is not filtered to the reader’s territory 
    * `directPartnersShown`/`directPartnersTotal` — and there is nothing to
    * publish here that the reader cannot already see.
    *
-   * ── Why `unassign` intersecting is NOT the same question ────────────────────
+   * ── And acting on it ─────────────────────────────────────────────────────────
    *
-   * That intersection decides an ACTION — "would removing this tag strand you
-   * outside your own view" — not a VIEW. `assertTagWithinScope` already refuses
-   * any assign or unassign of a tag outside the reader's territory, so seeing a
-   * foreign tag grants no power over it.
+   * Since 28 Sep 2026 (owner) an admin may add or remove ANY tag on a client
+   * they can see, foreign ones included — that is how a client moves between
+   * desks. The one question asked about an action is "does it take the client
+   * out of YOUR view?", and that is answered by a confirmation, not a refusal.
+   * Every such change is audited with the actor's name.
    *
    * If this ever needs to change, the honest shape is the one used above: filter
    * AND report the count withheld. Do not filter silently.
@@ -592,25 +626,19 @@ describe('a client’s OWN tag list is not filtered to the reader’s territory 
     ).toContain(foreignTagId);
   });
 
-  it('but still refuses to let them ACT on the foreign tag', async () => {
+  it('and lets them remove the foreign tag, since the client stays in their view', async () => {
     /*
-     * The half that makes the above safe, and the reason visibility and
-     * authority are separate questions here. Seeing another desk's label on a
-     * client grants nothing over it.
+     * Flipped with the owner's rule (28 Sep 2026). It used to answer 400 "within
+     * your own client scope". The client keeps the reader's own territory tag,
+     * so they still see it afterwards and nothing needs confirming.
      */
     const scoped = await actingAs(ctx, 'admin', SCOPED);
     const res = await scoped.del(`${CLIENTS}/${alphaClientId}/tags/${foreignTagId}`);
 
-    /*
-     * 400, not 403, because `assertTagWithinScope` raises a `ValidationError`.
-     * Asserted as it actually behaves rather than as it arguably should: this is
-     * an authority refusal wearing a validation code, which is a naming
-     * inconsistency and not a hole — the message names the reason, nothing is
-     * performed, and the tag vocabulary is public anyway so the code reveals
-     * nothing a 403 would have hidden. Pinned so that a change to either the
-     * code or the refusal is a deliberate one.
-     */
-    expect(res.status).toBe(400);
-    expect((res.body as { message?: string }).message).toMatch(/within your own client scope/i);
+    expect(res.status).toBe(200);
+    const body = res.body as ChangeBody;
+    expect(body.stillVisible).toBe(true);
+    expect(body.assignments.map((t) => t.id)).not.toContain(foreignTagId);
+    expect(body.assignments.map((t) => t.id)).toContain(alphaTagId);
   });
 });

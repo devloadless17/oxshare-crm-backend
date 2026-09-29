@@ -7,14 +7,20 @@ import { collectsAnswers, isDataBearingStep } from './step-slugs';
 import { documentTypeFor, typedAnswersFor } from './kyc-answers';
 import { catalogueDocument } from '../../common/kyc/document-catalogue';
 import {
-  asPageFlags,
   CANONICAL_FILE_STEP,
   documentFlagLabel,
   flagsSettledByUpload,
   outstandingDocumentFlags,
 } from './kyc-document-rules';
-import { answerKeysOf, flagLabel, reviewLayout } from './kyc-review-layout';
 import {
+  answerKeysOf,
+  flagLabel,
+  returnableItems,
+  returnedFlags,
+  reviewLayout,
+} from './kyc-review-layout';
+import {
+  answersInPlace,
   approvalBlockers,
   isPlainUpload,
   stepStates,
@@ -38,16 +44,14 @@ import {
   AuthorizationError,
   ConflictError,
   FieldValidationError,
-  KycCorrectionRefusedError,
   NotFoundError,
   ValidationError,
 } from '../../common/errors/domain-errors';
 import {
   acceptedDocuments,
   coreStepOf,
-  identityField,
   isPlatformField,
-  VERIFICATION_REQUIRED,
+  policyOf,
 } from '../../common/kyc/identity-core';
 import { DRIZZLE_DB } from '../../database/database.module';
 import {
@@ -56,12 +60,8 @@ import {
 } from '../../common/provisioning/notification-dispatch.port';
 import type { Db } from '../../database/db';
 import type { ClientScope } from '../../common/security/client-scope';
-import {
-  isProfileKey,
-  KYC_CORRECTABLE_KEYS,
-  normaliseProfileValue,
-  type ProfileKey,
-} from '../../common/profile/client-profile';
+import { isProfileKey, type ProfileKey } from '../../common/profile/client-profile';
+import { ClientIdentityService } from '../client-identity/client-identity.service';
 import {
   ClientProfileService,
   profileOf,
@@ -154,10 +154,10 @@ function assertOpenForUploads(submission: { status: KycStatus }): void {
   }
 }
 
-type StoredPage = { filePath: string; fileName: string } | undefined;
+type StoredPage = { filePath: string } | undefined;
 
-function pageOf(filePath: string | undefined, fileName: string | undefined): StoredPage {
-  return filePath ? { filePath, fileName: fileName ?? '' } : undefined;
+function pageOf(filePath: string | undefined): StoredPage {
+  return filePath ? { filePath } : undefined;
 }
 
 /**
@@ -185,7 +185,7 @@ function placePage(
   storedType: string | undefined,
   pages: readonly StoredPage[],
   page: number,
-  file: { filePath: string; fileName: string },
+  file: { filePath: string },
   type: string | undefined,
 ): { docType?: string; pages: StoredPage[]; replaced: boolean } {
   const switching = type !== undefined && storedType !== undefined && storedType !== type;
@@ -300,6 +300,13 @@ export class KycService {
      * `personal_info`. APPENDED LAST, for the positional construction above.
      */
     private readonly profile: ClientProfileService,
+    /**
+     * The client's identity RECORD (0151): every transaction here that changes
+     * evidence or records a decision ends by recording it there, so the record
+     * moves with the KYC row or not at all. APPENDED LAST, for the positional
+     * construction above.
+     */
+    private readonly identity: ClientIdentityService,
   ) {}
 
   /**
@@ -321,8 +328,60 @@ export class KycService {
     return { ...submission, personalInfo: this.personalView(submission, user) };
   }
 
+  /**
+   * The flags a return stores. REFUSED, naming each, when a reviewer names
+   * something the client cannot answer (`returnableItems`): an unknown id used
+   * to be stored as given — shown nowhere, blocking nothing, answered by
+   * nobody — and a page the document on file does not have told the client to
+   * replace a back side their passport never had.
+   */
+  private returnFlags(
+    ids: readonly string[],
+    steps: readonly KycStepConfig[],
+    evidence: KycSubmission,
+    field: 'rejectedFields' | 'items',
+  ): string[] {
+    const returnable = returnableItems(steps, reviewLayout(steps, evidence), evidence);
+    const { flags, unknown } = returnedFlags(ids, steps, returnable);
+    if (unknown.length > 0) {
+      throw new FieldValidationError(`The client cannot be asked for: ${unknown.join(', ')}.`, {
+        [field]:
+          `Not something this client can update: ${unknown.join(', ')}. Choose from the ` +
+          'details, the pages on file and the questions on their form.',
+      });
+    }
+    return flags;
+  }
+
+  /**
+   * What the client last PRESENTED, as the last decision recorded it: the
+   * archived attempt's evidence and answers. Undefined when nothing was ever
+   * decided (a returned row from before attempts were archived).
+   */
+  private async lastPresented(
+    userId: number,
+  ): Promise<
+    | Pick<
+        KycSubmission,
+        'document' | 'selfie' | 'addressProof' | 'stepData' | 'personalInfo' | 'submittedAt'
+      >
+    | undefined
+  > {
+    const attempts = await this.kycStore.listAttempts(userId);
+    const last = attempts.at(-1);
+    if (!last) return undefined;
+    return {
+      document: last.document,
+      selfie: last.selfie,
+      addressProof: last.addressProof,
+      stepData: last.stepData,
+      personalInfo: last.personalInfo,
+      submittedAt: last.submittedAt,
+    };
+  }
+
   // ─── Get status ────────────────────────────────────────────────────────────
-  async getStatus(userId: string) {
+  async getStatus(userId: number) {
     const submission = await this.kycStore.getOrCreate(userId);
     return this.statusView(userId, submission, await this.kycConfig.getSteps());
   }
@@ -333,25 +392,43 @@ export class KycService {
    * than re-deriving one (`kyc-step-state.ts`).
    */
   private async statusView(
-    userId: string,
+    userId: number,
     submission: KycSubmission,
     steps: readonly KycStepConfig[],
     chosen?: ChosenDocument,
   ): Promise<
-    Omit<KycSubmission, 'formSnapshot'> & { verificationLevel: number; steps: StepState[] }
+    Omit<KycSubmission, 'formSnapshot' | 'formPolicy' | 'reviewedBy' | 'updatedAt'> & {
+      steps: StepState[];
+    }
   > {
     const user = await this.users.findById(userId);
-    // The form snapshot is the reviewer's record of what was asked — not the client's.
-    const { formSnapshot: _internal, ...view } = this.withPersonalView(submission, user);
+    /*
+     * Two fields are the desk's, not the client's: the form snapshot (the
+     * reviewer's record of what was asked) and `reviewedBy` — an ADMIN's
+     * internal id, which also names whoever currently holds a claim. It went
+     * to every client until 28 Sep 2026; the portal never read it.
+     *
+     * Nor does this carry `updatedAt` or the verification level, which
+     * `KycStatusDto` never declared: the portal reads the level from
+     * `/auth/me` (lib/kyc-access.ts) and neither from here.
+     */
+    const {
+      formSnapshot: _internal,
+      formPolicy: _policy,
+      reviewedBy: _desk,
+      updatedAt: _written,
+      ...asStored
+    } = this.withPersonalView(submission, user);
+    // A question the broker moved shows its answer where it is asked now.
+    const view = answersInPlace(steps, asStored);
     return {
       ...view,
-      verificationLevel: user?.verificationLevel ?? 0,
       steps: stepStates(steps, view, new Date(), chosen),
     };
   }
 
   // ─── Save step data ────────────────────────────────────────────────────────
-  async saveStep(userId: string, step: string, data: Record<string, unknown>) {
+  async saveStep(userId: number, step: string, data: Record<string, unknown>) {
     const submission = await this.kycStore.getOrCreate(userId);
     // The early answer; the deciding one is re-asked under the lock below.
     assertOpenForAnswers(submission);
@@ -545,7 +622,10 @@ export class KycService {
       const remaining = flagged.filter((id) => !changed.includes(id));
       if (remaining.length !== flagged.length) patch['rejectedFields'] = remaining;
 
-      return this.kycStore.update(userId, patch, tx);
+      const updated = await this.kycStore.update(userId, patch, tx);
+      // The document the client chose is a draft on their record.
+      await this.identity.recordFromKyc(userId, tx);
+      return updated;
     });
 
     /*
@@ -558,10 +638,9 @@ export class KycService {
 
   // ─── Attach uploaded file to a step ────────────────────────────────────────
   async attachFile(
-    userId: string,
+    userId: number,
     field: string,
     filePath: string,
-    fileName: string,
     /**
      * Which catalogue document this page belongs to (`passport`,
      * `national_id`, `utility_bill`…). Optional only because a portal predating
@@ -671,7 +750,8 @@ export class KycService {
       );
     }
 
-    const file = { filePath, fileName };
+    // The path alone: what the client called the file is not kept (0160, D-84).
+    const file = { filePath };
     let replaced: string[] = [];
     await this.db.transaction(async (tx) => {
       /*
@@ -690,10 +770,7 @@ export class KycService {
         const page = field === 'doc_back' ? 1 : 0;
         const doc = placePage(
           current.document?.docType,
-          [
-            pageOf(current.document?.frontFilePath, current.document?.frontFileName),
-            pageOf(current.document?.backFilePath, current.document?.backFileName),
-          ],
+          [pageOf(current.document?.frontFilePath), pageOf(current.document?.backFilePath)],
           page,
           file,
           type,
@@ -702,18 +779,13 @@ export class KycService {
         patch.document = {
           ...(doc.docType ? { docType: doc.docType } : {}),
           frontFilePath: doc.pages[0]?.filePath,
-          frontFileName: doc.pages[0]?.fileName,
           backFilePath: doc.pages[1]?.filePath,
-          backFileName: doc.pages[1]?.fileName,
         };
       } else if (canonical === 'address') {
         const page = field === 'address_proof_2' ? 1 : 0;
         const doc = placePage(
           current.addressProof?.docType,
-          [
-            pageOf(current.addressProof?.filePath, current.addressProof?.fileName),
-            pageOf(current.addressProof?.page2FilePath, current.addressProof?.page2FileName),
-          ],
+          [pageOf(current.addressProof?.filePath), pageOf(current.addressProof?.page2FilePath)],
           page,
           file,
           type,
@@ -722,9 +794,7 @@ export class KycService {
         patch.addressProof = {
           ...(doc.docType ? { docType: doc.docType } : {}),
           filePath: doc.pages[0]?.filePath,
-          fileName: doc.pages[0]?.fileName,
           page2FilePath: doc.pages[1]?.filePath,
-          page2FileName: doc.pages[1]?.fileName,
         };
       } else if (canonical === 'selfie') {
         patch.selfie = file;
@@ -753,6 +823,8 @@ export class KycService {
       replaced = documentPathsOf(current).filter((path) => !kept.has(path));
 
       await this.kycStore.update(userId, patch, tx);
+      // The page lands on the client's draft in the same commit.
+      await this.identity.recordFromKyc(userId, tx);
     });
 
     /*
@@ -771,11 +843,11 @@ export class KycService {
       await this.deleteDocuments(replaced.filter((path) => !archived.has(basename(path))));
     }
 
-    return { message: 'File uploaded.', field, fileName };
+    return { message: 'File uploaded.', field };
   }
 
   // ─── Submit KYC ────────────────────────────────────────────────────────────
-  async submit(userId: string) {
+  async submit(userId: number) {
     /*
      * The personal step is judged on the PROFILE's values (0139). This used to
      * copy the account's name INTO `personal_info` when the blob was empty — one
@@ -913,6 +985,8 @@ export class KycService {
           // What the broker's own steps asked, as the client answered them — the
           // review labels their answers from this, whatever the builder does next.
           formSnapshot: formSnapshotOf(steps),
+          // The requirements it is made under — what approval will re-check (0158).
+          formPolicy: policyOf(steps),
         },
         tx,
       );
@@ -927,6 +1001,8 @@ export class KycService {
             : 'KYC has already been submitted and is awaiting review.',
         );
       }
+      // What the client presented is frozen on their record, as they sent it.
+      await this.identity.recordFromKyc(userId, tx);
       return { submitted: moved, wasRejected: rejectedBefore };
     });
 
@@ -950,7 +1026,7 @@ export class KycService {
       kind: wasRejected ? 'admin.kyc.resubmitted' : 'admin.kyc.submitted',
       params: { userId },
       // The submission is keyed on its client, so the item IS the client.
-      subject: { id: userId, clientId: userId },
+      subject: { id: String(userId), clientId: userId },
     });
 
     return submitted;
@@ -992,14 +1068,19 @@ export class KycService {
   }
 
   // ─── Admin: get one ────────────────────────────────────────────────────────
-  async getByUserId(userId: string) {
+  async getByUserId(userId: number) {
     const submission = await this.kycStore.findByUserId(userId);
     if (!submission) throw new NotFoundError('KYC submission not found.');
     const [user, steps] = await Promise.all([
       this.users.findById(userId),
       this.kycConfig.getSteps(),
     ]);
-    const { formSnapshot: _inLayout, ...view } = this.withPersonalView(submission, user);
+    // The snapshot is in the layout; the policy is what approval re-checks — neither is shown.
+    const {
+      formSnapshot: _inLayout,
+      formPolicy: _checkedAtApproval,
+      ...view
+    } = this.withPersonalView(submission, user);
     return {
       ...view,
       user: user ? reviewerView(user) : undefined,
@@ -1014,7 +1095,7 @@ export class KycService {
   }
 
   // ─── Admin: approve ────────────────────────────────────────────────────────
-  async approve(userId: string, adminId: string) {
+  async approve(userId: number, adminId: string) {
     const submission = await this.kycStore.findByUserId(userId);
     if (!submission) throw new NotFoundError('KYC submission not found.');
 
@@ -1126,6 +1207,8 @@ export class KycService {
        * here would be a second writer with nothing to copy.
        */
       await this.users.update(userId, { verificationLevel: 1 }, tx);
+      // The decision on the client's record, after the level it explains.
+      await this.identity.recordFromKyc(userId, tx);
       // The bell row commits WITH the decision — a rolled-back approval must
       // not leave a "you're verified" the client can read.
       await this.notifications.notify(
@@ -1175,7 +1258,7 @@ export class KycService {
    * verification is `reject`'s job, with a reason attached, not a silent
    * reversal that leaves no trace of what was decided or why.
    */
-  async release(userId: string, adminId: string, mayOverride = false) {
+  async release(userId: number, adminId: string, mayOverride = false) {
     const submission = await this.kycStore.findByUserId(userId);
     if (!submission) throw new NotFoundError('KYC submission not found.');
     if (submission.status !== 'under_review') {
@@ -1242,7 +1325,7 @@ export class KycService {
     return this.getByUserId(userId);
   }
 
-  async claim(userId: string, adminId: string) {
+  async claim(userId: number, adminId: string) {
     const submission = await this.kycStore.findByUserId(userId);
     if (!submission) throw new NotFoundError('KYC submission not found.');
     if (submission.status !== 'submitted') {
@@ -1342,7 +1425,7 @@ export class KycService {
    * transaction rather than after it.
    */
   async correctIdentity(
-    userId: string,
+    userId: number,
     patch: Record<string, unknown>,
     actor: ProfileActor,
     /** Why the verified record changes — on the audit row, beside both values. */
@@ -1359,76 +1442,26 @@ export class KycService {
     }
 
     /*
-     * ⚠️ VALIDATES WHAT CHANGED, NOT THE WHOLE RECORD — completeness was
-     * established at submission and is not what a correction re-opens; a record
-     * approved before a field became required must still be correctable. So the
-     * rules are narrowed to the corrected fields, and the date-of-birth rules
-     * fire exactly when a date of birth is what changed.
-     *
-     * A value that would DISQUALIFY an approved record — underage, impossible —
-     * is refused as a conflict (409), not an input error: it is a fact about the
-     * record, and the product's answer to it is a rejection, made on purpose.
+     * ONE implementation for every admin who changes a client's details
+     * (28 Sep 2026): the client page's edit and this review's "Correct details"
+     * both go through `ClientProfileService.editAsAdmin`. It validates only
+     * what changed (a record approved before a field became required must stay
+     * correctable), refuses a value that would disqualify the record as a 409,
+     * audits `kyc.identity_correct` with the reason and both values, and tells
+     * the client. `correctionOnly`: this route exists for nothing else.
      */
-    const asOf = new Date();
-    for (const [key, value] of Object.entries(patch)) {
-      if (!isProfileKey(key) || typeof value !== 'string' || value.trim() === '') continue;
-      const outcome = normaliseProfileValue(key, value, asOf);
-      if (
-        !outcome.ok &&
-        (outcome.code === 'underage' || outcome.code === 'invalid_date_of_birth')
-      ) {
-        throw new KycCorrectionRefusedError(
-          `The corrected details do not pass verification: ${outcome.message} ` +
-            'This is a fact about the RECORD, not about what you typed — an approved ' +
-            'submission cannot hold these values, so this is a rejection rather than an edit.',
-          { kind: outcome.code, fields: [key] },
-        );
-      }
-    }
-
-    const written = await this.profile.update(userId, patch, actor, {
-      audit: {
-        action: 'kyc.identity_correct',
-        subjectType: 'kyc_submission',
-        subjectId: userId,
-        via: 'kyc_correction',
-        reason,
-      },
-      // A correction never CLEARS a verified field — every one it names is required.
-      required: Object.keys(patch).filter((key): key is ProfileKey =>
-        VERIFICATION_REQUIRED.includes(key as ProfileKey),
-      ),
-      /*
-       * Re-asked under the locks: the status check above is a read, and this is
-       * the decision. And only what a correction may touch — every identity
-       * field but the phone, which the desk edits directly.
-       */
-      guard: (changed, verification) => {
-        if (verification !== 'approved') {
-          throw new ValidationError(
-            'This correction applies to an APPROVED submission, and this one no longer is.',
-          );
-        }
-        const outside = changed.filter((key) => !KYC_CORRECTABLE_KEYS.includes(key));
-        if (outside.length > 0) {
-          throw new ValidationError(
-            'A correction does not change the phone number — edit it on the client’s profile.',
-          );
-        }
-      },
-    });
-    /*
-     * The client is TOLD, always: a verified identity changed by somebody other
-     * than its owner must never be silent. Which details — not their values,
-     * which belong behind the client's own sign-in.
-     */
-    if (written.changed.length > 0) {
-      void this.email.sendKycDetailsCorrectedEmail(
-        written.user.email,
-        written.user.firstName,
-        written.changed.map((key) => identityField(key)?.label ?? key),
+    const phone = Object.prototype.hasOwnProperty.call(patch, 'phone');
+    if (phone) {
+      throw new ValidationError(
+        'A correction does not change the phone number — edit it on the client’s profile.',
       );
     }
+    const written = await this.profile.editAsAdmin(userId, patch, actor, {
+      mayCorrect: true,
+      reason,
+      via: 'kyc_correction',
+      correctionOnly: true,
+    });
     return {
       submission: await this.getByUserId(userId),
       before: written.before,
@@ -1457,7 +1490,7 @@ export class KycService {
    * the reason and the items; their resubmission reaches the queue as a
    * resubmission, like any returned one. Approval clears the stamp.
    */
-  async requestReverification(userId: string, adminId: string, reason: string, items: string[]) {
+  async requestReverification(userId: number, adminId: string, reason: string, items: string[]) {
     const submission = await this.kycStore.findByUserId(userId);
     if (!submission) throw new NotFoundError('KYC submission not found.');
     if (submission.status !== 'approved') {
@@ -1470,7 +1503,7 @@ export class KycService {
       this.users.findById(userId),
       this.kycConfig.getSteps(),
     ]);
-    const flags = asPageFlags(items, steps);
+    const flags = this.returnFlags(items, steps, submission, 'items');
 
     await this.db.transaction(async (tx) => {
       const updated = await this.kycStore.transition(
@@ -1491,9 +1524,13 @@ export class KycService {
           'This verification changed while you were deciding. Reload it and try again.',
         );
       }
-      await this.kycStore.archiveAttempt(this.withPersonalView(updated, user), tx);
+      // Archived as what it is — a request to UPDATE, not a rejection.
+      await this.kycStore.archiveAttempt(this.withPersonalView(updated, user), tx, {
+        reverification: true,
+      });
       // The money gate closes with the return, in the same commit.
       await this.users.update(userId, { verificationLevel: 0 }, tx);
+      await this.identity.recordFromKyc(userId, tx);
       /*
        * The client's bell, in the same commit — approve() and reject() stance: a
        * rolled-back return must not leave a "please update" the client can read.
@@ -1570,7 +1607,14 @@ export class KycService {
   }
 
   // ─── Admin: reject ─────────────────────────────────────────────────────────
-  async reject(userId: string, adminId: string, reason: string, rejectedFields: string[] = []) {
+  async reject(
+    userId: number,
+    adminId: string,
+    reason: string,
+    rejectedFields: string[] = [],
+    /** The configured reason chosen, when one was — kept on the decision (0151). */
+    reasonId?: string,
+  ) {
     const submission = await this.kycStore.findByUserId(userId);
     if (!submission) throw new NotFoundError('KYC submission not found.');
     const user = await this.users.findById(userId);
@@ -1584,9 +1628,19 @@ export class KycService {
      * NOT do is reject a submission that was never submitted.
      */
     await this.assertNotHeldByAnother(submission, adminId);
-    // A whole document returned is every page of it returned (`asPageFlags`).
+    /*
+     * WHAT IS BEING DECIDED. A submission with a reviewer, or approved, is its
+     * live evidence. One already RETURNED is being returned again — a correction
+     * of the return — and the client may have uploaded replacements since, which
+     * they never presented. Deciding on the live row would freeze those drafts
+     * as evidence of a decision nobody made about them; the correction decides
+     * what the LAST decision did.
+     */
+    const decided = submission.status === 'rejected' ? await this.lastPresented(userId) : undefined;
+    const evidence = { ...submission, ...decided };
+    // A whole document returned is every page of it ON FILE returned.
     const steps = await this.kycConfig.getSteps();
-    const flags = asPageFlags(rejectedFields, steps);
+    const flags = this.returnFlags(rejectedFields, steps, evidence, 'rejectedFields');
 
     await this.db.transaction(async (tx) => {
       const updated = await this.kycStore.transition(
@@ -1637,8 +1691,9 @@ export class KycService {
         );
       }
       await this.kycStore.archiveAttempt(
-        this.withPersonalView(updated, await this.users.findById(userId)),
+        { ...this.withPersonalView(updated, await this.users.findById(userId)), ...decided },
         tx,
+        { reasonId },
       );
       /*
        * Take the verification level back, in the SAME transaction.
@@ -1652,6 +1707,7 @@ export class KycService {
        * should hold none of it, whichever path they arrived by.
        */
       await this.users.update(userId, { verificationLevel: 0 }, tx);
+      await this.identity.recordFromKyc(userId, tx);
       // Same stance as approve(): the row and the decision are one commit. The
       // reason rides in params so the bell can say what to fix.
       await this.notifications.notify(
@@ -1710,7 +1766,7 @@ export class KycService {
    * is the same problem in a smaller form: the reviewer's screen empties and the
    * queue entry vanishes under them.
    */
-  async resetKyc(userId: string) {
+  async resetKyc(userId: number) {
     const submission = await this.kycStore.findByUserId(userId);
     if (!submission) return { message: 'KYC data reset successfully.' };
 
@@ -1766,14 +1822,19 @@ export class KycService {
     );
     const deletable = documentPathsOf(submission).filter((p) => !archived.has(basename(p)));
 
-    await this.kycStore.resetUser(userId);
+    await this.db.transaction(async (tx) => {
+      await this.kycStore.resetUser(userId, tx);
+      // The client's drafts go with the row, in the same commit; their decided
+      // evidence stays on their record, where it always belonged.
+      await this.identity.recordFromKyc(userId, tx);
+    });
     await this.deleteDocuments(deletable);
 
     return { message: 'KYC data reset successfully.' };
   }
 
   /** A client's decided attempts, oldest first — the admin history view. */
-  async getHistory(userId: string) {
+  async getHistory(userId: number) {
     const [attempts, steps] = await Promise.all([
       this.kycStore.listAttempts(userId),
       this.kycConfig.getSteps(),

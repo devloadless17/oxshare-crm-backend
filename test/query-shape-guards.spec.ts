@@ -47,6 +47,8 @@ let master: Session;
 
 /** Well-formed, and naming nothing — the control for every case below. */
 const ABSENT_UUID = '00000000-0000-4000-8000-000000000000';
+/** A client filter's control: a Portal ID (the client's id since 0159) nobody holds. */
+const ABSENT_PORTAL_ID = '2147483647';
 
 beforeAll(async () => {
   ctx = await startHttpTestApp();
@@ -71,21 +73,48 @@ afterAll(async () => {
   await stopHttpTestApp(ctx);
 });
 
-describe('a uuid filter refuses a malformed value', () => {
-  const ROUTES: { name: string; path: (value: string) => string }[] = [
-    { name: 'audit log ?actorId', path: (v) => `/v1/admin/audit-log?actorId=${v}` },
-    { name: 'audit log export ?actorId', path: (v) => `/v1/admin/audit-log/export?actorId=${v}` },
-    { name: 'wallets ?userId', path: (v) => `/v1/admin/wallets?userId=${v}` },
-    { name: 'wallets export ?userId', path: (v) => `/v1/admin/wallets/export?userId=${v}` },
-    { name: 'trading accounts ?userId', path: (v) => `/v1/admin/trading-accounts?userId=${v}` },
-    {
-      name: 'trading accounts export ?userId',
-      path: (v) => `/v1/admin/trading-accounts/export?userId=${v}`,
-    },
-    { name: 'ledger ?userId', path: (v) => `/v1/admin/ledger?userId=${v}` },
-    { name: 'ledger ?walletId', path: (v) => `/v1/admin/ledger?walletId=${v}` },
-    { name: 'accruals ?ibUserId', path: (v) => `/v1/admin/ib/accruals?ibUserId=${v}` },
-    { name: 'accruals ?clientUserId', path: (v) => `/v1/admin/ib/accruals?clientUserId=${v}` },
+describe('an id filter refuses a malformed value', () => {
+  type IdFilter = { name: string; path: (value: string) => string; absent: string };
+  const route = (name: string, path: (value: string) => string, absent: string): IdFilter => ({
+    name,
+    path,
+    absent,
+  });
+  /** Filters naming a CLIENT, by Portal ID (D-83); the rest name a record or an admin, by uuid. */
+  const CLIENT_ROUTES: IdFilter[] = [
+    route('wallets ?userId', (v) => `/v1/admin/wallets?userId=${v}`, ABSENT_PORTAL_ID),
+    route(
+      'wallets export ?userId',
+      (v) => `/v1/admin/wallets/export?userId=${v}`,
+      ABSENT_PORTAL_ID,
+    ),
+    route(
+      'trading accounts ?userId',
+      (v) => `/v1/admin/trading-accounts?userId=${v}`,
+      ABSENT_PORTAL_ID,
+    ),
+    route(
+      'trading accounts export ?userId',
+      (v) => `/v1/admin/trading-accounts/export?userId=${v}`,
+      ABSENT_PORTAL_ID,
+    ),
+    route('ledger ?userId', (v) => `/v1/admin/ledger?userId=${v}`, ABSENT_PORTAL_ID),
+    route('accruals ?ibUserId', (v) => `/v1/admin/ib/accruals?ibUserId=${v}`, ABSENT_PORTAL_ID),
+    route(
+      'accruals ?clientUserId',
+      (v) => `/v1/admin/ib/accruals?clientUserId=${v}`,
+      ABSENT_PORTAL_ID,
+    ),
+  ];
+  const ROUTES: IdFilter[] = [
+    ...CLIENT_ROUTES,
+    route('audit log ?actorId', (v) => `/v1/admin/audit-log?actorId=${v}`, ABSENT_UUID),
+    route(
+      'audit log export ?actorId',
+      (v) => `/v1/admin/audit-log/export?actorId=${v}`,
+      ABSENT_UUID,
+    ),
+    route('ledger ?walletId', (v) => `/v1/admin/ledger?walletId=${v}`, ABSENT_UUID),
   ];
 
   it.each(ROUTES)('$name names the parameter it refused', async ({ path }) => {
@@ -103,17 +132,30 @@ describe('a uuid filter refuses a malformed value', () => {
     expect(Object.keys(body.fields ?? {}).length).toBeGreaterThan(0);
   });
 
-  it.each(ROUTES)('$name still ACCEPTS a well-formed id that matches nothing', async ({ path }) => {
-    /*
-     * The control, and it is not redundant. A guard that refused every value
-     * would satisfy every assertion above while breaking the filter entirely —
-     * and "no results" for a valid id is a truthful answer, where a 400 would
-     * not be.
-     */
-    const res = await master.get(path(ABSENT_UUID));
+  it.each(CLIENT_ROUTES)(
+    '$name refuses a uuid — a client is named by Portal ID alone (D-83)',
+    async ({ path }) => {
+      const res = await master.get(path(ABSENT_UUID));
 
-    expect(res.status, `${String(res.status)} for a well-formed id`).toBeLessThan(400);
-  });
+      expect(res.status).toBe(400);
+      expect((res.body as { code?: string }).code).toBe('VALIDATION_FAILED');
+    },
+  );
+
+  it.each(ROUTES)(
+    '$name still ACCEPTS a well-formed id that matches nothing',
+    async ({ path, absent }) => {
+      /*
+       * The control, and it is not redundant. A guard that refused every value
+       * would satisfy every assertion above while breaking the filter entirely —
+       * and "no results" for a valid id is a truthful answer, where a 400 would
+       * not be.
+       */
+      const res = await master.get(path(absent));
+
+      expect(res.status, `${String(res.status)} for a well-formed id`).toBeLessThan(400);
+    },
+  );
 });
 
 describe('a tampered cursor refuses rather than reaching a cast', () => {

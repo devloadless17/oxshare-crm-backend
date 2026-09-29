@@ -66,7 +66,7 @@ const REVIEWER_A = { email: 'decide-a@oxshare.com', password: 'reviewer-password
 const REVIEWER_B = { email: 'decide-b@oxshare.com', password: 'reviewer-password-2' };
 
 let ctx: HttpTestContext;
-let subjectId: string;
+let subjectId: number;
 type Session = Awaited<ReturnType<typeof actingAs>>;
 let a: Session;
 let b: Session;

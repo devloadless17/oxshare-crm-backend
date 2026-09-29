@@ -139,6 +139,8 @@ async function purge() {
       `user_id IN (SELECT id FROM users WHERE email LIKE '%@${SEED_DOMAIN}')`,
     ],
     ['kyc_submissions', `user_id IN (SELECT id FROM users WHERE email LIKE '%@${SEED_DOMAIN}')`],
+    // After the KYC rows that point into it, before `users`.
+    removeIdentityRecord,
     ['ib_applications', `user_id IN (SELECT id FROM users WHERE email LIKE '%@${SEED_DOMAIN}')`],
     [
       'client_tag_assignments',
@@ -155,9 +157,39 @@ async function purge() {
     ['roles', `name LIKE 'Seed %'`],
   ];
 
-  for (const [table, where] of order) {
-    const { rowCount } = await db.query(`DELETE FROM ${table} WHERE ${where}`);
-    console.log(`  ${table.padEnd(24)} ${rowCount} removed`);
+  for (const step of order) {
+    if (typeof step === 'function') await step();
+    else await remove(...step);
+  }
+}
+
+async function remove(table, where) {
+  const { rowCount } = await db.query(`DELETE FROM ${table} WHERE ${where}`);
+  console.log(`  ${table.padEnd(24)} ${rowCount} removed`);
+}
+
+/**
+ * A seeded client's identity record (0151). A seeded client at level 1 is given
+ * a `legacy` decision by the next backend boot, and a decision is HISTORY: a
+ * trigger refuses deleting it even as a superuser, and it holds `users` by a
+ * RESTRICT key. So this takes the record's one explicit escape, which
+ * `set_config(…, true)` scopes to its own transaction — hence the BEGIN.
+ */
+async function removeIdentityRecord() {
+  const seeded = `(SELECT id FROM users WHERE email LIKE '%@${SEED_DOMAIN}')`;
+  await db.query('BEGIN');
+  try {
+    await db.query(`SELECT set_config('oxshare.identity_maintenance', 'on', true)`);
+    await remove(
+      'client_verification_documents',
+      `verification_id IN (SELECT id FROM client_verifications WHERE user_id IN ${seeded})`,
+    );
+    await remove('client_verifications', `user_id IN ${seeded}`);
+    await remove('client_documents', `user_id IN ${seeded}`);
+    await db.query('COMMIT');
+  } catch (error) {
+    await db.query('ROLLBACK');
+    throw error;
   }
 }
 
@@ -346,9 +378,9 @@ async function main() {
   const statuses = ['active', 'active', 'active', 'pending', 'suspended'];
 
   await step('users', async () => {
+    // No id: a client's key is their Portal ID, which the sequence assigns (0159).
     const rows = Array.from({ length: CLIENTS }, (_, at) => {
       return [
-        randomUUID(),
         `loadtest+${at}@${SEED_DOMAIN}`,
         UNUSABLE_HASH,
         pick(['Omar', 'Layla', 'Youssef', 'Nour', 'Karim', 'Rana', 'Ali', 'Sara'], at),
@@ -365,7 +397,6 @@ async function main() {
     return insertMany(
       'users',
       [
-        'id',
         'email',
         'password_hash',
         'first_name',

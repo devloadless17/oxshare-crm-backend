@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { UsersStore } from '../../store/users.store';
-import { ClientNotFoundError } from '../errors/domain-errors';
+import { ClientNotFoundError, type DomainError } from '../errors/domain-errors';
 import type { ClientScope } from './client-scope';
 
 /**
@@ -47,12 +47,23 @@ export class ClientVisibilityService {
    * transaction beforehand is how an out-of-scope client's details reach a log
    * line or an error message on the way to being refused.
    */
-  async assertVisible(clientId: string, scope: ClientScope): Promise<void> {
+  /**
+   * `notFound` is what a missing RECORD answers on the caller's route — pass it
+   * whenever the route names a record rather than the client (a withdrawal, a
+   * wallet, an accrual). An out-of-territory record must be indistinguishable
+   * from a missing one: same status, same `code`, same message. The default
+   * suits a route that names the client itself.
+   */
+  async assertVisible(
+    clientId: number,
+    scope: ClientScope,
+    notFound: () => DomainError = () => new ClientNotFoundError(),
+  ): Promise<void> {
     // A master admin, or an admin with no territory, sees everyone — so there
     // is nothing to look up and no query to pay for on the common path.
     if (scope.unrestricted) return;
 
     const client = await this.users.findForAdmin(clientId, scope);
-    if (!client) throw new ClientNotFoundError();
+    if (!client) throw notFound();
   }
 }

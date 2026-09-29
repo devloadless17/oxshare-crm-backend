@@ -282,7 +282,7 @@ export class TradingController {
       'actually be denominated in. An environment with no types is switched off and the portal ' +
       'hides it.',
   })
-  async selfService(@Req() req: Request & { user: { id: string } }) {
+  async selfService(@Req() req: Request & { user: { id: number } }) {
     /*
      * Currencies come from MT5 rather than from the catalogue.
      *

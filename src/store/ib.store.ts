@@ -10,6 +10,7 @@ import {
   or,
   sql,
   type SQLWrapper,
+  not,
 } from 'drizzle-orm';
 import { Inject, Injectable } from '@nestjs/common';
 import { orderTerms, type SortOrder } from '../common/sorting';
@@ -123,7 +124,7 @@ export class IbStore {
   // ── applications ───────────────────────────────────────────────────────────
 
   /** The application a client currently has open, if any. */
-  async findPendingByUser(userId: string): Promise<IbApplicationRow | undefined> {
+  async findPendingByUser(userId: number): Promise<IbApplicationRow | undefined> {
     const [row] = await this.db
       .select()
       .from(ibApplications)
@@ -140,7 +141,7 @@ export class IbStore {
    * cannot tell the difference between never having applied and having been
    * turned down.
    */
-  async findLatestByUser(userId: string): Promise<IbApplicationRow | undefined> {
+  async findLatestByUser(userId: number): Promise<IbApplicationRow | undefined> {
     const [row] = await this.db
       .select()
       .from(ibApplications)
@@ -261,7 +262,7 @@ export class IbStore {
         application: ibApplications,
         user: {
           id: users.id,
-          portalId: users.portalId,
+          portalId: users.id,
           email: users.email,
           firstName: users.firstName,
           lastName: users.lastName,
@@ -325,7 +326,7 @@ export class IbStore {
 
   // ── accounts ───────────────────────────────────────────────────────────────
 
-  async findAccount(userId: string): Promise<IbAccountRow | undefined> {
+  async findAccount(userId: number): Promise<IbAccountRow | undefined> {
     const [row] = await this.db
       .select()
       .from(ibAccounts)
@@ -358,7 +359,7 @@ export class IbStore {
   }
 
   /** How many partners sit directly beneath this one — the `maxDirectPartners` check. */
-  async countDirectPartners(parentUserId: string): Promise<number> {
+  async countDirectPartners(parentUserId: number): Promise<number> {
     const [{ value }] = await this.db
       .select({ value: count() })
       .from(ibAccounts)
@@ -394,22 +395,19 @@ export class IbStore {
    * oracle than the 403-versus-404 distinction `client-scope.ts` refuses to
    * give away.
    *
-   * And NO out-of-territory total is published beside the rows, which is the
-   * half worth stating because the obvious fix is to add one. `referredShown` /
-   * `referredTotal` on the client profile are BOTH scoped, deliberately —
-   * `client-network-tree.tsx` records why: "an unscoped count over a scoped list
-   * would read 12 of 213 and then show 12, which is correct and looks like a
-   * bug". And a count is itself a disclosure (`admin-stats.service.ts`), so an
-   * unscoped total here would hand over exactly the fact the rows withhold: how
-   * many partners this line has in territories the reader is denied. The pair
-   * exists there to publish a ROW CAP; this list has no cap, so a scoped total
-   * would only restate `rows.length`.
+   * What it withheld is said as a COUNT (`countDirectPartnersOutside`), never
+   * as rows: the owner's ruling of 28 Sep 2026 — "a count, no identity",
+   * everywhere a relation crosses a territory (R2). This comment used to argue
+   * the opposite, that a count is itself a disclosure; the owner weighed that
+   * and chose the count, because a line that silently drops people reads as a
+   * partner with nobody beneath them. It matches `referredOutsideScope` on the
+   * client profile.
    *
    * It also settles a response that contradicted itself: `countReferredBy` on
    * this same partner-detail payload is scoped, so the counts obeyed territory
    * while the roster beside them did not.
    */
-  async findDirectPartners(parentUserId: string, scope: ClientScope) {
+  async findDirectPartners(parentUserId: number, scope: ClientScope) {
     const belongsToParent = eq(ibAccounts.parentIbUserId, parentUserId);
 
     const rows = await this.db
@@ -421,7 +419,7 @@ export class IbStore {
         referralCode: ibAccounts.referralCode,
         active: ibAccounts.active,
         approvedAt: ibAccounts.approvedAt,
-        portalId: users.portalId,
+        portalId: users.id,
         email: users.email,
         firstName: users.firstName,
         lastName: users.lastName,
@@ -447,6 +445,21 @@ export class IbStore {
   }
 
   /**
+   * How many of this partner's DIRECT sub-partners `findDirectPartners`
+   * withheld from this reader — the count, never who (R2). Zero for an
+   * unrestricted reader, without a query.
+   */
+  async countDirectPartnersOutside(parentUserId: number, scope: ClientScope): Promise<number> {
+    const inScope = clientScopePredicate(scope, ibAccounts.userId);
+    if (!inScope) return 0;
+    const [{ value }] = await this.db
+      .select({ value: count() })
+      .from(ibAccounts)
+      .where(and(eq(ibAccounts.parentIbUserId, parentUserId), not(inScope)));
+    return value;
+  }
+
+  /**
    * Every partner between this one and the top of their chain.
    *
    * A recursive CTE rather than a loop of round trips, because the cycle guard
@@ -458,8 +471,8 @@ export class IbStore {
    * table can hold a cycle (a self-FK only checks the target exists), so this
    * query must survive one rather than assume it cannot happen.
    */
-  async ancestorsOf(userId: string): Promise<string[]> {
-    const result = await this.db.execute<{ user_id: string }>(sql`
+  async ancestorsOf(userId: number): Promise<number[]> {
+    const result = await this.db.execute<{ user_id: number }>(sql`
       WITH RECURSIVE chain AS (
         SELECT user_id, parent_ib_user_id
           FROM ib_accounts
@@ -520,7 +533,7 @@ export class IbStore {
       filter.scope ?? UNRESTRICTED,
       ibAccounts.parentIbUserId,
     );
-    const parentPortalId = sql<number | null>`(SELECT parent.portal_id FROM users AS parent
+    const parentPortalId = sql<number | null>`(SELECT parent.id FROM users AS parent
       WHERE parent.id = ${ibAccounts.parentIbUserId}${parentVisible ? sql` AND ${parentVisible}` : sql``})`;
 
     const sortKey: IbPartnerSortKey = filter.sort ?? DEFAULT_IB_PARTNER_SORT;
@@ -532,7 +545,7 @@ export class IbStore {
         account: ibAccounts,
         user: {
           id: users.id,
-          portalId: users.portalId,
+          portalId: users.id,
           email: users.email,
           firstName: users.firstName,
           lastName: users.lastName,
@@ -603,8 +616,8 @@ export class IbStore {
     page: number;
     limit: number;
     scope?: ClientScope;
-    ibUserId?: string;
-    clientUserId?: string;
+    ibUserId?: number;
+    clientUserId?: number;
     /**
      * The PARTNER's Portal ID, or free text over their email and name — never
      * the client's.
@@ -679,10 +692,24 @@ export class IbStore {
     const partner = aliasedTable(users, 'partner_user');
     const client = aliasedTable(users, 'client_user');
 
+    /*
+     * Whether the PERSON a filter or search names is one this reader may see.
+     * A row stays visible through its beneficiary while the other party is
+     * masked; narrowing by that other party's id or identity would pick their
+     * rows out and put a name to the mask. So an outside person answers exactly
+     * like an unknown one — no rows. Undefined for an unrestricted reader.
+     */
+    const partnerScope = clientScopePredicate(scope, partner.id);
+    const seesPerson = (id: number) => clientScopePredicate(scope, sql`${id}::integer`);
+
     const where = and(
       visible,
-      ...(filter.ibUserId ? [eq(ibAccruals.ibUserId, filter.ibUserId)] : []),
-      ...(filter.clientUserId ? [eq(ibAccruals.clientUserId, filter.clientUserId)] : []),
+      ...(filter.ibUserId
+        ? [eq(ibAccruals.ibUserId, filter.ibUserId), seesPerson(filter.ibUserId)]
+        : []),
+      ...(filter.clientUserId
+        ? [eq(ibAccruals.clientUserId, filter.clientUserId), seesPerson(filter.clientUserId)]
+        : []),
       ...(filter.status ? [eq(ibAccruals.status, filter.status as 'pending')] : []),
       /* Validated against the column's own enum at the edge, so an
          unrecognised value is a 400 rather than a filter matching nothing. */
@@ -695,9 +722,10 @@ export class IbStore {
        * for another screen to copy an id.
        *
        * A Portal ID or a name/email, through the one definition every client
-       * search shares — on the PARTNER alias, for the reason given on `q`.
+       * search shares — on the PARTNER alias, for the reason given on `q`, and
+       * only a partner this reader may see (`partnerScope`).
        */
-      ...(filter.q?.trim() ? [clientIdentitySearch(filter.q, partner)] : []),
+      ...(filter.q?.trim() ? [clientIdentitySearch(filter.q, partner), partnerScope] : []),
     );
 
     const sortKey: IbAccrualSortKey = filter.sort ?? DEFAULT_IB_ACCRUAL_SORT;
@@ -720,7 +748,6 @@ export class IbStore {
      * territory this reader may not hold. Rendering their name and email would
      * reintroduce the 13 Aug finding pointing the other way.
      */
-    const partnerScope = clientScopePredicate(scope, partner.id);
     const partnerInScopeExpr = partnerScope ? sql<boolean>`(${partnerScope})` : sql<boolean>`true`;
 
     const rawRows = await this.db
@@ -742,14 +769,14 @@ export class IbStore {
         partnerInScope: partnerInScopeExpr,
         partner: {
           id: partner.id,
-          portalId: partner.portalId,
+          portalId: partner.id,
           email: partner.email,
           firstName: partner.firstName,
           lastName: partner.lastName,
         },
         client: {
           id: client.id,
-          portalId: client.portalId,
+          portalId: client.id,
           email: client.email,
           firstName: client.firstName,
           lastName: client.lastName,
@@ -794,14 +821,12 @@ export class IbStore {
        * showing it for someone outside the reader's territory would hand them
        * the key to a person they may not look up.
        */
-      const hide = (person: {
-        id: string;
-        portalId: number;
-        email: string;
-        firstName: string;
-        lastName: string;
-      }) => ({
-        id: person.id,
+      /*
+       * The uuid goes too (R1): the row still has its own key, `accrual.id`,
+       * and an outside person's record id is not the reader's to hold.
+       */
+      const hide = () => ({
+        id: null as string | null,
         portalId: null as number | null,
         email: null as string | null,
         firstName: null as string | null,
@@ -810,8 +835,19 @@ export class IbStore {
 
       return {
         ...row,
-        client: clientInScope ? row.client : hide(row.client),
-        partner: partnerInScope ? row.partner : hide(row.partner),
+        /*
+         * The accrual names both people again by id, and names the outside
+         * client's trade: those go with the mask. The amounts, dates and terms
+         * stay — they are the visible beneficiary's.
+         */
+        accrual: {
+          ...row.accrual,
+          clientUserId: clientInScope ? row.accrual.clientUserId : null,
+          ibUserId: partnerInScope ? row.accrual.ibUserId : null,
+          sourceId: clientInScope ? row.accrual.sourceId : null,
+        },
+        client: clientInScope ? row.client : hide(),
+        partner: partnerInScope ? row.partner : hide(),
         clientMasked: !clientInScope,
         partnerMasked: !partnerInScope,
       };
@@ -885,8 +921,8 @@ export class IbStore {
    * loop: they never counted towards either figure, and grouping them would
    * give a currency that only ever held a clawback a row of zeroes.
    */
-  async earningsByPartner(ibUserIds: string[]) {
-    const byPartner = new Map<string, PartnerEarnings[]>();
+  async earningsByPartner(ibUserIds: number[]) {
+    const byPartner = new Map<number, PartnerEarnings[]>();
     if (ibUserIds.length === 0) return byPartner;
 
     const rows = await this.db
@@ -942,7 +978,7 @@ export class IbStore {
   }
 
   async updateAccount(
-    userId: string,
+    userId: number,
     /*
      * `level` replaced `programId` as the term that decides pay — 0112. The
      * programme stays assignable only so a historical value can be corrected;

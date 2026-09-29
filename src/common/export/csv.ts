@@ -27,6 +27,8 @@
  * string, only ever ADDS quoting. It never reinterprets the value.
  */
 
+import { HIDDEN, HIDDEN_TEXT } from '../security/mask-by-shape';
+
 /**
  * The bytes that make Excel read the file as UTF-8.
  *
@@ -138,7 +140,75 @@ export function csvHeader<T>(columns: readonly CsvColumn<T>[]): string {
   return UTF8_BOM + row(columns.map((column) => column.header));
 }
 
-/** One data row against a column set. */
+/**
+ * One data row against a column set.
+ *
+ * ## A value the reader's role hides is printed `[hidden]`, never left blank
+ *
+ * The export services mask rows with `maskForExport`, which puts `HIDDEN` where
+ * a value was. A blank cell would read as "this client has none" — and what a
+ * masked reader may know about the field is exactly nothing (D-82).
+ *
+ * The cell is decided by what the COLUMN READ, not by what it returned. A
+ * column may combine or transform values — tags joined into one cell, a flag
+ * turned into "yes"/"no" — so a marker handed to it could come back as a
+ * confident wrong answer (`HIDDEN ? 'yes' : 'no'` is "yes"). Each column is
+ * therefore run against a view of the row that notices every read of a
+ * `HIDDEN`; any such read makes the whole cell `[hidden]`, whatever the column
+ * would have computed, and a column that throws on a hidden value (a `.map`
+ * over it) is `[hidden]` too. No column declares anything, so a column added
+ * next year is covered without anybody remembering to.
+ *
+ * A row with nothing hidden takes the plain path, which is every row for a
+ * reader whose role masks nothing.
+ */
 export function csvRow<T>(columns: readonly CsvColumn<T>[], item: T): string {
-  return row(columns.map((column) => column.value(item)));
+  if (!carriesHidden(item, 0)) return row(columns.map((column) => column.value(item)));
+  return row(columns.map((column) => hiddenAware(column, item)));
+}
+
+/** Does this value hold a `HIDDEN` anywhere a column could reach? */
+function carriesHidden(value: unknown, depth: number): boolean {
+  if (value === HIDDEN) return true;
+  if (depth > 6 || !isWalkable(value)) return false;
+  return Object.values(value).some((child) => carriesHidden(child, depth + 1));
+}
+
+/** Plain objects and arrays — what a row is built of. A Date or a Decimal is a value. */
+function isWalkable(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== 'object') return false;
+  return Array.isArray(value) || Object.getPrototypeOf(value) === Object.prototype;
+}
+
+function hiddenAware<T>(
+  column: CsvColumn<T>,
+  item: T,
+): string | number | Date | boolean | null | undefined {
+  let touched = false;
+  const view = (value: unknown): unknown => {
+    if (value === HIDDEN) {
+      touched = true;
+      return undefined;
+    }
+    if (!isWalkable(value)) return value;
+    return new Proxy(value, {
+      get(target, key, receiver) {
+        const raw: unknown = Reflect.get(target, key, receiver);
+        // A proxy may not substitute a frozen property's value (an invariant).
+        const own = Reflect.getOwnPropertyDescriptor(target, key);
+        if (own && !own.configurable && !own.writable) {
+          if (raw === HIDDEN) touched = true;
+          return raw;
+        }
+        return view(raw);
+      },
+    });
+  };
+  try {
+    const value = column.value(view(item) as T);
+    return touched ? HIDDEN_TEXT : value;
+  } catch (error) {
+    if (touched) return HIDDEN_TEXT;
+    throw error;
+  }
 }

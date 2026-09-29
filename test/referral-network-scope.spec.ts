@@ -56,17 +56,17 @@ const SCOPED = { email: 'ref-scope-scoped@oxshare.com', password: 'admin-passwor
 const CLIENTS = '/v1/admin/clients';
 
 let ctx: HttpTestContext;
-let partnerId: string;
-let mineId: string;
-let theirsId: string;
+let partnerId: number;
+let mineId: number;
+let theirsId: number;
 /** Sub-partners of `partnerId`: one inside the reader's territory, one outside. */
-let subMineId: string;
-let subTheirsId: string;
+let subMineId: number;
+let subTheirsId: number;
 /** A partner the reader CAN open, whose PARENT sits outside their territory. */
-let childPartnerId: string;
-let outsideParentId: string;
+let childPartnerId: number;
+let outsideParentId: number;
 /** In the reader's territory, but INTRODUCED by a partner who is not. */
-let introducedFromOutsideId: string;
+let introducedFromOutsideId: number;
 
 beforeAll(async () => {
   ctx = await startHttpTestApp();
@@ -287,7 +287,7 @@ afterAll(async () => {
 });
 
 type Profile = {
-  referredClients?: { clientUserId: string }[];
+  referredClients?: { clientUserId: number }[];
   referredShown?: number;
   referredTotal?: number;
 };
@@ -451,7 +451,8 @@ describe('GET /admin/clients?referredBy=', () => {
      */
     const master = await actingAs(ctx, 'admin', MASTER);
     const res = await master
-      .get(`${CLIENTS}?referredBy=00000000-0000-0000-0000-000000000000&withTotal=true`)
+      // A well-formed Portal ID nobody holds (the sequence starts at 1,000,000).
+      .get(`${CLIENTS}?referredBy=999999999&withTotal=true`)
       .expect(200);
     const body = res.body as { items: unknown[]; total?: number };
 
@@ -473,12 +474,12 @@ describe("a partner's SUB-PARTNERS follow the reader's territory too", () => {
    * the `referredShown` / `referredTotal` of the line below.
    */
   type Detail = {
-    parent: { userId: string; email: string } | null;
+    parent: { userId: number; email: string } | null;
     parentOutsideTerritory: boolean;
-    directPartners: { userId: string; email?: string }[];
+    directPartners: { userId: number; email?: string }[];
   };
 
-  const detailFor = async (who: typeof MASTER, userId: string): Promise<Detail> => {
+  const detailFor = async (who: typeof MASTER, userId: number): Promise<Detail> => {
     const session = await actingAs(ctx, 'admin', who);
     const res = await session.get(`/v1/admin/ib/partners/${userId}`).expect(200);
     return res.body as Detail;
@@ -498,28 +499,22 @@ describe("a partner's SUB-PARTNERS follow the reader's territory too", () => {
     expect(body.directPartners.map((p) => p.userId)).toEqual([subMineId]);
   });
 
-  it('publishes NO out-of-territory count beside the scoped list', async () => {
+  it('says how many it withheld — a count, never who (R2)', async () => {
     /*
-     * The obvious next move after scoping this list is to add "3 of 5" so the
-     * reader is not silently under-reported. It is deliberately NOT done, for
-     * two reasons that both come from this codebase.
-     *
-     * `client-network-tree.tsx` keeps `referredShown` and `referredTotal` BOTH
-     * scoped, and says why: "an unscoped count over a scoped list would read 12
-     * of 213 and then show 12, which is correct and looks like a bug". And
-     * `admin-stats.service.ts` states the rule such a count would break — "A
-     * COUNT IS A DISCLOSURE" — so a total here would hand over precisely what
-     * the rows withhold: how many partners this line has in territories the
-     * reader is denied.
-     *
-     * That pair exists on the client profile to publish a ROW CAP. There is no
-     * cap on sub-partners, so a scoped total would only restate the array's
-     * length.
+     * This case used to pin the opposite: NO out-of-territory count, on the
+     * argument that "a count is a disclosure". The owner weighed that on
+     * 28 Sep 2026 and ruled "a count, no identity" everywhere a relation
+     * crosses a territory: a line that silently drops people reads as a
+     * partner with nobody beneath them. The profile's `referredOutsideScope`
+     * already said so for referred clients; this is the same for sub-partners.
      */
-    const body = (await detailFor(SCOPED, partnerId)) as unknown as Record<string, unknown>;
+    const scoped = (await detailFor(SCOPED, partnerId)) as unknown as Record<string, unknown>;
+    expect(scoped['directPartnersOutsideScope']).toBe(1);
+    expect(typeof scoped['referredClientsOutsideScope']).toBe('number');
 
-    expect(body['directPartnersTotal']).toBeUndefined();
-    expect(body['directPartnersShown']).toBeUndefined();
+    const master = (await detailFor(MASTER, partnerId)) as unknown as Record<string, unknown>;
+    expect(master['directPartnersOutsideScope']).toBe(0);
+    expect(master['referredClientsOutsideScope']).toBe(0);
   });
 
   it('leaks NOTHING about the sub-partner outside the territory — not even the id', async () => {
@@ -539,11 +534,11 @@ describe("a partner's SUB-PARTNERS follow the reader's territory too", () => {
 
 describe("a partner's PARENT follows the reader's territory", () => {
   type Detail = {
-    parent: { userId: string; email: string } | null;
+    parent: { userId: number; email: string } | null;
     parentOutsideTerritory: boolean;
   };
 
-  const detailFor = async (who: typeof MASTER, userId: string): Promise<Detail> => {
+  const detailFor = async (who: typeof MASTER, userId: number): Promise<Detail> => {
     const session = await actingAs(ctx, 'admin', who);
     const res = await session.get(`/v1/admin/ib/partners/${userId}`).expect(200);
     return res.body as Detail;
@@ -600,7 +595,7 @@ describe("the client profile's REFERRER follows the reader's territory", () => {
    */
   type Profile = {
     referrer?: {
-      ibUserId: string;
+      ibUserId: number;
       email?: string;
       firstName?: string;
       lastName?: string;
@@ -608,7 +603,7 @@ describe("the client profile's REFERRER follows the reader's territory", () => {
     };
   };
 
-  const profileFor = async (who: typeof MASTER, clientId: string): Promise<Profile> => {
+  const profileFor = async (who: typeof MASTER, clientId: number): Promise<Profile> => {
     const session = await actingAs(ctx, 'admin', who);
     const res = await session.get(`/v1/admin/clients/${clientId}`).expect(200);
     return res.body as Profile;
@@ -643,6 +638,8 @@ describe("the client profile's REFERRER follows the reader's territory", () => {
     // off the street", which is a different commercial fact.
     const body = await profileFor(SCOPED, introducedFromOutsideId);
     expect(body.referrer?.outsideTerritory).toBe(true);
+    // …and nothing else about them: no uuid, not even whether they are suspended.
+    expect(body.referrer).toEqual({ since: expect.any(String), outsideTerritory: true });
 
     // And an in-territory introducer reports the opposite, or the flag would be
     // indistinguishable from "always true".

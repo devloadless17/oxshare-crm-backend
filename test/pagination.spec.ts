@@ -53,6 +53,9 @@ async function seedClients(prefix: string, n: number) {
   await ctx.db.insert(users).values(rows);
 }
 
+/** A clients-list cursor: its row id is the Portal ID since 0159, as `findClients` decodes it. */
+const clientCursor = (cursor: string) => decodeCursor(cursor, undefined, undefined, 'integer');
+
 /** Walks every page with the cursor and returns the emails, in order. */
 async function walkWithCursor(limit: number, filter: Record<string, unknown> = {}) {
   const seen: string[] = [];
@@ -62,7 +65,7 @@ async function walkWithCursor(limit: number, filter: Record<string, unknown> = {
     const { rows } = await store.findPage({
       page: 1,
       limit,
-      cursor: cursor ? decodeCursor(cursor) : undefined,
+      cursor: cursor ? clientCursor(cursor) : undefined,
       ...filter,
     });
     const page = buildCursorPage(rows, limit);
@@ -110,7 +113,7 @@ describe('R-2.4 keyset pagination', () => {
     });
 
     const second = buildCursorPage(
-      await pageOf(limit, decodeCursor(first.nextCursor as string)),
+      await pageOf(limit, clientCursor(first.nextCursor as string)),
       limit,
     );
 

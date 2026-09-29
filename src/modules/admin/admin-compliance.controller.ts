@@ -34,7 +34,8 @@ import { exportFormat, streamCsv, EXPORT_RATE_LIMIT } from '../../common/export/
 import { KYC_SORT_COLUMNS } from '../../store/kyc.store';
 import { KycStepConfig } from '../../store/kyc-config.store';
 import { DOCUMENT_CATALOGUE } from '../../common/kyc/document-catalogue';
-import { KycDocumentTypeDto } from '../compliance/dto/kyc-response.dto';
+import { KycDocumentTypeDto, KycFieldConfigDto } from '../compliance/dto/kyc-response.dto';
+import { IDENTITY_FIELDS } from '../../common/kyc/identity-core';
 import { RejectionContext } from '../../store/rejection-reasons.store';
 import {
   KycConfigDto,
@@ -65,18 +66,7 @@ import { kycStatusEnum } from '../../database/schema';
 import { NotClientScoped, ScopedToClients } from './guards/client-scope.decorator';
 import { Audited } from './guards/audited.decorator';
 import { AnnouncesChange } from '../../common/realtime/announces-change.decorator';
-
-/**
- * The version an `If-Match` header names: the bare digest, with the quotes and
- * any weak-validator prefix an HTTP client may have kept on the `ETag` removed.
- * Absent means the caller named none — a builder predating the check, which is
- * let through rather than refused, so deploying the API first breaks no screen.
- */
-function versionFrom(ifMatch: string | undefined): string | undefined {
-  const value = ifMatch?.trim();
-  if (!value) return undefined;
-  return value.replace(/^W\//, '').replace(/^"|"$/g, '');
-}
+import { versionFromIfMatch } from '../../common/http/if-match';
 
 /** KYC review queue, configurable rejection reasons and the KYC step configurator. */
 @ApiTags('admin')
@@ -234,7 +224,7 @@ export class AdminComplianceController {
   @ApiOkResponse({ type: KycSubmissionDto })
   @ScopedToClients('Scoped by-id read — an out-of-scope submission 404s like a missing one.')
   getKyc(
-    @Param('userId', ClientRefPipe) userId: string,
+    @Param('userId', ClientRefPipe) userId: number,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
     return this.compliance.getKyc(userId, req.admin);
@@ -257,7 +247,7 @@ export class AdminComplianceController {
   @ApiOkResponse({ type: [KycAttemptDto] })
   @ScopedToClients('Scoped by-id read over kyc_submission_attempts.')
   getKycHistory(
-    @Param('userId', ClientRefPipe) userId: string,
+    @Param('userId', ClientRefPipe) userId: number,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
     return this.compliance.getKycHistory(userId, req.admin);
@@ -277,7 +267,7 @@ export class AdminComplianceController {
   )
   @Audited('kyc.claim')
   claimKyc(
-    @Param('userId', ClientRefPipe) userId: string,
+    @Param('userId', ClientRefPipe) userId: number,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
     return this.compliance.claimKyc(userId, req.admin);
@@ -306,7 +296,7 @@ export class AdminComplianceController {
   )
   @Audited('kyc.release')
   releaseKyc(
-    @Param('userId', ClientRefPipe) userId: string,
+    @Param('userId', ClientRefPipe) userId: number,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
     return this.compliance.releaseKyc(userId, req.admin);
@@ -339,7 +329,7 @@ export class AdminComplianceController {
   )
   @Audited('kyc.identity_correct')
   correctKycIdentity(
-    @Param('userId', ClientRefPipe) userId: string,
+    @Param('userId', ClientRefPipe) userId: number,
     @Body() dto: CorrectKycIdentityDto,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
@@ -360,7 +350,7 @@ export class AdminComplianceController {
   )
   @Audited('kyc.approve')
   approveKyc(
-    @Param('userId', ClientRefPipe) userId: string,
+    @Param('userId', ClientRefPipe) userId: number,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
     return this.compliance.approveKyc(userId, req.admin);
@@ -379,7 +369,7 @@ export class AdminComplianceController {
   @ScopedToClients("Predicate inside the transition's UPDATE ... WHERE.")
   @Audited('kyc.reject')
   rejectKyc(
-    @Param('userId', ClientRefPipe) userId: string,
+    @Param('userId', ClientRefPipe) userId: number,
     @Body() dto: RejectDto,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
@@ -413,7 +403,7 @@ export class AdminComplianceController {
   )
   @Audited('kyc.reverification_request')
   requestReverification(
-    @Param('userId', ClientRefPipe) userId: string,
+    @Param('userId', ClientRefPipe) userId: number,
     @Body() dto: ReverifyKycDto,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
@@ -523,6 +513,29 @@ export class AdminComplianceController {
     return DOCUMENT_CATALOGUE;
   }
 
+  @Get('kyc-config/identity-catalogue')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('kyc.view', 'kyc.edit')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'The identity details Personal Information may ask for',
+    description:
+      'The platform owns their names, kinds and meaning; the builder decides which are asked, ' +
+      'where, and whether each is required. `required` here is the default tier.',
+  })
+  @ApiOkResponse({ type: [KycFieldConfigDto] })
+  @NotClientScoped('A catalogue of the platform’s identity fields — no client data.')
+  getIdentityCatalogue() {
+    return IDENTITY_FIELDS.map(({ id, name, label, type, required, hint }) => ({
+      id,
+      name,
+      label,
+      type,
+      required,
+      ...(hint ? { hint } : {}),
+    }));
+  }
+
   @Put('kyc-config')
   @UseGuards(PermissionsGuard)
   @RequirePermissions('kyc.edit')
@@ -545,7 +558,8 @@ export class AdminComplianceController {
     return this.compliance.updateKycConfig(
       dto.steps as unknown as KycStepConfig[],
       req.admin,
-      versionFrom(ifMatch),
+      versionFromIfMatch(ifMatch),
+      dto.format,
     );
   }
 

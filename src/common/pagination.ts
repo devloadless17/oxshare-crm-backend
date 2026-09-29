@@ -63,8 +63,16 @@ export interface CursorPosition {
 /** What a cursor's `value` will be cast to by the seek that consumes it. */
 export type CursorValueShape = 'timestamptz' | 'numeric' | 'text';
 
-/** Every seek emits `${cursor.id}::uuid`, so anything else is a guaranteed 22P02. */
-const CURSOR_ID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/**
+ * The row id a seek casts the cursor's `id` to — `uuid` for every list except
+ * the clients list, whose rows are keyed by the Portal ID (0159). Checked
+ * here, so a cursor of the wrong shape is a 400 and never a failed cast.
+ */
+export type CursorIdShape = 'uuid' | 'integer';
+const CURSOR_ID_SHAPES: Record<CursorIdShape, RegExp> = {
+  uuid: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+  integer: /^[1-9][0-9]{0,9}$/,
+};
 
 /** A decimal a `::numeric` cast will accept, sign and fraction included. */
 const NUMERIC_SHAPE = /^-?\d+(\.\d+)?$/;
@@ -88,6 +96,7 @@ export function decodeCursor(
    * the value when the sort is the default timestamp one.
    */
   valueShape?: CursorValueShape,
+  idShape: CursorIdShape = 'uuid',
 ): CursorPosition {
   let parsed: unknown;
   try {
@@ -155,7 +164,7 @@ export function decodeCursor(
    * own `cursorSeek`; the other six inherited nothing, which is the shape of gap
    * a shared decoder exists to close.
    */
-  if (!CURSOR_ID_SHAPE.test(position.id)) {
+  if (!CURSOR_ID_SHAPES[idShape].test(position.id)) {
     throw new ValidationError('Malformed cursor. Omit it to start from the first page.');
   }
 
@@ -252,7 +261,7 @@ function cursorValueOf(value: unknown): string {
  * to prevent. `cursorValueOf` passes a string through verbatim, and
  * `::timestamptz` restores full precision on the way back in.
  */
-export function buildCursorPage<T extends { id: string; createdAt: Date | string }>(
+export function buildCursorPage<T extends { id: string | number; createdAt: Date | string }>(
   rows: T[],
   limit: number,
   total?: number,
@@ -299,7 +308,7 @@ export function buildCursorPage<T extends { id: string; createdAt: Date | string
               (last as Record<string, unknown>)[sort],
               sort,
             ),
-            id: last.id,
+            id: String(last.id),
           })
         : null,
     ...(total === undefined ? {} : { total }),

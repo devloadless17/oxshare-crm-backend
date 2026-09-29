@@ -82,7 +82,7 @@ export interface Statement {
 export class StatementService {
   constructor(@Inject(DRIZZLE_DB) private readonly db: Db) {}
 
-  async forWallet(userId: string, walletId: string, from: string, to: string): Promise<Statement> {
+  async forWallet(userId: number, walletId: string, from: string, to: string): Promise<Statement> {
     if (!DATE_PATTERN.test(from) || !DATE_PATTERN.test(to)) {
       throw new ValidationError('from and to must be YYYY-MM-DD dates.');
     }

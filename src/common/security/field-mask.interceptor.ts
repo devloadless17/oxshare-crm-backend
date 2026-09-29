@@ -2,7 +2,7 @@ import { CallHandler, ExecutionContext, Injectable, NestInterceptor } from '@nes
 import type { Observable } from 'rxjs';
 import { map } from 'rxjs/operators';
 import type { FieldMask } from './field-mask';
-import { maskByShape } from './mask-by-shape';
+import { declaredType, maskByShapeReporting } from './mask-by-shape';
 
 /**
  * RBAC-03, applied to every ADMIN response, without anybody remembering to.
@@ -75,7 +75,12 @@ export class FieldMaskInterceptor implements NestInterceptor {
     const shape = declaredResponseType(context.getHandler());
     if (shape === undefined) return next.handle();
 
-    return next.handle().pipe(map((body: unknown) => maskByShape(shape, body, mask)));
+    return next.handle().pipe(
+      map((body: unknown) => {
+        const { value, removed } = maskByShapeReporting(shape, body, mask);
+        return withMaskedFields(shape, value, removed);
+      }),
+    );
   }
 }
 
@@ -90,7 +95,7 @@ const API_RESPONSE = 'swagger/apiResponse';
  * Only 2xx responses: an error body is `AllExceptionsFilter`'s envelope and
  * carries no client projection.
  */
-function declaredResponseType(handler: object): unknown {
+export function declaredResponseType(handler: object): unknown {
   const responses = Reflect.getMetadata(API_RESPONSE, handler) as
     Record<string, { type?: unknown }> | undefined;
   if (!responses) return undefined;
@@ -106,4 +111,39 @@ function declaredResponseType(handler: object): unknown {
     if (typeof type === 'function') return type;
   }
   return undefined;
+}
+
+/**
+ * A response's `maskedFields`, from what the mask ACTUALLY removed, where the
+ * route reported none.
+ *
+ * A route that declares `maskedFields` and does not fill it leaves the screen
+ * unable to tell a hidden value from an empty one, and it renders "—" — none
+ * on file — the one conflation masking must not make (D-82). A route that
+ * fills its own list keeps it: that list is its promise about its own paths
+ * (`withdrawal.user.email`), and adding the catalogue key beside it would
+ * announce the same field twice.
+ */
+function withMaskedFields(shape: unknown, value: unknown, removed: readonly string[]): unknown {
+  if (removed.length === 0 || value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return value;
+  }
+  const body = value as { maskedFields?: unknown };
+  if (Array.isArray(body.maskedFields)) return value;
+  if (
+    declaredType(shape, 'maskedFields') === undefined &&
+    !declaresProperty(shape, 'maskedFields')
+  ) {
+    return value;
+  }
+  return { ...body, maskedFields: [...removed] };
+}
+
+function declaresProperty(shape: unknown, key: string): boolean {
+  if (typeof shape !== 'function') return false;
+  const names = Reflect.getMetadata(
+    'swagger/apiModelPropertiesArray',
+    (shape as { prototype: object }).prototype,
+  ) as string[] | undefined;
+  return names?.includes(`:${key}`) ?? false;
 }

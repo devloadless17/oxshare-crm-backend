@@ -10,7 +10,6 @@ import type { CommissionTypeTerms } from '../src/modules/ib/commission';
 import { UNRESTRICTED, scopeOf } from '../src/common/security/client-scope';
 import { ClientVisibilityService } from '../src/common/security/client-visibility.service';
 import { UsersStore } from '../src/store/users.store';
-import { ClientNotFoundError } from '../src/common/errors/domain-errors';
 
 /**
  * Taking an accrual back — against real Postgres, because every guarantee here
@@ -46,13 +45,13 @@ import { ClientNotFoundError } from '../src/common/errors/domain-errors';
 let ctx: MoneyTestContext;
 let commissions: CommissionService;
 
-let partnerId: string;
-let clientId: string;
+let partnerId: number;
+let clientId: number;
 
 const DEAL_ROW_ID = '22222222-2222-4222-8222-222222222222';
 
-async function makeUser(email: string): Promise<string> {
-  const { rows } = await ctx.db.execute<{ id: string }>(sql`
+async function makeUser(email: string): Promise<number> {
+  const { rows } = await ctx.db.execute<{ id: number }>(sql`
     INSERT INTO users (email, password_hash, first_name, last_name)
     VALUES (${email}, 'x', ${email.split('@')[0]}, 'Person')
     RETURNING id
@@ -100,14 +99,14 @@ async function accrualRows() {
   return rows;
 }
 
-async function walletOf(userId: string, kind: string): Promise<string | null> {
+async function walletOf(userId: number, kind: string): Promise<string | null> {
   const { rows } = await ctx.db.execute<{ balance: string }>(
     sql`SELECT balance FROM wallets WHERE user_id = ${userId} AND kind = ${kind}::wallet_kind`,
   );
   return rows[0]?.balance ?? null;
 }
 
-async function ledgerFor(userId: string) {
+async function ledgerFor(userId: number) {
   const { rows } = await ctx.db.execute<{
     entry_type: string;
     amount: string;
@@ -418,7 +417,7 @@ describe('the reversal obeys the reader’s TERRITORY, on the column it actually
     const result = await scopedCommissions.reverseAccrual(
       commission.id,
       'in territory',
-      scopeOf([partnerOnlyTagId]),
+      scopeOf([partnerOnlyTagId], false, false),
     );
 
     expect(result.status).toBe('reversed');
@@ -437,8 +436,13 @@ describe('the reversal obeys the reader’s TERRITORY, on the column it actually
     const rebate = (await accrualRows()).find((r) => r.kind === 'rebate')!;
 
     await expect(
-      scopedCommissions.reverseAccrual(rebate.id, 'out of territory', scopeOf([partnerOnlyTagId])),
-    ).rejects.toBeInstanceOf(ClientNotFoundError);
+      scopedCommissions.reverseAccrual(
+        rebate.id,
+        'out of territory',
+        scopeOf([partnerOnlyTagId], false, false),
+      ),
+      // Exactly a missing accrual's answer — code and message — never "not your client".
+    ).rejects.toMatchObject({ code: 'NOT_FOUND', message: 'Accrual not found.' });
 
     // And nothing moved: the row is untouched, not half-reversed.
     const after = (await accrualRows()).find((r) => r.kind === 'rebate')!;
@@ -456,7 +460,11 @@ describe('the reversal obeys the reader’s TERRITORY, on the column it actually
     const rebate = (await accrualRows()).find((r) => r.kind === 'rebate')!;
 
     await expect(
-      scopedCommissions.reverseAccrual(rebate.id, 'probe', scopeOf([partnerOnlyTagId])),
+      scopedCommissions.reverseAccrual(
+        rebate.id,
+        'probe',
+        scopeOf([partnerOnlyTagId], false, false),
+      ),
     ).rejects.toThrow(/not found/i);
   });
 
@@ -476,7 +484,12 @@ describe('the reversal obeys the reader’s TERRITORY, on the column it actually
 
     // The scoped reader must still be refused, not told "already done".
     await expect(
-      scopedCommissions.reverseAccrual(rebate.id, 'probe', scopeOf([partnerOnlyTagId])),
-    ).rejects.toBeInstanceOf(ClientNotFoundError);
+      scopedCommissions.reverseAccrual(
+        rebate.id,
+        'probe',
+        scopeOf([partnerOnlyTagId], false, false),
+      ),
+      // Exactly a missing accrual's answer — code and message — never "not your client".
+    ).rejects.toMatchObject({ code: 'NOT_FOUND', message: 'Accrual not found.' });
   });
 });

@@ -79,6 +79,17 @@ function actionsWritingDetails(): string[] {
       for (const match of text.matchAll(/audit:\s*\{[^}]*?action:\s*'([a-z_]+\.[a-z_.]+)'/g)) {
         found.add(match[1]);
       }
+      /*
+       * …or CHOOSES it from what actually changed: `audit: (changed, verification)
+       * => …` (`ClientProfileService.editAsAdmin`, 28 Sep 2026 — a desk edit that
+       * touches a verified detail is a correction). Missing this form is how
+       * the census once lost `kyc.identity_correct` without anything else moving.
+       */
+      for (const match of text.matchAll(
+        /audit:\s*\([^)]*\)\s*=>[\s\S]{0,400}?action:\s*'([a-z_]+\.[a-z_.]+)'/g,
+      )) {
+        found.add(match[1]);
+      }
     }
   }
   /*
@@ -136,6 +147,8 @@ const WRITES_DETAILS: readonly string[] = [
   'api_key.create',
   'api_key.revoke',
   'client.email_change',
+  // `{ route }` only — the search that found them, never the typed address (D-82).
+  'client.lookup_hidden_email',
   'client.profile_consolidated',
   'client.profile_update',
   'client.referrer_set',
@@ -226,6 +239,10 @@ describe('audit details payloads are declared, not accidental', () => {
         'so `maskAuditRow` can withhold them from a masked reader — otherwise the\n' +
         'value is readable by every operator who can open the audit log, and by\n' +
         'anyone who can download it.\n' +
+        'Does it NAME A CLIENT (a Portal ID)? Then use a key listed in\n' +
+        '`CLIENT_ID_KEYS` (src/store/audit-log.store.ts) — since 0159 a client id\n' +
+        'is a bare number and is recognised by its key alone; under any other key\n' +
+        'a scoped reader is shown the Portal ID of a client outside their territory.\n' +
         'If it does not, add it here and the log stays as it is.',
     ).toEqual([...WRITES_DETAILS]);
   });

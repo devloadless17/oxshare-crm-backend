@@ -40,7 +40,7 @@ let northTagId: string;
 let southTagId: string;
 let seq = 0;
 
-async function client(tag: 'north' | 'south'): Promise<string> {
+async function client(tag: 'north' | 'south'): Promise<number> {
   seq += 1;
   const [row] = await ctx.db.db
     .insert(users)
@@ -59,7 +59,7 @@ async function client(tag: 'north' | 'south'): Promise<string> {
 
 /** A payment flagged for a person, with the open admin task that announced it. */
 async function flagged(
-  clientId: string,
+  clientId: number,
   direction: 'deposit' | 'withdrawal',
 ): Promise<{ txId: string; taskId: string }> {
   const { rows: wallet } = await ctx.db.db.execute<{ id: string }>(sql`
@@ -245,7 +245,7 @@ describe('the Financial page — where a deposit anomaly task lands', () => {
     needsAttention: boolean;
     attentionReason?: string | null;
   }
-  const listPath = (clientId: string, extra = '') =>
+  const listPath = (clientId: number, extra = '') =>
     `/v1/admin/transactions?userId=${clientId}${extra}`;
 
   it('badges the flagged payment with its reason, and attention=true narrows to exactly it', async () => {

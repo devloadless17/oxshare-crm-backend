@@ -87,8 +87,8 @@ async function seedMethods(): Promise<void> {
 }
 
 /** A verified client with NO wallet yet — a deposit is what opens it. */
-async function makeClient(email: string): Promise<string> {
-  const { rows } = await ctx.db.execute<{ id: string }>(sql`
+async function makeClient(email: string): Promise<number> {
+  const { rows } = await ctx.db.execute<{ id: number }>(sql`
     INSERT INTO users (email, password_hash, first_name, last_name, verification_level, email_verified)
     VALUES (${email}, 'x', 'Test', 'Client', 1, true)
     RETURNING id
@@ -101,7 +101,7 @@ async function makeClient(email: string): Promise<string> {
  * '0.00000000' rather than having no row — which is the honest distinction the
  * portal's own em-dash-not-zero rule is about, from the other side.
  */
-async function balanceOf(userId: string): Promise<string> {
+async function balanceOf(userId: number): Promise<string> {
   const { rows } = await ctx.db.execute<{ balance: string }>(
     sql`SELECT balance FROM wallets WHERE user_id = ${userId} AND currency = 'USD'`,
   );
@@ -129,7 +129,7 @@ async function stateOf(txId: string) {
   return rows[0];
 }
 
-function declare(userId: string, amount = '250') {
+function declare(userId: number, amount = '250') {
   return transactions.requestDeposit({
     userId,
     amount,

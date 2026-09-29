@@ -62,9 +62,9 @@ const MASKED = { email: 'fin-masked@oxshare.com', password: 'admin-password-123'
 let ctx: HttpTestContext;
 
 /** The union client: one movement of every kind, seeded in beforeAll. */
-let unionClientId: string;
+let unionClientId: number;
 /** The out-of-territory client whose movement must never reach SCOPED. */
-let outsiderId: string;
+let outsiderId: number;
 
 async function seedClient(email: string, firstName: string, lastName: string) {
   const [client] = await ctx.db.db
@@ -290,7 +290,7 @@ type ListBody = {
     amount: string;
     currency: string;
     methodName: string;
-    user: { id: string; email: string; firstName: string; lastName: string };
+    user: { id: number; email: string; firstName: string; lastName: string };
   }>;
   nextCursor: string | null;
   total: number;
@@ -634,7 +634,7 @@ describe('THE LEAK TEST: territory holds on every surface', () => {
     expect(res.headers['content-type']).toContain('text/csv');
     expect(res.text).toContain('fin-mine@oxshare-e2e.test');
     expect(res.text).not.toContain('fin-outside@oxshare-e2e.test');
-    expect(res.text).not.toContain(outsiderId);
+    expect(res.text).not.toContain(String(outsiderId));
   });
 
   it('a MASTER admin exporting the same list sees both, amounts verbatim', async () => {
@@ -697,13 +697,23 @@ describe('RBAC-03: the joined client is masked like everywhere else', () => {
     expect(res.text).toContain('Union');
   });
 
-  it('a search over a masked column still works server-side — the mask is display, not scope', async () => {
-    // The mask hides the value from the RESPONSE; the operator may still
-    // filter by what they cannot read back, exactly as the client list does.
+  it('a hidden email is found by its complete address, never by a fragment (D-82)', async () => {
+    /*
+     * This case used to pin the opposite — "the mask is display, not scope":
+     * a fragment of a hidden email still filtered the list. That was the
+     * oracle: "f", "fi", "fin"… and the row count spells the address out. The
+     * owner's rule keeps the one lookup support needs — the complete address
+     * they already hold, audited — and nothing else.
+     */
     const session = await actingAs(ctx, 'admin', MASKED);
-    const body = (await session.get(`${LIST}?q=fin-union`).expect(200)).body as ListBody;
-    expect(body.total).toBeGreaterThan(0);
-    expect(JSON.stringify(body)).not.toContain('fin-union@oxshare-e2e.test');
+    const fragment = (await session.get(`${LIST}?q=fin-union`).expect(200)).body as ListBody;
+    expect(fragment.total).toBe(0);
+
+    const complete = (
+      await session.get(`${LIST}?q=${encodeURIComponent('fin-union@oxshare-e2e.test')}`).expect(200)
+    ).body as ListBody;
+    expect(complete.total).toBeGreaterThan(0);
+    expect(JSON.stringify(complete)).not.toContain('fin-union@oxshare-e2e.test');
   });
 });
 
@@ -788,7 +798,7 @@ describe('keyset precision — rows sharing a millisecond are never skipped', ()
         INSERT INTO transactions
           (user_id, wallet_id, direction, amount, currency, state, provider, provider_ref, created_at)
         VALUES
-          (${client.id}::uuid, ${main.id}::uuid, 'deposit', '1.00000000', 'USD', 'success',
+          (${client.id}::integer, ${main.id}::uuid, 'deposit', '1.00000000', 'USD', 'success',
            'manual_test', ${ref}, ${`2026-07-01T09:00:00.${fraction}Z`}::timestamptz)
       `);
     }

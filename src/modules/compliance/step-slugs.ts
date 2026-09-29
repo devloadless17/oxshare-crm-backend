@@ -74,15 +74,16 @@ export function isFileField(field: { type?: string }): boolean {
 /**
  * One answer inside a custom step.
  *
- * A typed answer is a string. A File or Camera field stores the pair the
- * serving route needs instead: `filePath` is what `GET /uploads/kyc/:file`
- * resolves (and what the ownership check scans), `fileName` is what the client
- * called it, kept for the reviewer to read and never used to build a path.
+ * A typed answer is a string. A File or Camera field stores what the serving
+ * route needs instead: `filePath`, which `GET /uploads/kyc/:file` resolves (and
+ * the ownership check scans). What the client called the file is not kept
+ * (0160, D-84) — it carried names and document numbers, and a reviewer reads
+ * the question it answers instead.
  *
  * The union is deliberately narrow. `stepData` is written from a client-facing
  * route, so widening it to `unknown` would make every reader guess.
  */
-export type KycStoredFile = { filePath: string; fileName: string };
+export type KycStoredFile = { filePath: string };
 export type KycStepAnswer = string | KycStoredFile;
 export type KycStepData = Record<string, Record<string, KycStepAnswer>>;
 
@@ -91,7 +92,6 @@ export function isStoredFile(value: unknown): value is KycStoredFile {
   return (
     typeof value === 'object' &&
     value !== null &&
-    typeof (value as KycStoredFile).filePath === 'string' &&
-    typeof (value as KycStoredFile).fileName === 'string'
+    typeof (value as KycStoredFile).filePath === 'string'
   );
 }

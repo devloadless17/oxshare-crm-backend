@@ -68,6 +68,10 @@ export class WithdrawalExportRowDto extends ExportedPerson {
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty()
   id!: string;
+
+  @ClientField('client.payoutDestination')
+  @ApiProperty({ required: false })
+  destination?: string | null;
 }
 
 /** A transaction row in `GET /admin/transactions/export`. */
@@ -75,6 +79,10 @@ export class FinancialExportRowDto extends ExportedPerson {
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty()
   id!: string;
+
+  @ClientField('client.payoutDestination')
+  @ApiProperty({ required: false })
+  destination?: string | null;
 }
 
 /**
@@ -117,9 +125,23 @@ class IbExportedPerson {
  * Columns nothing masks — the application's status, the agency, the dates —
  * need no declaration and get none.
  */
+/** The applicant's own words — hidden with `client.partnerApplication` (D-82). */
+class IbExportedApplication {
+  @ClientField('client.partnerApplication')
+  @ApiProperty({ required: false })
+  motivation?: string | null;
+
+  @ClientField('client.partnerApplication')
+  @ApiProperty({ required: false })
+  website?: string | null;
+}
+
 export class IbApplicationExportRowDto {
   @ApiProperty({ type: () => IbExportedPerson })
   user!: IbExportedPerson;
+
+  @ApiProperty({ type: () => IbExportedApplication })
+  application!: IbExportedApplication;
 }
 
 /** A partner row in `GET /admin/ib/partners/export`. */

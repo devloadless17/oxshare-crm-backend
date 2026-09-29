@@ -56,7 +56,7 @@ const STEPS: StateStep[] = [
   },
 ];
 
-const PNG = (name: string) => ({ filePath: `uploads/kyc/${name}.png`, fileName: `${name}.png` });
+const PNG = (name: string) => ({ filePath: `uploads/kyc/${name}.png` });
 
 const COMPLETE: StateSubmission = {
   personalInfo: {
@@ -107,20 +107,33 @@ describe('every step, judged once', () => {
     ]);
   });
 
-  it('judges the identity by the platform’s rules, whatever the builder flags say', () => {
-    // A form whose personal step lost its identity fields — the reported case —
-    // still owes the identity, and a required flag set to false changes nothing.
-    const stripped = STEPS.map((step) =>
+  it('judges the identity details the form ASKS for, required as the broker set them (Phase 2)', () => {
+    const noIdentity = { ...COMPLETE, personalInfo: {} };
+    // All asked, all optional: nothing is owed.
+    const optional = STEPS.map((step) =>
       step.slug === 'personal'
         ? { ...step, fields: step.fields.map((field) => ({ ...field, required: false })) }
         : step,
     );
-    const noIdentity = { ...COMPLETE, personalInfo: {} };
-    expect(stateOf('personal', noIdentity, stripped).missing).toHaveLength(8);
+    expect(stateOf('personal', noIdentity, optional).missing).toEqual([]);
+    // None asked (sign-up has them): nothing is owed either.
     const noFields = STEPS.map((step) =>
       step.slug === 'personal' ? { ...step, fields: [] } : step,
     );
-    expect(stateOf('personal', noIdentity, noFields).missing).toHaveLength(8);
+    expect(stateOf('personal', noIdentity, noFields).missing).toEqual([]);
+    // As placed by default: the eight required details are owed.
+    expect(stateOf('personal', noIdentity).missing).toHaveLength(8);
+  });
+
+  it('lets a client skip OPTIONAL evidence, and still owes a document they started', () => {
+    const optional = STEPS.map((step) => ({ ...step, evidenceRequired: false }));
+    const none = { ...COMPLETE, document: null, selfie: null };
+    expect(stateOf('document', none, optional).missing).toEqual([]);
+    expect(stateOf('selfie', none, optional).missing).toEqual([]);
+    const started = { ...COMPLETE, document: { docType: 'national_id', frontFilePath: 'f.png' } };
+    expect(stateOf('document', started, optional).missing.map((item) => item.id)).toEqual([
+      'doc_back',
+    ]);
   });
 
   it('leaves out disabled steps and the review screen', () => {

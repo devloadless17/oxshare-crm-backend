@@ -35,14 +35,14 @@ import { admins, ibAccounts, roles, users } from '../src/database/schema';
 const ADMIN = { email: 'ref-repair-admin@oxshare.com', password: 'admin-password-123' };
 const EDITOR = { email: 'ref-repair-editor@oxshare.com', password: 'admin-password-123' };
 
-const ROUTE = (id: string) => `/v1/admin/clients/${id}/referrer`;
+const ROUTE = (id: number) => `/v1/admin/clients/${id}/referrer`;
 
 let ctx: HttpTestContext;
-let orphanId: string;
-let attributedId: string;
-let partnerId: string;
-let suspendedPartnerId: string;
-let selfPartnerId: string;
+let orphanId: number;
+let attributedId: number;
+let partnerId: number;
+let suspendedPartnerId: number;
+let selfPartnerId: number;
 
 beforeAll(async () => {
   ctx = await startHttpTestApp();
@@ -122,7 +122,7 @@ beforeEach(async () => {
   await ctx.db.db.update(users).set({ referredByIbUserId: null }).where(eq(users.id, orphanId));
 });
 
-const referrerOf = async (id: string) => {
+const referrerOf = async (id: number) => {
   const [row] = await ctx.db.db
     .select({ ref: users.referredByIbUserId })
     .from(users)

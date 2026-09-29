@@ -13,6 +13,8 @@ import {
 import { TRANSACTION_KINDS } from '../../payments/transactions.service';
 import type { RejectionContext } from '../../../store/rejection-reasons.store';
 import { PROFILE_FIELD_KEYS } from '../../../common/profile/client-profile';
+import { TransactionDto } from '../../payments/dto/withdrawal.dto';
+import { TransferDto } from '../../payments/dto/transfer.dto';
 
 // Response DTOs so /api/docs-json carries response schemas (API-CONTRACTS
 // Part C). Both frontends generate TypeScript types from the Swagger JSON —
@@ -115,6 +117,14 @@ export class AdminProfileDto {
   @NotClientField('an ADMINISTRATOR attribute \u2014 this describes the operator, never a client')
   @ApiProperty()
   seesUntriaged: boolean;
+
+  /**
+   * Sees EVERY client — the effective explicit grant (0154): the flag set and
+   * no territory tags. An empty territory no longer means every client.
+   */
+  @NotClientField('an ADMINISTRATOR attribute \u2014 this describes the operator, never a client')
+  @ApiProperty()
+  seesAllClients: boolean;
 
   /**
    * The profile photo, on `me` rather than behind a profile endpoint of its
@@ -232,8 +242,6 @@ export class KycDocumentDto {
   @ApiPropertyOptional() docType?: string;
   @ApiPropertyOptional() frontFilePath?: string;
   @ApiPropertyOptional() backFilePath?: string;
-  @ApiPropertyOptional() frontFileName?: string;
-  @ApiPropertyOptional() backFileName?: string;
 }
 
 @NoClientFields(
@@ -241,7 +249,6 @@ export class KycDocumentDto {
 )
 export class KycSelfieDto {
   @ApiPropertyOptional() filePath?: string;
-  @ApiPropertyOptional() fileName?: string;
 }
 
 @NoClientFields(
@@ -250,9 +257,7 @@ export class KycSelfieDto {
 export class KycAddressProofDto {
   @ApiPropertyOptional() docType?: string;
   @ApiPropertyOptional() filePath?: string;
-  @ApiPropertyOptional() fileName?: string;
   @ApiPropertyOptional() page2FilePath?: string;
-  @ApiPropertyOptional() page2FileName?: string;
 }
 
 const LAYOUT_ONLY =
@@ -358,7 +363,7 @@ export class KycReviewLayoutDto {
 export class KycSubmissionDto {
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty()
-  userId: string;
+  userId: number;
   @ApiProperty({
     enum: ['not_started', 'in_progress', 'submitted', 'under_review', 'approved', 'rejected'],
   })
@@ -449,7 +454,7 @@ export class KycSubmissionDto {
     additionalProperties: { type: 'object', additionalProperties: { type: 'string' } },
     description: 'Answers for configured steps beyond the four canonical ones, keyed by slug.',
   })
-  stepData?: Record<string, Record<string, string | { filePath: string; fileName: string }>>;
+  stepData?: Record<string, Record<string, string | { filePath: string }>>;
   @ApiPropertyOptional({ type: KycUserDto, nullable: true })
   @NotClientField(
     'the nested person, whose own shape carries the marks \u2014 masked there, not here',
@@ -586,7 +591,7 @@ export class KycAttemptDto {
     additionalProperties: { type: 'object', additionalProperties: { type: 'string' } },
     description: 'Answers for configured steps beyond the four canonical ones, keyed by slug.',
   })
-  stepData?: Record<string, Record<string, string | { filePath: string; fileName: string }>>;
+  stepData?: Record<string, Record<string, string | { filePath: string }>>;
   @NotClientField('a timestamp the system recorded, describing the record rather than the client')
   @ApiProperty()
   archivedAt: Date;
@@ -687,19 +692,53 @@ export class ClientTagAssignmentDto extends ClientTagDto {
   @ApiProperty() assignedAt: Date;
 }
 
+/**
+ * What adding or removing a tag answers: the client's tags afterwards, and
+ * whether the acting admin can still see the client at all.
+ *
+ * A scoped admin may hand a client to another desk by tag (owner, 28 Sep 2026).
+ * After that the client is outside their territory, so `assignments` comes back
+ * EMPTY rather than describing somebody they may no longer see, and
+ * `stillVisible: false` tells the console to leave the page instead of
+ * refetching into a 404.
+ */
+@NoClientFields(
+  'the outcome of a tag change: tag labels (configuration) and a visibility flag about the reader - no client-owned field on it',
+)
+export class ClientTagChangeResultDto {
+  @ApiProperty({
+    type: [ClientTagAssignmentDto],
+    description: 'The client’s tags after the change. Empty when `stillVisible` is false.',
+  })
+  assignments: ClientTagAssignmentDto[];
+
+  @ApiProperty({
+    description:
+      'False when the change took the client out of the acting admin’s territory — sent only with confirmLeavesScope=true.',
+  })
+  stillVisible: boolean;
+}
+
 @NoClientFields(
   'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
 )
 export class ClientTagWithCountDto extends ClientTagDto {
-  @ApiProperty({ description: 'How many clients carry this tag.' })
+  @ApiProperty({ description: 'How many clients carry this tag in the reader’s territory.' })
   clientCount: number;
+  @ApiProperty({
+    type: 'integer',
+    description:
+      'How many clients carry it OUTSIDE the reader’s territory — a count, never who (D-81 R2). ' +
+      'Zero for a reader who sees every client.',
+  })
+  clientsOutsideScope: number;
 }
 
 /** The introducer on a client-list row — `ProfileReferrerDto`, cut to what a row shows. */
 export class ClientRowReferrerDto {
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
-  @ApiProperty()
-  ibUserId: string;
+  @ApiPropertyOptional({ description: 'Absent when the introducer is outside your territory.' })
+  ibUserId?: number;
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiPropertyOptional({
     type: 'integer',
@@ -742,8 +781,12 @@ export class ClientRowReferrerDto {
  */
 export class ClientRowDto {
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
-  @ApiProperty()
-  id: string;
+  @ApiProperty({
+    type: 'integer',
+    example: 1000245,
+    description: 'The client’s Portal ID — their one id (0159).',
+  })
+  id: number;
   /**
    * The client's PORTAL ID — the human number, 1,000,000 up (migration 0133).
    * What staff read and search by; `id` stays the key for URLs and the API.
@@ -862,8 +905,8 @@ export class ProfileTradingAccountDto {
 
 export class ProfileReferrerDto {
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
-  @ApiProperty()
-  ibUserId: string;
+  @ApiPropertyOptional({ description: 'Absent when the introducer is outside your territory.' })
+  ibUserId?: number;
   /*
    * IDENTITY IS OMITTED WHEN THE INTRODUCER IS OUTSIDE THE READER'S TERRITORY.
    *
@@ -904,9 +947,13 @@ export class ProfileReferrerDto {
       '“introduced, by someone outside your territory” distinct from “not introduced”.',
   })
   outsideTerritory: boolean;
-  @ApiProperty({ description: 'False when the attribution was switched off.' })
+  @ApiPropertyOptional({
+    description:
+      'False when the attribution was switched off. Absent when the introducer is outside your ' +
+      'territory: whether a partner you may not see is suspended is not yours to learn.',
+  })
   @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
-  active: boolean;
+  active?: boolean;
   @NotClientField('a timestamp the system recorded, describing the record rather than the client')
   @ApiProperty()
   since: Date;
@@ -915,7 +962,7 @@ export class ProfileReferrerDto {
 export class ProfileReferredClientDto {
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty()
-  clientUserId: string;
+  clientUserId: number;
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty({ type: 'integer', example: 1000245, description: 'Their Portal ID.' })
   clientPortalId: number;
@@ -978,8 +1025,12 @@ export class ProfileKycDto {
  */
 export class ClientAccountDto {
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
-  @ApiProperty({ format: 'uuid' })
-  id: string;
+  @ApiProperty({
+    type: 'integer',
+    example: 1000245,
+    description: 'The client’s Portal ID — their one id (0159).',
+  })
+  id: number;
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty({ type: 'integer', example: 1000245, description: 'The client’s Portal ID.' })
   portalId: number;
@@ -1028,6 +1079,9 @@ export class ClientAccountDto {
   @ClientField('client.city')
   @ApiProperty({ type: String, nullable: true })
   city: string | null;
+  @ClientField('client.stateProvince')
+  @ApiProperty({ type: String, nullable: true })
+  stateProvince: string | null;
   @ClientField('client.postalCode')
   @ApiProperty({ type: String, nullable: true })
   postalCode: string | null;
@@ -1048,8 +1102,12 @@ export class ClientAccountDto {
 
 export class ClientProfileDto {
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
-  @ApiProperty()
-  id: string;
+  @ApiProperty({
+    type: 'integer',
+    example: 1000245,
+    description: 'The client’s Portal ID — their one id (0159).',
+  })
+  id: number;
   /**
    * The client's PORTAL ID — the human number, 1,000,000 up (migration 0133).
    * What staff read and search by; `id` stays the key for URLs and the API.
@@ -1099,6 +1157,9 @@ export class ClientProfileDto {
   @ClientField('client.city')
   @ApiPropertyOptional()
   city?: string;
+  @ClientField('client.stateProvince')
+  @ApiPropertyOptional()
+  stateProvince?: string;
   @ClientField('client.postalCode')
   @ApiPropertyOptional()
   postalCode?: string;
@@ -1114,12 +1175,20 @@ export class ClientProfileDto {
     type: 'object',
     additionalProperties: { type: 'string' },
     description:
-      "The profile fields the desk may not change right now, each with where it can be changed instead — the verification's lock (`deskLocks`). Present only for a reader holding clients.edit; empty when nothing is locked.",
+      'The details THIS admin may not change right now, each with the sentence saying why — a review is checking it, or it was verified and they may not correct verified details (`adminEditRule`). Present only for a reader holding clients.edit; empty when nothing is held.',
   })
   @NotClientField(
     "the verification's rule about the record, in the system's words — which fields are locked, never their values",
   )
   lockedFields?: Record<string, string>;
+
+  @ApiPropertyOptional({
+    type: [String],
+    description:
+      'Verified details THIS admin may correct: they change only with a `reason`, are recorded on the verification, and the client is told. Present only for a reader holding clients.edit.',
+  })
+  @NotClientField("the verification's rule about the record — which fields, never their values")
+  correctableFields?: string[];
   @ApiPropertyOptional({ type: ProfileKycDto, description: 'Absent without kyc.view.' })
   @NotClientField(
     'not a client-owned attribute \u2014 kyc describes the record rather than the person',
@@ -1504,9 +1573,9 @@ export class AuditEntryDto {
   @ApiProperty()
   subjectId: string;
   /*
-   * The CLIENT the row concerns, by the number staff know them by — wherever
-   * the row keeps the client (the subject, or `details` for money and trading
-   * rows; see `auditRowClientId`). The screen shows this instead of a uuid.
+   * The CLIENT the row concerns, by the number staff know them by — the
+   * client the database stamped on the row (`audit_log.client_id`, 0156). The
+   * screen shows this instead of a uuid.
    */
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty({
@@ -1570,11 +1639,63 @@ export class AuditListResponseDto {
   @ApiProperty() total: number;
   @ApiProperty() page: number;
   @ApiProperty() limit: number;
+  /**
+   * Client fields withheld from THIS page by the reader's role (RBAC-03) —
+   * `maskAuditRow` removes them from `details` and from a client actor's row.
+   * Returned since the audit read learned to mask, and declared since the
+   * response projection (28 Sep 2026) made an undeclared key a refusal.
+   */
+  @ApiProperty({ type: [String] })
+  maskedFields: string[];
 }
 
 export { MessageResponseDto } from '../../../common/dto/message-response.dto';
 
 // ── Money (ARCHITECTURE §6: every monetary field is a STRING) ────────────────
+
+/**
+ * `POST /admin/wallets/credit` — the deposit the credit wrote, and whether this
+ * request replayed an earlier one.
+ *
+ * The route declared `TransactionDto` while answering this WRAPPER, so the
+ * published contract described a shape the route never sent — the console
+ * hand-declared the real one. Found by the response projection's census
+ * (28 Sep 2026), which would otherwise have stripped `replayed` and
+ * `transaction` as undeclared and emptied the response.
+ */
+@NoClientFields(
+  'the outcome of a hand credit: a transaction addressed by ids (TransactionDto, exempt) and a replay flag - no client-owned field',
+)
+export class WalletCreditResultDto {
+  @ApiProperty({ type: TransactionDto }) transaction: TransactionDto;
+  @ApiProperty({
+    description: 'True when the idempotency key replayed an earlier credit — nothing moved again.',
+  })
+  replayed: boolean;
+}
+
+/**
+ * `POST /admin/trading-accounts/:id/fund` — both legs of a hand movement.
+ *
+ * A DEPOSIT is a wallet credit then a transfer: `transaction` is the credit and
+ * `transferError` says why the onward leg did not go through, when it did not.
+ * A WITHDRAWAL writes no transaction row (`transaction` is null) and cannot
+ * half-happen (`transferError` is null). Declared as `TransactionDto` until the
+ * 28 Sep 2026 projection audit — the same wrong-wrapper declaration as the
+ * credit above, and invisible to the census because no test drove the route
+ * past its scope check.
+ */
+@NoClientFields(
+  'the outcome of a hand trading-account movement: a transaction and a transfer addressed by ids (both exempt shapes), a replay flag and an error sentence - no client-owned field',
+)
+export class TradingAccountFundResultDto {
+  @ApiProperty({ type: TransactionDto, nullable: true }) transaction: TransactionDto | null;
+  @ApiProperty() replayed: boolean;
+  @ApiProperty({ type: TransferDto, nullable: true }) transfer: TransferDto | null;
+  @ApiProperty({ type: String, nullable: true }) transferError: string | null;
+  @ApiPropertyOptional({ enum: ['wallet'], description: 'Where the money went, on a withdrawal.' })
+  destination?: 'wallet';
+}
 
 /**
  * The client behind a payout — and the reason three of its four fields are
@@ -1657,9 +1778,9 @@ export class WithdrawalRowDto {
   )
   @ApiPropertyOptional({ type: String, nullable: true })
   providerRef?: string | null;
-  @NotClientField(
-    'not a client-owned attribute \u2014 destination describes the record rather than the person',
-  )
+  /* Where the client is paid — a bank account, wallet address or payment
+     phone. Personal data, hideable since D-82 (it was "not client-owned"). */
+  @ClientField('client.payoutDestination')
   @ApiPropertyOptional({ type: String, nullable: true })
   destination?: string | null;
   @NotClientField(
@@ -1753,8 +1874,8 @@ export class WithdrawalRowDto {
    * rows still satisfy it.
    */
   @NotClientField('addresses the record\u2019s owner; client.id is unmaskable for that reason')
-  @ApiPropertyOptional({ type: String })
-  userId?: string;
+  @ApiPropertyOptional({ type: 'integer' })
+  userId?: number;
   @NotClientField('an identifier addressing the wallet, not an attribute of the person')
   @ApiPropertyOptional({ type: String })
   walletId?: string;
@@ -1784,23 +1905,42 @@ export class WithdrawalRowDto {
   maskedFields?: string[];
 }
 
-@NoClientFields(
-  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
-)
 export class WithdrawalListResponseDto {
-  @ApiProperty({ type: [WithdrawalRowDto] }) items: WithdrawalRowDto[];
+  @NotClientField(
+    'the nested rows, whose own shape carries the marks \u2014 masked there, not here',
+  )
+  @ApiProperty({ type: [WithdrawalRowDto] })
+  items: WithdrawalRowDto[];
   /**
    * Pass back as `?cursor=` for the next page; `null` on the last (R-2.4).
    *
    * This, not `total`, is what says whether there is more — counting is a full
    * scan of the filtered set and is only performed on request.
    */
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
   @ApiProperty({ type: String, nullable: true })
   nextCursor: string | null;
 
-  @ApiProperty() total: number;
-  @ApiProperty() page: number;
-  @ApiProperty() limit: number;
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  @ApiProperty()
+  total: number;
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  @ApiProperty()
+  page: number;
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  @ApiProperty()
+  limit: number;
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
   @ApiProperty({ type: 'object', additionalProperties: { type: 'number' } })
   counts: Record<string, number>;
   /**
@@ -1811,7 +1951,9 @@ export class WithdrawalListResponseDto {
    * rather than repeated per item. Without it the desk renders an em dash and
    * "hidden from you" becomes indistinguishable from "no email on file".
    */
-  @ApiPropertyOptional({ type: [String] }) maskedFields?: string[];
+  @NotClientField('the mask reporting on ITSELF, so the screen can say hidden rather than empty')
+  @ApiPropertyOptional({ type: [String] })
+  maskedFields?: string[];
 }
 
 // ── The Financial page: every money movement, platform-wide ─────────────────
@@ -1901,9 +2043,9 @@ export class AdminTransactionRowDto {
    */
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   rivalExternalId?: string | null;
-  @NotClientField(
-    'not a client-owned attribute \u2014 destination describes the record rather than the person',
-  )
+  /* Where the client is paid — a bank account, wallet address or payment
+     phone. Personal data, hideable since D-82 (it was "not client-owned"). */
+  @ClientField('client.payoutDestination')
   @ApiPropertyOptional({ type: String, nullable: true })
   destination?: string | null;
   /** Also carries a transfer's failure reason — one column for "why not". */
@@ -1964,22 +2106,41 @@ export class AdminTransactionRowDto {
   user: WithdrawalUserDto;
 }
 
-@NoClientFields(
-  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
-)
 export class AdminTransactionListResponseDto {
-  @ApiProperty({ type: [AdminTransactionRowDto] }) items: AdminTransactionRowDto[];
+  @NotClientField(
+    'the nested rows, whose own shape carries the marks \u2014 masked there, not here',
+  )
+  @ApiProperty({ type: [AdminTransactionRowDto] })
+  items: AdminTransactionRowDto[];
   /** Pass back as `?cursor=` for the next page; `null` on the last (R-2.4). */
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
   @ApiProperty({ type: String, nullable: true })
   nextCursor: string | null;
-  @ApiProperty() total: number;
-  @ApiProperty() page: number;
-  @ApiProperty() limit: number;
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  @ApiProperty()
+  total: number;
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  @ApiProperty()
+  page: number;
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  @ApiProperty()
+  limit: number;
   /**
    * Per-STATE sizes plus `all`, ignoring the active state filter but never
    * the scope — the withdrawal queue's two-axis rule, so the state tabs show
    * every state's size whichever tab is active.
    */
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
   @ApiProperty({ type: 'object', additionalProperties: { type: 'number' } })
   counts: Record<string, number>;
   /**
@@ -1987,6 +2148,9 @@ export class AdminTransactionListResponseDto {
    * never the scope — the same rule on the other axis, for the page's
    * deposit/withdrawal tabs.
    */
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
   @ApiProperty({ type: 'object', additionalProperties: { type: 'number' } })
   directionCounts: Record<string, number>;
   /**
@@ -1996,7 +2160,9 @@ export class AdminTransactionListResponseDto {
    * email". Only ever `financial.`-prefixed: a response announces its own
    * paths and nobody else's.
    */
-  @ApiPropertyOptional({ type: [String] }) maskedFields?: string[];
+  @NotClientField('the mask reporting on ITSELF, so the screen can say hidden rather than empty')
+  @ApiPropertyOptional({ type: [String] })
+  maskedFields?: string[];
 }
 
 @NoClientFields(
@@ -2486,7 +2652,7 @@ export class WalletDiscrepancyDto {
 
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty()
-  userId: string;
+  userId: number;
 
   /** The client's Portal ID — the identifier an operator quotes. Never masked. */
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
@@ -2877,7 +3043,7 @@ export class DepositDecisionDto {
 
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty({ description: 'The client this deposit belongs to.' })
-  userId: string;
+  userId: number;
 
   @NotClientField(
     'a money, paging or configuration value on the RECORD, carrying no client attribute',

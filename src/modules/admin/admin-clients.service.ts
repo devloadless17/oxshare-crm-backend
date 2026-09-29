@@ -4,7 +4,6 @@ import { IbStore } from '../../store/ib.store';
 import { ClientTagsStore } from '../../store/client-tags.store';
 import {
   ClientNotFoundError,
-  ProfileLockedError,
   ReferralCodeUnknownError,
   ReferralPartnerInactiveError,
   ReferralSelfError,
@@ -85,7 +84,8 @@ export function referredFilter(value: string | undefined): boolean | undefined {
 
 /** Who introduced a client, as a list row carries it — see `withReferrers`. */
 export interface ClientRowReferrer {
-  ibUserId: string;
+  /** Absent for an introducer outside the reader's territory (R1). */
+  ibUserId?: number;
   portalId?: number;
   firstName?: string;
   lastName?: string;
@@ -109,7 +109,7 @@ export interface ClientRowReferrer {
  * are exactly what they were before this existed. The raw attribution id is
  * stripped either way — it is how the referrer is found, not part of the row.
  */
-export async function withReferrers<T extends { referredByIbUserId: string | null }>(
+export async function withReferrers<T extends { referredByIbUserId: number | null }>(
   rows: readonly T[],
   users: UsersStore,
   scope: ClientScope,
@@ -120,13 +120,13 @@ export async function withReferrers<T extends { referredByIbUserId: string | nul
         rows.flatMap((row) => (row.referredByIbUserId ? [row.referredByIbUserId] : [])),
         scope,
       )
-    : new Map<string, { portalId: number; firstName: string; lastName: string }>();
+    : new Map<number, { portalId: number; firstName: string; lastName: string }>();
   return rows.map(({ referredByIbUserId, ...row }) => {
     if (!canSeeNetwork || !referredByIbUserId) return row;
     const introducer = introducers.get(referredByIbUserId);
     const referrer: ClientRowReferrer = introducer
       ? { ibUserId: referredByIbUserId, ...introducer, outsideTerritory: false }
-      : { ibUserId: referredByIbUserId, outsideTerritory: true };
+      : { outsideTerritory: true };
     return { ...row, referrer };
   });
 }
@@ -157,7 +157,8 @@ import { AdminHoldingsService } from './admin-holdings.service';
 import type { AuthenticatedAdmin } from './guards/admin.guard';
 import { ClientProfileService } from '../profile/client-profile.service';
 import {
-  deskLocks,
+  correctionFields,
+  heldFields,
   PROFILE_FIELD_KEYS,
   type ProfileKey,
 } from '../../common/profile/client-profile';
@@ -241,7 +242,7 @@ export class AdminClientsService {
       emailVerified?: string;
       kycStatus?: string;
       tag?: string;
-      referredBy?: string;
+      referredBy?: number;
       referred?: string;
       sort?: string;
       order?: string;
@@ -328,18 +329,15 @@ export class AdminClientsService {
      * client in the system. So a value that cannot be a user id fails loudly
      * instead.
      */
-    let referredBy: string | undefined;
-    if (query.referredBy !== undefined && query.referredBy !== '') {
-      if (!UUID_RE.test(query.referredBy)) {
-        throw new ValidationError('referredBy must be a client id.');
-      }
-      referredBy = query.referredBy;
-    }
+    // Validated as a Portal ID at the edge (ClientRefPipe), which refuses a
+    // malformed value loudly rather than ignoring it.
+    const referredBy = query.referredBy;
 
     const { rows, total } = await this.users.findPage({
       page,
       limit,
-      cursor: query.cursor ? decodeCursor(query.cursor, sort) : undefined,
+      // Keyed by the Portal ID (0159): the cursor's id is an integer.
+      cursor: query.cursor ? decodeCursor(query.cursor, sort, undefined, 'integer') : undefined,
       // Counting is a full scan of the filtered set. Requested explicitly, or
       // implied by the legacy offset caller, which renders a page count.
       withTotal: query.withTotal === 'true' || (!query.cursor && query.page !== undefined),
@@ -421,7 +419,7 @@ export class AdminClientsService {
    * independent reads on one screen, and doing them one after another turns a
    * profile open into five round trips of latency for no benefit.
    */
-  async getClientProfile(clientId: string, actor: AuthenticatedAdmin) {
+  async getClientProfile(clientId: number, actor: AuthenticatedAdmin) {
     assertActorCan(actor, 'clients.view', 'open a client profile');
 
     // The scoped lookup, first. An out-of-scope client 404s exactly as a
@@ -516,18 +514,41 @@ export class AdminClientsService {
       nationality: client.nationality,
       address: client.address,
       city: client.city,
+      stateProvince: client.stateProvince,
       postalCode: client.postalCode,
       createdAt: client.createdAt,
-      tags,
+      // The declared tag shape: an assignment also carries who and when, which the
+      // profile never declared (the per-client tags route serves provenance).
+      tags: tags.map(({ id, slug, label, color, description, createdAt }) => ({
+        id,
+        slug,
+        label,
+        color,
+        description,
+        createdAt,
+      })),
       /*
-       * Which fields the desk may NOT change right now, each with where it can
-       * be changed instead — the server's rule (`deskLocks`), stated once, so
-       * the dialog disables them rather than keeping a copy of the rule that
-       * could drift from the one that refuses. Only for an editor: nobody else
-       * has a form to render it on.
+       * How THIS admin may change each detail right now — the server's rule
+       * (`adminEditRule`), stated once, so the dialog renders it rather than
+       * keeping a copy that could drift from the one that refuses:
+       *  - `lockedFields`: held, each with the sentence saying why, in place;
+       *  - `correctableFields`: verified details this admin may correct, which
+       *    change only with a reason.
+       * Only for an editor: nobody else has a form to render it on.
        */
       ...(may('clients.edit')
-        ? { lockedFields: deskLocks(PROFILE_FIELD_KEYS, submission?.status) }
+        ? {
+            lockedFields: heldFields(
+              PROFILE_FIELD_KEYS,
+              submission?.status,
+              may('kyc.identity.correct'),
+            ),
+            correctableFields: correctionFields(
+              PROFILE_FIELD_KEYS,
+              submission?.status,
+              may('kyc.identity.correct'),
+            ),
+          }
         : {}),
       ...(kyc === undefined
         ? {}
@@ -620,12 +641,8 @@ export class AdminClientsService {
      * territory. Told as a fact, with no identity attached.
      */
     if (!introducer && account) {
-      return {
-        ibUserId: client.referredByIbUserId,
-        active: account.active,
-        since: client.createdAt,
-        outsideTerritory: true,
-      };
+      // The fact and nothing else: no uuid, and not whether they are suspended.
+      return { since: client.createdAt, outsideTerritory: true };
     }
     // Unreachable while the users→ib_accounts FK stands; refusing to fabricate
     // a half-empty card is still better than trusting that forever.
@@ -650,7 +667,7 @@ export class AdminClientsService {
    * `countReferredBy` for why the previous "unscoped by design" was answered
    * rather than merely overruled.
    */
-  private async referredClientsOf(clientId: string, scope: ClientScope) {
+  private async referredClientsOf(clientId: number, scope: ClientScope) {
     const clients = await this.users.listReferredBy(clientId, REFERRED_CLIENTS_SHOWN, scope);
     return clients.map((referred) => ({
       clientUserId: referred.id,
@@ -678,16 +695,17 @@ export class AdminClientsService {
    *
    * What is left is the CLERICAL set — the profile a client gave at
    * registration, which a support desk fixes when it was typed wrong. That is
-   * the whole intended job, and it ends where verification begins: once a KYC
-   * submission leaves the client's hands, only the phone stays the desk's to
-   * change. The rest is evidence a reviewer is checking or has checked, and it
-   * has its own narrower routes — `deskLocks` says which, per field, and the
-   * refusal (409 `PROFILE_LOCKED`) names them. Decided under the same locks the
-   * write takes, so a submission cannot slip in between the check and the edit.
+   * the whole intended job, and verification changes HOW, not WHERE: while a
+   * reviewer is checking the record only the phone moves, and once verified a
+   * detail is a CORRECTION — made right here by an admin holding
+   * `kyc.identity.correct`, with a reason, recorded on the verification, the
+   * client told. `adminEditRule` says which, per field; a held detail answers
+   * 409 `PROFILE_LOCKED` naming each. Decided under the same locks the write
+   * takes, so a submission cannot slip in between the check and the edit.
    */
   async updateClientProfile(
-    userId: string,
-    patch: Partial<Record<ProfileKey, string>>,
+    userId: number,
+    patch: Partial<Record<ProfileKey, string>> & { reason?: string },
     actor: AuthenticatedAdmin,
   ) {
     assertActorCan(actor, 'clients.edit', "edit a client's profile");
@@ -695,8 +713,9 @@ export class AdminClientsService {
     const user = await this.users.findForAdmin(userId, actor.clientScope);
     if (!user) throw new ClientNotFoundError();
 
+    const { reason, ...fields } = patch;
     const named = Object.fromEntries(
-      Object.entries(patch).filter(([, value]) => value !== undefined),
+      Object.entries(fields).filter(([, value]) => value !== undefined),
     ) as Partial<Record<ProfileKey, string>>;
     if (Object.keys(named).length === 0) {
       throw new ValidationError('Name a field to change.');
@@ -713,17 +732,22 @@ export class AdminClientsService {
      * only what actually changed, and records `client.profile_update` — before
      * and after — in the write's own transaction.
      */
-    const { user: updated } = await this.profile.update(
+    /*
+     * A VERIFIED detail is corrected HERE, on the client, by an admin who may
+     * correct verified details — with a reason, re-checked, audited on the
+     * verification, and the client told. It used to be refused with "Use
+     * Correct details on the client's KYC review", sending the admin to another
+     * screen (reported 28 Sep 2026). One rule and one write for both screens:
+     * `ClientProfileService.editAsAdmin`.
+     */
+    const { user: updated } = await this.profile.editAsAdmin(
       userId,
       named,
       { kind: 'admin', id: actor.id, email: actor.email },
       {
-        audit: { via: 'admin_edit' },
-        guard: (changed, verification) => {
-          const locked = deskLocks(changed, verification);
-          const first = Object.values(locked)[0];
-          if (first) throw new ProfileLockedError(first, locked);
-        },
+        mayCorrect: actorHasPermission(actor, 'kyc.identity.correct'),
+        reason,
+        via: 'admin_edit',
       },
     );
     return this.profileView(updated, actor);
@@ -762,7 +786,7 @@ export class AdminClientsService {
    * JWTs and expire on their own. What revocation guarantees is that none of
    * them can be refreshed into a new one.
    */
-  async changeClientEmail(userId: string, rawEmail: string, actor: AuthenticatedAdmin) {
+  async changeClientEmail(userId: number, rawEmail: string, actor: AuthenticatedAdmin) {
     assertActorCan(actor, 'clients.email', "change a client's sign-in email");
 
     const user = await this.users.findForAdmin(userId, actor.clientScope);
@@ -852,7 +876,7 @@ export class AdminClientsService {
    */
   private profileView(
     user: {
-      id: string;
+      id: number;
       portalId: number;
       email: string;
       firstName: string;
@@ -867,6 +891,7 @@ export class AdminClientsService {
       nationality?: string | null;
       address?: string | null;
       city?: string | null;
+      stateProvince?: string | null;
       postalCode?: string | null;
       createdAt: Date;
     },
@@ -888,6 +913,7 @@ export class AdminClientsService {
       nationality: user.nationality ?? null,
       address: user.address ?? null,
       city: user.city ?? null,
+      stateProvince: user.stateProvince ?? null,
       postalCode: user.postalCode ?? null,
       createdAt: user.createdAt,
     };
@@ -938,7 +964,7 @@ export class AdminClientsService {
    * should see named, and "the code was RIGHT and that partner is suspended",
    * which is somebody else's decision and a different conversation.
    */
-  async setClientReferrer(userId: string, referralCode: string, actor: AuthenticatedAdmin) {
+  async setClientReferrer(userId: number, referralCode: string, actor: AuthenticatedAdmin) {
     assertActorCan(actor, 'clients.referrer.set', 'record a referring partner');
     // Scoped first: an out-of-scope client 404s exactly as a missing one, so
     // nothing about the response says they exist.
@@ -987,10 +1013,19 @@ export class AdminClientsService {
       referralCode: code,
     });
 
-    return updated;
+    /*
+     * The same view every client-account write answers with — never the row.
+     *
+     * This returned `updated` itself: the full `users` row, `passwordHash` and
+     * the email-verification and password-reset token hashes included, to any
+     * administrator holding `clients.referrer.set`. The route declares
+     * `ClientAccountDto`, but a declaration is a promise about the shape, not
+     * a filter, and nothing held the body to it.
+     */
+    return this.profileView(updated, actor);
   }
 
-  async setClientStatus(userId: string, status: 'active' | 'suspended', actor: AuthenticatedAdmin) {
+  async setClientStatus(userId: number, status: 'active' | 'suspended', actor: AuthenticatedAdmin) {
     // Suspension kills live sessions and blocks login — a real privilege.
     assertActorCan(actor, 'clients.suspend', 'suspend or reactivate a client');
     // Scoped lookup: an out-of-scope client is 404, never 403. A 403 here would
@@ -1040,24 +1075,13 @@ export class AdminClientsService {
       },
     );
 
-    // Through the mask like every other client read. This built its own
-    // object and skipped it, so an admin whose role hid `client.email` could
-    // read the address out of the 200 by suspending and reactivating.
-    const view = {
-      id: updated.id,
-      portalId: updated.portalId,
-      email: updated.email,
-      firstName: updated.firstName,
-      lastName: updated.lastName,
-      type: updated.type,
-      status: updated.status,
-      verificationLevel: updated.verificationLevel,
-      country: updated.country,
-      createdAt: updated.createdAt,
-    };
-    return {
-      ...view,
-      maskedFields: maskedFieldsFor('client', actor.fieldMask),
-    };
+    /*
+     * The shared account view, masked by the global interceptor because the
+     * route declares `ClientAccountDto`. This built its own object and the route
+     * declared no response type, so the interceptor never ran and an admin whose
+     * role hid `client.email` could read the address out of the 200 by
+     * suspending and reactivating — while `maskedFields` claimed it was hidden.
+     */
+    return this.profileView(updated, actor);
   }
 }

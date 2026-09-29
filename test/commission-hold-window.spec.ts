@@ -86,8 +86,8 @@ async function serviceWithHold(seconds: number | undefined): Promise<CommissionS
   );
 }
 
-async function makeClient(email: string): Promise<string> {
-  const { rows } = await ctx.db.execute<{ id: string }>(sql`
+async function makeClient(email: string): Promise<number> {
+  const { rows } = await ctx.db.execute<{ id: number }>(sql`
     INSERT INTO users (email, password_hash, first_name, last_name, verification_level, email_verified)
     VALUES (${email}, 'x', 'Test', 'Partner', 1, true)
     RETURNING id
@@ -103,8 +103,8 @@ async function makeClient(email: string): Promise<string> {
  * the default timestamp can only ever test the "too new" branch.
  */
 async function accrue(
-  ibUserId: string,
-  clientUserId: string,
+  ibUserId: number,
+  clientUserId: number,
   sourceId: string,
   hoursAgo: number,
 ): Promise<void> {

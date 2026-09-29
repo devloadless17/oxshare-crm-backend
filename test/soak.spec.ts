@@ -56,18 +56,18 @@ const WALLET_COUNT = Number(process.env['SOAK_WALLETS'] ?? 12);
 
 let ctx: MoneyTestContext;
 let wallets: WalletService;
-let hotUserId: string;
-const spread: string[] = [];
+let hotUserId: number;
+const spread: number[] = [];
 
-async function makeUser(email: string): Promise<string> {
-  const { rows } = await ctx.db.execute<{ id: string }>(sql`
+async function makeUser(email: string): Promise<number> {
+  const { rows } = await ctx.db.execute<{ id: number }>(sql`
     INSERT INTO users (email, password_hash, first_name, last_name)
     VALUES (${email}, 'x', 'Soak', 'Person') RETURNING id
   `);
   return rows[0].id;
 }
 
-async function balanceOf(userId: string): Promise<string> {
+async function balanceOf(userId: number): Promise<string> {
   const { rows } = await ctx.db.execute<{ balance: string }>(sql`
     SELECT balance FROM wallets WHERE user_id = ${userId} AND currency = 'USD' AND kind = 'main'
   `);

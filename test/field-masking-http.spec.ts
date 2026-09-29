@@ -47,7 +47,7 @@ const MASKED = { email: 'mask-limited@oxshare.com', password: 'admin-password-12
 const CLIENTS = '/v1/admin/clients';
 
 let ctx: HttpTestContext;
-let clientId: string;
+let clientId: number;
 
 interface ListBody {
   items: Record<string, unknown>[];
@@ -228,10 +228,18 @@ afterAll(async () => {
   await stopHttpTestApp(ctx);
 });
 
+/*
+ * Looked up by the COMPLETE address: under D-82 a role that hides client emails
+ * finds nobody by a fragment of one (that search was the oracle), and these
+ * cases are about what the found row shows, so they find it the one way that
+ * role may.
+ */
+const TARGET_EMAIL = encodeURIComponent('mask-target@oxshare-e2e.test');
+
 describe('the client list', () => {
   it('OMITS a masked field from every row — not null, not a placeholder', async () => {
     const session = await actingAs(ctx, 'admin', MASKED);
-    const res = await session.get(`${CLIENTS}?q=mask-target`);
+    const res = await session.get(`${CLIENTS}?q=${TARGET_EMAIL}`);
     expect(res.status).toBe(200);
 
     const body = res.body as ListBody;
@@ -252,7 +260,7 @@ describe('the client list', () => {
      * the process", which is the actual requirement.
      */
     const session = await actingAs(ctx, 'admin', MASKED);
-    const res = await session.get(`${CLIENTS}?q=mask-target`);
+    const res = await session.get(`${CLIENTS}?q=${TARGET_EMAIL}`);
 
     expect(JSON.stringify(res.body)).not.toContain('mask-target@oxshare-e2e.test');
     expect(JSON.stringify(res.body)).not.toContain('+961 1 000 000');
@@ -260,7 +268,7 @@ describe('the client list', () => {
 
   it('says WHICH fields are hidden, so the UI can distinguish hidden from empty', async () => {
     const session = await actingAs(ctx, 'admin', MASKED);
-    const res = await session.get(`${CLIENTS}?q=mask-target`);
+    const res = await session.get(`${CLIENTS}?q=${TARGET_EMAIL}`);
 
     const body = res.body as ListBody;
     expect(body.maskedFields).toContain('client.email');
@@ -280,7 +288,7 @@ describe('the client list', () => {
     // Masking must not be a blunt instrument. A control that hides more than it
     // was asked to gets switched off.
     const session = await actingAs(ctx, 'admin', MASKED);
-    const res = await session.get(`${CLIENTS}?q=mask-target`);
+    const res = await session.get(`${CLIENTS}?q=${TARGET_EMAIL}`);
     const row = (res.body as ListBody).items[0];
 
     expect(row['firstName']).toBe('Masked');
@@ -408,7 +416,7 @@ describe('the KYC screen is not a bypass', () => {
       expect.arrayContaining(['kyc.personalInfo.email', 'kyc.user.email']),
     );
     // The unmasked parts still arrive — this is a mask, not a 403.
-    expect((res.body as { userId: string }).userId).toBe(clientId);
+    expect((res.body as { userId: number }).userId).toBe(clientId);
   });
 
   it('hides them on the review QUEUE too', async () => {
@@ -488,7 +496,7 @@ describe('the DECISION is not a bypass either', () => {
     expect(text).not.toContain('mask-target@oxshare-e2e.test');
     expect(text).not.toContain('+961 1 000 000');
     // A mask, not a 403 and not an empty body: the submission still arrives.
-    expect((res.body as { userId: string }).userId).toBe(clientId);
+    expect((res.body as { userId: number }).userId).toBe(clientId);
     expect((res.body as { maskedFields: string[] }).maskedFields).toEqual(
       expect.arrayContaining(['kyc.user.email']),
     );
@@ -830,7 +838,7 @@ describe('the IB lists are not a bypass either', () => {
     const session = await actingAs(ctx, 'admin', MASKED);
     const res = await session.get('/v1/admin/ib/applications').expect(200);
 
-    const body = res.body as { rows: { user: { id: string; email?: string } }[] };
+    const body = res.body as { rows: { user: { id: number; email?: string } }[] };
     expect(body.rows.length, 'no applications — the mask case is vacuous').toBeGreaterThan(0);
     expect(body.rows.some((r) => r.user.id === clientId)).toBe(true);
     expect(JSON.stringify(body)).not.toContain('mask-target@oxshare-e2e.test');

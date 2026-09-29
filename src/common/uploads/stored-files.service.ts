@@ -312,13 +312,14 @@ export interface StoredFile {
 
 /** Who is uploading, for the registry. */
 export interface Uploader {
-  id: string;
+  /** An admin's uuid, or a client's Portal ID (0159) — stored as text. */
+  id: string | number;
   kind: UploaderKind;
   /**
    * The client the file is ABOUT, when that differs from the uploader — an admin
    * uploading on a client's behalf — or null for objects belonging to nobody.
    */
-  ownerUserId?: string | null;
+  ownerUserId?: number | null;
 }
 
 @Injectable()
@@ -343,6 +344,12 @@ export class StoredFilesService {
    * HTML document ends up served as active content from the origin holding the
    * session cookies.
    *
+   * And the uploaded filename is not KEPT either (0160, D-84). What a file was
+   * called on somebody's device routinely carries their name or a document
+   * number, it would be shown beside the document whatever a role hides, and
+   * nothing needs it — a document is named by what it is. So there is no
+   * parameter to pass it through.
+   *
    * ## Ordering: bytes first, then the row
    *
    * If the registry insert fails, the object is deleted and the error propagates.
@@ -356,7 +363,6 @@ export class StoredFilesService {
     buffer: Buffer,
     declaredMime: string,
     uploader: Uploader,
-    originalName?: string | null,
   ): Promise<StoredFile> {
     if (buffer.length === 0) throw new ValidationError('That file is empty.');
 
@@ -434,7 +440,7 @@ export class StoredFilesService {
     }
 
     const owner = bucket.countsTowardOwnerQuota
-      ? (uploader.ownerUserId ?? (uploader.kind === 'client' ? uploader.id : null))
+      ? (uploader.ownerUserId ?? (uploader.kind === 'client' ? Number(uploader.id) : null))
       : null;
     if (owner) await this.assertWithinQuota(owner, buffer.length);
 
@@ -489,7 +495,6 @@ export class StoredFilesService {
         contentType: actual,
         byteSize: buffer.length,
         sha256,
-        originalName: originalName ?? null,
         ownerUserId: owner,
         uploadedById: uploader.id,
         uploadedByKind: uploader.kind,
@@ -664,7 +669,7 @@ export class StoredFilesService {
    * §6 locking rules apply to the ledger, where a lost update is a wrong balance;
    * applying them here would imply a guarantee this does not make.
    */
-  private async assertWithinQuota(ownerUserId: string, incomingBytes: number): Promise<void> {
+  private async assertWithinQuota(ownerUserId: number, incomingBytes: number): Promise<void> {
     const used = await this.registry.liveBytesForOwner(ownerUserId);
     if (used + incomingBytes <= OWNER_STORAGE_QUOTA_BYTES) return;
 
