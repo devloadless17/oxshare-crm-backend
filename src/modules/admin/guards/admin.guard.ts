@@ -6,6 +6,7 @@ import {
   SetMetadata,
   UnauthorizedException,
 } from '@nestjs/common';
+import { requestContext } from '../../../common/logging/request-context';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { Reflector } from '@nestjs/core';
@@ -101,6 +102,20 @@ export class AdminAuthenticator {
   ) {}
 
   async authenticate(req: AdminRequest): Promise<AuthenticatedAdmin> {
+    const admin = await this.authenticateRequest(req);
+    /*
+     * The mask travels with the request (`currentFieldMask`), so the one
+     * client search and `sortKey` obey it wherever they run (D-82). Set HERE,
+     * the one door every admin credential passes — both guards, API keys, the
+     * socket handshake (which has no request context, so this is a no-op) —
+     * because a guard that forgot it would silently reopen every oracle.
+     */
+    const store = requestContext.getStore();
+    if (store) store.fieldMask = admin.fieldMask;
+    return admin;
+  }
+
+  private async authenticateRequest(req: AdminRequest): Promise<AuthenticatedAdmin> {
     /*
      * An API key authenticates BEFORE the cookie path, and returns the same
      * `AuthenticatedAdmin` shape.

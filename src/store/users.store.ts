@@ -1,3 +1,6 @@
+import { ValidationError } from '../common/errors/domain-errors';
+import { currentFieldMask } from '../common/logging/request-context';
+import type { FieldMask } from '../common/security/field-mask';
 import {
   SQL,
   type SQLWrapper,
@@ -325,10 +328,46 @@ export function clientIdByPortalId(portalId: number): SQL<string | null> {
  * An alias does not stop Postgres using either index: the planner matches the
  * expression against the table's columns, not against the name in the FROM.
  */
-export function clientIdentitySearch(q: string, person: typeof users = users): SQL {
+export function clientIdentitySearch(
+  q: string,
+  person: typeof users = users,
+  mask: FieldMask = currentFieldMask(),
+): SQL {
   const portalId = parsePortalId(q);
   if (portalId !== undefined) return eq(person.portalId, portalId);
-  return sql`(coalesce(${person.email}, '') || ' ' || coalesce(${person.firstName}, '') || ' ' || coalesce(${person.lastName}, '')) ILIKE ${`%${escapeLike(q.trim())}%`}`;
+  const fragment = `%${escapeLike(q.trim())}%`;
+
+  const emailHidden = mask.includes('client.email');
+  const nameHidden = mask.includes('client.firstName') || mask.includes('client.lastName');
+  if (!emailHidden && !nameHidden) {
+    return sql`(coalesce(${person.email}, '') || ' ' || coalesce(${person.firstName}, '') || ' ' || coalesce(${person.lastName}, '')) ILIKE ${fragment}`;
+  }
+
+  /*
+   * ── A HIDDEN FIELD IS NEVER MATCHED BY A FRAGMENT (RBAC-03, D-82) ────────
+   *
+   * A substring match over a column the reader may not read is that column,
+   * one keystroke at a time: "a", "ab", "abd"… and the row count answers each
+   * guess. So a fragment is matched against the VISIBLE columns only — each
+   * form is indexed in 0157, like 0010's — and a hidden email is found by its
+   * COMPLETE address alone (the owner's rule: support must be able to find the
+   * client whose address they already hold; the lookup is audited by
+   * `HiddenEmailLookupInterceptor`). Emails are stored lower-cased, so the
+   * equality reads `users_email_unique`. A hidden NAME gets no exact lookup: a
+   * common name labels many clients.
+   */
+  const matches: SQL[] = [];
+  if (emailHidden && q.includes('@')) {
+    matches.push(eq(person.email, q.trim().toLowerCase()));
+  }
+  // `::text` explicitly: ILIKE casts a varchar, and 0157's index is on the cast (0125's trap).
+  if (!emailHidden) matches.push(sql`coalesce(${person.email}, '')::text ILIKE ${fragment}`);
+  if (!nameHidden) {
+    matches.push(
+      sql`(coalesce(${person.firstName}, '') || ' ' || coalesce(${person.lastName}, '')) ILIKE ${fragment}`,
+    );
+  }
+  return matches.length === 0 ? sql`false` : sql`(${sql.join(matches, sql` OR `)})`;
 }
 
 /**
@@ -965,7 +1004,14 @@ export class UsersStore {
     if (typeof filter.level === 'number' && !Number.isNaN(filter.level)) {
       conditions.push(eq(users.verificationLevel, filter.level));
     }
-    if (filter.country) conditions.push(eq(users.country, filter.country));
+    if (filter.country) {
+      // Filtering by a hidden field answers "is this client from X?" one guess
+      // at a time — the same refusal `sortKey` makes for a sort (RBAC-03).
+      if (currentFieldMask().includes('client.country')) {
+        throw new ValidationError('Cannot filter by country: that field is hidden from your role.');
+      }
+      conditions.push(eq(users.country, filter.country));
+    }
 
     /*
      * The two filters that make the new columns useful.

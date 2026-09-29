@@ -697,13 +697,23 @@ describe('RBAC-03: the joined client is masked like everywhere else', () => {
     expect(res.text).toContain('Union');
   });
 
-  it('a search over a masked column still works server-side — the mask is display, not scope', async () => {
-    // The mask hides the value from the RESPONSE; the operator may still
-    // filter by what they cannot read back, exactly as the client list does.
+  it('a hidden email is found by its complete address, never by a fragment (D-82)', async () => {
+    /*
+     * This case used to pin the opposite — "the mask is display, not scope":
+     * a fragment of a hidden email still filtered the list. That was the
+     * oracle: "f", "fi", "fin"… and the row count spells the address out. The
+     * owner's rule keeps the one lookup support needs — the complete address
+     * they already hold, audited — and nothing else.
+     */
     const session = await actingAs(ctx, 'admin', MASKED);
-    const body = (await session.get(`${LIST}?q=fin-union`).expect(200)).body as ListBody;
-    expect(body.total).toBeGreaterThan(0);
-    expect(JSON.stringify(body)).not.toContain('fin-union@oxshare-e2e.test');
+    const fragment = (await session.get(`${LIST}?q=fin-union`).expect(200)).body as ListBody;
+    expect(fragment.total).toBe(0);
+
+    const complete = (
+      await session.get(`${LIST}?q=${encodeURIComponent('fin-union@oxshare-e2e.test')}`).expect(200)
+    ).body as ListBody;
+    expect(complete.total).toBeGreaterThan(0);
+    expect(JSON.stringify(complete)).not.toContain('fin-union@oxshare-e2e.test');
   });
 });
 

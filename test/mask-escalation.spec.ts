@@ -73,7 +73,8 @@ describe('a masked administrator', () => {
     const plaintext = (minted.body as { plaintext: string }).plaintext;
 
     const res = await request(ctx.app.getHttpServer())
-      .get('/v1/admin/clients?q=maskesc-client&limit=5')
+      // The COMPLETE address: under D-82 a key that hides emails finds nobody by a fragment.
+      .get(`/v1/admin/clients?q=${encodeURIComponent(CLIENT_EMAIL)}&limit=5`)
       .set('X-API-Key', plaintext)
       .expect(200);
 

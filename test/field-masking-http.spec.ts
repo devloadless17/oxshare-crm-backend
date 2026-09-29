@@ -228,10 +228,18 @@ afterAll(async () => {
   await stopHttpTestApp(ctx);
 });
 
+/*
+ * Looked up by the COMPLETE address: under D-82 a role that hides client emails
+ * finds nobody by a fragment of one (that search was the oracle), and these
+ * cases are about what the found row shows, so they find it the one way that
+ * role may.
+ */
+const TARGET_EMAIL = encodeURIComponent('mask-target@oxshare-e2e.test');
+
 describe('the client list', () => {
   it('OMITS a masked field from every row — not null, not a placeholder', async () => {
     const session = await actingAs(ctx, 'admin', MASKED);
-    const res = await session.get(`${CLIENTS}?q=mask-target`);
+    const res = await session.get(`${CLIENTS}?q=${TARGET_EMAIL}`);
     expect(res.status).toBe(200);
 
     const body = res.body as ListBody;
@@ -252,7 +260,7 @@ describe('the client list', () => {
      * the process", which is the actual requirement.
      */
     const session = await actingAs(ctx, 'admin', MASKED);
-    const res = await session.get(`${CLIENTS}?q=mask-target`);
+    const res = await session.get(`${CLIENTS}?q=${TARGET_EMAIL}`);
 
     expect(JSON.stringify(res.body)).not.toContain('mask-target@oxshare-e2e.test');
     expect(JSON.stringify(res.body)).not.toContain('+961 1 000 000');
@@ -260,7 +268,7 @@ describe('the client list', () => {
 
   it('says WHICH fields are hidden, so the UI can distinguish hidden from empty', async () => {
     const session = await actingAs(ctx, 'admin', MASKED);
-    const res = await session.get(`${CLIENTS}?q=mask-target`);
+    const res = await session.get(`${CLIENTS}?q=${TARGET_EMAIL}`);
 
     const body = res.body as ListBody;
     expect(body.maskedFields).toContain('client.email');
@@ -280,7 +288,7 @@ describe('the client list', () => {
     // Masking must not be a blunt instrument. A control that hides more than it
     // was asked to gets switched off.
     const session = await actingAs(ctx, 'admin', MASKED);
-    const res = await session.get(`${CLIENTS}?q=mask-target`);
+    const res = await session.get(`${CLIENTS}?q=${TARGET_EMAIL}`);
     const row = (res.body as ListBody).items[0];
 
     expect(row['firstName']).toBe('Masked');

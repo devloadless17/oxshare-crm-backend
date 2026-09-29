@@ -1,3 +1,4 @@
+import { currentFieldMask } from './logging/request-context';
 import { asc, desc, sql, type SQL, type SQLWrapper } from 'drizzle-orm';
 import { ValidationError } from './errors/domain-errors';
 
@@ -45,6 +46,26 @@ import { ValidationError } from './errors/domain-errors';
 export type SortOrder = 'asc' | 'desc';
 
 /**
+ * Sort keys that ORDER BY a client's personal field, by the catalogue key that
+ * hides it. `user*` names the client joined onto a record on every list that
+ * offers it; the bare names are the client's own columns on the clients list
+ * only — the administrators list sorts by `email` too, an ADMIN's address.
+ */
+const SORT_KEY_FIELD: Readonly<Record<string, string>> = {
+  userEmail: 'client.email',
+  userFirstName: 'client.firstName',
+};
+
+/** The clients list's own columns — `createdAt` there IS the registration date. */
+const CLIENT_LIST_FIELD: Readonly<Record<string, string>> = {
+  email: 'client.email',
+  firstName: 'client.firstName',
+  lastName: 'client.lastName',
+  country: 'client.country',
+  createdAt: 'client.createdAt',
+};
+
+/**
  * A caller's `?sort=` string, or a 400 naming what is allowed.
  *
  * NEVER a silent fallback to the default when the value is unrecognised. R-2.5:
@@ -65,7 +86,22 @@ export function sortKey<T extends string>(
   subject: string,
 ): T {
   if (value === undefined || value === '') return fallback;
-  if (Object.prototype.hasOwnProperty.call(allowed, value)) return value as T;
+  if (Object.prototype.hasOwnProperty.call(allowed, value)) {
+    /*
+     * A sort is a question about the column: order by a hidden email and the
+     * row order spells it out, and the keyset cursor carries the value itself.
+     * So a column the reader's mask hides cannot be sorted by (RBAC-03) — the
+     * same refusal on every list, decided here once.
+     */
+    const hides =
+      SORT_KEY_FIELD[value] ?? (subject === 'clients' ? CLIENT_LIST_FIELD[value] : undefined);
+    if (hides && currentFieldMask().includes(hides)) {
+      throw new ValidationError(
+        `Cannot sort ${subject} by "${value}": that field is hidden from your role.`,
+      );
+    }
+    return value as T;
+  }
   throw new ValidationError(
     `Cannot sort ${subject} by "${value}". Allowed: ${Object.keys(allowed).join(', ')}.`,
   );

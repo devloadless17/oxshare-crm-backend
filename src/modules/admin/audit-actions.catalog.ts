@@ -78,6 +78,16 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
     historical: true,
   },
   { action: 'client.email_change', label: 'Client sign-in email changed', group: 'Clients' },
+  /*
+   * A reader whose role hides client emails found a client by a COMPLETE
+   * address (D-82). The subject is the client found; the typed text is never
+   * stored. See `HiddenEmailLookupInterceptor`.
+   */
+  {
+    action: 'client.lookup_hidden_email',
+    label: 'Client found by a hidden email address',
+    group: 'Clients',
+  },
   { action: 'client.suspend', label: 'Client suspended', group: 'Clients' },
   {
     action: 'client.referrer_set',

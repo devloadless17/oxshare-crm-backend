@@ -147,6 +147,8 @@ const WRITES_DETAILS: readonly string[] = [
   'api_key.create',
   'api_key.revoke',
   'client.email_change',
+  // `{ route }` only — the search that found them, never the typed address (D-82).
+  'client.lookup_hidden_email',
   'client.profile_consolidated',
   'client.profile_update',
   'client.referrer_set',
