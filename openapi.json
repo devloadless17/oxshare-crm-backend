@@ -7726,6 +7726,43 @@
         ]
       }
     },
+    "/v1/admin/clients/{id}/documents": {
+      "get": {
+        "description": "KYC document versions (with their review status) and offline-deposit receipts (with their deposit's state — a receipt on a refused deposit reads rejected), newest first. KYC needs kyc.documents.view or kyc.review; receipts need deposits.proofs.view or deposits.approve — a half the reader may not see is named in `hidden`.",
+        "operationId": "AdminClientIdentityController_documentsFor",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientDocumentListDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Every document a client has handed the platform, each with where it stands",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/tags": {
       "get": {
         "operationId": "AdminTagsController_list",
@@ -19276,6 +19313,125 @@
           }
         }
       },
+      "ClientDocumentFileDto": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string",
+            "example": "Identity document — first page"
+          },
+          "path": {
+            "type": "string",
+            "example": "uploads/kyc/2f0c….jpg",
+            "description": "Opened through GET /v1/<path>, which checks the reader against the file and audits it."
+          }
+        },
+        "required": [
+          "label",
+          "path"
+        ]
+      },
+      "ClientDocumentDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "The KYC version id, or the deposit transaction id."
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "identity",
+              "address",
+              "selfie",
+              "kyc_other",
+              "deposit_receipt"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "example": "Identity document",
+            "description": "What the document is."
+          },
+          "detail": {
+            "type": "string",
+            "nullable": true,
+            "example": "Passport",
+            "description": "The document type, or for a receipt the deposit it proves."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "draft",
+              "pending",
+              "approved",
+              "rejected",
+              "reverification_requested"
+            ],
+            "description": "KYC: draft (not presented) · pending (awaiting review) · approved (verified) · rejected (returned) · reverification_requested. Receipt: its DEPOSIT — pending, approved (credited) or rejected (refused or failed)."
+          },
+          "current": {
+            "type": "boolean",
+            "description": "False for an older KYC version the client has since replaced; always true for a receipt."
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ClientDocumentFileDto"
+            }
+          },
+          "reason": {
+            "type": "string",
+            "nullable": true,
+            "description": "Why it was rejected, when the source recorded one (a refused deposit)."
+          },
+          "transactionId": {
+            "type": "string",
+            "nullable": true,
+            "description": "For a receipt: the deposit transaction it belongs to."
+          },
+          "uploadedAt": {
+            "format": "date-time",
+            "type": "string",
+            "description": "When it was uploaded (a KYC version) or filed (a deposit)."
+          }
+        },
+        "required": [
+          "id",
+          "category",
+          "title",
+          "status",
+          "current",
+          "files",
+          "uploadedAt"
+        ]
+      },
+      "ClientDocumentListDto": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "description": "Newest first.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ClientDocumentDto"
+            }
+          },
+          "hidden": {
+            "example": [
+              "deposit_receipt"
+            ],
+            "description": "Categories left OUT because the reader lacks the permission that guards those files (KYC: kyc.documents.view or kyc.review; receipts: deposits.proofs.view or deposits.approve), so an empty list is never mistaken for \"has none\".",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "items",
+          "hidden"
+        ]
+      },
       "ClientTagWithCountDto": {
         "type": "object",
         "properties": {
@@ -21625,6 +21781,11 @@
             "type": "string"
           },
           "settledAt": {
+            "format": "date-time",
+            "type": "string",
+            "nullable": true
+          },
+          "reviewedAt": {
             "format": "date-time",
             "type": "string",
             "nullable": true

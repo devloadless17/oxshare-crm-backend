@@ -1,4 +1,9 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
+import { and, desc, eq, isNotNull } from 'drizzle-orm';
+import { DRIZZLE_DB } from '../../database/database.module';
+import type { Db } from '../../database/db';
+import { paymentMethods, transactions } from '../../database/schema';
+import { formatLimit } from '../../common/currency-limits';
 import { NotFoundError } from '../../common/errors/domain-errors';
 import { catalogueDocument } from '../../common/kyc/document-catalogue';
 import { identityField } from '../../common/kyc/identity-core';
@@ -7,6 +12,12 @@ import { KycConfigStore } from '../../store/kyc-config.store';
 import { UsersStore } from '../../store/users.store';
 import { ClientIdentityService } from '../client-identity/client-identity.service';
 import type { ClientIdentityRecordDto } from './dto/client-identity.dto';
+import type {
+  ClientDocumentCategory,
+  ClientDocumentDto,
+  ClientDocumentListDto,
+  ClientDocumentStatus,
+} from './dto/client-documents.dto';
 import type { AuthenticatedAdmin } from './guards/admin.guard';
 
 /** A returned page, named the way the review names its tiles. */
@@ -42,6 +53,7 @@ export class AdminClientIdentityService {
     private readonly users: UsersStore,
     private readonly identity: ClientIdentityService,
     private readonly kycConfig: KycConfigStore,
+    @Inject(DRIZZLE_DB) private readonly db: Db,
   ) {}
 
   async recordFor(clientId: number, actor: AuthenticatedAdmin): Promise<ClientIdentityRecordDto> {
@@ -98,4 +110,133 @@ export class AdminClientIdentityService {
         : {}),
     };
   }
+  /**
+   * EVERY DOCUMENT THE CLIENT HAS HANDED THE PLATFORM, in one list — the
+   * profile's Documents tab (owner, 29 Sep 2026), `GET /admin/clients/:id/documents`.
+   *
+   * Two sources, one vocabulary, and no decision of its own:
+   *
+   *  - each KYC document VERSION (identity, address, selfie, a broker's own
+   *    upload), with the status its review gave it — the same record
+   *    `recordFor` composes, flattened;
+   *  - each RECEIPT attached to an offline deposit, with its DEPOSIT's state —
+   *    so a receipt on a refused deposit reads REJECTED, with the reason.
+   *
+   * Each half behind the permission that already guards its files (the file
+   * routes ask the same): KYC behind `kyc.documents.view` or `kyc.review`,
+   * receipts behind `deposits.proofs.view` or `deposits.approve`. A half the
+   * reader may not see is named in `hidden`, so "none" and "not yours to see"
+   * never read the same. Scoped like the profile: out of scope is 404.
+   */
+  async documentsFor(clientId: number, actor: AuthenticatedAdmin): Promise<ClientDocumentListDto> {
+    const client = await this.users.findForAdmin(clientId, actor.clientScope);
+    if (!client) throw new NotFoundError('Client not found.');
+
+    const may = (key: string) => actorHasPermission(actor, key);
+    const seesKyc = may('kyc.documents.view') || may('kyc.review');
+    const seesReceipts = may('deposits.proofs.view') || may('deposits.approve');
+
+    const items: ClientDocumentDto[] = [];
+    const hidden: ClientDocumentCategory[] = [];
+
+    if (seesKyc) {
+      const record = await this.recordFor(clientId, actor);
+      for (const document of record.documents ?? []) {
+        const category = SLOT_CATEGORY[document.slot] ?? 'kyc_other';
+        document.versions.forEach((version, index) => {
+          items.push({
+            id: version.id,
+            category,
+            title: document.label,
+            detail: version.docLabel,
+            status: KYC_STATUS[version.status],
+            // Newest first, per slot: the first is what the client holds now.
+            current: index === 0,
+            files: version.pages.map((page) => ({ label: page.label, path: page.path })),
+            reason: null,
+            transactionId: null,
+            // The record's store may hand back a timestamp STRING; a Date either way.
+            uploadedAt: new Date(version.presentedAt ?? version.createdAt),
+          });
+        });
+      }
+    } else {
+      hidden.push('identity', 'address', 'selfie', 'kyc_other');
+    }
+
+    if (seesReceipts) {
+      const receipts = await this.db
+        .select({
+          id: transactions.id,
+          state: transactions.state,
+          amount: transactions.amount,
+          currency: transactions.currency,
+          proofFilename: transactions.proofFilename,
+          rejectionReason: transactions.rejectionReason,
+          createdAt: transactions.createdAt,
+          // The DESK's name for the method (0161) — this is an admin screen.
+          method: paymentMethods.internalLabel,
+        })
+        .from(transactions)
+        .leftJoin(paymentMethods, eq(paymentMethods.key, transactions.methodKey))
+        .where(and(eq(transactions.userId, clientId), isNotNull(transactions.proofFilename)))
+        .orderBy(desc(transactions.createdAt));
+      for (const receipt of receipts) {
+        items.push({
+          id: receipt.id,
+          category: 'deposit_receipt',
+          title: 'Deposit receipt',
+          detail:
+            `${formatLimit(receipt.amount)} ${receipt.currency}` +
+            (receipt.method ? ` via ${receipt.method}` : ''),
+          status: RECEIPT_STATUS[receipt.state],
+          current: true,
+          files: [{ label: 'Receipt', path: `uploads/deposit-proofs/${receipt.proofFilename}` }],
+          reason: receipt.rejectionReason,
+          transactionId: receipt.id,
+          uploadedAt: new Date(receipt.createdAt),
+        });
+      }
+    } else {
+      hidden.push('deposit_receipt');
+    }
+
+    items.sort((a, b) => b.uploadedAt.getTime() - a.uploadedAt.getTime());
+    return { items, hidden };
+  }
 }
+
+/** Which Documents-tab category a KYC slot is. `other:<field>` is a broker's own upload. */
+const SLOT_CATEGORY: Readonly<Record<string, ClientDocumentCategory>> = {
+  identity: 'identity',
+  address: 'address',
+  selfie: 'selfie',
+};
+
+/** A KYC version's review status, in the tab's one vocabulary. */
+const KYC_STATUS: Readonly<
+  Record<
+    'draft' | 'awaiting_review' | 'verified' | 'returned' | 'reverification_requested',
+    ClientDocumentStatus
+  >
+> = {
+  draft: 'draft',
+  awaiting_review: 'pending',
+  verified: 'approved',
+  returned: 'rejected',
+  reverification_requested: 'reverification_requested',
+};
+
+/**
+ * A receipt reads its DEPOSIT: credited is approved; refused or failed is
+ * rejected; anything still moving is pending.
+ */
+const RECEIPT_STATUS: Readonly<
+  Record<'pending' | 'approved' | 'success' | 'failure' | 'rejected', ClientDocumentStatus>
+> = {
+  pending: 'pending',
+  approved: 'pending',
+  success: 'approved',
+  failure: 'rejected',
+  rejected: 'rejected',
+};

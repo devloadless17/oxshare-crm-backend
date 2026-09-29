@@ -373,6 +373,11 @@ describe('by-id routes answer 404 for an out-of-scope client, never 403', () => 
       run: (s: Session, id: number) => s.get(`/v1/admin/clients/${id}/identity`),
     },
     {
+      // Every document — KYC versions and deposit receipts — in one list.
+      signature: 'GET /admin/clients/:id/documents',
+      run: (s: Session, id: number) => s.get(`/v1/admin/clients/${id}/documents`),
+    },
+    {
       signature: 'GET /admin/clients/:id/closed-positions',
       run: (s: Session, id: number) => s.get(`/v1/admin/clients/${id}/closed-positions`),
     },
