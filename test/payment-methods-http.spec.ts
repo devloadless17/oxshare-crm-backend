@@ -108,7 +108,13 @@ describe('creating a payment method', () => {
 
     const listed = await master.get('/v1/admin/payment-methods');
     const row = (listed.body as { key: string }[]).find((m) => m.key === 'e2e_bank');
-    expect(row).toBeDefined();
+    // The route and whether clients see it reach the console (0168): the view
+    // picks fields by name, and these were once declared but never sent.
+    expect(row).toMatchObject({
+      providerCode: 'manual',
+      channelCode: 'offline',
+      availability: 'offered',
+    });
   });
 
   /**

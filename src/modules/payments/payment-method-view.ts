@@ -36,6 +36,12 @@ export function adminPaymentMethodView(row: AdminPaymentMethod) {
     internalLabel: row.internalLabel,
     builtIn: row.builtIn,
     inUse: row.inUse,
+    // The route it runs on and whether clients see it (0168) — picked by name
+    // like everything here, so a field the DTO declares but this omits never
+    // reaches the console (it rendered "undefined · undefined" until it was added).
+    providerCode: row.providerCode,
+    channelCode: row.channelCode,
+    availability: row.availability,
     // Every question, hidden ones included — the console edits them all.
     proofFields: row.proofFields.map((field) => ({
       id: field.id,
