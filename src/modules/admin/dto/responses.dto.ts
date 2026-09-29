@@ -282,7 +282,11 @@ export class KycReviewDocumentDto {
 
 @NoClientFields(LAYOUT_ONLY)
 export class KycReviewAddressDto extends KycReviewDocumentDto {
-  @ApiProperty({ description: 'Whether the form asks for a proof of address at all.' })
+  @ApiProperty({
+    description:
+      'Whether the form asks for this document now. When it does not, its pages on file are ' +
+      'shown but cannot be returned: the client has no step to replace them on.',
+  })
   asked: boolean;
 }
 
@@ -296,7 +300,14 @@ export class KycReviewSelfieDto {
 export class KycReviewIdentityFieldDto {
   @ApiProperty({ enum: PROFILE_FIELD_KEYS }) key: (typeof PROFILE_FIELD_KEYS)[number];
   @ApiProperty({ example: 'Date of Birth' }) label: string;
-  @ApiProperty() required: boolean;
+  @ApiProperty({ description: 'Required by the form as it stands; false when not asked.' })
+  required: boolean;
+  @ApiProperty({
+    description:
+      'The form asks it now, so the client can answer it — only these can be returned. ' +
+      'The others are shown for comparison with the document.',
+  })
+  asked: boolean;
 }
 
 /** One of the broker's own questions, and where its answer is filed. */
@@ -344,8 +355,8 @@ export class KycReviewLayoutDto {
   @ApiProperty({ type: [KycReviewIdentityFieldDto] })
   identity: KycReviewIdentityFieldDto[];
   @NotClientField(LAYOUT_ONLY)
-  @ApiProperty({ type: KycReviewDocumentDto })
-  identityDocument: KycReviewDocumentDto;
+  @ApiProperty({ type: KycReviewAddressDto })
+  identityDocument: KycReviewAddressDto;
   @NotClientField(LAYOUT_ONLY)
   @ApiProperty({ type: KycReviewAddressDto })
   proofOfAddress: KycReviewAddressDto;

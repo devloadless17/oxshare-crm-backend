@@ -2,6 +2,7 @@ import { Throttle } from '@nestjs/throttler';
 import {
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
@@ -43,12 +44,13 @@ import { NotClientScoped } from '../admin/guards/client-scope.decorator';
 import { Audited } from '../admin/guards/audited.decorator';
 import { PaymentMethodsService } from './payment-methods.service';
 import {
+  AdminPaymentMethodDto,
   CreatePaymentMethodDto,
+  DeletedMethodDto,
   PaymentLogoResponseDto,
-  PaymentMethodDto,
   UpdatePaymentMethodDto,
 } from './dto/payment-method.dto';
-import { paymentMethodView } from './payment-method-view';
+import { adminPaymentMethodView } from './payment-method-view';
 
 /**
  * How clients can put money in — the operator's side.
@@ -86,10 +88,10 @@ export class AdminPaymentMethodsController {
       'see a narrower list: GET /payments/methods returns only what is enabled AND, for a ' +
       'gateway, reachable from this deployment.',
   })
-  @ApiOkResponse({ type: PaymentMethodDto, isArray: true })
+  @ApiOkResponse({ type: AdminPaymentMethodDto, isArray: true })
   @NotClientScoped('Platform payment configuration; names no client and returns no client data.')
   async list() {
-    return (await this.methods.listAll()).map(paymentMethodView);
+    return (await this.methods.listAllForAdmin()).map(adminPaymentMethodView);
   }
 
   /**
@@ -151,14 +153,15 @@ export class AdminPaymentMethodsController {
       'exception they cannot: a GATEWAY method stays hidden on a deployment holding no provider ' +
       'credentials, because a client who picks it would land on an error.',
   })
-  @ApiOkResponse({ type: PaymentMethodDto })
+  @ApiOkResponse({ type: AdminPaymentMethodDto })
   @NotClientScoped('Platform payment configuration; names no client and returns no client data.')
   @Audited('payment_method.create')
   async create(
     @Req() req: Request & { admin: AuthenticatedAdmin },
     @Body() dto: CreatePaymentMethodDto,
   ) {
-    return paymentMethodView(await this.methods.create(dto, req.admin));
+    const row = await this.methods.create(dto, req.admin);
+    return adminPaymentMethodView((await this.methods.findOneForAdmin(row.key))!);
   }
 
   @Patch(':key')
@@ -168,10 +171,11 @@ export class AdminPaymentMethodsController {
   @ApiOperation({
     summary: 'Update a payment method',
     description:
-      'PATCH, and `key` itself is not editable: it is the primary key and `transactions.' +
-      'method_key` references it, so renaming is a data migration rather than an edit.',
+      'PATCH. `key` is permanent (0161): transactions reference it and code dispatches on it. ' +
+      'The desk renames a method with `internalLabel`, which every admin screen and export ' +
+      'shows instead of `name`; clients keep seeing `name`.',
   })
-  @ApiOkResponse({ type: PaymentMethodDto })
+  @ApiOkResponse({ type: AdminPaymentMethodDto })
   @NotClientScoped('Platform payment configuration; names no client and returns no client data.')
   @Audited('payment_method.update')
   async update(
@@ -179,7 +183,24 @@ export class AdminPaymentMethodsController {
     @Param('key') key: string,
     @Body() dto: UpdatePaymentMethodDto,
   ) {
-    return paymentMethodView(await this.methods.update(key, dto, req.admin));
+    return adminPaymentMethodView(await this.methods.update(key, dto, req.admin));
+  }
+
+  @Delete(':key')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('payments.edit')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Delete a payment method that was never used',
+    description:
+      'Only a method NO transaction references (a typo, a test row) — 409 otherwise: its ' +
+      'deposits must keep naming it, so disable it instead. A gateway method is never deleted.',
+  })
+  @ApiOkResponse({ type: DeletedMethodDto })
+  @NotClientScoped('Platform payment configuration; names no client and returns no client data.')
+  @Audited('payment_method.delete')
+  async remove(@Req() req: Request & { admin: AuthenticatedAdmin }, @Param('key') key: string) {
+    return this.methods.remove(key, req.admin);
   }
 
   /**
@@ -267,24 +288,13 @@ export class AdminPaymentMethodsController {
   }
 
   /*
-   * ── THERE IS NO DELETE, DELIBERATELY ──────────────────────────────────────
+   * ── DELETE IS FOR A METHOD NOBODY USED ────────────────────────────────────
    *
-   * `DELETE /admin/payment-methods/:key` was removed along with its service
-   * method, and the capability is not coming back behind a confirmation dialog.
-   *
-   * A payment method is referenced by every deposit ever filed against it. The
-   * old endpoint already refused to delete one with history — which meant the
-   * button worked exactly once per method, on the ones nobody had used, and
-   * threw a conflict on every method that mattered. That is a control whose
-   * successful case is the uninteresting one.
-   *
-   * DISABLING does what deleting was reached for: it stops the method being
-   * offered to clients immediately (`listAvailable` filters on `enabled`, and
-   * `assertUsable` refuses it on the write path), while every historical deposit
-   * keeps a readable method name instead of pointing at a row that is gone.
-   *
-   * So the surface is: create, update, and toggle `enabled`. Nothing here can
-   * destroy a row that money history depends on.
+   * A method referenced by any transaction is never deleted: its deposits must
+   * keep naming the rail they came through, and `transactions.method_key` is
+   * RESTRICT, so the database refuses it even if the service's check is raced.
+   * DISABLING is the answer for those — it stops the method being offered at
+   * once. What delete is for is the row that should never have existed.
    */
 }
 
@@ -296,16 +306,20 @@ export class AdminPaymentMethodsController {
  * the §6.1 string handling the other exports do.
  */
 const PAYMENT_METHOD_EXPORT_COLUMNS = [
-  { header: 'Key', value: (r: PaymentMethodExportRow) => r.key },
-  { header: 'Name', value: (r: PaymentMethodExportRow) => r.name },
+  // The desk's name first — what the console shows (0161). The permanent ID goes
+  // last, for matching a transaction export's `Provider` column, never for reading.
+  { header: 'Internal name', value: (r: PaymentMethodExportRow) => r.internalLabel },
+  { header: 'Display name', value: (r: PaymentMethodExportRow) => r.name },
   { header: 'Currency', value: (r: PaymentMethodExportRow) => r.currency },
   { header: 'Enabled', value: (r: PaymentMethodExportRow) => r.enabled },
   { header: 'Sort order', value: (r: PaymentMethodExportRow) => r.sortOrder },
   { header: 'Updated at', value: (r: PaymentMethodExportRow) => r.updatedAt },
+  { header: 'ID', value: (r: PaymentMethodExportRow) => r.key },
 ] as const;
 
 interface PaymentMethodExportRow {
   key: string;
+  internalLabel: string;
   name: string;
   currency: string;
   enabled: boolean;

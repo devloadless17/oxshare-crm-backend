@@ -111,6 +111,8 @@ interface CombinedRow {
   rival_attention_reason: string | null;
   created_at: string;
   method_name: string | null;
+  /** The desk's label, falling back to the name (0161). ADMIN mappings only. */
+  method_label: string | null;
   kind: MovementKind;
   trading_account_id: string | null;
 }
@@ -245,7 +247,7 @@ function toMovementRow(row: AdminCombinedRow) {
      * fallback is their stated provider ('transfer' / 'commission'), which
      * the frontends already translate through `kind`.
      */
-    methodName: row.method_name ?? row.provider,
+    methodName: row.method_label ?? row.method_name ?? row.provider,
     provider: row.provider,
     providerRef: row.provider_ref,
     rivalExternalId: row.rival_external_id,
@@ -280,7 +282,7 @@ import { money, toDecimal } from '../wallet/money';
 import { buildCursorPage, pageSize, type CursorPosition } from '../../common/pagination';
 import type { SortOrder } from '../../common/sorting';
 import { sortKey, sortOrder } from '../../common/sorting';
-import { MoneyLimits } from '../../config/money-limits';
+import { formatLimit } from '../../common/currency-limits';
 import { PaymentMethodsService } from './payment-methods.service';
 import { wishDestinationIssue } from './rival/wish-phone';
 import { isPayerReachableUrl } from './rival/payer-reachable-url';
@@ -540,7 +542,6 @@ export class TransactionsService {
   constructor(
     private readonly wallets: WalletService,
     @Inject(DRIZZLE_DB) private readonly db: Db,
-    private readonly limits: MoneyLimits,
     /*
      * Which deposit methods exist, and whether the chosen one can take money.
      * Appended for the reason the parameter below records — the suite
@@ -671,7 +672,11 @@ export class TransactionsService {
     // The NORMALISED code is what the rest of this method uses: `assertUsable`
     // upper-cases and trims, so 'usd' and 'USD' cannot become two currencies on
     // the rows this writes.
-    const { code: currency, decimals } = await this.currencies.assertUsableDetail(params.currency);
+    const {
+      code: currency,
+      decimals,
+      limits,
+    } = await this.currencies.assertUsableDetail(params.currency);
 
     const amount = toDecimal(params.amount);
     /*
@@ -688,22 +693,25 @@ export class TransactionsService {
       throw new ValidationError('Withdrawal amount must be positive.');
 
     /*
-     * Absolute bounds — PLATFORM-CONVENTIONS R-5.1.
+     * Absolute bounds — PLATFORM-CONVENTIONS R-5.1 — in THIS CURRENCY's units.
      *
      * Balance and KYC level were already checked below, and they are the RIGHT
      * checks. What was missing is a ceiling that holds when something upstream
      * is wrong: a mispriced wallet, a bad rate, a compromised session draining
-     * an account in one move. Limits live in config as documented assumptions,
-     * so confirming a real figure with the client is an env change.
+     * an account in one move.
+     *
+     * The currency's own limits since 0162. They were one config number for
+     * every currency, so a client could not withdraw more than 50,000 LBP —
+     * about fifty cents — while the same number was a large USD withdrawal.
      */
-    const min = this.limits.minWithdrawal();
-    const max = this.limits.maxWithdrawal();
+    const min = toDecimal(limits.minWithdrawal);
+    const max = toDecimal(limits.maxWithdrawal);
     if (amount.lessThan(min)) {
-      throw new ValidationError(`The minimum withdrawal is ${min.toString()} ${currency}.`);
+      throw new ValidationError(`The minimum withdrawal is ${formatLimit(min)} ${currency}.`);
     }
     if (amount.greaterThan(max)) {
       throw new ValidationError(
-        `The maximum single withdrawal is ${max.toString()} ${currency}. ` +
+        `The maximum single withdrawal is ${formatLimit(max)} ${currency}. ` +
           'Please split the request or contact support.',
       );
     }
@@ -801,7 +809,7 @@ export class TransactionsService {
      * it caps the paperwork rather than the exposure. Counted over everything
      * not rejected — a pending withdrawal is money already on its way out.
      */
-    const dayCap = this.limits.maxWithdrawalPerDay();
+    const dayCap = toDecimal(limits.maxWithdrawalDaily);
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const recent = await db
       .select({ amount: transactions.amount })
@@ -818,8 +826,8 @@ export class TransactionsService {
     const already = recent.reduce((sum, row) => sum.plus(toDecimal(row.amount)), toDecimal('0'));
     if (already.plus(amount).greaterThan(dayCap)) {
       throw new ValidationError(
-        `This would exceed the ${dayCap.toString()} ${currency} rolling 24-hour ` +
-          `withdrawal limit — ${already.toString()} has already been requested in that window.`,
+        `This would exceed the ${formatLimit(dayCap)} ${currency} rolling 24-hour ` +
+          `withdrawal limit — ${formatLimit(already)} has already been requested in that window.`,
       );
     }
 
@@ -1091,16 +1099,17 @@ export class TransactionsService {
         userLastName: users.lastName,
         withdrawalMethodKey: transactions.withdrawalMethodKey,
         /*
-         * The rail's DISPLAY name, resolved server-side so the desk and the
-         * client read the same words and a renamed method is renamed in both at
-         * once — the rule `TransactionDto.methodName` already states for
-         * deposits.
+         * The rail's name AS THE DESK KNOWS IT — its internal label (0161),
+         * falling back to the display name — resolved server-side and joined at
+         * read time, so renaming it relabels every request at once.
          *
          * Null for every withdrawal written before migration 0062, which named
          * no method. The admin column falls back to `provider` for those rather
          * than showing a blank cell.
          */
-        withdrawalMethodName: withdrawalPaymentMethods.name,
+        withdrawalMethodName: sql<
+          string | null
+        >`coalesce(${withdrawalPaymentMethods.internalLabel}, ${withdrawalPaymentMethods.name})`,
       })
       .from(transactions)
       .innerJoin(users, eq(transactions.userId, users.id))
@@ -1525,6 +1534,7 @@ export class TransactionsService {
               THEN 'Rebate · ' || b.accrual_count || ' trades'
             ELSE 'Rebate'
           END::varchar                            AS method_name,
+          NULL::varchar                           AS method_label,
           'rebate'::text                          AS kind,
           NULL::uuid                              AS trading_account_id
         /*
@@ -1593,6 +1603,8 @@ export class TransactionsService {
            * unambiguous rather than a guess about precedence.
            */
           COALESCE(pm.name, wpm.name)             AS method_name,
+          -- The DESK's name (0161): admin mappings read it, the client's never do.
+          COALESCE(pm.internal_label, pm.name, wpm.internal_label, wpm.name) AS method_label,
           'payment'::text                         AS kind,
           NULL::uuid                              AS trading_account_id
         FROM transactions t
@@ -1644,6 +1656,7 @@ export class TransactionsService {
           NULL::text,                             -- rival_attention_reason
           tr.created_at,
           NULL::varchar                           AS method_name,
+          NULL::varchar                           AS method_label,
           'transfer'::text                        AS kind,
           tr.trading_account_id
         FROM transfers tr
@@ -1711,6 +1724,7 @@ export class TransactionsService {
           NULL::text,                             -- rival_attention_reason
           iwt.created_at,
           NULL::varchar                           AS method_name,
+          NULL::varchar                           AS method_label,
           'commission_transfer'::text             AS kind,
           NULL::uuid                              AS trading_account_id
         FROM ib_wallet_transfers iwt
@@ -2865,19 +2879,12 @@ export class TransactionsService {
       );
     }
 
+    /*
+     * The method's resolved range: the tighter of its CURRENCY's deposit limits
+     * and its own optional one (0162). The platform-wide pair this used to
+     * re-check here is gone — it was one USD-sized number for every currency.
+     */
     this.paymentMethods.assertAmountWithin(paymentMethod, amount);
-
-    const min = this.limits.minDeposit();
-    const max = this.limits.maxDeposit();
-    if (amount.lessThan(min)) {
-      throw new ValidationError(`The minimum deposit is ${min.toString()} ${params.currency}.`);
-    }
-    if (amount.greaterThan(max)) {
-      throw new ValidationError(
-        `The maximum single deposit is ${max.toString()} ${params.currency}. ` +
-          'Please split the transfer or contact support.',
-      );
-    }
 
     /*
      * The chosen trading account, validated NOW rather than at settlement.
@@ -3100,7 +3107,9 @@ export class TransactionsService {
           transactionId: tx.id,
           amount: tx.amount,
           currency: tx.currency,
-          method: paymentMethod.key,
+          // The DESK's name (0161), never the key: this is the sentence an
+          // operator reads ("…sent 100 USD by OMT – Hamra"). Snapshot at filing.
+          method: paymentMethod.internalLabel,
           reference,
         },
         dedupeKey: `admin.deposit.submitted:${tx.id}`,

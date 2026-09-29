@@ -48,6 +48,7 @@ describe('the identity and the documents', () => {
       'postalCode',
     ]);
     expect(layout.identityDocument).toEqual({
+      asked: true,
       type: 'national_id',
       label: 'National ID',
       pages: [

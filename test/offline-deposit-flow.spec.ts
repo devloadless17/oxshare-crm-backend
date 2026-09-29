@@ -4,7 +4,6 @@ import { ConfigService } from '@nestjs/config';
 import { TransactionsService } from '../src/modules/payments/transactions.service';
 import { WalletService } from '../src/modules/wallet/wallet.service';
 import { CurrenciesService } from '../src/modules/currencies/currencies.service';
-import { MoneyLimits } from '../src/config/money-limits';
 import { PaymentMethodsService } from '../src/modules/payments/payment-methods.service';
 import { SYSTEM_ACTOR } from '../src/common/security/actor';
 import { auditStubAs } from './audit-stub';
@@ -43,17 +42,10 @@ beforeAll(async () => {
   ctx = await startMoneyTestDb();
   wallets = new WalletService(ctx.db);
   const currencies = new CurrenciesService(ctx.db, auditStubAs());
-  methods = new PaymentMethodsService(
-    ctx.db,
-    currencies,
-    auditStubAs(),
-    gatewayStubAs(),
-    new MoneyLimits(new ConfigService()),
-  );
+  methods = new PaymentMethodsService(ctx.db, currencies, auditStubAs(), gatewayStubAs());
   transactions = new TransactionsService(
     wallets,
     ctx.db,
-    new MoneyLimits(new ConfigService()),
     methods,
     currencies,
     gatewayStubAs(),

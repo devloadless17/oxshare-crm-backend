@@ -1,6 +1,16 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { NoClientFields } from '../../../common/security/client-field.decorator';
-import { IsBoolean, IsInt, IsOptional, IsString, Length, Matches, Min } from 'class-validator';
+import {
+  IsBoolean,
+  IsInt,
+  IsOptional,
+  IsString,
+  Length,
+  Matches,
+  Min,
+  ValidateIf,
+} from 'class-validator';
+import { METHOD_KEY_MESSAGE, METHOD_KEY_PATTERN } from '../method-keys';
 
 /**
  * A logo this API will serve, or an https one it will not.
@@ -65,9 +75,10 @@ export class PaymentMethodDto {
     type: 'string',
     example: '10.00000000',
     description:
-      'The smallest deposit this method accepts, RESOLVED SERVER-SIDE from the platform limits ' +
-      '(§12.4). The same figure `POST /payments/deposits` enforces, so a client showing it cannot ' +
-      'promise a floor the validator disagrees with. A decimal string, never a number (§6.1).',
+      'The smallest deposit this method accepts, RESOLVED SERVER-SIDE: the tighter of the ' +
+      "currency's minimum deposit and the method's own (0162). The same figure " +
+      '`POST /payments/deposits` enforces, so a client showing it cannot promise a floor the ' +
+      'validator disagrees with. A decimal string, never a number (§6.1).',
   })
   minAmount: string;
 
@@ -90,6 +101,10 @@ export class PaymentMethodDto {
   requiresProof: boolean;
 }
 
+/** A method's own limit: an amount, up to 20 digits and 8 decimals (§6.1). */
+const OWN_LIMIT = /^\d{1,20}(\.\d{1,8})?$/;
+const OWN_LIMIT_MESSAGE = 'must be an amount, e.g. 100 or 5000000 (up to 8 decimals)';
+
 export class CreatePaymentMethodDto {
   /**
    * Lower-case, letters, digits and underscores.
@@ -97,18 +112,36 @@ export class CreatePaymentMethodDto {
    * It ends up in `transactions.provider` as `manual_<key>` and in URLs, so a
    * space or a slash here becomes a bug somewhere that cannot fix it.
    */
-  @ApiProperty({ example: 'whish', maxLength: 40 })
+  @ApiPropertyOptional({
+    example: 'whish',
+    maxLength: 40,
+    description:
+      'The permanent ID. Omit it — the platform generates one (`pm_…`) and the console never ' +
+      'shows it. Given only to create a row the CODE dispatches on (a gateway such as whish).',
+  })
+  @IsOptional()
   @IsString()
   @Length(2, 40)
-  @Matches(/^[a-z0-9_]+$/i, {
-    message: 'key may contain only letters, digits and underscores',
-  })
-  key: string;
+  @Matches(METHOD_KEY_PATTERN, { message: METHOD_KEY_MESSAGE })
+  key?: string;
 
   @ApiProperty({ example: 'Whish Money' })
   @IsString()
   @Length(1, 80)
   name: string;
+
+  @ApiPropertyOptional({
+    maxLength: 80,
+    example: 'OMT – Hamra branch',
+    description:
+      'What the DESK calls the method — shown, typed and renamed in the console in place of ' +
+      'the key, and on every admin screen, export and bell. Unique (case-insensitive). Never ' +
+      'sent to a client. Omitted, it starts as `name`.',
+  })
+  @IsOptional()
+  @IsString()
+  @Length(1, 80)
+  internalLabel?: string;
 
   /**
    * What this method settles in — NOT NULL, and the wallet a deposit lands in.
@@ -132,12 +165,42 @@ export class CreatePaymentMethodDto {
   logoUrl?: string;
 
   /*
-   * No `payTo`, `instructions`, `minAmount` or `maxAmount` — all four columns
-   * went in migration 0042 — and no `kind`, which went in 0043. An operator
-   * configures a method by naming it, giving it a logo and switching it on; the
-   * bounds are the platform's and apply to every method equally, and the flow is
-   * decided by whether a gateway is implemented for the key.
+   * No `payTo` or `instructions` — both went in migration 0042 — and no `kind`,
+   * which went in 0043. The flow is decided by whether a gateway is implemented
+   * for the key. The deposit RANGE is the currency's (0162), and a method may
+   * narrow it with the two optional fields below.
    */
+
+  /*
+   * The method's OWN range (0162) — optional, and it can only NARROW the
+   * currency's deposit limits: a value outside them is refused under its field.
+   * `null` clears it back to "the currency's limit".
+   */
+  @ApiPropertyOptional({
+    type: 'string',
+    nullable: true,
+    example: '100',
+    description:
+      "Optional minimum for this method, tighter than the currency's minimum deposit. " +
+      "Null or omitted: the currency's.",
+  })
+  @IsOptional()
+  @ValidateIf((_o, value) => value !== null)
+  @Matches(OWN_LIMIT, { message: `ownMinAmount ${OWN_LIMIT_MESSAGE}` })
+  ownMinAmount?: string | null;
+
+  @ApiPropertyOptional({
+    type: 'string',
+    nullable: true,
+    example: '5000',
+    description:
+      "Optional maximum for this method, tighter than the currency's maximum deposit. " +
+      "Null or omitted: the currency's.",
+  })
+  @IsOptional()
+  @ValidateIf((_o, value) => value !== null)
+  @Matches(OWN_LIMIT, { message: `ownMaxAmount ${OWN_LIMIT_MESSAGE}` })
+  ownMaxAmount?: string | null;
 
   @ApiPropertyOptional({ default: true })
   @IsOptional()
@@ -169,19 +232,33 @@ export class CreatePaymentMethodDto {
 }
 
 /**
- * `key` is absent: it is the primary key and `transactions.method_key`
- * references it, so renaming is a data migration rather than an edit.
+ * `key` is absent: it is the primary key, transactions reference it and spell it
+ * into `provider`, and code dispatches on it — migration 0161 records why a
+ * rename was built, measured and rejected. The desk renames a method through
+ * `internalLabel`, which is one row and rewrites no history.
  *
- * ## `instructions`, `payTo`, `minAmount` and `maxAmount` are gone from HERE too
+ * ## `instructions` and `payTo` are gone from HERE too
  *
  * They outlived their columns by a release. `update()` never read them — the
- * columns went in migration 0042 — so the API accepted a pay-to account, a set
- * of transfer instructions and a pair of deposit bounds, answered 200, and
- * stored none of it. An accepted write that changes nothing is worse than a
- * rejected one: the operator has been told their change took effect.
+ * columns went in migration 0042 — so the API accepted a pay-to account and a
+ * set of transfer instructions, answered 200, and stored none of it. An
+ * accepted write that changes nothing is worse than a rejected one. The range
+ * came back in 0162 as `ownMinAmount`/`ownMaxAmount`, and IS stored.
  */
 export class UpdatePaymentMethodDto {
   @ApiPropertyOptional() @IsOptional() @IsString() @Length(1, 80) name?: string;
+
+  @ApiPropertyOptional({
+    maxLength: 80,
+    example: 'OMT – Hamra branch',
+    description:
+      'Renames the method for the desk: one row, and every admin screen, export and bell ' +
+      'follows at once. Unique (case-insensitive), never blank, never sent to a client.',
+  })
+  @IsOptional()
+  @IsString()
+  @Length(1, 80)
+  internalLabel?: string;
 
   @ApiPropertyOptional() @IsOptional() @IsString() @Length(1, 10) currency?: string;
 
@@ -212,6 +289,89 @@ export class UpdatePaymentMethodDto {
   @IsOptional()
   @IsBoolean()
   requiresProof?: boolean;
+
+  /*
+   * The method's OWN range (0162) — optional, and it can only NARROW the
+   * currency's deposit limits: a value outside them is refused under its field.
+   * `null` clears it back to "the currency's limit".
+   */
+  @ApiPropertyOptional({
+    type: 'string',
+    nullable: true,
+    example: '100',
+    description:
+      "Optional minimum for this method, tighter than the currency's minimum deposit. " +
+      "Null or omitted: the currency's.",
+  })
+  @IsOptional()
+  @ValidateIf((_o, value) => value !== null)
+  @Matches(OWN_LIMIT, { message: `ownMinAmount ${OWN_LIMIT_MESSAGE}` })
+  ownMinAmount?: string | null;
+
+  @ApiPropertyOptional({
+    type: 'string',
+    nullable: true,
+    example: '5000',
+    description:
+      "Optional maximum for this method, tighter than the currency's maximum deposit. " +
+      "Null or omitted: the currency's.",
+  })
+  @IsOptional()
+  @ValidateIf((_o, value) => value !== null)
+  @Matches(OWN_LIMIT, { message: `ownMaxAmount ${OWN_LIMIT_MESSAGE}` })
+  ownMaxAmount?: string | null;
+}
+
+/** The console's view of a method: the client shape plus what the desk may do to it. */
+@NoClientFields('operator configuration - the payment methods offered, not who used them')
+export class AdminPaymentMethodDto extends PaymentMethodDto {
+  @ApiProperty({
+    type: 'string',
+    nullable: true,
+    description:
+      "The method's own minimum as the operator set it — null means the currency's. " +
+      '`minAmount` is what clients are actually held to.',
+  })
+  ownMinAmount: string | null;
+
+  @ApiProperty({
+    type: 'string',
+    nullable: true,
+    description:
+      "The method's own maximum as the operator set it — null means the currency's. " +
+      '`maxAmount` is what clients are actually held to.',
+  })
+  ownMaxAmount: string | null;
+
+  @ApiProperty({
+    example: 'OMT – Hamra branch',
+    description:
+      'What the desk calls the method (admin-only, unique). The console shows it in ' +
+      'place of the key.',
+  })
+  internalLabel: string;
+
+  @ApiProperty({
+    description:
+      'The platform’s code depends on this method (a payment gateway), so it cannot be deleted.',
+  })
+  builtIn: boolean;
+
+  @ApiProperty({
+    description:
+      'A transaction references this method. Such a method cannot be deleted — disable it.',
+  })
+  inUse: boolean;
+}
+
+/** What deleting a never-used payment or withdrawal method answers with. */
+@NoClientFields('operator configuration - the payment methods offered, not who used them')
+export class DeletedMethodDto {
+  @ApiProperty({ example: 'typo_method' })
+  key: string;
+
+  @ApiProperty({ example: true })
+  deleted: boolean;
 }
 
 /**

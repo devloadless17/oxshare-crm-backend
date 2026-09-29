@@ -11,7 +11,6 @@ import { WalletService } from '../src/modules/wallet/wallet.service';
 import { CurrenciesService } from '../src/modules/currencies/currencies.service';
 import { AuditLogStore } from '../src/store/audit-log.store';
 import { UsersStore } from '../src/store/users.store';
-import { MoneyLimits } from '../src/config/money-limits';
 import { auditStubAs } from './audit-stub';
 import { emailStubAs } from './email-stub';
 import { notificationsStub, notificationsStubAs } from './notifications-stub';
@@ -60,14 +59,7 @@ beforeAll(async () => {
   transactions = new TransactionsService(
     wallets,
     ctx.db,
-    new MoneyLimits(new ConfigService()),
-    new PaymentMethodsService(
-      ctx.db,
-      currencies,
-      auditStubAs(),
-      gatewayStubAs(),
-      new MoneyLimits(new ConfigService()),
-    ),
+    new PaymentMethodsService(ctx.db, currencies, auditStubAs(), gatewayStubAs()),
     currencies,
     gatewayStubAs(),
     new ConfigService(),

@@ -62,8 +62,21 @@ async function currencyExists(code: string): Promise<boolean> {
   return rows[0].n === 1;
 }
 
+/** Every currency is created with its own limits (0162); these are USD-sized. */
+const LIMITS = {
+  minDeposit: '10',
+  maxDeposit: '250000',
+  minWithdrawal: '10',
+  maxWithdrawal: '50000',
+  maxWithdrawalDaily: '100000',
+  maxAdminCredit: '50000',
+};
+
 const add = (code: string, enabled = true) =>
-  currencies.create({ code, name: `Test ${code}`, symbol: code, decimals: 2, enabled }, TEST_ACTOR);
+  currencies.create(
+    { code, name: `Test ${code}`, symbol: code, decimals: 2, enabled, ...LIMITS },
+    TEST_ACTOR,
+  );
 
 beforeAll(async () => {
   ctx = await startMoneyTestDb();

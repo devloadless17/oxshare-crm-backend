@@ -72,8 +72,14 @@ export interface KycReviewSection {
 }
 
 export interface KycReviewLayout {
-  identity: { key: ProfileKey; label: string; required: boolean }[];
-  identityDocument: KycReviewDocument;
+  /**
+   * Every identity detail, in the platform's order: the reviewer compares the
+   * client's name and date of birth with the document even where the form does
+   * not ask for them. `asked` — the form asks it now (Phase 2: the broker places
+   * them), so the client can answer it if it is returned; `required` — as placed.
+   */
+  identity: { key: ProfileKey; label: string; required: boolean; asked: boolean }[];
+  identityDocument: KycReviewDocument & { asked: boolean };
   proofOfAddress: KycReviewDocument & { asked: boolean };
   selfie: { asked: boolean; label: string };
   additional: KycReviewSection[];
@@ -118,13 +124,22 @@ export function reviewLayout(
 ): KycReviewLayout {
   const asked = (slug: string) => steps.some((step) => step.slug === slug && step.enabled);
   const additional = additionalSections(steps, submission, recorded);
+  const placed = new Map(
+    (steps.find((step) => step.slug === 'personal' && step.enabled)?.fields ?? [])
+      .filter((field) => isProfileKey(field.name))
+      .map((field) => [field.name, Boolean(field.required)]),
+  );
   return {
     identity: IDENTITY_FIELDS.map((field) => ({
       key: field.name,
       label: field.label,
-      required: field.required,
+      required: placed.get(field.name) ?? false,
+      asked: placed.has(field.name),
     })),
-    identityDocument: documentOf(submission.document?.docType, 'identity', 'Identity document'),
+    identityDocument: {
+      asked: asked('document'),
+      ...documentOf(submission.document?.docType, 'identity', 'Identity document'),
+    },
     proofOfAddress: {
       asked: asked('address'),
       ...documentOf(submission.addressProof?.docType, 'address', 'Proof of address'),
@@ -277,7 +292,11 @@ export function returnableItems(
   layout: KycReviewLayout,
   submission: Pick<KycSubmission, 'document' | 'addressProof' | 'selfie'>,
 ): Set<string> {
-  const items = new Set<string>(layout.identity.map((field) => field.key));
+  // Only a detail the form ASKS: returning one it does not would ask the client
+  // for something their form gives them no field for.
+  const items = new Set<string>(
+    layout.identity.filter((field) => field.asked).map((field) => field.key),
+  );
   const onFile: Record<string, string | undefined> = {
     doc_front: submission.document?.frontFilePath,
     doc_back: submission.document?.backFilePath,
@@ -292,7 +311,9 @@ export function returnableItems(
       ?.fields.find((f) => document.type !== null && f.type === `doc:${document.type}`);
     if (field && pages.length > 0) items.add(field.name);
   };
-  documentOnFile('document', layout.identityDocument);
+  // A page of a step the form has switched off cannot be replaced — the upload
+  // route refuses it — so returning one would strand the client.
+  if (layout.identityDocument.asked) documentOnFile('document', layout.identityDocument);
   if (layout.proofOfAddress.asked) documentOnFile('address', layout.proofOfAddress);
   if (layout.selfie.asked && submission.selfie?.filePath) items.add('selfie');
   for (const section of layout.additional) {

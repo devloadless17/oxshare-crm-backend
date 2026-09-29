@@ -11,7 +11,6 @@ import { TransfersService } from '../src/modules/payments/transfers.service';
 import { WalletService } from '../src/modules/wallet/wallet.service';
 import { CurrenciesService } from '../src/modules/currencies/currencies.service';
 import { PaymentMethodsService } from '../src/modules/payments/payment-methods.service';
-import { MoneyLimits } from '../src/config/money-limits';
 import { KycStore } from '../src/store/kyc.store';
 import { UsersStore } from '../src/store/users.store';
 import { AdminsStore } from '../src/store/admins.store';
@@ -78,14 +77,7 @@ beforeAll(async () => {
   transactions = new TransactionsService(
     wallets,
     ctx.db,
-    new MoneyLimits(new ConfigService()),
-    new PaymentMethodsService(
-      ctx.db,
-      currencies,
-      auditStubAs(),
-      gatewayStubAs(),
-      new MoneyLimits(new ConfigService()),
-    ),
+    new PaymentMethodsService(ctx.db, currencies, auditStubAs(), gatewayStubAs()),
     currencies,
     gatewayStubAs(),
     new ConfigService(),

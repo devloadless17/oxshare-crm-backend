@@ -58,74 +58,18 @@ export class MoneyLimits {
     }
   }
 
-  /** Below this a withdrawal costs more in provider fees than it moves. */
-  minWithdrawal(): Decimal {
-    return this.decimal('WITHDRAWAL_MIN', '10');
-  }
-
-  /** ASSUMPTION — pending client confirmation. Per single withdrawal. */
-  maxWithdrawal(): Decimal {
-    return this.decimal('WITHDRAWAL_MAX', '50000');
-  }
-
-  /** ASSUMPTION — pending client confirmation. Per user, rolling 24 hours. */
-  maxWithdrawalPerDay(): Decimal {
-    return this.decimal('WITHDRAWAL_DAILY_MAX', '100000');
-  }
-
-  /**
-   * Below this a manual deposit costs more in operator time than it moves.
+  /*
+   * ── The deposit, withdrawal and admin-credit limits are NOT here ──────────
    *
-   * A declared deposit is not money yet — nothing is credited until somebody
-   * confirms the transfer arrived — so this bound is not protecting a balance.
-   * It is protecting the reconciliation queue: a stream of one-dollar
-   * declarations is a denial of service against the person working through it.
+   * They were (`WITHDRAWAL_MIN/MAX/DAILY_MAX`, `DEPOSIT_MIN/MAX`,
+   * `ADMIN_CREDIT_MAX`), one number each for every currency — so a client could
+   * not withdraw more than 50,000 LBP, about fifty cents. A limit is an amount
+   * OF a currency, so since 0162 each currency carries its own six, in its own
+   * units, set on the admin Currencies screen (`currencies.min_deposit` …
+   * `max_admin_credit`, `common/currency-limits.ts`). What stays here are the
+   * commission backstops, which are ratios and per-deal ceilings, not amounts a
+   * client moves.
    */
-  minDeposit(): Decimal {
-    return this.decimal('DEPOSIT_MIN', '10');
-  }
-
-  /**
-   * ASSUMPTION — pending client confirmation. Per single declared deposit.
-   *
-   * Deliberately generous compared to the withdrawal ceiling: a large INBOUND
-   * declaration is a compliance question for the operator to answer with the
-   * money in view, not something to refuse at the door. It exists so a typo
-   * ("500000" for "5000") is caught while the client is still looking at the
-   * form rather than after a wire arrives.
-   */
-  maxDeposit(): Decimal {
-    return this.decimal('DEPOSIT_MAX', '250000');
-  }
-
-  /**
-   * The most an administrator may credit or fund in one action.
-   *
-   * ## Why a MINTING path needs a ceiling more than a spending one does
-   *
-   * Every other limit here bounds money that already exists — a withdrawal moves
-   * a balance out, a deposit declares an inbound transfer that a human then
-   * confirms. `POST /admin/wallets/credit` and the trading-account fund path are
-   * different in kind: they are the only routes that create balance from
-   * nothing, with no provider, no bank statement and no second party.
-   *
-   * Their DTO accepts `^\d{1,20}(\.\d{1,8})?$` — up to a hundred quintillion —
-   * and nothing downstream consulted a maximum. So the whole protection against
-   * a mistyped zero was the operator noticing, and the ledger is append-only:
-   * the correction is a compensating entry somebody has to write, after a client
-   * has seen the balance.
-   *
-   * Set BELOW the deposit ceiling (250,000) on purpose. A large inbound
-   * declaration is a compliance question answered with the money in view; a
-   * large hand-credit is a number somebody typed. The two should not share a
-   * bound just because both are "money arriving".
-   *
-   * Not a permission — that already exists and is deliberately its own key. This
-   * is the bound that holds when the person IS authorised and is simply wrong.
-   */
-  maxAdminCredit(): Decimal {
-    return this.decimal('ADMIN_CREDIT_MAX', '50000');
-  }
 
   /*
    * ── The two below have NO CALLER today ──────────────────────────────────

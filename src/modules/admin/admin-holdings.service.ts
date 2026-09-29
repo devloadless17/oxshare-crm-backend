@@ -1205,7 +1205,7 @@ export class AdminHoldingsService {
          */
         methodName: sql<
           string | null
-        >`coalesce(${paymentMethods.name}, ${withdrawalPaymentMethods.name})`,
+        >`coalesce(${paymentMethods.internalLabel}, ${paymentMethods.name}, ${withdrawalPaymentMethods.internalLabel}, ${withdrawalPaymentMethods.name})`,
         provider: transactions.provider,
         providerRef: transactions.providerRef,
         createdAt: transactions.createdAt,

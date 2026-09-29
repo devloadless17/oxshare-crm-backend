@@ -500,6 +500,8 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
    */
   { action: 'payment_method.create', label: 'Payment method added', group: 'Configuration' },
   { action: 'payment_method.update', label: 'Payment method changed', group: 'Configuration' },
+  // Only a method no transaction references (a typo, a test row); a used one is disabled.
+  { action: 'payment_method.delete', label: 'Payment method deleted', group: 'Configuration' },
   /*
    * The payout side's twin. Its own actions rather than `payment_method.*`: a
    * deposit rail and a withdrawal rail are separate rows switched separately,
@@ -515,16 +517,11 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
     label: 'Withdrawal method changed',
     group: 'Configuration',
   },
-  /*
-   * `payment_method.delete` is GONE, for the reason the `ip_allowlist` entries
-   * below were removed: nothing writes it. A payment method is disabled, never
-   * deleted — the only writers are `create` and `update`
-   * (payment-methods.service.ts). Offering the filter meant an operator
-   * searching for "Payment method removed" got "No entries for this action"
-   * and concluded a removal had never happened, rather than that it is
-   * unloggable. A vocabulary that advertises actions the system cannot record
-   * is worse than a shorter one.
-   */
+  {
+    action: 'withdrawal_method.delete',
+    label: 'Withdrawal method deleted',
+    group: 'Configuration',
+  },
 
   // ── Security controls ─────────────────────────────────────────────────────
   // `ip_allowlist.add|remove` are GONE: the feature was deleted whole

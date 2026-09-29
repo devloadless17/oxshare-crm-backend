@@ -1,27 +1,57 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { asc, eq, sql } from 'drizzle-orm';
+import { and, asc, eq, ne, sql } from 'drizzle-orm';
 import Decimal from 'decimal.js';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
-import { paymentMethods } from '../../database/schema';
+import { paymentMethods, transactions } from '../../database/schema';
 import { CurrenciesService } from '../currencies/currencies.service';
 import { toDecimal } from '../wallet/money';
-import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/domain-errors';
+import {
+  ConflictError,
+  FieldValidationError,
+  NotFoundError,
+  ValidationError,
+} from '../../common/errors/domain-errors';
+import {
+  effectiveDepositRange,
+  formatLimit,
+  methodRangeProblems,
+  type CurrencyLimits,
+} from '../../common/currency-limits';
 import { AdminAuditService } from '../admin/admin-audit.service';
 import type { Actor } from '../../common/security/actor';
 import type { CreatePaymentMethodDto, UpdatePaymentMethodDto } from './dto/payment-method.dto';
 import { PaymentGateways } from './payment-gateways.service';
-import { MoneyLimits } from '../../config/money-limits';
+import {
+  assertDepositMethodKeyAllowed,
+  generateMethodKey,
+  isForeignKeyViolation,
+  normaliseMethodKey,
+  requireInternalLabel,
+} from './method-keys';
 
 export type PaymentMethodRow = typeof paymentMethods.$inferSelect;
 
 /**
- * A method as a CLIENT sees it: the stored row plus the bounds it is subject to.
- *
- * The bounds are not columns any more — migration 0042 dropped the per-method
- * ones — so they are attached here from `MoneyLimits`. Keeping them ON the
- * method rather than returning them alongside means the portal reads one shape,
- * and would keep reading one shape if per-method bounds ever came back.
+ * A method as the CONSOLE sees it: what the desk may still do to it, and the
+ * range clients are held to (`minAmount`/`maxAmount`) beside the method's own
+ * optional override (`ownMinAmount`/`ownMaxAmount`) the form edits.
+ */
+export type AdminPaymentMethod = ClientPaymentMethod & { builtIn: boolean; inUse: boolean };
+
+/** A currency's deposit pair — what a method's range is resolved against. */
+type DepositRange = Pick<CurrencyLimits, 'minDeposit' | 'maxDeposit'>;
+
+/** Does any transaction reference this method? Indexed (0161). */
+const methodInUse = sql<boolean>`exists (
+  select 1 from ${transactions} where ${transactions.methodKey} = ${paymentMethods.key}
+)`;
+
+/**
+ * A method as a CLIENT sees it: the stored row plus the range it is held to —
+ * the tighter of its currency's deposit limits and its own optional range
+ * (0162). Resolved here so the portal reads one shape and shows the figure the
+ * validator enforces.
  */
 export type ClientPaymentMethod = PaymentMethodRow & {
   /** Decimal strings (§6.1). The same figures `requestDeposit` enforces. */
@@ -64,13 +94,42 @@ export class PaymentMethodsService {
      * inserting a parameter in the middle silently shifts every one after it.
      */
     private readonly gateways: PaymentGateways,
-    /*
-     * The platform-wide deposit floor and ceiling, so `listAvailable` can hand
-     * the client the bounds they are ACTUALLY subject to. APPENDED LAST — this
-     * class is constructed positionally in the unit suites.
-     */
-    private readonly limits: MoneyLimits,
   ) {}
+
+  /** The admin screen's list, with what the desk may do to each method. */
+  async listAllForAdmin(): Promise<AdminPaymentMethod[]> {
+    const rows = await this.db
+      .select({ row: paymentMethods, inUse: methodInUse })
+      .from(paymentMethods)
+      .orderBy(asc(paymentMethods.sortOrder), asc(paymentMethods.key));
+    const ranges = await this.depositRanges(rows.map(({ row }) => row.currency));
+    return rows.map(({ row, inUse }) => ({
+      ...this.withEffectiveBounds(row, ranges),
+      builtIn: this.isBuiltIn(row.key),
+      inUse,
+    }));
+  }
+
+  /** One method as the console sees it — what create and update answer with. */
+  async findOneForAdmin(key: string): Promise<AdminPaymentMethod | null> {
+    const [found] = await this.db
+      .select({ row: paymentMethods, inUse: methodInUse })
+      .from(paymentMethods)
+      .where(eq(paymentMethods.key, this.normalise(key)))
+      .limit(1);
+    if (!found) return null;
+    const ranges = await this.depositRanges([found.row.currency]);
+    return {
+      ...this.withEffectiveBounds(found.row, ranges),
+      builtIn: this.isBuiltIn(found.row.key),
+      inUse: found.inUse,
+    };
+  }
+
+  /** A gateway: `PaymentGateways` dispatches on its key, so the code depends on the row. */
+  private isBuiltIn(key: string): boolean {
+    return this.gateways.isImplemented(key);
+  }
 
   /** Everything, including disabled and unconfigured. The admin screen's list. */
   listAll(): Promise<PaymentMethodRow[]> {
@@ -145,7 +204,23 @@ export class PaymentMethodsService {
       );
     }
 
-    return available.map((row) => this.withEffectiveBounds(row));
+    const ranges = await this.depositRanges(available.map((row) => row.currency));
+    return available.map((row) => this.withEffectiveBounds(row, ranges));
+  }
+
+  /**
+   * The deposit limits of every currency named — one read per distinct code, and
+   * a platform holds a handful. Keyed by code.
+   */
+  private async depositRanges(codes: readonly string[]): Promise<Map<string, DepositRange>> {
+    const ranges = new Map<string, DepositRange>();
+    for (const code of new Set(codes)) {
+      const limits = await this.currencies.limitsFor(code);
+      // Unreachable while `payment_methods.currency` is a foreign key.
+      if (!limits) throw new NotFoundError(`Unknown currency ${code}.`);
+      ranges.set(code, { minDeposit: limits.minDeposit, maxDeposit: limits.maxDeposit });
+    }
+    return ranges;
   }
 
   /**
@@ -164,20 +239,47 @@ export class PaymentMethodsService {
    * in the validator are the same number by construction, rather than by two
    * places agreeing to stay in step.
    *
-   * The per-method columns were DROPPED in migration 0042, so these are simply
-   * the platform limits — which is exactly what makes the bounds identical
-   * across every method. They are attached to the row rather than returned
-   * separately so a caller reads one shape whether or not per-method bounds ever
-   * come back.
+   * Since 0162 the two limits are the CURRENCY's deposit pair and the method's
+   * own optional range, and the client is held to the tighter of them
+   * (`effectiveDepositRange`) — so an LBP method is bounded in LBP, not by a
+   * USD-sized number every currency used to share.
    */
-  private withEffectiveBounds(row: PaymentMethodRow): ClientPaymentMethod {
+  private withEffectiveBounds(
+    row: PaymentMethodRow,
+    ranges: Map<string, DepositRange>,
+  ): ClientPaymentMethod {
+    const currency = ranges.get(row.currency);
+    if (!currency) throw new NotFoundError(`Unknown currency ${row.currency}.`);
     // Strings out, at the ledger's scale (§6.1) — never a number, and never
     // rounded to something the validator would not agree with.
-    return {
-      ...row,
-      minAmount: this.limits.minDeposit().toFixed(8),
-      maxAmount: this.limits.maxDeposit().toFixed(8),
-    };
+    const { min, max } = effectiveDepositRange(currency, {
+      minAmount: row.ownMinAmount,
+      maxAmount: row.ownMaxAmount,
+    });
+    return { ...row, minAmount: min, maxAmount: max };
+  }
+
+  /**
+   * Refuses a method range that would not narrow its currency's — each sentence
+   * under its field. See `methodRangeProblems` for why it refuses rather than
+   * clamps.
+   */
+  private async assertOwnRange(
+    currency: string,
+    ownMinAmount: string | null,
+    ownMaxAmount: string | null,
+  ): Promise<void> {
+    const ranges = await this.depositRanges([currency]);
+    const problems = methodRangeProblems(currency, ranges.get(currency) as DepositRange, {
+      minAmount: ownMinAmount,
+      maxAmount: ownMaxAmount,
+    });
+    const fields: Record<string, string> = {};
+    if (problems.minAmount) fields.ownMinAmount = problems.minAmount;
+    if (problems.maxAmount) fields.ownMaxAmount = problems.maxAmount;
+    if (Object.keys(fields).length > 0) {
+      throw new FieldValidationError(Object.values(fields)[0], fields);
+    }
   }
 
   /**
@@ -253,7 +355,7 @@ export class PaymentMethodsService {
      * to refuse an out-of-range amount, so handing back the RAW row here would
      * let the write path disagree with the screen the client just used.
      */
-    return this.withEffectiveBounds(row);
+    return this.withEffectiveBounds(row, await this.depositRanges([row.currency]));
   }
 
   /**
@@ -271,36 +373,50 @@ export class PaymentMethodsService {
   assertAmountWithin(row: ClientPaymentMethod, amount: Decimal): void {
     if (amount.lessThan(toDecimal(row.minAmount))) {
       throw new ValidationError(
-        `The minimum ${row.name} deposit is ${toDecimal(row.minAmount).toString()} ${row.currency}.`,
+        `The minimum ${row.name} deposit is ${formatLimit(row.minAmount)} ${row.currency}.`,
       );
     }
     if (amount.greaterThan(toDecimal(row.maxAmount))) {
       throw new ValidationError(
-        `The maximum ${row.name} deposit is ${toDecimal(row.maxAmount).toString()} ${row.currency}.`,
+        `The maximum ${row.name} deposit is ${formatLimit(row.maxAmount)} ${row.currency}.`,
       );
     }
   }
 
   async create(dto: CreatePaymentMethodDto, actor: Actor): Promise<PaymentMethodRow> {
     const adminId = actor.id;
-    const key = this.normalise(dto.key);
-    if (await this.findOne(key)) {
+    /*
+     * The console sends no key: the platform generates a permanent, opaque one.
+     * A caller may still name one — only to create a row the CODE dispatches on
+     * (a gateway) — and it is held to the reserved-provider rule.
+     */
+    const key = dto.key !== undefined ? this.normalise(dto.key) : await this.freshKey();
+    assertDepositMethodKeyAllowed(key);
+    if (dto.key !== undefined && (await this.findOne(key))) {
       throw new ConflictError(`A payment method with the key ${key} already exists.`);
     }
+    const internalLabel = requireInternalLabel(dto.internalLabel ?? dto.name);
+    await this.assertLabelFree(internalLabel);
     // Refuses an unknown or DISABLED currency — a method denominated in one the
     // platform does not hold could never open a wallet to receive into.
     const currency = await this.currencies.assertUsable(dto.currency);
+    const ownMinAmount = dto.ownMinAmount ?? null;
+    const ownMaxAmount = dto.ownMaxAmount ?? null;
+    await this.assertOwnRange(currency, ownMinAmount, ownMaxAmount);
 
     const [row] = await this.db
       .insert(paymentMethods)
       .values({
         key,
         name: dto.name.trim(),
+        internalLabel,
         currency,
         logoUrl: dto.logoUrl ?? null,
         enabled: dto.enabled ?? true,
         sortOrder: dto.sortOrder ?? (await this.nextSortOrder()),
         requiresProof: dto.requiresProof ?? false,
+        ownMinAmount,
+        ownMaxAmount,
         updatedBy: adminId,
       })
       .returning();
@@ -315,32 +431,67 @@ export class PaymentMethodsService {
      */
     this.audit.record(actor.id, 'payment_method.create', 'payment_method', row.key, {
       name: row.name,
+      internalLabel: row.internalLabel,
       currency: row.currency,
       enabled: row.enabled,
+      requiresProof: row.requiresProof,
+      ownMinAmount: row.ownMinAmount,
+      ownMaxAmount: row.ownMaxAmount,
     });
     return row;
   }
 
-  async update(key: string, dto: UpdatePaymentMethodDto, actor: Actor): Promise<PaymentMethodRow> {
+  /**
+   * Everything about a method but its KEY, which is permanent (0161).
+   *
+   * Renaming it for the desk is `internalLabel`: one row, joined at read time by
+   * every admin screen and export, rewriting no transaction.
+   */
+  async update(
+    key: string,
+    dto: UpdatePaymentMethodDto,
+    actor: Actor,
+  ): Promise<AdminPaymentMethod> {
     const adminId = actor.id;
     const current = await this.findOne(key);
     if (!current) throw new NotFoundError(`Unknown payment method ${this.normalise(key)}.`);
 
     const currency = dto.currency ? await this.currencies.assertUsable(dto.currency) : undefined;
+    const internalLabel =
+      dto.internalLabel !== undefined ? requireInternalLabel(dto.internalLabel) : undefined;
+    if (internalLabel !== undefined) await this.assertLabelFree(internalLabel, current.key);
+    /*
+     * The range is judged against the currency the method WILL have, merged —
+     * moving a method to LBP with a USD-sized override left in place is refused
+     * rather than saved as a range no LBP client could meet.
+     */
+    const ownMinAmount = dto.ownMinAmount !== undefined ? dto.ownMinAmount : current.ownMinAmount;
+    const ownMaxAmount = dto.ownMaxAmount !== undefined ? dto.ownMaxAmount : current.ownMaxAmount;
+    if (
+      currency !== undefined ||
+      dto.ownMinAmount !== undefined ||
+      dto.ownMaxAmount !== undefined
+    ) {
+      await this.assertOwnRange(currency ?? current.currency, ownMinAmount, ownMaxAmount);
+    }
     const [row] = await this.db
       .update(paymentMethods)
       .set({
         ...(dto.name !== undefined ? { name: dto.name.trim() } : {}),
+        ...(internalLabel !== undefined ? { internalLabel } : {}),
         ...(currency !== undefined ? { currency } : {}),
         ...(dto.logoUrl !== undefined ? { logoUrl: dto.logoUrl } : {}),
         ...(dto.enabled !== undefined ? { enabled: dto.enabled } : {}),
         ...(dto.sortOrder !== undefined ? { sortOrder: dto.sortOrder } : {}),
         ...(dto.requiresProof !== undefined ? { requiresProof: dto.requiresProof } : {}),
+        ...(dto.ownMinAmount !== undefined ? { ownMinAmount: dto.ownMinAmount } : {}),
+        ...(dto.ownMaxAmount !== undefined ? { ownMaxAmount: dto.ownMaxAmount } : {}),
         updatedBy: adminId,
         updatedAt: new Date(),
       })
-      .where(eq(paymentMethods.key, this.normalise(key)))
+      .where(eq(paymentMethods.key, current.key))
       .returning();
+    if (!row) throw new NotFoundError(`Unknown payment method ${current.key}.`);
 
     /*
      * The changed fields with their OLD values, because the UPDATE destroyed
@@ -349,38 +500,92 @@ export class PaymentMethodsService {
      * `enabled` is the field this now exists for: a method turned off is a
      * deposit route that stopped working, and "when did it stop, and who" is
      * otherwise unanswerable from a row holding only the current state.
+     * `requiresProof` decides how the next deposit is filed, so it is here too.
      */
     const changed: Record<string, { before: unknown; after: unknown }> = {};
-    for (const field of ['name', 'currency', 'enabled', 'sortOrder', 'logoUrl'] as const) {
+    for (const field of [
+      'name',
+      'internalLabel',
+      'currency',
+      'enabled',
+      'sortOrder',
+      'logoUrl',
+      'requiresProof',
+      'ownMinAmount',
+      'ownMaxAmount',
+    ] as const) {
       if (current[field] !== row[field])
         changed[field] = { before: current[field], after: row[field] };
     }
     this.audit.record(actor.id, 'payment_method.update', 'payment_method', row.key, { changed });
-    return row;
+    const updated = await this.findOneForAdmin(row.key);
+    if (!updated) throw new NotFoundError(`Unknown payment method ${row.key}.`);
+    return updated;
   }
 
-  /*
-   * ── `remove()` IS GONE, AND SHOULD NOT COME BACK ──────────────────────────
-   *
-   * `transactions.method_key` is a RESTRICT foreign key, so the database
-   * refuses to delete any method a deposit has ever referenced. The old method
-   * turned that into a readable message — but it meant deleting only ever
-   * worked on methods nobody had used, and threw a conflict on every method
-   * that mattered.
-   *
-   * DISABLING is what deleting was reached for, and it does the job completely:
-   * `listAvailable` filters on `enabled` so the method vanishes from the client
-   * portal immediately, `assertUsable` refuses it on the write path, and every
-   * historical deposit keeps a readable method name instead of pointing at a row
-   * that no longer exists.
-   *
-   * The admin surface is therefore create, update, and toggle `enabled` —
-   * nothing that can destroy a row money history depends on.
+  /**
+   * A method nobody has used can be deleted (a typo, a test row). One with any
+   * transaction cannot: its deposits must keep naming the rail they came
+   * through, and `transactions.method_key` is RESTRICT, so the database refuses
+   * even if the check below were raced. Disabling is the answer for those.
    */
+  async remove(key: string, actor: Actor): Promise<{ key: string; deleted: true }> {
+    const current = await this.findOneForAdmin(key);
+    if (!current) throw new NotFoundError(`Unknown payment method ${this.normalise(key)}.`);
+    if (current.builtIn) {
+      throw new ConflictError(`${current.name} is built into the platform and cannot be deleted.`);
+    }
+    if (current.inUse) throw this.inUseError(current.name);
+    try {
+      await this.db.delete(paymentMethods).where(eq(paymentMethods.key, current.key));
+    } catch (error) {
+      if (isForeignKeyViolation(error)) throw this.inUseError(current.name);
+      throw error;
+    }
+    // The row as it was, because the DELETE is the last place it existed.
+    this.audit.record(actor.id, 'payment_method.delete', 'payment_method', current.key, {
+      name: current.name,
+      internalLabel: current.internalLabel,
+      currency: current.currency,
+      enabled: current.enabled,
+    });
+    return { key: current.key, deleted: true };
+  }
+
+  /**
+   * The internal name is how the desk tells methods apart, so two may not share
+   * one (case-insensitive). The unique index `payment_methods_internal_label_uq`
+   * is the guard a race cannot pass; this is the readable refusal.
+   */
+  private async assertLabelFree(label: string, exceptKey?: string): Promise<void> {
+    const sameLabel = sql`lower(${paymentMethods.internalLabel}) = lower(${label})`;
+    const [taken] = await this.db
+      .select({ key: paymentMethods.key })
+      .from(paymentMethods)
+      .where(exceptKey ? and(sameLabel, ne(paymentMethods.key, exceptKey)) : sameLabel)
+      .limit(1);
+    if (taken) {
+      throw new ConflictError(`Another deposit method is already called “${label}” internally.`);
+    }
+  }
+
+  /** A generated ID no row holds — see `generateMethodKey`. */
+  private async freshKey(): Promise<string> {
+    for (;;) {
+      const key = generateMethodKey('pm');
+      if (!(await this.findOne(key))) return key;
+    }
+  }
+
+  private inUseError(name: string): ConflictError {
+    return new ConflictError(
+      `${name} has been used by transactions and cannot be deleted. Disable it instead.`,
+    );
+  }
 
   /** Keys are lower-case and trimmed, so 'Whish' and 'whish' are one method. */
   private normalise(key: string): string {
-    return key.trim().toLowerCase();
+    return normaliseMethodKey(key);
   }
 
   /**

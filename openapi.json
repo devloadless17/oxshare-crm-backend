@@ -4106,7 +4106,7 @@
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/PaymentMethodDto"
+                    "$ref": "#/components/schemas/AdminPaymentMethodDto"
                   }
                 }
               }
@@ -4143,7 +4143,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PaymentMethodDto"
+                  "$ref": "#/components/schemas/AdminPaymentMethodDto"
                 }
               }
             }
@@ -4202,7 +4202,7 @@
     },
     "/v1/admin/payment-methods/{key}": {
       "patch": {
-        "description": "PATCH, and `key` itself is not editable: it is the primary key and `transactions.method_key` references it, so renaming is a data migration rather than an edit.",
+        "description": "PATCH. `key` is permanent (0161): transactions reference it and code dispatches on it. The desk renames a method with `internalLabel`, which every admin screen and export shows instead of `name`; clients keep seeing `name`.",
         "operationId": "AdminPaymentMethodsController_update",
         "parameters": [
           {
@@ -4230,7 +4230,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PaymentMethodDto"
+                  "$ref": "#/components/schemas/AdminPaymentMethodDto"
                 }
               }
             }
@@ -4242,6 +4242,41 @@
           }
         ],
         "summary": "Update a payment method",
+        "tags": [
+          "admin"
+        ]
+      },
+      "delete": {
+        "description": "Only a method NO transaction references (a typo, a test row) — 409 otherwise: its deposits must keep naming it, so disable it instead. A gateway method is never deleted.",
+        "operationId": "AdminPaymentMethodsController_remove",
+        "parameters": [
+          {
+            "name": "key",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeletedMethodDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Delete a payment method that was never used",
         "tags": [
           "admin"
         ]
@@ -4343,7 +4378,7 @@
     },
     "/v1/admin/withdrawal-methods/{key}": {
       "patch": {
-        "description": "PATCH, and `key` itself is not editable: it is the primary key and withdrawal requests reference it. Disabling hides the method from new requests and leaves existing ones for the desk to settle.",
+        "description": "PATCH. `key` is permanent (0161); the desk renames a rail with `internalLabel`, shown on every admin screen instead of `name`. Disabling hides the method from new requests and leaves existing ones for the desk to settle.",
         "operationId": "AdminWithdrawalMethodsController_update",
         "parameters": [
           {
@@ -4383,6 +4418,41 @@
           }
         ],
         "summary": "Update a withdrawal method",
+        "tags": [
+          "admin"
+        ]
+      },
+      "delete": {
+        "description": "Only a method NO withdrawal references — 409 otherwise; disable it instead. `whish` is never deleted.",
+        "operationId": "AdminWithdrawalMethodsController_remove",
+        "parameters": [
+          {
+            "name": "key",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeletedMethodDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Delete a withdrawal method that was never used",
         "tags": [
           "admin"
         ]
@@ -12938,6 +13008,36 @@
           "sortOrder": {
             "type": "number"
           },
+          "minDeposit": {
+            "type": "string",
+            "example": "10.00000000",
+            "description": "The smallest deposit a client may make. In this currency's own units."
+          },
+          "maxDeposit": {
+            "type": "string",
+            "example": "250000.00000000",
+            "description": "The largest single deposit. In this currency's own units."
+          },
+          "minWithdrawal": {
+            "type": "string",
+            "example": "10.00000000",
+            "description": "The smallest withdrawal a client may request. In this currency's own units."
+          },
+          "maxWithdrawal": {
+            "type": "string",
+            "example": "50000.00000000",
+            "description": "The largest single withdrawal. In this currency's own units."
+          },
+          "maxWithdrawalDaily": {
+            "type": "string",
+            "example": "100000.00000000",
+            "description": "The most one client may withdraw in any rolling 24 hours. In this currency's own units."
+          },
+          "maxAdminCredit": {
+            "type": "string",
+            "example": "50000.00000000",
+            "description": "The most an operator may credit or fund in one action. In this currency's own units."
+          },
           "createdAt": {
             "format": "date-time",
             "type": "string"
@@ -12955,6 +13055,12 @@
           "enabled",
           "isDefault",
           "sortOrder",
+          "minDeposit",
+          "maxDeposit",
+          "minWithdrawal",
+          "maxWithdrawal",
+          "maxWithdrawalDaily",
+          "maxAdminCredit",
           "createdAt",
           "updatedAt"
         ]
@@ -12991,12 +13097,48 @@
           "isDefault": {
             "type": "boolean",
             "default": false
+          },
+          "minDeposit": {
+            "type": "string",
+            "example": "10",
+            "description": "The smallest deposit a client may make. In this currency's own units."
+          },
+          "maxDeposit": {
+            "type": "string",
+            "example": "250000",
+            "description": "The largest single deposit. In this currency's own units."
+          },
+          "minWithdrawal": {
+            "type": "string",
+            "example": "10",
+            "description": "The smallest withdrawal a client may request. In this currency's own units."
+          },
+          "maxWithdrawal": {
+            "type": "string",
+            "example": "50000",
+            "description": "The largest single withdrawal. In this currency's own units."
+          },
+          "maxWithdrawalDaily": {
+            "type": "string",
+            "example": "100000",
+            "description": "The most one client may withdraw in any rolling 24 hours. In this currency's own units."
+          },
+          "maxAdminCredit": {
+            "type": "string",
+            "example": "50000",
+            "description": "The most an operator may credit or fund in one action. In this currency's own units."
           }
         },
         "required": [
           "code",
           "name",
-          "symbol"
+          "symbol",
+          "minDeposit",
+          "maxDeposit",
+          "minWithdrawal",
+          "maxWithdrawal",
+          "maxWithdrawalDaily",
+          "maxAdminCredit"
         ]
       },
       "UpdateCurrencyDto": {
@@ -13023,6 +13165,36 @@
           },
           "isDefault": {
             "type": "boolean"
+          },
+          "minDeposit": {
+            "type": "string",
+            "example": "10",
+            "description": "The smallest deposit a client may make. In this currency's own units."
+          },
+          "maxDeposit": {
+            "type": "string",
+            "example": "250000",
+            "description": "The largest single deposit. In this currency's own units."
+          },
+          "minWithdrawal": {
+            "type": "string",
+            "example": "10",
+            "description": "The smallest withdrawal a client may request. In this currency's own units."
+          },
+          "maxWithdrawal": {
+            "type": "string",
+            "example": "50000",
+            "description": "The largest single withdrawal. In this currency's own units."
+          },
+          "maxWithdrawalDaily": {
+            "type": "string",
+            "example": "100000",
+            "description": "The most one client may withdraw in any rolling 24 hours. In this currency's own units."
+          },
+          "maxAdminCredit": {
+            "type": "string",
+            "example": "50000",
+            "description": "The most an operator may credit or fund in one action. In this currency's own units."
           }
         }
       },
@@ -14582,7 +14754,7 @@
           "minAmount": {
             "type": "string",
             "example": "10.00000000",
-            "description": "The smallest deposit this method accepts, RESOLVED SERVER-SIDE from the platform limits (§12.4). The same figure `POST /payments/deposits` enforces, so a client showing it cannot promise a floor the validator disagrees with. A decimal string, never a number (§6.1)."
+            "description": "The smallest deposit this method accepts, RESOLVED SERVER-SIDE: the tighter of the currency's minimum deposit and the method's own (0162). The same figure `POST /payments/deposits` enforces, so a client showing it cannot promise a floor the validator disagrees with. A decimal string, never a number (§6.1)."
           },
           "maxAmount": {
             "type": "string",
@@ -15028,13 +15200,13 @@
           "createdAt"
         ]
       },
-      "CreatePaymentMethodDto": {
+      "AdminPaymentMethodDto": {
         "type": "object",
         "properties": {
           "key": {
             "type": "string",
             "example": "whish",
-            "maxLength": 40
+            "description": "A stable machine key. Never renamed."
           },
           "name": {
             "type": "string",
@@ -15046,8 +15218,108 @@
           },
           "logoUrl": {
             "type": "string",
+            "nullable": true
+          },
+          "minAmount": {
+            "type": "string",
+            "example": "10.00000000",
+            "description": "The smallest deposit this method accepts, RESOLVED SERVER-SIDE: the tighter of the currency's minimum deposit and the method's own (0162). The same figure `POST /payments/deposits` enforces, so a client showing it cannot promise a floor the validator disagrees with. A decimal string, never a number (§6.1)."
+          },
+          "maxAmount": {
+            "type": "string",
+            "example": "5000.00000000",
+            "description": "The largest deposit this method accepts. Same source and same guarantee as above."
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "sortOrder": {
+            "type": "number"
+          },
+          "requiresProof": {
+            "type": "boolean",
+            "description": "The client must attach a receipt: this method is paid outside the platform and an operator approves it by hand. The portal reads this to decide whether to ask for one, rather than branching on the method key."
+          },
+          "ownMinAmount": {
+            "type": "string",
+            "nullable": true,
+            "description": "The method's own minimum as the operator set it — null means the currency's. `minAmount` is what clients are actually held to."
+          },
+          "ownMaxAmount": {
+            "type": "string",
+            "nullable": true,
+            "description": "The method's own maximum as the operator set it — null means the currency's. `maxAmount` is what clients are actually held to."
+          },
+          "internalLabel": {
+            "type": "string",
+            "example": "OMT – Hamra branch",
+            "description": "What the desk calls the method (admin-only, unique). The console shows it in place of the key."
+          },
+          "builtIn": {
+            "type": "boolean",
+            "description": "The platform’s code depends on this method (a payment gateway), so it cannot be deleted."
+          },
+          "inUse": {
+            "type": "boolean",
+            "description": "A transaction references this method. Such a method cannot be deleted — disable it."
+          }
+        },
+        "required": [
+          "key",
+          "name",
+          "currency",
+          "logoUrl",
+          "minAmount",
+          "maxAmount",
+          "enabled",
+          "sortOrder",
+          "requiresProof",
+          "ownMinAmount",
+          "ownMaxAmount",
+          "internalLabel",
+          "builtIn",
+          "inUse"
+        ]
+      },
+      "CreatePaymentMethodDto": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "example": "whish",
+            "maxLength": 40,
+            "description": "The permanent ID. Omit it — the platform generates one (`pm_…`) and the console never shows it. Given only to create a row the CODE dispatches on (a gateway such as whish)."
+          },
+          "name": {
+            "type": "string",
+            "example": "Whish Money"
+          },
+          "internalLabel": {
+            "type": "string",
+            "maxLength": 80,
+            "example": "OMT – Hamra branch",
+            "description": "What the DESK calls the method — shown, typed and renamed in the console in place of the key, and on every admin screen, export and bell. Unique (case-insensitive). Never sent to a client. Omitted, it starts as `name`."
+          },
+          "currency": {
+            "type": "string",
+            "example": "USD"
+          },
+          "logoUrl": {
+            "type": "string",
             "maxLength": 2048,
             "example": "/v1/uploads/payment-logos/8f2c….png"
+          },
+          "ownMinAmount": {
+            "type": "string",
+            "nullable": true,
+            "example": "100",
+            "description": "Optional minimum for this method, tighter than the currency's minimum deposit. Null or omitted: the currency's."
+          },
+          "ownMaxAmount": {
+            "type": "string",
+            "nullable": true,
+            "example": "5000",
+            "description": "Optional maximum for this method, tighter than the currency's maximum deposit. Null or omitted: the currency's."
           },
           "enabled": {
             "type": "boolean",
@@ -15063,7 +15335,6 @@
           }
         },
         "required": [
-          "key",
           "name",
           "currency"
         ]
@@ -15073,6 +15344,12 @@
         "properties": {
           "name": {
             "type": "string"
+          },
+          "internalLabel": {
+            "type": "string",
+            "maxLength": 80,
+            "example": "OMT – Hamra branch",
+            "description": "Renames the method for the desk: one row, and every admin screen, export and bell follows at once. Unique (case-insensitive), never blank, never sent to a client."
           },
           "currency": {
             "type": "string"
@@ -15091,8 +15368,37 @@
           "requiresProof": {
             "type": "boolean",
             "description": "OFFLINE: the client pays outside the platform and must attach a receipt. Such a deposit is filed through POST /payments/deposits/offline and settles when an operator approves it — the JSON deposit route refuses the method. Cannot be combined with a gateway key."
+          },
+          "ownMinAmount": {
+            "type": "string",
+            "nullable": true,
+            "example": "100",
+            "description": "Optional minimum for this method, tighter than the currency's minimum deposit. Null or omitted: the currency's."
+          },
+          "ownMaxAmount": {
+            "type": "string",
+            "nullable": true,
+            "example": "5000",
+            "description": "Optional maximum for this method, tighter than the currency's maximum deposit. Null or omitted: the currency's."
           }
         }
+      },
+      "DeletedMethodDto": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "example": "typo_method"
+          },
+          "deleted": {
+            "type": "boolean",
+            "example": true
+          }
+        },
+        "required": [
+          "key",
+          "deleted"
+        ]
       },
       "PaymentLogoResponseDto": {
         "type": "object",
@@ -15133,6 +15439,19 @@
             "example": 0,
             "description": "The order clients see the methods in."
           },
+          "internalLabel": {
+            "type": "string",
+            "example": "Whish payouts",
+            "description": "What the desk calls the rail (admin-only, unique). The console shows it in place of the key."
+          },
+          "builtIn": {
+            "type": "boolean",
+            "description": "The platform’s code depends on this rail (`whish`, the Rival payouts)."
+          },
+          "inUse": {
+            "type": "boolean",
+            "description": "A withdrawal references this method. Such a method cannot be deleted."
+          },
           "createdAt": {
             "format": "date-time",
             "type": "string"
@@ -15148,6 +15467,9 @@
           "logoUrl",
           "enabled",
           "sortOrder",
+          "internalLabel",
+          "builtIn",
+          "inUse",
           "createdAt",
           "updatedAt"
         ]
@@ -15157,12 +15479,19 @@
         "properties": {
           "key": {
             "type": "string",
-            "example": "bank_transfer",
-            "maxLength": 40
+            "example": "whish",
+            "maxLength": 40,
+            "description": "The permanent ID. Omit it — the platform generates one (`wm_…`) and the console never shows it. Given only to create a rail the CODE matches on (whish)."
           },
           "name": {
             "type": "string",
             "example": "Bank transfer"
+          },
+          "internalLabel": {
+            "type": "string",
+            "maxLength": 80,
+            "example": "OMT – Hamra branch",
+            "description": "What the DESK calls the method — shown, typed and renamed in the console in place of the key, and on every admin screen, export and bell. Unique (case-insensitive). Never sent to a client. Omitted, it starts as `name`."
           },
           "logoUrl": {
             "type": "string",
@@ -15179,13 +15508,18 @@
           }
         },
         "required": [
-          "key",
           "name"
         ]
       },
       "UpdateWithdrawalMethodDto": {
         "type": "object",
         "properties": {
+          "internalLabel": {
+            "type": "string",
+            "maxLength": 80,
+            "example": "OMT – Hamra branch",
+            "description": "Renames the method for the desk: one row, and every admin screen, export and bell follows at once. Unique (case-insensitive), never blank, never sent to a client."
+          },
           "name": {
             "type": "string"
           },
@@ -19208,13 +19542,19 @@
             "example": "Date of Birth"
           },
           "required": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "Required by the form as it stands; false when not asked."
+          },
+          "asked": {
+            "type": "boolean",
+            "description": "The form asks it now, so the client can answer it — only these can be returned. The others are shown for comparison with the document."
           }
         },
         "required": [
           "key",
           "label",
-          "required"
+          "required",
+          "asked"
         ]
       },
       "KycReviewPageDto": {
@@ -19239,31 +19579,6 @@
           "required"
         ]
       },
-      "KycReviewDocumentDto": {
-        "type": "object",
-        "properties": {
-          "type": {
-            "type": "string",
-            "nullable": true,
-            "example": "national_id"
-          },
-          "label": {
-            "type": "string",
-            "example": "National ID"
-          },
-          "pages": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/KycReviewPageDto"
-            }
-          }
-        },
-        "required": [
-          "type",
-          "label",
-          "pages"
-        ]
-      },
       "KycReviewAddressDto": {
         "type": "object",
         "properties": {
@@ -19284,7 +19599,7 @@
           },
           "asked": {
             "type": "boolean",
-            "description": "Whether the form asks for a proof of address at all."
+            "description": "Whether the form asks for this document now. When it does not, its pages on file are shown but cannot be returned: the client has no step to replace them on."
           }
         },
         "required": [
@@ -19390,7 +19705,7 @@
             }
           },
           "identityDocument": {
-            "$ref": "#/components/schemas/KycReviewDocumentDto"
+            "$ref": "#/components/schemas/KycReviewAddressDto"
           },
           "proofOfAddress": {
             "$ref": "#/components/schemas/KycReviewAddressDto"

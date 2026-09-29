@@ -1,5 +1,6 @@
 import { documentForFieldType } from '../../common/kyc/document-catalogue';
-import { isDocumentField } from '../../common/kyc/identity-core';
+import { identityField, isDocumentField } from '../../common/kyc/identity-core';
+import { isProfileKey } from '../../common/profile/client-profile';
 import type { KycFieldConfig, KycStepConfig } from '../../store/kyc-config.store';
 
 /**
@@ -13,9 +14,13 @@ import type { KycFieldConfig, KycStepConfig } from '../../store/kyc-config.store
  * of who changed it has to say WHAT changed, or it only proves that somebody
  * pressed Save.
  *
- * One sentence per change, naming steps by title and fields by label. The
- * identity fields and the selfie camera never appear: they are the platform's
- * and cannot change. Pure: the two configurations in, the sentences out.
+ * One sentence per change, naming steps by title and fields by label. Since
+ * Phase 2 the broker places the client's identity details and decides whether
+ * each piece of evidence is required, so those changes are described too — an
+ * identity detail by the platform's name, never a label a save could send.
+ * Until 29 Sep 2026 they were skipped, and a save that stopped asking for the
+ * client's nationality left `changes: []` behind it. The selfie camera never
+ * appears. Pure: the two configurations in, the sentences out.
  */
 export function describeKycConfigChanges(
   before: readonly KycStepConfig[],
@@ -56,6 +61,38 @@ function describeStepChanges(before: KycStepConfig, after: KycStepConfig): strin
   }
   if ((before.description ?? '') !== (after.description ?? '')) {
     changes.push(`${name}: description changed`);
+  }
+  if (
+    after.slug !== 'personal' &&
+    (before.evidenceRequired !== false) !== (after.evidenceRequired !== false)
+  ) {
+    changes.push(
+      `${name}: ${after.evidenceRequired === false ? 'now optional — the client may skip it' : 'now required'}`,
+    );
+  }
+
+  const asked = (step: KycStepConfig) =>
+    new Map(
+      step.slug === 'personal'
+        ? step.fields
+            .filter((field) => isProfileKey(field.name))
+            .map((field) => [field.name, field])
+        : [],
+    );
+  const [askedBefore, askedNow] = [asked(before), asked(after)];
+  const detail = (key: string) => `"${identityField(key)?.label ?? key}"`;
+  for (const key of askedBefore.keys()) {
+    if (!askedNow.has(key)) changes.push(`${name}: no longer asks for ${detail(key)}`);
+  }
+  for (const [key, field] of askedNow) {
+    const was = askedBefore.get(key);
+    if (!was) {
+      changes.push(
+        `${name}: now asks for ${detail(key)} (${field.required ? 'required' : 'optional'})`,
+      );
+    } else if (Boolean(was.required) !== Boolean(field.required)) {
+      changes.push(`${name}: ${detail(key)} is now ${field.required ? 'required' : 'optional'}`);
+    }
   }
 
   const accepted = (step: KycStepConfig) =>
@@ -100,7 +137,12 @@ function describeStepChanges(before: KycStepConfig, after: KycStepConfig): strin
 
 /** The broker's own fields — never the platform's identity, camera or documents. */
 function ownFields(step: KycStepConfig): KycFieldConfig[] {
-  return step.fields.filter((field) => !field.system && !isDocumentField(field));
+  return step.fields.filter(
+    (field) =>
+      !field.system &&
+      !isDocumentField(field) &&
+      !(step.slug === 'personal' && isProfileKey(field.name)),
+  );
 }
 
 function describeField(field: KycFieldConfig): string {

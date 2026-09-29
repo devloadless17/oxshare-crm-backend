@@ -5,7 +5,6 @@ import { PaymentMethodsService } from '../src/modules/payments/payment-methods.s
 import { TransactionsService } from '../src/modules/payments/transactions.service';
 import { WalletService } from '../src/modules/wallet/wallet.service';
 import { CurrenciesService } from '../src/modules/currencies/currencies.service';
-import { MoneyLimits } from '../src/config/money-limits';
 import { auditStubAs } from './audit-stub';
 import { AuditLogStore } from '../src/store/audit-log.store';
 import { emailStubAs } from './email-stub';
@@ -46,17 +45,10 @@ beforeAll(async () => {
   ctx = await startMoneyTestDb();
   const currencies = new CurrenciesService(ctx.db, auditStubAs());
   wallets = new WalletService(ctx.db);
-  methods = new PaymentMethodsService(
-    ctx.db,
-    currencies,
-    auditStubAs(),
-    gatewayStubAs(),
-    new MoneyLimits(new ConfigService()),
-  );
+  methods = new PaymentMethodsService(ctx.db, currencies, auditStubAs(), gatewayStubAs());
   transactions = new TransactionsService(
     wallets,
     ctx.db,
-    new MoneyLimits(new ConfigService()),
     methods,
     currencies,
     gatewayStubAs(),

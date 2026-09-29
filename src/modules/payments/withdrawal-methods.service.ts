@@ -1,8 +1,8 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { asc, eq, sql } from 'drizzle-orm';
+import { and, asc, eq, ne, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
-import { withdrawalPaymentMethods } from '../../database/schema';
+import { transactions, withdrawalPaymentMethods } from '../../database/schema';
 import { ConflictError, NotFoundError } from '../../common/errors/domain-errors';
 import { AdminAuditService } from '../admin/admin-audit.service';
 import type { Actor } from '../../common/security/actor';
@@ -11,8 +11,28 @@ import type {
   CreateWithdrawalMethodDto,
   UpdateWithdrawalMethodDto,
 } from './dto/withdrawal-method.dto';
+import {
+  assertWithdrawalMethodKeyAllowed,
+  generateMethodKey,
+  isForeignKeyViolation,
+  normaliseMethodKey,
+  requireInternalLabel,
+} from './method-keys';
 
 type WithdrawalMethodRow = typeof withdrawalPaymentMethods.$inferSelect;
+
+/**
+ * Rails the CODE depends on: the Rival payout flow selects withdrawals by
+ * `provider = 'whish'` (`rival-withdrawals.service.ts`, `rival-poll.scheduler.ts`)
+ * and the portal's payout field is keyed on it. Such a row is never deleted.
+ */
+const BUILT_IN_WITHDRAWAL_KEYS: ReadonlySet<string> = new Set(['whish']);
+
+/** Does any withdrawal reference this method? Indexed (0161). */
+const methodInUse = sql<boolean>`exists (
+  select 1 from ${transactions}
+  where ${transactions.withdrawalMethodKey} = ${withdrawalPaymentMethods.key}
+)`;
 
 /**
  * The payout rails clients may withdraw through — `withdrawal_payment_methods`.
@@ -21,12 +41,12 @@ type WithdrawalMethodRow = typeof withdrawalPaymentMethods.$inferSelect;
  * read it all along (`GET /payments/withdrawal-methods`, enabled rows only). What
  * was missing was a way to change it without a database client: this is that.
  *
- * ## Enable and disable, never delete
+ * ## Delete only what nobody used; disable the rest
  *
  * `transactions.withdrawal_method_key` references a row ON DELETE RESTRICT, so a
- * method that has carried a request cannot be removed — and one that has not is
- * just as well switched off. Same rule as the deposit methods, for the same
- * reason: the desk has to be able to name the rail on every request it settles.
+ * method that has carried a request cannot be removed — the desk has to be able
+ * to name the rail on every request it settles. One that never carried any (a
+ * typo, a test row) can be deleted. Same rule as the deposit methods.
  *
  * ## `payments.*` keys, shared with the deposit methods
  *
@@ -43,10 +63,25 @@ export class WithdrawalMethodsService {
 
   /** Every method, disabled ones included, in the order clients see them. */
   async listAll(): Promise<AdminWithdrawalMethodDto[]> {
-    return this.db
-      .select()
+    const rows = await this.db
+      .select({ row: withdrawalPaymentMethods, inUse: methodInUse })
       .from(withdrawalPaymentMethods)
       .orderBy(asc(withdrawalPaymentMethods.sortOrder), asc(withdrawalPaymentMethods.name));
+    return rows.map(({ row, inUse }) => this.adminView(row, inUse));
+  }
+
+  /** One method as the console sees it. */
+  async findOneForAdmin(key: string): Promise<AdminWithdrawalMethodDto | null> {
+    const [found] = await this.db
+      .select({ row: withdrawalPaymentMethods, inUse: methodInUse })
+      .from(withdrawalPaymentMethods)
+      .where(eq(withdrawalPaymentMethods.key, this.normalise(key)))
+      .limit(1);
+    return found ? this.adminView(found.row, found.inUse) : null;
+  }
+
+  private adminView(row: WithdrawalMethodRow, inUse: boolean): AdminWithdrawalMethodDto {
+    return { ...row, builtIn: BUILT_IN_WITHDRAWAL_KEYS.has(row.key), inUse };
   }
 
   async findOne(key: string): Promise<WithdrawalMethodRow | null> {
@@ -59,16 +94,22 @@ export class WithdrawalMethodsService {
   }
 
   async create(dto: CreateWithdrawalMethodDto, actor: Actor): Promise<AdminWithdrawalMethodDto> {
-    const key = this.normalise(dto.key);
-    if (await this.findOne(key)) {
+    // Generated unless a caller names a rail the code matches on (whish). Its
+    // provider IS its key, so a named one may not enter the `manual_` namespace.
+    const key = dto.key !== undefined ? this.normalise(dto.key) : await this.freshKey();
+    assertWithdrawalMethodKeyAllowed(key);
+    if (dto.key !== undefined && (await this.findOne(key))) {
       throw new ConflictError(`A withdrawal method with the key ${key} already exists.`);
     }
+    const internalLabel = requireInternalLabel(dto.internalLabel ?? dto.name);
+    await this.assertLabelFree(internalLabel);
 
     const [row] = await this.db
       .insert(withdrawalPaymentMethods)
       .values({
         key,
         name: dto.name.trim(),
+        internalLabel,
         logoUrl: dto.logoUrl ?? null,
         enabled: dto.enabled ?? true,
         sortOrder: dto.sortOrder ?? (await this.nextSortOrder()),
@@ -77,9 +118,10 @@ export class WithdrawalMethodsService {
 
     this.audit.record(actor.id, 'withdrawal_method.create', 'withdrawal_method', row.key, {
       name: row.name,
+      internalLabel: row.internalLabel,
       enabled: row.enabled,
     });
-    return row;
+    return this.adminView(row, false);
   }
 
   async update(
@@ -90,10 +132,15 @@ export class WithdrawalMethodsService {
     const current = await this.findOne(key);
     if (!current) throw new NotFoundError(`Unknown withdrawal method ${this.normalise(key)}.`);
 
+    // The key is permanent (0161); the desk renames a rail with `internalLabel`.
+    const internalLabel =
+      dto.internalLabel !== undefined ? requireInternalLabel(dto.internalLabel) : undefined;
+    if (internalLabel !== undefined) await this.assertLabelFree(internalLabel, current.key);
     const [row] = await this.db
       .update(withdrawalPaymentMethods)
       .set({
         ...(dto.name !== undefined ? { name: dto.name.trim() } : {}),
+        ...(internalLabel !== undefined ? { internalLabel } : {}),
         ...(dto.logoUrl !== undefined ? { logoUrl: dto.logoUrl } : {}),
         ...(dto.enabled !== undefined ? { enabled: dto.enabled } : {}),
         ...(dto.sortOrder !== undefined ? { sortOrder: dto.sortOrder } : {}),
@@ -101,6 +148,7 @@ export class WithdrawalMethodsService {
       })
       .where(eq(withdrawalPaymentMethods.key, current.key))
       .returning();
+    if (!row) throw new NotFoundError(`Unknown withdrawal method ${current.key}.`);
 
     /*
      * The diff, not the new row: "who switched Whish payouts off, and when" is
@@ -108,7 +156,7 @@ export class WithdrawalMethodsService {
      * compared by hand.
      */
     const changed: Record<string, { before: unknown; after: unknown }> = {};
-    for (const field of ['name', 'enabled', 'sortOrder', 'logoUrl'] as const) {
+    for (const field of ['name', 'internalLabel', 'enabled', 'sortOrder', 'logoUrl'] as const) {
       if (current[field] !== row[field]) {
         changed[field] = { before: current[field], after: row[field] };
       }
@@ -116,12 +164,66 @@ export class WithdrawalMethodsService {
     this.audit.record(actor.id, 'withdrawal_method.update', 'withdrawal_method', row.key, {
       changed,
     });
-    return row;
+    const updated = await this.findOneForAdmin(row.key);
+    if (!updated) throw new NotFoundError(`Unknown withdrawal method ${row.key}.`);
+    return updated;
+  }
+
+  /**
+   * Deletes a method NO withdrawal references. One that carried any request is
+   * refused (disable it instead); the RESTRICT foreign key refuses it too, so a
+   * race with a new request cannot get past.
+   */
+  async remove(key: string, actor: Actor): Promise<{ key: string; deleted: true }> {
+    const current = await this.findOneForAdmin(key);
+    if (!current) throw new NotFoundError(`Unknown withdrawal method ${this.normalise(key)}.`);
+    if (current.builtIn) {
+      throw new ConflictError(`${current.name} is built into the platform and cannot be deleted.`);
+    }
+    const inUse = new ConflictError(
+      `${current.name} has been used by withdrawals and cannot be deleted. Disable it instead.`,
+    );
+    if (current.inUse) throw inUse;
+    try {
+      await this.db
+        .delete(withdrawalPaymentMethods)
+        .where(eq(withdrawalPaymentMethods.key, current.key));
+    } catch (error) {
+      if (isForeignKeyViolation(error)) throw inUse;
+      throw error;
+    }
+    this.audit.record(actor.id, 'withdrawal_method.delete', 'withdrawal_method', current.key, {
+      name: current.name,
+      internalLabel: current.internalLabel,
+      enabled: current.enabled,
+    });
+    return { key: current.key, deleted: true };
+  }
+
+  /** Two rails may not share an internal name — the unique index is the race-proof guard. */
+  private async assertLabelFree(label: string, exceptKey?: string): Promise<void> {
+    const sameLabel = sql`lower(${withdrawalPaymentMethods.internalLabel}) = lower(${label})`;
+    const [taken] = await this.db
+      .select({ key: withdrawalPaymentMethods.key })
+      .from(withdrawalPaymentMethods)
+      .where(exceptKey ? and(sameLabel, ne(withdrawalPaymentMethods.key, exceptKey)) : sameLabel)
+      .limit(1);
+    if (taken) {
+      throw new ConflictError(`Another withdrawal method is already called “${label}” internally.`);
+    }
+  }
+
+  /** A generated ID no row holds — see `generateMethodKey`. */
+  private async freshKey(): Promise<string> {
+    for (;;) {
+      const key = generateMethodKey('wm');
+      if (!(await this.findOne(key))) return key;
+    }
   }
 
   /** Keys are stored lower-case, so `Whish` and `whish` are one method. */
   private normalise(key: string): string {
-    return key.trim().toLowerCase();
+    return normaliseMethodKey(key);
   }
 
   /**

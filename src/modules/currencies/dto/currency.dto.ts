@@ -2,6 +2,23 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { NoClientFields } from '../../../common/security/client-field.decorator';
 import { IsBoolean, IsInt, IsOptional, IsString, Length, Matches, Max, Min } from 'class-validator';
 
+/*
+ * ── The money limits (0162) ─────────────────────────────────────────────────
+ *
+ * Six amounts, in the currency's OWN units, as decimal strings (§6.1): up to 20
+ * integer digits so LBP's billions fit, up to 8 decimals because that is the
+ * storage scale. The DTO checks SHAPE; `currencyLimitProblems` checks that they
+ * make sense together (a floor above zero, a ceiling at least its floor), on
+ * create and on the MERGED row on update.
+ */
+const LIMIT = /^\d{1,20}(\.\d{1,8})?$/;
+const LIMIT_MESSAGE = 'must be an amount, e.g. 10 or 5000000 (up to 8 decimals)';
+const limitDoc = (description: string, example: string) => ({
+  type: 'string' as const,
+  example,
+  description: `${description} In this currency's own units.`,
+});
+
 /**
  * A currency as both apps read it.
  *
@@ -21,6 +38,20 @@ export class CurrencyDto {
   @ApiProperty({ description: "The currency a new client's first wallet opens in." })
   isDefault: boolean;
   @ApiProperty() sortOrder: number;
+  @ApiProperty(limitDoc('The smallest deposit a client may make.', '10.00000000'))
+  minDeposit: string;
+  @ApiProperty(limitDoc('The largest single deposit.', '250000.00000000'))
+  maxDeposit: string;
+  @ApiProperty(limitDoc('The smallest withdrawal a client may request.', '10.00000000'))
+  minWithdrawal: string;
+  @ApiProperty(limitDoc('The largest single withdrawal.', '50000.00000000'))
+  maxWithdrawal: string;
+  @ApiProperty(
+    limitDoc('The most one client may withdraw in any rolling 24 hours.', '100000.00000000'),
+  )
+  maxWithdrawalDaily: string;
+  @ApiProperty(limitDoc('The most an operator may credit or fund in one action.', '50000.00000000'))
+  maxAdminCredit: string;
   @ApiProperty() createdAt: Date;
   @ApiProperty() updatedAt: Date;
 }
@@ -81,6 +112,34 @@ export class CreateCurrencyDto {
   @IsOptional()
   @IsBoolean()
   isDefault?: boolean;
+
+  /*
+   * REQUIRED on create, all six. A default would be one currency's numbers
+   * handed to another — the exact bug this replaces: USD's 50,000 on LBP.
+   */
+  @ApiProperty(limitDoc('The smallest deposit a client may make.', '10'))
+  @Matches(LIMIT, { message: `minDeposit ${LIMIT_MESSAGE}` })
+  minDeposit: string;
+
+  @ApiProperty(limitDoc('The largest single deposit.', '250000'))
+  @Matches(LIMIT, { message: `maxDeposit ${LIMIT_MESSAGE}` })
+  maxDeposit: string;
+
+  @ApiProperty(limitDoc('The smallest withdrawal a client may request.', '10'))
+  @Matches(LIMIT, { message: `minWithdrawal ${LIMIT_MESSAGE}` })
+  minWithdrawal: string;
+
+  @ApiProperty(limitDoc('The largest single withdrawal.', '50000'))
+  @Matches(LIMIT, { message: `maxWithdrawal ${LIMIT_MESSAGE}` })
+  maxWithdrawal: string;
+
+  @ApiProperty(limitDoc('The most one client may withdraw in any rolling 24 hours.', '100000'))
+  @Matches(LIMIT, { message: `maxWithdrawalDaily ${LIMIT_MESSAGE}` })
+  maxWithdrawalDaily: string;
+
+  @ApiProperty(limitDoc('The most an operator may credit or fund in one action.', '50000'))
+  @Matches(LIMIT, { message: `maxAdminCredit ${LIMIT_MESSAGE}` })
+  maxAdminCredit: string;
 }
 
 /**
@@ -125,4 +184,36 @@ export class UpdateCurrencyDto {
   @IsOptional()
   @IsBoolean()
   isDefault?: boolean;
+
+  @ApiPropertyOptional(limitDoc('The smallest deposit a client may make.', '10'))
+  @IsOptional()
+  @Matches(LIMIT, { message: `minDeposit ${LIMIT_MESSAGE}` })
+  minDeposit?: string;
+
+  @ApiPropertyOptional(limitDoc('The largest single deposit.', '250000'))
+  @IsOptional()
+  @Matches(LIMIT, { message: `maxDeposit ${LIMIT_MESSAGE}` })
+  maxDeposit?: string;
+
+  @ApiPropertyOptional(limitDoc('The smallest withdrawal a client may request.', '10'))
+  @IsOptional()
+  @Matches(LIMIT, { message: `minWithdrawal ${LIMIT_MESSAGE}` })
+  minWithdrawal?: string;
+
+  @ApiPropertyOptional(limitDoc('The largest single withdrawal.', '50000'))
+  @IsOptional()
+  @Matches(LIMIT, { message: `maxWithdrawal ${LIMIT_MESSAGE}` })
+  maxWithdrawal?: string;
+
+  @ApiPropertyOptional(
+    limitDoc('The most one client may withdraw in any rolling 24 hours.', '100000'),
+  )
+  @IsOptional()
+  @Matches(LIMIT, { message: `maxWithdrawalDaily ${LIMIT_MESSAGE}` })
+  maxWithdrawalDaily?: string;
+
+  @ApiPropertyOptional(limitDoc('The most an operator may credit or fund in one action.', '50000'))
+  @IsOptional()
+  @Matches(LIMIT, { message: `maxAdminCredit ${LIMIT_MESSAGE}` })
+  maxAdminCredit?: string;
 }

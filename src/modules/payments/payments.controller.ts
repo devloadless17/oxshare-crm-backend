@@ -53,6 +53,7 @@ import { TransfersService } from './transfers.service';
 import { TransferExecutor } from './transfer-executor.service';
 import { PaymentMethodsService } from './payment-methods.service';
 import { PaymentMethodDto } from './dto/payment-method.dto';
+import { clientPaymentMethodView } from './payment-method-view';
 import {
   DEPOSIT_PROOF_BUCKET,
   StoredFilesService,
@@ -134,8 +135,8 @@ export class PaymentsController {
       'the operator has not finished setting up is absent rather than shown as unusable.',
   })
   @ApiOkResponse({ type: PaymentMethodDto, isArray: true })
-  listMethods() {
-    return this.paymentMethods.listAvailable();
+  async listMethods() {
+    return (await this.paymentMethods.listAvailable()).map(clientPaymentMethodView);
   }
 
   /**

@@ -253,6 +253,13 @@ describe('recorded: the feature modules', () => {
       name: 'Audit Test Currency',
       symbol: '¤',
       decimals: 2,
+      // Required since 0162: each currency carries its own limits.
+      minDeposit: '10',
+      maxDeposit: '250000',
+      minWithdrawal: '10',
+      maxWithdrawal: '50000',
+      maxWithdrawalDaily: '100000',
+      maxAdminCredit: '50000',
     });
     expect([200, 201]).toContain(res.status);
 
