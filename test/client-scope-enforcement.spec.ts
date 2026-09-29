@@ -368,6 +368,11 @@ describe('by-id routes answer 404 for an out-of-scope client, never 403', () => 
       run: (s: Session, id: string) => s.get(`/v1/admin/clients/${id}`),
     },
     {
+      // The identity record: documents and every verification decision.
+      signature: 'GET /admin/clients/:id/identity',
+      run: (s: Session, id: string) => s.get(`/v1/admin/clients/${id}/identity`),
+    },
+    {
       signature: 'GET /admin/clients/:id/closed-positions',
       run: (s: Session, id: string) => s.get(`/v1/admin/clients/${id}/closed-positions`),
     },
