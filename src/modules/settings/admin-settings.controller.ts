@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, Put, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Put, Req, UseGuards } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Request } from 'express';
@@ -16,6 +16,7 @@ import {
   UpdateSmtpSettingsDto,
   UpdateTradingSettingsDto,
 } from './dto/settings.dto';
+import { ScheduledJobListDto, UpdateScheduledJobDto } from './dto/scheduled-jobs.dto';
 import {
   RivalSettingsDto,
   RivalTestResultDto,
@@ -112,6 +113,68 @@ export class AdminSettingsController {
   @Audited('settings.trading.update')
   setTrading(@Body() dto: UpdateTradingSettingsDto, @Req() req: Request & { admin: Admin }) {
     return this.settings.setTrading(dto, req.admin);
+  }
+
+  /* ── Scheduled jobs (0167) ────────────────────────────────────────────────── */
+
+  /*
+   * Every background job's timing, edited here rather than in an environment
+   * file (owner, 29 Sep 2026). Read with `settings.view`, changed with
+   * `settings.edit` — the same keys as the Trading terms, one of which (the
+   * commission interval) is shown on both screens.
+   */
+  @Get('scheduled-jobs')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('settings.view')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Background jobs: how often each runs, and its last run',
+    description:
+      'The CRM jobs are started by ScheduledJobsRunner at these intervals; `bridge.sweep` is read ' +
+      'by the MT5 bridge once a minute. The commission pair share the Trading settings interval.',
+  })
+  @ApiOkResponse({ type: ScheduledJobListDto })
+  @NotClientScoped('Platform job timings; contains no client data.')
+  listJobs() {
+    return this.settings.listJobs();
+  }
+
+  @Put('scheduled-jobs/:key')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('settings.edit')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Change how often a background job runs',
+    description:
+      'Within the job’s bounds (a 400 names them). Applies within 15 seconds (a minute for the ' +
+      'bridge). For the commission jobs this is the Trading settings interval — also the hold.',
+  })
+  @ApiOkResponse({ type: ScheduledJobListDto })
+  @NotClientScoped('Platform job timings; contains no client data.')
+  @Audited('settings.jobs.update')
+  setJobInterval(
+    @Param('key') key: string,
+    @Body() dto: UpdateScheduledJobDto,
+    @Req() req: Request & { admin: Admin },
+  ) {
+    return this.settings.setJobInterval(key, dto.intervalSeconds, req.admin);
+  }
+
+  @Post('scheduled-jobs/:key/run')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('settings.edit')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Run a background job now',
+    description:
+      'Started at the runner’s next tick (within 15 seconds). Not for the commission jobs or a ' +
+      'bridge job (400).',
+  })
+  @ApiOkResponse({ type: ScheduledJobListDto })
+  @NotClientScoped('Platform job timings; contains no client data.')
+  @Audited('settings.jobs.run')
+  runJobNow(@Param('key') key: string, @Req() req: Request & { admin: Admin }) {
+    return this.settings.runJobNow(key, req.admin);
   }
 
   /* ── Email / SMTP ───────────────────────────────────────────────────────── */

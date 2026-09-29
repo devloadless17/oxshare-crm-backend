@@ -422,7 +422,7 @@ export class AdminMoneyService {
      * caller. See `FundTradingAccountDto` on why taking either would let them
      * disagree with the account.
      */
-    const [account] = await this.db
+    const [found] = await this.db
       .select({
         id: tradingAccounts.id,
         userId: tradingAccounts.userId,
@@ -440,7 +440,18 @@ export class AdminMoneyService {
       )
       .limit(1);
 
-    if (!account) throw new NotFoundError('Trading account not found.');
+    if (!found) throw new NotFoundError('Trading account not found.');
+    /*
+     * An account the MT5 sync found with no client (0166) has no wallet for
+     * money to come from or go to. Refused before anything moves; the desk
+     * assigns it to a client first.
+     */
+    if (found.userId === null) {
+      throw new ValidationError(
+        `MT5 account ${found.login ?? ''} is not assigned to a client yet. Assign it first, then fund it.`,
+      );
+    }
+    const account = { ...found, userId: found.userId };
 
     const user = await this.users.findById(account.userId);
     if (!user) throw new NotFoundError('Client not found.');

@@ -5346,6 +5346,19 @@
             }
           },
           {
+            "name": "client",
+            "required": false,
+            "in": "query",
+            "description": "`unassigned`: accounts the MT5 sync found that no client owns yet (shown only to a reader who sees every client); `assigned`: the rest.",
+            "schema": {
+              "enum": [
+                "assigned",
+                "unassigned"
+              ],
+              "type": "string"
+            }
+          },
+          {
             "name": "page",
             "required": false,
             "in": "query",
@@ -5430,6 +5443,156 @@
           }
         ],
         "summary": "Every client trading account, with its owner (balances are strings)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/mt5/accounts/{login}": {
+      "get": {
+        "description": "MT5's snapshot and holder name/email, the products that sell its group, whether the CRM already owns the login (the owner is named only inside your territory), and how many of its deals are waiting to accrue. Read-only.",
+        "operationId": "Mt5AccountsController_lookup",
+        "parameters": [
+          {
+            "name": "login",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Mt5AccountLookupDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Look up an MT5 login to link it to a client",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/trading-accounts/link": {
+      "post": {
+        "description": "Records the login under the client with its product; its waiting deals accrue on the next commission run. Refuses a login the CRM already has (409), one MT5 does not have (404), a currency the platform does not hold, and a product that does not sell the group.",
+        "operationId": "Mt5AccountsController_link",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LinkMt5AccountDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LinkedMt5AccountDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Link an existing MT5 account to a client",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/trading-accounts/sync": {
+      "post": {
+        "description": "Records every MT5 login the CRM has no account for, with no client; they list under GET /admin/trading-accounts?client=unassigned. 409 while another sync runs.",
+        "operationId": "Mt5AccountsController_syncAccounts",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Mt5AccountsSyncRunDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Sync MT5's accounts into the CRM",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/trading-accounts/{id}/product": {
+      "patch": {
+        "description": "The product must sell the account's MT5 group. Applies to trades not yet decided; accruals already written keep the terms that priced them.",
+        "operationId": "Mt5AccountsController_setProduct",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetTradingAccountProductDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TradingAccountProductDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Set a trading account's product",
         "tags": [
           "admin"
         ]
@@ -5876,6 +6039,118 @@
           }
         ],
         "summary": "Update the trading terms",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/settings/scheduled-jobs": {
+      "get": {
+        "description": "The CRM jobs are started by ScheduledJobsRunner at these intervals; `bridge.sweep` is read by the MT5 bridge once a minute. The commission pair share the Trading settings interval.",
+        "operationId": "AdminSettingsController_listJobs",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScheduledJobListDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Background jobs: how often each runs, and its last run",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/settings/scheduled-jobs/{key}": {
+      "put": {
+        "description": "Within the job’s bounds (a 400 names them). Applies within 15 seconds (a minute for the bridge). For the commission jobs this is the Trading settings interval — also the hold.",
+        "operationId": "AdminSettingsController_setJobInterval",
+        "parameters": [
+          {
+            "name": "key",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateScheduledJobDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScheduledJobListDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Change how often a background job runs",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/settings/scheduled-jobs/{key}/run": {
+      "post": {
+        "description": "Started at the runner’s next tick (within 15 seconds). Not for the commission jobs or a bridge job (400).",
+        "operationId": "AdminSettingsController_runJobNow",
+        "parameters": [
+          {
+            "name": "key",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScheduledJobListDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Run a background job now",
         "tags": [
           "admin"
         ]
@@ -11658,6 +11933,19 @@
               ],
               "type": "string"
             }
+          },
+          {
+            "name": "client",
+            "required": false,
+            "in": "query",
+            "description": "`unassigned`: accounts the MT5 sync found that no client owns yet (shown only to a reader who sees every client); `assigned`: the rest.",
+            "schema": {
+              "enum": [
+                "assigned",
+                "unassigned"
+              ],
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -16939,6 +17227,278 @@
           "environment"
         ]
       },
+      "Mt5ProductOptionDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string",
+            "example": "Standard"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ]
+      },
+      "Mt5AccountOwnerDto": {
+        "type": "object",
+        "properties": {
+          "portalId": {
+            "type": "integer",
+            "description": "Absent when the owner is outside your territory."
+          },
+          "name": {
+            "type": "string",
+            "description": "Absent when the owner is outside your territory."
+          },
+          "outsideTerritory": {
+            "type": "boolean",
+            "description": "True when a client you may not see already owns it."
+          }
+        },
+        "required": [
+          "outsideTerritory"
+        ]
+      },
+      "Mt5AccountLookupDto": {
+        "type": "object",
+        "properties": {
+          "login": {
+            "type": "string",
+            "example": "5000123"
+          },
+          "group": {
+            "type": "string",
+            "example": "real\\Standard"
+          },
+          "currency": {
+            "type": "string",
+            "example": "USD"
+          },
+          "leverage": {
+            "type": "integer"
+          },
+          "balance": {
+            "type": "string",
+            "example": "1250.00000000"
+          },
+          "equity": {
+            "type": "string",
+            "example": "1250.00000000"
+          },
+          "credit": {
+            "type": "string",
+            "example": "0.00000000"
+          },
+          "holderName": {
+            "type": "string",
+            "nullable": true,
+            "description": "The holder's name as MT5 records it; null if the bridge could not say or your role hides names."
+          },
+          "holderEmail": {
+            "type": "string",
+            "nullable": true,
+            "description": "Null if the bridge could not say or your role hides emails."
+          },
+          "environment": {
+            "type": "string",
+            "enum": [
+              "live",
+              "demo"
+            ],
+            "nullable": true,
+            "description": "What the catalogue sells the group as; null when no product carries it."
+          },
+          "currencyKnown": {
+            "type": "boolean",
+            "description": "Whether the account's currency is one this platform holds."
+          },
+          "products": {
+            "description": "The products that sell this group.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Mt5ProductOptionDto"
+            }
+          },
+          "owner": {
+            "nullable": true,
+            "description": "The CRM client who already owns this login; null when nobody does.",
+            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Mt5AccountOwnerDto"
+              }
+            ]
+          },
+          "waitingDeals": {
+            "type": "integer",
+            "description": "Deals on this login ingested but not yet paid on — they accrue once it is linked."
+          }
+        },
+        "required": [
+          "login",
+          "group",
+          "currency",
+          "leverage",
+          "balance",
+          "equity",
+          "credit",
+          "environment",
+          "currencyKnown",
+          "products",
+          "waitingDeals"
+        ]
+      },
+      "LinkMt5AccountDto": {
+        "type": "object",
+        "properties": {
+          "userId": {
+            "type": "integer",
+            "description": "The client the account is linked to."
+          },
+          "login": {
+            "type": "string",
+            "example": "5000123",
+            "description": "The MT5 login, as digits."
+          },
+          "productId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The product whose commission terms the account's trades pay. Must sell the account's group; required when several products do, and optional when one does (it is used)."
+          }
+        },
+        "required": [
+          "userId",
+          "login"
+        ]
+      },
+      "LinkedMt5AccountDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "login": {
+            "type": "string"
+          },
+          "group": {
+            "type": "string"
+          },
+          "productId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          },
+          "environment": {
+            "type": "string",
+            "enum": [
+              "live",
+              "demo"
+            ]
+          },
+          "currency": {
+            "type": "string"
+          },
+          "balance": {
+            "type": "string"
+          },
+          "waitingDeals": {
+            "type": "integer",
+            "description": "Deals now waiting to accrue on the next run."
+          }
+        },
+        "required": [
+          "id",
+          "login",
+          "group",
+          "productId",
+          "environment",
+          "currency",
+          "balance",
+          "waitingDeals"
+        ]
+      },
+      "Mt5AccountsSyncRunDto": {
+        "type": "object",
+        "properties": {
+          "onServer": {
+            "type": "number",
+            "description": "Logins MT5 reported, in every group the bridge watches."
+          },
+          "newOnServer": {
+            "type": "number",
+            "description": "Of those, logins the CRM had no account for before this run."
+          },
+          "added": {
+            "type": "number",
+            "description": "Accounts this run recorded, with no client, ready to assign."
+          },
+          "remaining": {
+            "type": "number",
+            "description": "New logins left for the scheduled runs, every ten minutes."
+          },
+          "unknownCurrency": {
+            "description": "Currencies MT5 holds accounts in that this platform does not; those are skipped.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "removed": {
+            "type": "number",
+            "description": "Unowned accounts MT5 confirmed it no longer has, removed."
+          },
+          "stoppedEarly": {
+            "type": "string",
+            "description": "Why the run stopped early, when it did."
+          }
+        },
+        "required": [
+          "onServer",
+          "newOnServer",
+          "added",
+          "remaining",
+          "unknownCurrency",
+          "removed"
+        ]
+      },
+      "SetTradingAccountProductDto": {
+        "type": "object",
+        "properties": {
+          "productId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true,
+            "description": "A product that sells the account's MT5 group, or null to record none."
+          }
+        },
+        "required": [
+          "productId"
+        ]
+      },
+      "TradingAccountProductDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "productId": {
+            "type": "string",
+            "format": "uuid",
+            "nullable": true
+          }
+        },
+        "required": [
+          "id",
+          "productId"
+        ]
+      },
       "Mt5GroupCommissionTierDto": {
         "type": "object",
         "properties": {
@@ -17655,6 +18215,126 @@
           "maxDemoAccounts",
           "maxDemoDeposit",
           "ibCommissionIntervalSeconds"
+        ]
+      },
+      "ScheduledJobDto": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "example": "mt5.syncAccounts"
+          },
+          "group": {
+            "type": "string",
+            "enum": [
+              "mt5",
+              "commission",
+              "money",
+              "system"
+            ]
+          },
+          "runsOn": {
+            "type": "string",
+            "enum": [
+              "crm",
+              "bridge"
+            ],
+            "description": "`bridge`: the MT5 bridge runs it and picks up a change within a minute."
+          },
+          "intervalSeconds": {
+            "type": "number",
+            "example": 600
+          },
+          "defaultSeconds": {
+            "type": "number",
+            "example": 600
+          },
+          "minSeconds": {
+            "type": "number",
+            "example": 60
+          },
+          "maxSeconds": {
+            "type": "number",
+            "example": 86400
+          },
+          "sharedInterval": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "commission"
+            ],
+            "description": "`commission`: one interval for accruing and paying commission, which is also how long a commission is held before it is paid (the Trading settings value)."
+          },
+          "lastStartedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "lastFinishedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "lastDurationMs": {
+            "type": "number",
+            "nullable": true
+          },
+          "lastError": {
+            "type": "string",
+            "nullable": true
+          },
+          "lastErrorAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "externalReadAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "For a bridge job: when the bridge last read its interval."
+          },
+          "running": {
+            "type": "boolean",
+            "description": "Started and not yet finished."
+          }
+        },
+        "required": [
+          "key",
+          "group",
+          "runsOn",
+          "intervalSeconds",
+          "defaultSeconds",
+          "minSeconds",
+          "maxSeconds",
+          "running"
+        ]
+      },
+      "ScheduledJobListDto": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ScheduledJobDto"
+            }
+          }
+        },
+        "required": [
+          "items"
+        ]
+      },
+      "UpdateScheduledJobDto": {
+        "type": "object",
+        "properties": {
+          "intervalSeconds": {
+            "type": "number",
+            "example": 600,
+            "description": "Seconds between runs, within the job’s bounds."
+          }
+        },
+        "required": [
+          "intervalSeconds"
         ]
       },
       "SmtpSettingsDto": {
@@ -22582,6 +23262,19 @@
           "limit"
         ]
       },
+      "Mt5HolderDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "nullable": true
+          },
+          "email": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
       "TradingAccountRowDto": {
         "type": "object",
         "properties": {
@@ -22643,7 +23336,22 @@
             "type": "string"
           },
           "user": {
-            "$ref": "#/components/schemas/HoldingOwnerDto"
+            "nullable": true,
+            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/HoldingOwnerDto"
+              }
+            ]
+          },
+          "mt5Holder": {
+            "nullable": true,
+            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Mt5HolderDto"
+              }
+            ]
           }
         },
         "required": [

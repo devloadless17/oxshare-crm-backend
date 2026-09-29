@@ -1,5 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { Cron, CronExpression } from '@nestjs/schedule';
+import { ScheduledJob } from '../../common/scheduling/scheduled-job.decorator';
 import { sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
@@ -25,7 +25,7 @@ export class MovementTotalsScheduler {
 
   constructor(@Inject(DRIZZLE_DB) private readonly db: Db) {}
 
-  @Cron(CronExpression.EVERY_MINUTE, { name: 'payments.foldMovementTotals' })
+  @ScheduledJob('payments.foldMovementTotals')
   async fold(): Promise<number> {
     try {
       const { rows } = await this.db.execute<{ folded: number }>(

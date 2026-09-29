@@ -477,6 +477,8 @@ describe('by-id routes answer 404 for an out-of-scope client, never 403', () => 
    */
   const PARAM_IS_NOT_A_CLIENT: Record<string, string> = {
     'DELETE /admin/wallets/:id': 'a wallet id — holdings scope is covered by admin-wallets.spec.ts',
+    'PATCH /admin/trading-accounts/:id/product':
+      "a trading-account id — the service joins the account's owner under the scope, see mt5-account-link.spec.ts",
     'GET /admin/trading-accounts/:id/live':
       'a trading-account id — see admin-trading-accounts.spec.ts',
     'POST /admin/trading-accounts/:id/fund':

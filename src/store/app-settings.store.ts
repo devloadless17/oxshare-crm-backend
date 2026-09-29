@@ -1,8 +1,8 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { sql } from 'drizzle-orm';
+import { and, eq, isNull, or, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db } from '../database/db';
-import { rivalSettings, smtpSettings, tradingSettings } from '../database/schema';
+import { rivalSettings, scheduledJobs, smtpSettings, tradingSettings } from '../database/schema';
 
 /**
  * The singleton settings rows — `smtp_settings`, `trading_settings` and
@@ -275,4 +275,98 @@ export class AppSettingsStore {
   async touchRivalLastEvent(): Promise<void> {
     await this.db.update(rivalSettings).set({ lastEventAt: sql`now()` });
   }
+  // ── Scheduled jobs (0167) — see `scheduled_jobs` in schema.ts ────────────
+
+  /** Every job row, for the settings screen and the runner's tick. */
+  async listJobs(): Promise<ScheduledJobRow[]> {
+    return await this.db.select().from(scheduledJobs);
+  }
+
+  /** Create a job's row with its default if it has none (a job added after 0167). */
+  async ensureJob(key: string, intervalSeconds: number): Promise<void> {
+    await this.db.insert(scheduledJobs).values({ key, intervalSeconds }).onConflictDoNothing();
+  }
+
+  /**
+   * CLAIM a due run: true for exactly one caller per period, however many
+   * instances ask. The database decides — `last_started_at` moves only if it is
+   * NULL ("Run now") or at least one interval old.
+   */
+  async claimJob(key: string): Promise<Date | null> {
+    const [row] = await this.db
+      .update(scheduledJobs)
+      .set({ lastStartedAt: sql`now()` })
+      .where(
+        and(
+          eq(scheduledJobs.key, key),
+          or(
+            isNull(scheduledJobs.lastStartedAt),
+            sql`${scheduledJobs.lastStartedAt} <= now() - make_interval(secs => ${scheduledJobs.intervalSeconds})`,
+          ),
+        ),
+      )
+      .returning({ startedAt: scheduledJobs.lastStartedAt });
+    return row?.startedAt ?? null;
+  }
+
+  /** What a run did. An error is kept until the next success clears it. */
+  async finishJob(key: string, startedAt: Date, error?: string): Promise<void> {
+    const finishedAt = new Date();
+    await this.db
+      .update(scheduledJobs)
+      .set({
+        lastFinishedAt: finishedAt,
+        lastDurationMs: Math.max(0, finishedAt.getTime() - startedAt.getTime()),
+        ...(error
+          ? { lastError: error.slice(0, 2000), lastErrorAt: finishedAt }
+          : { lastError: null, lastErrorAt: null }),
+      })
+      .where(eq(scheduledJobs.key, key));
+  }
+
+  /**
+   * A run the job's OWN loop started (the commission pair): both stamps at once.
+   * Never throws — a status line must not break the job it describes.
+   */
+  async recordJobRun(key: string, startedAt: Date, error?: string): Promise<void> {
+    try {
+      await this.db
+        .update(scheduledJobs)
+        .set({ lastStartedAt: startedAt })
+        .where(eq(scheduledJobs.key, key));
+      await this.finishJob(key, startedAt, error);
+    } catch {
+      /* the status is a courtesy; the run itself already happened */
+    }
+  }
+
+  async setJobInterval(key: string, intervalSeconds: number, updatedBy: string): Promise<void> {
+    await this.db
+      .insert(scheduledJobs)
+      .values({ key, intervalSeconds, updatedBy, updatedAt: new Date() })
+      .onConflictDoUpdate({
+        target: scheduledJobs.key,
+        set: { intervalSeconds, updatedBy, updatedAt: new Date() },
+      });
+  }
+
+  /** "Run now": the next runner tick, on whichever instance, starts it. */
+  async requestJobRun(key: string): Promise<void> {
+    await this.db
+      .update(scheduledJobs)
+      .set({ lastStartedAt: null })
+      .where(eq(scheduledJobs.key, key));
+  }
+
+  /** A job another process runs (the bridge) read its interval — returns that interval. */
+  async readExternalJob(key: string, fallbackSeconds: number): Promise<number> {
+    const [row] = await this.db
+      .update(scheduledJobs)
+      .set({ externalReadAt: sql`now()` })
+      .where(eq(scheduledJobs.key, key))
+      .returning({ intervalSeconds: scheduledJobs.intervalSeconds });
+    return row?.intervalSeconds ?? fallbackSeconds;
+  }
 }
+
+export type ScheduledJobRow = typeof scheduledJobs.$inferSelect;

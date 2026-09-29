@@ -2718,9 +2718,27 @@ export const tradingAccounts = pgTable(
   'trading_accounts',
   {
     id: uuid('id').defaultRandom().primaryKey(),
-    userId: integer('user_id')
-      .notNull()
-      .references(() => users.id, { onDelete: 'restrict' }),
+    /**
+     * The client who owns the account — NULL for an account the MT5 sync found
+     * on the broker's server that no client owns yet (0166, owner 29 Sep 2026:
+     * every MT5 account in the CRM, the unowned ones shown as "no client" until
+     * an operator assigns them).
+     *
+     * ⚠️ NULL is a real state every reader must treat as "no client": an inner
+     * join to `users` drops the row (right for anything about a client), a
+     * commission read must require it (`deal-commission.service.ts` — an
+     * unowned account's trades stay orphaned until it is assigned), and the
+     * territory predicate must never let a restricted admin see it.
+     */
+    userId: integer('user_id').references(() => users.id, { onDelete: 'restrict' }),
+    /**
+     * MT5's HOLDER name and email for an account the sync found unowned — what
+     * the operator matches against a client before assigning it. Read by the
+     * sync, a person's data: masked like a client's name and email on read.
+     * NULL on accounts the CRM opened (the client's own profile is the truth).
+     */
+    mt5HolderName: varchar('mt5_holder_name', { length: 256 }),
+    mt5HolderEmail: varchar('mt5_holder_email', { length: 320 }),
     /**
      * The MT5 login, once there is an MT5 to issue one.
      *
@@ -2892,6 +2910,10 @@ export const tradingAccounts = pgTable(
   },
   (t) => [
     index('trading_accounts_user_idx').on(t.userId),
+    /* The "No client" queue (0166): accounts the MT5 sync found unowned, newest first. */
+    index('trading_accounts_unassigned_idx')
+      .on(t.createdAt.desc(), t.id.desc())
+      .where(sql`${t.userId} IS NULL`),
     /* "Every account on this product" — what an operator asks before retiring
        one, and what the FK's SET NULL sweeps on a delete. */
     index('trading_accounts_product_idx').on(t.productId),
@@ -4964,4 +4986,38 @@ export const jobLeases = pgTable('job_leases', {
    * tick is not blocked by a job that already ended.
    */
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+});
+
+/**
+ * ── scheduled_jobs — WHEN each background job runs, edited in Settings (0167) ──
+ *
+ * The owner (29 Sep 2026): every job's timing is set from the console, not from
+ * an environment file. One row per job (`common/scheduling/scheduled-jobs.catalog.ts`
+ * lists them): its interval, and what its last run did.
+ *
+ * `ScheduledJobsRunner` starts a job when `last_started_at + interval` has
+ * passed, CLAIMING the run with a conditional UPDATE of `last_started_at`, so
+ * on several instances exactly one starts each period. The job's own lease
+ * (`job_leases`) still stops a slow run overlapping the next.
+ *
+ * The two commission jobs keep their interval in `trading_settings`
+ * (`ib_commission_interval_seconds`, which is also the commission hold window)
+ * and their own loop; their rows here record runs only. `bridge.sweep` runs on
+ * the MT5 bridge, which reads its interval from the CRM once a minute
+ * (`external_read_at` says when it last did).
+ */
+export const scheduledJobs = pgTable('scheduled_jobs', {
+  key: varchar('key', { length: 64 }).primaryKey(),
+  intervalSeconds: integer('interval_seconds').notNull(),
+  /** Claimed by the instance that started the run; NULL asks for a run at the next tick ("Run now"). */
+  lastStartedAt: timestamp('last_started_at', { withTimezone: true }),
+  lastFinishedAt: timestamp('last_finished_at', { withTimezone: true }),
+  lastDurationMs: integer('last_duration_ms'),
+  /** The last run's failure, cleared by the next success. */
+  lastError: text('last_error'),
+  lastErrorAt: timestamp('last_error_at', { withTimezone: true }),
+  /** For a job another process runs (the bridge): when it last read its interval. */
+  externalReadAt: timestamp('external_read_at', { withTimezone: true }),
+  updatedBy: uuid('updated_by'),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });

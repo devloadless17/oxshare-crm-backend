@@ -496,8 +496,12 @@ export class DealCommissionService {
                *
                * It is still COUNTED — `stuckCounts` reports the backlog, and
                * that number is what reaches an operator.
+               *
+               * The CLIENT, not the row (0166): the MT5 sync records accounts
+               * no client owns yet, and their trades are orphans exactly as
+               * before — until the account is assigned, when they accrue.
                */
-              isNotNull(tradingAccounts.id),
+              isNotNull(tradingAccounts.userId),
             ),
           ),
         ),
@@ -847,7 +851,7 @@ export class DealCommissionService {
   private async stuckCounts(): Promise<{ orphaned: number; deferred: number }> {
     const [row] = await this.db
       .select({
-        orphaned: sql<number>`count(*) FILTER (WHERE ${tradingAccounts.id} IS NULL)::int`,
+        orphaned: sql<number>`count(*) FILTER (WHERE ${tradingAccounts.userId} IS NULL)::int`,
         deferred: sql<number>`count(*) FILTER (WHERE ${mt5Deals.commissionAttempts} > 0)::int`,
       })
       .from(mt5Deals)

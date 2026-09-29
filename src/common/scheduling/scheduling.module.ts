@@ -1,4 +1,6 @@
 import { Global, Module } from '@nestjs/common';
+import { DiscoveryModule } from '@nestjs/core';
+import { ScheduledJobsRunner } from './scheduled-jobs.runner';
 import { JobLeaseService } from './job-lease.service';
 
 /**
@@ -12,7 +14,9 @@ import { JobLeaseService } from './job-lease.service';
  */
 @Global()
 @Module({
-  providers: [JobLeaseService],
+  // DiscoveryModule: the runner finds every @ScheduledJob method (settings-driven timing, 0167).
+  imports: [DiscoveryModule],
+  providers: [JobLeaseService, ScheduledJobsRunner],
   exports: [JobLeaseService],
 })
 export class SchedulingModule {}

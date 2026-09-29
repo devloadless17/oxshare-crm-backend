@@ -13,6 +13,13 @@ import type {
   UpdateTradingSettingsDto,
 } from './dto/settings.dto';
 import { tradingTermsFrom } from '../../common/trading-terms';
+import {
+  SCHEDULED_JOBS,
+  scheduledJob,
+  type ScheduledJobDefinition,
+} from '../../common/scheduling/scheduled-jobs.catalog';
+import { NotFoundError, ValidationError } from '../../common/errors/domain-errors';
+import type { ScheduledJobDto, ScheduledJobListDto } from './dto/scheduled-jobs.dto';
 
 /**
  * Reads and writes the two singleton settings rows.
@@ -322,6 +329,104 @@ export class SettingsService {
     this.audit.record(actor.id, 'settings.trading.update', 'app_settings', 'trading', { changed });
 
     return after;
+  }
+
+  // ── Scheduled jobs (0167) — Settings → Scheduled jobs ──────────────────────
+
+  /**
+   * Every background job, its interval and its last run. The commission pair
+   * shows the ONE Trading-settings interval they share (it is also the hold
+   * window), so the two screens can never disagree.
+   */
+  async listJobs(): Promise<ScheduledJobListDto> {
+    const [rows, trading] = await Promise.all([this.store.listJobs(), this.store.getTrading()]);
+    const commission = tradingTermsFrom(trading).ibCommissionIntervalSeconds;
+    const byKey = new Map(rows.map((row) => [row.key, row]));
+    const iso = (at: Date | null | undefined) => (at ? at.toISOString() : null);
+    const items: ScheduledJobDto[] = (SCHEDULED_JOBS as readonly ScheduledJobDefinition[]).map(
+      (job) => {
+        const row = byKey.get(job.key);
+        return {
+          key: job.key,
+          group: job.group,
+          runsOn: job.runsOn,
+          intervalSeconds: job.sharedInterval
+            ? commission
+            : (row?.intervalSeconds ?? job.defaultSeconds),
+          defaultSeconds: job.defaultSeconds,
+          minSeconds: job.min,
+          maxSeconds: job.max,
+          sharedInterval: job.sharedInterval ?? null,
+          lastStartedAt: iso(row?.lastStartedAt),
+          lastFinishedAt: iso(row?.lastFinishedAt),
+          lastDurationMs: row?.lastDurationMs ?? null,
+          lastError: row?.lastError ?? null,
+          lastErrorAt: iso(row?.lastErrorAt),
+          externalReadAt: iso(row?.externalReadAt),
+          running: Boolean(
+            row?.lastStartedAt && (!row.lastFinishedAt || row.lastFinishedAt < row.lastStartedAt),
+          ),
+        };
+      },
+    );
+    return { items };
+  }
+
+  /**
+   * Change how often a job runs — within its bounds, which are the safe range
+   * (`scheduled-jobs.catalog.ts`). The runner applies it within 15 seconds; the
+   * bridge within a minute. The commission pair's interval is the Trading
+   * setting, changed through `setTrading` so it is audited exactly as there.
+   */
+  async setJobInterval(key: string, seconds: number, actor: Actor): Promise<ScheduledJobListDto> {
+    const job = scheduledJob(key);
+    if (!job) throw new NotFoundError(`There is no scheduled job "${key}".`);
+    if (!Number.isInteger(seconds) || seconds < job.min || seconds > job.max) {
+      throw new ValidationError(
+        `This job can run every ${job.min} to ${job.max} seconds; ${seconds} is outside that.`,
+      );
+    }
+
+    if (job.sharedInterval === 'commission') {
+      const current = await this.getTrading();
+      await this.setTrading(
+        {
+          maxLiveAccounts: current.maxLiveAccounts,
+          maxDemoAccounts: current.maxDemoAccounts,
+          maxDemoDeposit: current.maxDemoDeposit,
+          ibCommissionIntervalSeconds: seconds,
+        },
+        actor,
+      );
+      return await this.listJobs();
+    }
+
+    const before = (await this.store.listJobs()).find((row) => row.key === key);
+    await this.store.setJobInterval(key, seconds, actor.id);
+    this.audit.record(actor.id, 'settings.jobs.update', 'app_settings', key, {
+      intervalSeconds: { before: before?.intervalSeconds ?? job.defaultSeconds, after: seconds },
+    });
+    return await this.listJobs();
+  }
+
+  /**
+   * "Run now": the runner starts it at its next tick (within 15 seconds), on
+   * whichever instance claims it. Not for the commission pair (their own loop,
+   * paced by the hold window) nor a bridge job (the bridge runs it).
+   */
+  async runJobNow(key: string, actor: Actor): Promise<ScheduledJobListDto> {
+    const job = scheduledJob(key);
+    if (!job) throw new NotFoundError(`There is no scheduled job "${key}".`);
+    if (job.runsOn !== 'crm' || job.sharedInterval) {
+      throw new ValidationError(
+        job.runsOn === 'bridge'
+          ? 'This job runs on the MT5 bridge; it cannot be started from here.'
+          : 'Commission runs on its own interval, which is also its hold window; it cannot be started early.',
+      );
+    }
+    await this.store.requestJobRun(key);
+    this.audit.record(actor.id, 'settings.jobs.run', 'app_settings', key, {});
+    return await this.listJobs();
   }
 }
 

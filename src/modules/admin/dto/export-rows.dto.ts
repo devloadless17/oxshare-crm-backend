@@ -62,6 +62,15 @@ export class TradingAccountExportRowDto extends ExportedPerson {
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty()
   id!: string;
+
+  /** MT5's holder of an account found with no client (0166) — a person, masked as one. */
+  @ClientField('client.lastName')
+  @ApiProperty({ required: false })
+  mt5HolderName?: string | null;
+
+  @ClientField('client.email')
+  @ApiProperty({ required: false })
+  mt5HolderEmail?: string | null;
 }
 
 /** A withdrawal row in `GET /admin/withdrawals/export`. */

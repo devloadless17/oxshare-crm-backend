@@ -1,5 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { Cron, CronExpression } from '@nestjs/schedule';
+import { ScheduledJob } from '../../../common/scheduling/scheduled-job.decorator';
 import { and, eq, isNotNull, lt } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../../database/database.module';
 import type { Db } from '../../../database/db';
@@ -58,7 +58,7 @@ export class RivalPollScheduler {
     private readonly leases: JobLeaseService,
   ) {}
 
-  @Cron(CronExpression.EVERY_5_MINUTES, { name: 'rival.reconcile' })
+  @ScheduledJob('rival.reconcile')
   async sweep(): Promise<void> {
     if (!(await this.config.isEnabled())) return;
 

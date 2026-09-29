@@ -97,17 +97,16 @@ export class Mt5LiveService {
       .where(eq(tradingAccounts.login, reading.login))
       .limit(1);
 
-    if (!account) {
-      this.logger.debug(`Live reading for MT5 ${reading.login} names no account here; ignored`);
+    /*
+     * An account with NO client (0166, found by the MT5 sync) is treated as
+     * unknown here. The room name IS the owner, so an ownerless reading would be
+     * emitted into `client:null` — a room somebody could join.
+     */
+    if (!account || account.userId === null) {
+      this.logger.debug(`Live reading for MT5 ${reading.login} names no client's account; ignored`);
       return { delivered: false, reason: 'unknown-login' };
     }
 
-    /*
-     * `userId` is NOT NULL on the table, so there is no ownerless branch to
-     * handle here — every trading account is opened for a client. Worth stating
-     * because the room name IS the owner, and a nullable owner would mean
-     * emitting into `client:null`, which is a room somebody could join.
-     */
     const event: Mt5LiveEvent = {
       userId: account.userId,
       accountId: account.id,

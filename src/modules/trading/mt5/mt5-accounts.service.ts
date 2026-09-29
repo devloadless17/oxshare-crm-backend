@@ -1,10 +1,10 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import Decimal from 'decimal.js';
-import { and, eq, ne, sql } from 'drizzle-orm';
+import { and, eq, isNotNull, isNull, ne, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../../database/database.module';
 import type { Db } from '../../../database/db';
-import { tradingAccounts, users } from '../../../database/schema';
+import { currencies, mt5Deals, tradingAccounts, users } from '../../../database/schema';
 import { Mt5BridgeClient } from './mt5-bridge.client';
 import { AdminAuditService } from '../../admin/admin-audit.service';
 import { EmailService } from '../../email/email.service';
@@ -14,6 +14,7 @@ import { clientScopePredicate } from '../../../common/security/client-scope';
 import type { AuthenticatedAdmin } from '../../admin/guards/admin.guard';
 import {
   AccountNameTakenError,
+  ConflictError,
   NotFoundError,
   ValidationError,
 } from '../../../common/errors/domain-errors';
@@ -1172,6 +1173,345 @@ export class Mt5AccountsService {
    * which reads as "MT5 is down" — a different problem with a different owner.
    * An unconfigured bridge is a deployment that was never finished.
    */
+  /* ── Linking an EXISTING MT5 account (owner, 29 Sep 2026) ─────────────────
+   *
+   * The broker's server holds accounts the CRM never recorded — opened in the
+   * manager terminal, or on the platform this one replaced. Their snapshots are
+   * dropped (`ingestSnapshot` matches by login only) and their deals wait in
+   * `mt5_deals` as orphans. Linking records the login under a client with the
+   * product whose terms its trades pay: from the next commission run the
+   * waiting deals accrue like any other client's — the batch LEFT JOINs
+   * `trading_accounts` on login, so no backfill is needed. Deals already
+   * decided (marked processed) are not revisited, and deals older than
+   * `IB_ACCRUAL_START` stay unpaid by that rule, exactly as for anyone else.
+   */
+
+  /**
+   * One MT5 login, for the link screen: MT5's snapshot and holder, whether the
+   * CRM already owns it (the owner named only inside the reader's territory),
+   * the products that sell its group, and how many of its deals are waiting.
+   */
+  async lookupMt5Account(login: string, actor: AuthenticatedAdmin) {
+    assertActorCan(actor, 'trading.create', 'look up an MT5 account to link');
+    this.assertBridge();
+    const normalised = normaliseLogin(login);
+
+    const [owned] = await this.db
+      .select({ userId: tradingAccounts.userId })
+      .from(tradingAccounts)
+      .where(eq(tradingAccounts.login, normalised))
+      .limit(1);
+
+    const snapshot = await this.bridge.getAccount(normalised);
+    if (!snapshot) throw new NotFoundError(`MT5 has no account with login ${normalised}.`);
+    const holder = await this.bridge.getAccountHolder(normalised).catch((error: unknown) => {
+      // The holder is a courtesy for the operator's check, never a reason to fail.
+      this.logger.warn(
+        `Could not read the MT5 holder of ${normalised}: ` +
+          (error instanceof Error ? error.message : String(error)),
+      );
+      return null;
+    });
+
+    /*
+     * The field mask applies to the holder too: MT5's name and email for a login
+     * describe a person as surely as the CRM's do, and a role that may not read
+     * one should not read the other.
+     */
+    const hidesNames =
+      actor.fieldMask.includes('client.firstName') || actor.fieldMask.includes('client.lastName');
+    const hidesEmails = actor.fieldMask.includes('client.email');
+
+    let owner: { portalId?: number; name?: string; outsideTerritory: boolean } | null = null;
+    // A row with no client is the MT5 sync's record of it (0166) — free to assign.
+    if (owned && owned.userId !== null) {
+      const [visible] = await this.db
+        .select({ id: users.id, firstName: users.firstName, lastName: users.lastName })
+        .from(users)
+        .where(and(eq(users.id, owned.userId), clientScopePredicate(actor.clientScope, users.id)))
+        .limit(1);
+      owner = visible
+        ? {
+            portalId: visible.id,
+            ...(hidesNames
+              ? {}
+              : { name: `${visible.firstName ?? ''} ${visible.lastName ?? ''}`.trim() }),
+            outsideTerritory: false,
+          }
+        : { outsideTerritory: true };
+    }
+
+    const sellerIds = await this.products.productIdsForGroup(snapshot.group);
+    const products = (await this.products.listProducts())
+      .filter((product) => sellerIds.includes(product.id))
+      .map((product) => ({ id: product.id, name: product.name }));
+
+    const [currency] = await this.db
+      .select({ code: currencies.code })
+      .from(currencies)
+      .where(eq(currencies.code, snapshot.currency))
+      .limit(1);
+
+    return {
+      login: normalised,
+      group: snapshot.group,
+      currency: snapshot.currency,
+      leverage: snapshot.leverage,
+      balance: snapshot.balance,
+      equity: snapshot.equity,
+      credit: snapshot.credit,
+      holderName: hidesNames ? null : holder?.name || null,
+      holderEmail: hidesEmails ? null : holder?.email || null,
+      environment: await this.products.environmentForGroup(snapshot.group),
+      currencyKnown: Boolean(currency),
+      products,
+      owner,
+      waitingDeals: await this.waitingDeals(normalised),
+    };
+  }
+
+  /**
+   * Record an MT5 login MT5 already has under a client, with its product.
+   *
+   * Refused, each with a sentence: a client outside the reader's territory (404,
+   * like one that does not exist); a login the CRM already has (409 — moving an
+   * account between clients re-attributes its commission and is not this
+   * action); a login MT5 does not have (404); a currency the platform does not
+   * hold; and a product that does not sell the group, or no product chosen when
+   * several do — the same rule opening an account follows.
+   */
+  async linkMt5Account(
+    input: { userId: number; login: string; productId?: string },
+    actor: AuthenticatedAdmin,
+  ) {
+    assertActorCan(actor, 'trading.create', 'link an MT5 account');
+    const login = normaliseLogin(input.login);
+
+    const [client] = await this.db
+      .select({ id: users.id })
+      .from(users)
+      .where(and(eq(users.id, input.userId), clientScopePredicate(actor.clientScope, users.id)))
+      .limit(1);
+    if (!client) throw new NotFoundError('Client not found.');
+    this.assertBridge();
+
+    const [owned] = await this.db
+      .select({ id: tradingAccounts.id, userId: tradingAccounts.userId })
+      .from(tradingAccounts)
+      .where(eq(tradingAccounts.login, login))
+      .limit(1);
+    if (owned && owned.userId !== null) {
+      throw new ConflictError(
+        `MT5 account ${login} is already linked to a client. Moving an account between clients ` +
+          're-attributes its commission and is not done from here.',
+      );
+    }
+
+    // Stamped BEFORE the read: the mirror's rule is the moment MT5 was asked.
+    const readAt = new Date();
+    const snapshot = await this.bridge.getAccount(login);
+    if (!snapshot) throw new NotFoundError(`MT5 has no account with login ${login}.`);
+
+    const [currency] = await this.db
+      .select({ code: currencies.code })
+      .from(currencies)
+      .where(eq(currencies.code, snapshot.currency))
+      .limit(1);
+    if (!currency) {
+      throw new ValidationError(
+        `MT5 account ${login} is in ${snapshot.currency}, which this platform does not hold. ` +
+          'Add the currency first, then link the account.',
+      );
+    }
+
+    const productId = await this.productForGroup(snapshot.group, input.productId);
+    const environment = (await this.products.environmentForGroup(snapshot.group)) ?? 'live';
+
+    /*
+     * The MT5 sync may already hold the login as an account with NO client
+     * (0166). Assigning it is an UPDATE of that row — guarded on `user_id IS
+     * NULL`, so two operators assigning it at once cannot both win. Otherwise the
+     * login is new to the CRM and is inserted, as before.
+     */
+    if (owned) {
+      const [assigned] = await this.db
+        .update(tradingAccounts)
+        .set({
+          userId: client.id,
+          mt5Group: snapshot.group,
+          productId,
+          environment,
+          currency: snapshot.currency,
+          leverage: snapshot.leverage,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(tradingAccounts.id, owned.id), isNull(tradingAccounts.userId)))
+        .returning({ id: tradingAccounts.id });
+      if (!assigned) {
+        throw new ConflictError(`MT5 account ${login} was just assigned by someone else.`);
+      }
+      /*
+       * The balance only when this read is newer than the mirror's — the rule
+       * every writer of it follows (the sweep may have read it after us).
+       */
+      await this.db
+        .update(tradingAccounts)
+        .set({ balance: snapshot.balance, credit: snapshot.credit, balanceSyncedAt: readAt })
+        .where(
+          and(
+            eq(tradingAccounts.id, owned.id),
+            sql`(${tradingAccounts.balanceSyncedAt} IS NULL OR ${tradingAccounts.balanceSyncedAt} < ${readAt})`,
+          ),
+        );
+      return await this.linked(actor, {
+        id: assigned.id,
+        login,
+        snapshot,
+        productId,
+        environment,
+        clientId: client.id,
+        assigned: true,
+      });
+    }
+
+    let row: typeof tradingAccounts.$inferSelect;
+    try {
+      [row] = await this.db
+        .insert(tradingAccounts)
+        .values({
+          userId: client.id,
+          login,
+          mt5Group: snapshot.group,
+          productId,
+          /*
+           * From the catalogue when a product carries the group; LIVE when none
+           * does — the conservative reading for an account holding real money
+           * on the broker's server, and the one that lets its trades be decided
+           * rather than silently skipped.
+           */
+          environment,
+          currency: snapshot.currency,
+          leverage: snapshot.leverage,
+          // MT5's own figures, stamped with when they were read — never zero:
+          // an existing account holds real money, and the mirror says so at once.
+          balance: snapshot.balance,
+          credit: snapshot.credit,
+          balanceSyncedAt: readAt,
+          status: 'active',
+        })
+        .returning();
+    } catch (error) {
+      if (isUniqueViolation(error)) {
+        throw new ConflictError(`MT5 account ${login} was just linked by someone else.`);
+      }
+      throw error;
+    }
+
+    return await this.linked(actor, {
+      id: row.id,
+      login,
+      snapshot,
+      productId,
+      environment,
+      clientId: client.id,
+      assigned: false,
+    });
+  }
+
+  /** The audit row and the answer, for both kinds of link. */
+  private async linked(
+    actor: AuthenticatedAdmin,
+    link: {
+      id: string;
+      login: string;
+      snapshot: { group: string; currency: string; balance: string };
+      productId: string | null;
+      environment: 'live' | 'demo';
+      clientId: number;
+      /** True when the MT5 sync already held it with no client (0166). */
+      assigned: boolean;
+    },
+  ) {
+    const waitingDeals = await this.waitingDeals(link.login);
+    this.audit.record(actor.id, 'trading.account_link', 'trading_account', link.id, {
+      login: link.login,
+      group: link.snapshot.group,
+      environment: link.environment,
+      productId: link.productId,
+      clientId: link.clientId,
+      waitingDeals,
+      fromUnassigned: link.assigned,
+    });
+
+    return {
+      id: link.id,
+      login: link.login,
+      group: link.snapshot.group,
+      productId: link.productId,
+      environment: link.environment,
+      currency: link.snapshot.currency,
+      balance: link.snapshot.balance,
+      waitingDeals,
+    };
+  }
+
+  /**
+   * Set, change or clear the product an account's trades pay under — the
+   * control a log line here has long told operators to use ("set one on the
+   * account"). The product must sell the account's group. It applies to trades
+   * NOT YET decided; accruals already written keep the terms that priced them.
+   */
+  async setAccountProduct(accountId: string, productId: string | null, actor: AuthenticatedAdmin) {
+    assertActorCan(actor, 'trading.create', "set a trading account's product");
+    const [account] = await this.db
+      .select({
+        id: tradingAccounts.id,
+        login: tradingAccounts.login,
+        group: tradingAccounts.mt5Group,
+        productId: tradingAccounts.productId,
+        userId: tradingAccounts.userId,
+      })
+      .from(tradingAccounts)
+      .where(and(eq(tradingAccounts.id, accountId), accountInScope(actor)))
+      .limit(1);
+    if (!account) throw new NotFoundError('Trading account not found.');
+
+    if (productId !== null) {
+      if (!account.group) {
+        throw new ValidationError(
+          'This account has no MT5 group recorded, so no product can be checked against it.',
+        );
+      }
+      if (!(await this.products.productSellsGroup(productId, account.group))) {
+        throw new ValidationError(
+          `That product does not sell the MT5 group "${account.group}". Choose one that carries ` +
+            'this group, or attach the group to it first.',
+        );
+      }
+    }
+
+    await this.db
+      .update(tradingAccounts)
+      .set({ productId, updatedAt: new Date() })
+      .where(eq(tradingAccounts.id, account.id));
+
+    this.audit.record(actor.id, 'trading.account_product', 'trading_account', account.id, {
+      login: account.login,
+      clientId: account.userId,
+      productId: { before: account.productId, after: productId },
+    });
+    return { id: account.id, productId };
+  }
+
+  /** Deals on a login ingested but not yet decided — what a link sets moving. */
+  private async waitingDeals(login: string): Promise<number> {
+    const [{ value }] = await this.db
+      .select({ value: sql<number>`count(*)::int` })
+      .from(mt5Deals)
+      .where(and(eq(mt5Deals.login, login), isNull(mt5Deals.commissionProcessedAt)));
+    return value;
+  }
+
   private assertBridge(): void {
     if (!this.bridge.isConfigured) {
       throw new ValidationError(
@@ -1180,4 +1520,32 @@ export class Mt5AccountsService {
       );
     }
   }
+}
+
+/**
+ * The accounts a reader may act on: their territory's clients' — and, for a
+ * reader who sees every client, the ones with no client yet (0166). The NULL
+ * test is explicit because the predicate's intake branch is true for a NULL.
+ */
+function accountInScope(actor: AuthenticatedAdmin) {
+  const scoped = clientScopePredicate(actor.clientScope, tradingAccounts.userId);
+  return scoped ? and(isNotNull(tradingAccounts.userId), scoped) : undefined;
+}
+
+/** An MT5 login as digits, or a 400 naming the problem. */
+function normaliseLogin(login: string): string {
+  const trimmed = login.trim();
+  if (!/^\d{1,20}$/.test(trimmed)) {
+    throw new ValidationError('An MT5 login is a number, e.g. 5000123.');
+  }
+  // Leading zeros are not part of an MT5 login; stored as MT5 reports it.
+  return String(BigInt(trimmed));
+}
+
+/** Postgres unique_violation — a concurrent link of the same login. */
+function isUniqueViolation(error: unknown): boolean {
+  const code =
+    (error as { code?: string; cause?: { code?: string } })?.code ??
+    (error as { cause?: { code?: string } })?.cause?.code;
+  return code === '23505';
 }

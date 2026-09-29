@@ -16,6 +16,8 @@ import { DealCommissionService } from './mt5/deal-commission.service';
 import { DealCommissionScheduler } from './mt5/deal-commission.scheduler';
 import { Mt5GroupSyncService } from './mt5/mt5-group-sync.service';
 import { Mt5GroupSyncScheduler } from './mt5/mt5-group-sync.scheduler';
+import { Mt5AccountDirectoryService } from './mt5/mt5-account-directory.service';
+import { Mt5AccountDirectoryScheduler } from './mt5/mt5-account-directory.scheduler';
 import { AdminMt5GroupsController } from './mt5/admin-mt5-groups.controller';
 import { PositionsService } from './positions.service';
 import { Mt5BridgeClient } from './mt5/mt5-bridge.client';
@@ -104,6 +106,9 @@ import { Mt5LivePublisher } from './mt5/live-snapshot';
     DealCommissionScheduler,
     Mt5GroupSyncService,
     Mt5GroupSyncScheduler,
+    /* Every MT5 account in the CRM, the unowned ones with no client (0166). */
+    Mt5AccountDirectoryService,
+    Mt5AccountDirectoryScheduler,
     PositionsService,
     Mt5BridgeClient,
     Mt5AccountsService,
