@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { sql } from 'drizzle-orm';
-import { AuditLogStore } from '../src/store/audit-log.store';
+import { AuditLogStore, type AuditSubjectType } from '../src/store/audit-log.store';
 import { scopeOf, UNRESTRICTED } from '../src/common/security/client-scope';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
 
@@ -54,7 +54,7 @@ async function entry(
   actorId: string,
   actorEmail: string,
   action: string,
-  subjectType: string,
+  subjectType: AuditSubjectType,
   subjectId: string,
   details?: Record<string, unknown>,
 ) {
@@ -246,8 +246,8 @@ describe('a client is found — and named — by Portal ID', () => {
       actorEmail: 'audit-inscope@oxshare-e2e.test',
       actorKind: 'client',
       action: 'client.self_update',
-      subjectType: 'session',
-      subjectId: crypto.randomUUID(),
+      subjectType: 'user',
+      subjectId: inScopeClientId,
       ipAddress: '127.0.0.1',
     });
   });

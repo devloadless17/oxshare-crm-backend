@@ -712,11 +712,10 @@ describe('a PORTAL ID search is a point lookup on every screen', () => {
 
   it('the audit log finds a client’s rows through the index on its expression', async () => {
     /*
-     * 0134's `audit_log_client_id_idx` is only worth anything if the query's
-     * expression is the index's expression, tree for tree — 0125 is the record
-     * of an index that existed and could never be chosen. This plans the
-     * shipped predicate, so a change to `auditRowClientId()` that is not made
-     * to the migration too turns this red.
+     * `audit_log_client_id_idx` (0156, on `client_id`; 0134's was on a
+     * read-time expression) is only worth anything if the shipped predicate
+     * can choose it — 0125 is the record of an index that existed and could
+     * never be chosen. This plans the shipped predicate.
      */
     const text = await planWithoutSeqScan(sql`
       SELECT id FROM audit_log WHERE ${auditClientSearch(portalClient.portalId)}

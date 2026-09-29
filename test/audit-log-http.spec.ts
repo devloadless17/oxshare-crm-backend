@@ -339,7 +339,7 @@ describe('client-subject rows follow the reader’s scope — D-54, resolved', (
        *  - `ib_account` keeps it in the subject (a partner IS a user);
        *  - `transaction` / `wallet` keep it in `details.userId`;
        *  - `trading_account` keeps it in `details.clientId` (subject is the
-       *    MT5 account uuid). `auditRowClientId()` reads all three.
+       *    MT5 account uuid). `audit_log_client_of` (0156) reads all three.
        */
       {
         actorId: scopedAdmin.id,
@@ -367,7 +367,7 @@ describe('client-subject rows follow the reader’s scope — D-54, resolved', (
       /*
        * ── THE THREE SHAPES THAT LEAKED, EACH SEEDED BY NAME ───────────────
        *
-       * This fixture listed only the subject types `auditRowClientId` already
+       * This fixture listed only the subject types the read-time CASE (before 0156) already
        * knew about, so the test and the expression were written from one list
        * and agreed with each other while both were wrong. Measured on the
        * development database: 7 `ib.reject` rows and 1 `transfer.abandon` row

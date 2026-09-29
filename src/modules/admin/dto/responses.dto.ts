@@ -1555,9 +1555,9 @@ export class AuditEntryDto {
   @ApiProperty()
   subjectId: string;
   /*
-   * The CLIENT the row concerns, by the number staff know them by — wherever
-   * the row keeps the client (the subject, or `details` for money and trading
-   * rows; see `auditRowClientId`). The screen shows this instead of a uuid.
+   * The CLIENT the row concerns, by the number staff know them by — the
+   * client the database stamped on the row (`audit_log.client_id`, 0156). The
+   * screen shows this instead of a uuid.
    */
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty({

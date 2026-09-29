@@ -4,7 +4,12 @@ import { maskedFieldsFor } from '../../common/security/field-mask';
 import { AdminsStore } from '../../store/admins.store';
 import type { AuthenticatedAdmin } from './guards/admin.guard';
 import { AuthorizationError } from '../../common/errors/domain-errors';
-import { AUDIT_SORT_COLUMNS, AuditLogStore, DEFAULT_AUDIT_SORT } from '../../store/audit-log.store';
+import {
+  AUDIT_SORT_COLUMNS,
+  AuditLogStore,
+  DEFAULT_AUDIT_SORT,
+  type AuditSubjectType,
+} from '../../store/audit-log.store';
 import { sortKey, sortOrder } from '../../common/sorting';
 import type { Executor } from '../../database/db';
 import { decodeCursor } from '../../common/pagination';
@@ -50,7 +55,7 @@ export class AdminAuditService {
     executor: Executor,
     actorId: string,
     action: string,
-    subjectType: string,
+    subjectType: AuditSubjectType,
     subjectId: string,
     details?: Record<string, unknown>,
   ): Promise<void> {
@@ -76,7 +81,7 @@ export class AdminAuditService {
   record(
     actorId: string,
     action: string,
-    subjectType: string,
+    subjectType: AuditSubjectType,
     subjectId: string,
     details?: Record<string, unknown>,
   ) {

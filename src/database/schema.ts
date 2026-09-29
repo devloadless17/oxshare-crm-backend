@@ -3444,6 +3444,16 @@ export const auditLog = pgTable(
      */
     ipAddress: varchar('ip_address', { length: 45 }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    /**
+     * The CLIENT this row concerns, or NULL for a row about no client (0156).
+     *
+     * Stamped by the `audit_log_stamp_client` trigger on every insert, from
+     * `audit_log_client_of` — the one definition, which also resolves what a
+     * row names only by reference (a file, an accrual, a request line). The
+     * reader's client scope filters on it (D-54). Never sent: a client is shown
+     * by Portal ID. No foreign key — history outlives the client it names.
+     */
+    clientId: uuid('client_id'),
   },
   (t) => [
     index('audit_log_created_at_idx').on(t.createdAt),
@@ -3461,9 +3471,9 @@ export const auditLog = pgTable(
      * leading wildcard, which no b-tree can serve, so it carries a pg_trgm GIN
      * index declared in the migration (Drizzle has no expression-index form).
      *
-     * A third lives only in its migration for the same reason: 0134's
-     * `audit_log_client_id_idx`, on `auditRowClientId()` — the client a row is
-     * about, wherever the row keeps it — which the Portal ID search reads.
+     * The client a row is about is `client_id` (0156), partially indexed as
+     * `audit_log_client_id_idx` in its migration — the scope filter and the
+     * Portal ID search read it.
      */
     index('audit_log_subject_id_created_at_idx').on(t.subjectId, t.createdAt.desc()),
   ],

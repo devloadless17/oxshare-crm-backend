@@ -26,7 +26,7 @@ import { AdminsStore, type Admin } from '../../store/admins.store';
 import { RolesStore } from '../../store/roles.store';
 import { ClientIdentityService } from '../client-identity/client-identity.service';
 import { UsersStore } from '../../store/users.store';
-import { AuditLogStore } from '../../store/audit-log.store';
+import { AuditLogStore, type AuditSubjectType } from '../../store/audit-log.store';
 import { DepositProofsStore } from '../../store/deposit-proofs.store';
 import { AdminClientScopesStore } from '../../store/admin-client-scopes.store';
 import { AdminIpAllowlistStore } from '../../store/admin-ip-allowlist.store';
@@ -76,7 +76,7 @@ interface ReadPolicy {
   /** Does this client own this file? */
   clientOwns(userId: string, fileName: string): Promise<boolean>;
   /** The R-6.6 audit row this read writes. */
-  audit: { action: string; subjectType: string };
+  audit: { action: string; subjectType: AuditSubjectType };
   adminForbidden: string;
   clientForbidden: string;
 }
@@ -488,7 +488,7 @@ export class UploadsController {
   private async recordRead(
     reader: Reader,
     fileName: string,
-    audit: { action: string; subjectType: string },
+    audit: { action: string; subjectType: AuditSubjectType },
   ): Promise<void> {
     try {
       await this.auditLog.record({

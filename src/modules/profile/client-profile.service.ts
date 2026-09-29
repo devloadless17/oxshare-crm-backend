@@ -21,7 +21,7 @@ import {
   type ProfileKey,
 } from '../../common/profile/client-profile';
 import { identityField, VERIFICATION_REQUIRED } from '../../common/kyc/identity-core';
-import { AuditLogStore } from '../../store/audit-log.store';
+import { AuditLogStore, type AuditSubjectType } from '../../store/audit-log.store';
 import {
   IDENTITY_REVIEW,
   type IdentityReviewPort,
@@ -43,7 +43,7 @@ export interface ProfileActor {
  */
 export interface ProfileAuditOptions {
   action?: string;
-  subjectType?: string;
+  subjectType?: AuditSubjectType;
   subjectId?: string;
   /** Where the change came from — `kyc`, `admin_edit`, `kyc_correction`. */
   via?: string;
