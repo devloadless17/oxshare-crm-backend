@@ -13008,6 +13008,36 @@
           "sortOrder": {
             "type": "number"
           },
+          "minDeposit": {
+            "type": "string",
+            "example": "10.00000000",
+            "description": "The smallest deposit a client may make. In this currency's own units."
+          },
+          "maxDeposit": {
+            "type": "string",
+            "example": "250000.00000000",
+            "description": "The largest single deposit. In this currency's own units."
+          },
+          "minWithdrawal": {
+            "type": "string",
+            "example": "10.00000000",
+            "description": "The smallest withdrawal a client may request. In this currency's own units."
+          },
+          "maxWithdrawal": {
+            "type": "string",
+            "example": "50000.00000000",
+            "description": "The largest single withdrawal. In this currency's own units."
+          },
+          "maxWithdrawalDaily": {
+            "type": "string",
+            "example": "100000.00000000",
+            "description": "The most one client may withdraw in any rolling 24 hours. In this currency's own units."
+          },
+          "maxAdminCredit": {
+            "type": "string",
+            "example": "50000.00000000",
+            "description": "The most an operator may credit or fund in one action. In this currency's own units."
+          },
           "createdAt": {
             "format": "date-time",
             "type": "string"
@@ -13025,6 +13055,12 @@
           "enabled",
           "isDefault",
           "sortOrder",
+          "minDeposit",
+          "maxDeposit",
+          "minWithdrawal",
+          "maxWithdrawal",
+          "maxWithdrawalDaily",
+          "maxAdminCredit",
           "createdAt",
           "updatedAt"
         ]
@@ -13061,12 +13097,48 @@
           "isDefault": {
             "type": "boolean",
             "default": false
+          },
+          "minDeposit": {
+            "type": "string",
+            "example": "10",
+            "description": "The smallest deposit a client may make. In this currency's own units."
+          },
+          "maxDeposit": {
+            "type": "string",
+            "example": "250000",
+            "description": "The largest single deposit. In this currency's own units."
+          },
+          "minWithdrawal": {
+            "type": "string",
+            "example": "10",
+            "description": "The smallest withdrawal a client may request. In this currency's own units."
+          },
+          "maxWithdrawal": {
+            "type": "string",
+            "example": "50000",
+            "description": "The largest single withdrawal. In this currency's own units."
+          },
+          "maxWithdrawalDaily": {
+            "type": "string",
+            "example": "100000",
+            "description": "The most one client may withdraw in any rolling 24 hours. In this currency's own units."
+          },
+          "maxAdminCredit": {
+            "type": "string",
+            "example": "50000",
+            "description": "The most an operator may credit or fund in one action. In this currency's own units."
           }
         },
         "required": [
           "code",
           "name",
-          "symbol"
+          "symbol",
+          "minDeposit",
+          "maxDeposit",
+          "minWithdrawal",
+          "maxWithdrawal",
+          "maxWithdrawalDaily",
+          "maxAdminCredit"
         ]
       },
       "UpdateCurrencyDto": {
@@ -13093,6 +13165,36 @@
           },
           "isDefault": {
             "type": "boolean"
+          },
+          "minDeposit": {
+            "type": "string",
+            "example": "10",
+            "description": "The smallest deposit a client may make. In this currency's own units."
+          },
+          "maxDeposit": {
+            "type": "string",
+            "example": "250000",
+            "description": "The largest single deposit. In this currency's own units."
+          },
+          "minWithdrawal": {
+            "type": "string",
+            "example": "10",
+            "description": "The smallest withdrawal a client may request. In this currency's own units."
+          },
+          "maxWithdrawal": {
+            "type": "string",
+            "example": "50000",
+            "description": "The largest single withdrawal. In this currency's own units."
+          },
+          "maxWithdrawalDaily": {
+            "type": "string",
+            "example": "100000",
+            "description": "The most one client may withdraw in any rolling 24 hours. In this currency's own units."
+          },
+          "maxAdminCredit": {
+            "type": "string",
+            "example": "50000",
+            "description": "The most an operator may credit or fund in one action. In this currency's own units."
           }
         }
       },
@@ -14652,7 +14754,7 @@
           "minAmount": {
             "type": "string",
             "example": "10.00000000",
-            "description": "The smallest deposit this method accepts, RESOLVED SERVER-SIDE from the platform limits (§12.4). The same figure `POST /payments/deposits` enforces, so a client showing it cannot promise a floor the validator disagrees with. A decimal string, never a number (§6.1)."
+            "description": "The smallest deposit this method accepts, RESOLVED SERVER-SIDE: the tighter of the currency's minimum deposit and the method's own (0162). The same figure `POST /payments/deposits` enforces, so a client showing it cannot promise a floor the validator disagrees with. A decimal string, never a number (§6.1)."
           },
           "maxAmount": {
             "type": "string",
@@ -15121,7 +15223,7 @@
           "minAmount": {
             "type": "string",
             "example": "10.00000000",
-            "description": "The smallest deposit this method accepts, RESOLVED SERVER-SIDE from the platform limits (§12.4). The same figure `POST /payments/deposits` enforces, so a client showing it cannot promise a floor the validator disagrees with. A decimal string, never a number (§6.1)."
+            "description": "The smallest deposit this method accepts, RESOLVED SERVER-SIDE: the tighter of the currency's minimum deposit and the method's own (0162). The same figure `POST /payments/deposits` enforces, so a client showing it cannot promise a floor the validator disagrees with. A decimal string, never a number (§6.1)."
           },
           "maxAmount": {
             "type": "string",
@@ -15137,6 +15239,16 @@
           "requiresProof": {
             "type": "boolean",
             "description": "The client must attach a receipt: this method is paid outside the platform and an operator approves it by hand. The portal reads this to decide whether to ask for one, rather than branching on the method key."
+          },
+          "ownMinAmount": {
+            "type": "string",
+            "nullable": true,
+            "description": "The method's own minimum as the operator set it — null means the currency's. `minAmount` is what clients are actually held to."
+          },
+          "ownMaxAmount": {
+            "type": "string",
+            "nullable": true,
+            "description": "The method's own maximum as the operator set it — null means the currency's. `maxAmount` is what clients are actually held to."
           },
           "internalLabel": {
             "type": "string",
@@ -15162,6 +15274,8 @@
           "enabled",
           "sortOrder",
           "requiresProof",
+          "ownMinAmount",
+          "ownMaxAmount",
           "internalLabel",
           "builtIn",
           "inUse"
@@ -15194,6 +15308,18 @@
             "type": "string",
             "maxLength": 2048,
             "example": "/v1/uploads/payment-logos/8f2c….png"
+          },
+          "ownMinAmount": {
+            "type": "string",
+            "nullable": true,
+            "example": "100",
+            "description": "Optional minimum for this method, tighter than the currency's minimum deposit. Null or omitted: the currency's."
+          },
+          "ownMaxAmount": {
+            "type": "string",
+            "nullable": true,
+            "example": "5000",
+            "description": "Optional maximum for this method, tighter than the currency's maximum deposit. Null or omitted: the currency's."
           },
           "enabled": {
             "type": "boolean",
@@ -15242,6 +15368,18 @@
           "requiresProof": {
             "type": "boolean",
             "description": "OFFLINE: the client pays outside the platform and must attach a receipt. Such a deposit is filed through POST /payments/deposits/offline and settles when an operator approves it — the JSON deposit route refuses the method. Cannot be combined with a gateway key."
+          },
+          "ownMinAmount": {
+            "type": "string",
+            "nullable": true,
+            "example": "100",
+            "description": "Optional minimum for this method, tighter than the currency's minimum deposit. Null or omitted: the currency's."
+          },
+          "ownMaxAmount": {
+            "type": "string",
+            "nullable": true,
+            "example": "5000",
+            "description": "Optional maximum for this method, tighter than the currency's maximum deposit. Null or omitted: the currency's."
           }
         }
       },

@@ -1696,6 +1696,38 @@ export const currencies = pgTable(
     isDefault: boolean('is_default').notNull().default(false),
     /** Presentation order, so the operator controls it rather than the alphabet. */
     sortOrder: integer('sort_order').notNull().default(0),
+    /*
+     * ── The money limits, in THIS currency's units (0162) ─────────────────────
+     *
+     * They were one set of numbers in server config for every currency, so a
+     * client could not withdraw more than 50,000 LBP — about fifty cents. A limit
+     * is an amount OF a currency; without an FX source (and there is none) it
+     * can only be stated per currency. `currencies_money_limits_ck` holds the
+     * shape: every floor positive, every ceiling at least its floor, the day at
+     * least one withdrawal. A deposit method may narrow the deposit pair
+     * (`payment_methods.min_amount` / `max_amount`), never widen it.
+     */
+    /** The smallest deposit a client may declare. */
+    minDeposit: numeric('min_deposit', { precision: 28, scale: 8 }).notNull().default('10'),
+    /** The largest single deposit — catches a mistyped zero while the client is still looking. */
+    maxDeposit: numeric('max_deposit', { precision: 28, scale: 8 }).notNull().default('250000'),
+    /** Below this a withdrawal costs more in provider fees than it moves. */
+    minWithdrawal: numeric('min_withdrawal', { precision: 28, scale: 8 }).notNull().default('10'),
+    /** The largest single withdrawal. */
+    maxWithdrawal: numeric('max_withdrawal', { precision: 28, scale: 8 })
+      .notNull()
+      .default('50000'),
+    /** Per client, rolling 24 hours, counting every withdrawal not rejected. */
+    maxWithdrawalDaily: numeric('max_withdrawal_daily', { precision: 28, scale: 8 })
+      .notNull()
+      .default('100000'),
+    /**
+     * The most an operator may credit or fund in one action — the only paths
+     * that create balance from nothing, so a mistyped zero is caught here.
+     */
+    maxAdminCredit: numeric('max_admin_credit', { precision: 28, scale: 8 })
+      .notNull()
+      .default('50000'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -2366,9 +2398,11 @@ export const paymentMethods = pgTable(
      * fake $0.00 balances, with a worse outcome: the money leaves and does not
      * arrive."
      *
-     * The bounds are no loss. `PaymentMethodsService.withEffectiveBounds`
-     * reports the platform-wide floor and ceiling on every method, which is what
-     * makes the limits identical across them, and `requestDeposit` enforces it.
+     * `min_amount` and `max_amount` came BACK in 0162, with a narrower job: an
+     * optional range that tightens the CURRENCY's deposit limits for a channel
+     * with its own cap. NULL means "the currency's limit". They can only narrow —
+     * `PaymentMethodsService.withEffectiveBounds` takes the tighter of the two,
+     * and the admin write refuses an override outside the currency's range.
      */
     /*
      * OFFLINE: the client pays outside the system and uploads a receipt.
@@ -2386,6 +2420,14 @@ export const paymentMethods = pgTable(
      * which is the correct answer to a contradictory configuration.
      */
     requiresProof: boolean('requires_proof').notNull().default(false),
+    /*
+     * The method's OWN range (0162), optional, tighter than the currency's
+     * deposit limits. Named `own…` in code because `minAmount`/`maxAmount` on a
+     * method response are the RESOLVED range a client is held to — the tighter
+     * of this and the currency's — and one name must not mean both.
+     */
+    ownMinAmount: numeric('min_amount', { precision: 28, scale: 8 }),
+    ownMaxAmount: numeric('max_amount', { precision: 28, scale: 8 }),
     enabled: boolean('enabled').notNull().default(true),
     sortOrder: integer('sort_order').notNull().default(0),
     updatedBy: uuid('updated_by'),

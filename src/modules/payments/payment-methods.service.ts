@@ -6,12 +6,22 @@ import type { Db } from '../../database/db';
 import { paymentMethods, transactions } from '../../database/schema';
 import { CurrenciesService } from '../currencies/currencies.service';
 import { toDecimal } from '../wallet/money';
-import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/domain-errors';
+import {
+  ConflictError,
+  FieldValidationError,
+  NotFoundError,
+  ValidationError,
+} from '../../common/errors/domain-errors';
+import {
+  effectiveDepositRange,
+  formatLimit,
+  methodRangeProblems,
+  type CurrencyLimits,
+} from '../../common/currency-limits';
 import { AdminAuditService } from '../admin/admin-audit.service';
 import type { Actor } from '../../common/security/actor';
 import type { CreatePaymentMethodDto, UpdatePaymentMethodDto } from './dto/payment-method.dto';
 import { PaymentGateways } from './payment-gateways.service';
-import { MoneyLimits } from '../../config/money-limits';
 import {
   assertDepositMethodKeyAllowed,
   generateMethodKey,
@@ -22,8 +32,15 @@ import {
 
 export type PaymentMethodRow = typeof paymentMethods.$inferSelect;
 
-/** A method as the CONSOLE sees it: what the desk may still do to it. */
-export type AdminPaymentMethod = PaymentMethodRow & { builtIn: boolean; inUse: boolean };
+/**
+ * A method as the CONSOLE sees it: what the desk may still do to it, and the
+ * range clients are held to (`minAmount`/`maxAmount`) beside the method's own
+ * optional override (`ownMinAmount`/`ownMaxAmount`) the form edits.
+ */
+export type AdminPaymentMethod = ClientPaymentMethod & { builtIn: boolean; inUse: boolean };
+
+/** A currency's deposit pair — what a method's range is resolved against. */
+type DepositRange = Pick<CurrencyLimits, 'minDeposit' | 'maxDeposit'>;
 
 /** Does any transaction reference this method? Indexed (0161). */
 const methodInUse = sql<boolean>`exists (
@@ -31,12 +48,10 @@ const methodInUse = sql<boolean>`exists (
 )`;
 
 /**
- * A method as a CLIENT sees it: the stored row plus the bounds it is subject to.
- *
- * The bounds are not columns any more — migration 0042 dropped the per-method
- * ones — so they are attached here from `MoneyLimits`. Keeping them ON the
- * method rather than returning them alongside means the portal reads one shape,
- * and would keep reading one shape if per-method bounds ever came back.
+ * A method as a CLIENT sees it: the stored row plus the range it is held to —
+ * the tighter of its currency's deposit limits and its own optional range
+ * (0162). Resolved here so the portal reads one shape and shows the figure the
+ * validator enforces.
  */
 export type ClientPaymentMethod = PaymentMethodRow & {
   /** Decimal strings (§6.1). The same figures `requestDeposit` enforces. */
@@ -79,12 +94,6 @@ export class PaymentMethodsService {
      * inserting a parameter in the middle silently shifts every one after it.
      */
     private readonly gateways: PaymentGateways,
-    /*
-     * The platform-wide deposit floor and ceiling, so `listAvailable` can hand
-     * the client the bounds they are ACTUALLY subject to. APPENDED LAST — this
-     * class is constructed positionally in the unit suites.
-     */
-    private readonly limits: MoneyLimits,
   ) {}
 
   /** The admin screen's list, with what the desk may do to each method. */
@@ -93,7 +102,12 @@ export class PaymentMethodsService {
       .select({ row: paymentMethods, inUse: methodInUse })
       .from(paymentMethods)
       .orderBy(asc(paymentMethods.sortOrder), asc(paymentMethods.key));
-    return rows.map(({ row, inUse }) => ({ ...row, builtIn: this.isBuiltIn(row.key), inUse }));
+    const ranges = await this.depositRanges(rows.map(({ row }) => row.currency));
+    return rows.map(({ row, inUse }) => ({
+      ...this.withEffectiveBounds(row, ranges),
+      builtIn: this.isBuiltIn(row.key),
+      inUse,
+    }));
   }
 
   /** One method as the console sees it — what create and update answer with. */
@@ -104,7 +118,12 @@ export class PaymentMethodsService {
       .where(eq(paymentMethods.key, this.normalise(key)))
       .limit(1);
     if (!found) return null;
-    return { ...found.row, builtIn: this.isBuiltIn(found.row.key), inUse: found.inUse };
+    const ranges = await this.depositRanges([found.row.currency]);
+    return {
+      ...this.withEffectiveBounds(found.row, ranges),
+      builtIn: this.isBuiltIn(found.row.key),
+      inUse: found.inUse,
+    };
   }
 
   /** A gateway: `PaymentGateways` dispatches on its key, so the code depends on the row. */
@@ -185,7 +204,23 @@ export class PaymentMethodsService {
       );
     }
 
-    return available.map((row) => this.withEffectiveBounds(row));
+    const ranges = await this.depositRanges(available.map((row) => row.currency));
+    return available.map((row) => this.withEffectiveBounds(row, ranges));
+  }
+
+  /**
+   * The deposit limits of every currency named — one read per distinct code, and
+   * a platform holds a handful. Keyed by code.
+   */
+  private async depositRanges(codes: readonly string[]): Promise<Map<string, DepositRange>> {
+    const ranges = new Map<string, DepositRange>();
+    for (const code of new Set(codes)) {
+      const limits = await this.currencies.limitsFor(code);
+      // Unreachable while `payment_methods.currency` is a foreign key.
+      if (!limits) throw new NotFoundError(`Unknown currency ${code}.`);
+      ranges.set(code, { minDeposit: limits.minDeposit, maxDeposit: limits.maxDeposit });
+    }
+    return ranges;
   }
 
   /**
@@ -204,20 +239,47 @@ export class PaymentMethodsService {
    * in the validator are the same number by construction, rather than by two
    * places agreeing to stay in step.
    *
-   * The per-method columns were DROPPED in migration 0042, so these are simply
-   * the platform limits — which is exactly what makes the bounds identical
-   * across every method. They are attached to the row rather than returned
-   * separately so a caller reads one shape whether or not per-method bounds ever
-   * come back.
+   * Since 0162 the two limits are the CURRENCY's deposit pair and the method's
+   * own optional range, and the client is held to the tighter of them
+   * (`effectiveDepositRange`) — so an LBP method is bounded in LBP, not by a
+   * USD-sized number every currency used to share.
    */
-  private withEffectiveBounds(row: PaymentMethodRow): ClientPaymentMethod {
+  private withEffectiveBounds(
+    row: PaymentMethodRow,
+    ranges: Map<string, DepositRange>,
+  ): ClientPaymentMethod {
+    const currency = ranges.get(row.currency);
+    if (!currency) throw new NotFoundError(`Unknown currency ${row.currency}.`);
     // Strings out, at the ledger's scale (§6.1) — never a number, and never
     // rounded to something the validator would not agree with.
-    return {
-      ...row,
-      minAmount: this.limits.minDeposit().toFixed(8),
-      maxAmount: this.limits.maxDeposit().toFixed(8),
-    };
+    const { min, max } = effectiveDepositRange(currency, {
+      minAmount: row.ownMinAmount,
+      maxAmount: row.ownMaxAmount,
+    });
+    return { ...row, minAmount: min, maxAmount: max };
+  }
+
+  /**
+   * Refuses a method range that would not narrow its currency's — each sentence
+   * under its field. See `methodRangeProblems` for why it refuses rather than
+   * clamps.
+   */
+  private async assertOwnRange(
+    currency: string,
+    ownMinAmount: string | null,
+    ownMaxAmount: string | null,
+  ): Promise<void> {
+    const ranges = await this.depositRanges([currency]);
+    const problems = methodRangeProblems(currency, ranges.get(currency) as DepositRange, {
+      minAmount: ownMinAmount,
+      maxAmount: ownMaxAmount,
+    });
+    const fields: Record<string, string> = {};
+    if (problems.minAmount) fields.ownMinAmount = problems.minAmount;
+    if (problems.maxAmount) fields.ownMaxAmount = problems.maxAmount;
+    if (Object.keys(fields).length > 0) {
+      throw new FieldValidationError(Object.values(fields)[0], fields);
+    }
   }
 
   /**
@@ -293,7 +355,7 @@ export class PaymentMethodsService {
      * to refuse an out-of-range amount, so handing back the RAW row here would
      * let the write path disagree with the screen the client just used.
      */
-    return this.withEffectiveBounds(row);
+    return this.withEffectiveBounds(row, await this.depositRanges([row.currency]));
   }
 
   /**
@@ -311,12 +373,12 @@ export class PaymentMethodsService {
   assertAmountWithin(row: ClientPaymentMethod, amount: Decimal): void {
     if (amount.lessThan(toDecimal(row.minAmount))) {
       throw new ValidationError(
-        `The minimum ${row.name} deposit is ${toDecimal(row.minAmount).toString()} ${row.currency}.`,
+        `The minimum ${row.name} deposit is ${formatLimit(row.minAmount)} ${row.currency}.`,
       );
     }
     if (amount.greaterThan(toDecimal(row.maxAmount))) {
       throw new ValidationError(
-        `The maximum ${row.name} deposit is ${toDecimal(row.maxAmount).toString()} ${row.currency}.`,
+        `The maximum ${row.name} deposit is ${formatLimit(row.maxAmount)} ${row.currency}.`,
       );
     }
   }
@@ -338,6 +400,9 @@ export class PaymentMethodsService {
     // Refuses an unknown or DISABLED currency — a method denominated in one the
     // platform does not hold could never open a wallet to receive into.
     const currency = await this.currencies.assertUsable(dto.currency);
+    const ownMinAmount = dto.ownMinAmount ?? null;
+    const ownMaxAmount = dto.ownMaxAmount ?? null;
+    await this.assertOwnRange(currency, ownMinAmount, ownMaxAmount);
 
     const [row] = await this.db
       .insert(paymentMethods)
@@ -350,6 +415,8 @@ export class PaymentMethodsService {
         enabled: dto.enabled ?? true,
         sortOrder: dto.sortOrder ?? (await this.nextSortOrder()),
         requiresProof: dto.requiresProof ?? false,
+        ownMinAmount,
+        ownMaxAmount,
         updatedBy: adminId,
       })
       .returning();
@@ -368,6 +435,8 @@ export class PaymentMethodsService {
       currency: row.currency,
       enabled: row.enabled,
       requiresProof: row.requiresProof,
+      ownMinAmount: row.ownMinAmount,
+      ownMaxAmount: row.ownMaxAmount,
     });
     return row;
   }
@@ -391,6 +460,20 @@ export class PaymentMethodsService {
     const internalLabel =
       dto.internalLabel !== undefined ? requireInternalLabel(dto.internalLabel) : undefined;
     if (internalLabel !== undefined) await this.assertLabelFree(internalLabel, current.key);
+    /*
+     * The range is judged against the currency the method WILL have, merged —
+     * moving a method to LBP with a USD-sized override left in place is refused
+     * rather than saved as a range no LBP client could meet.
+     */
+    const ownMinAmount = dto.ownMinAmount !== undefined ? dto.ownMinAmount : current.ownMinAmount;
+    const ownMaxAmount = dto.ownMaxAmount !== undefined ? dto.ownMaxAmount : current.ownMaxAmount;
+    if (
+      currency !== undefined ||
+      dto.ownMinAmount !== undefined ||
+      dto.ownMaxAmount !== undefined
+    ) {
+      await this.assertOwnRange(currency ?? current.currency, ownMinAmount, ownMaxAmount);
+    }
     const [row] = await this.db
       .update(paymentMethods)
       .set({
@@ -401,6 +484,8 @@ export class PaymentMethodsService {
         ...(dto.enabled !== undefined ? { enabled: dto.enabled } : {}),
         ...(dto.sortOrder !== undefined ? { sortOrder: dto.sortOrder } : {}),
         ...(dto.requiresProof !== undefined ? { requiresProof: dto.requiresProof } : {}),
+        ...(dto.ownMinAmount !== undefined ? { ownMinAmount: dto.ownMinAmount } : {}),
+        ...(dto.ownMaxAmount !== undefined ? { ownMaxAmount: dto.ownMaxAmount } : {}),
         updatedBy: adminId,
         updatedAt: new Date(),
       })
@@ -426,6 +511,8 @@ export class PaymentMethodsService {
       'sortOrder',
       'logoUrl',
       'requiresProof',
+      'ownMinAmount',
+      'ownMaxAmount',
     ] as const) {
       if (current[field] !== row[field])
         changed[field] = { before: current[field], after: row[field] };

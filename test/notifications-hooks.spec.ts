@@ -5,7 +5,6 @@ import { TransactionsService } from '../src/modules/payments/transactions.servic
 import { CommissionService } from '../src/modules/ib/commission.service';
 import { WalletService } from '../src/modules/wallet/wallet.service';
 import { CurrenciesService } from '../src/modules/currencies/currencies.service';
-import { MoneyLimits } from '../src/config/money-limits';
 import { PaymentMethodsService } from '../src/modules/payments/payment-methods.service';
 import { NotificationsService } from '../src/modules/notifications/notifications.service';
 import { NotificationsStore } from '../src/store/notifications.store';
@@ -71,13 +70,11 @@ beforeAll(async () => {
   transactions = new TransactionsService(
     wallets,
     ctx.db,
-    new MoneyLimits(new ConfigService()),
     new PaymentMethodsService(
       ctx.db,
       currencies,
       auditStubAs(),
       gateway as unknown as PaymentGateways,
-      new MoneyLimits(new ConfigService()),
     ),
     currencies,
     gateway as unknown as PaymentGateways,

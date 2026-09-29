@@ -6,7 +6,6 @@ import { PaymentMethodsService } from '../src/modules/payments/payment-methods.s
 import { TransactionsService } from '../src/modules/payments/transactions.service';
 import { WalletService } from '../src/modules/wallet/wallet.service';
 import { CurrenciesService } from '../src/modules/currencies/currencies.service';
-import { MoneyLimits } from '../src/config/money-limits';
 import { toDecimal } from '../src/modules/wallet/money';
 import type { Actor } from '../src/common/security/actor';
 import { auditStubAs } from './audit-stub';
@@ -65,17 +64,10 @@ beforeAll(async () => {
   wallets = new WalletService(ctx.db);
   gateways = gatewayStub();
   const asGateways = gateways as unknown as PaymentGateways;
-  methods = new PaymentMethodsService(
-    ctx.db,
-    currencies,
-    auditStubAs(),
-    asGateways,
-    new MoneyLimits(new ConfigService()),
-  );
+  methods = new PaymentMethodsService(ctx.db, currencies, auditStubAs(), asGateways);
   transactions = new TransactionsService(
     wallets,
     ctx.db,
-    new MoneyLimits(new ConfigService()),
     methods,
     currencies,
     asGateways,

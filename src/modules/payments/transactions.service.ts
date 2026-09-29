@@ -282,7 +282,7 @@ import { money, toDecimal } from '../wallet/money';
 import { buildCursorPage, pageSize, type CursorPosition } from '../../common/pagination';
 import type { SortOrder } from '../../common/sorting';
 import { sortKey, sortOrder } from '../../common/sorting';
-import { MoneyLimits } from '../../config/money-limits';
+import { formatLimit } from '../../common/currency-limits';
 import { PaymentMethodsService } from './payment-methods.service';
 import { wishDestinationIssue } from './rival/wish-phone';
 import { isPayerReachableUrl } from './rival/payer-reachable-url';
@@ -542,7 +542,6 @@ export class TransactionsService {
   constructor(
     private readonly wallets: WalletService,
     @Inject(DRIZZLE_DB) private readonly db: Db,
-    private readonly limits: MoneyLimits,
     /*
      * Which deposit methods exist, and whether the chosen one can take money.
      * Appended for the reason the parameter below records — the suite
@@ -673,7 +672,11 @@ export class TransactionsService {
     // The NORMALISED code is what the rest of this method uses: `assertUsable`
     // upper-cases and trims, so 'usd' and 'USD' cannot become two currencies on
     // the rows this writes.
-    const { code: currency, decimals } = await this.currencies.assertUsableDetail(params.currency);
+    const {
+      code: currency,
+      decimals,
+      limits,
+    } = await this.currencies.assertUsableDetail(params.currency);
 
     const amount = toDecimal(params.amount);
     /*
@@ -690,22 +693,25 @@ export class TransactionsService {
       throw new ValidationError('Withdrawal amount must be positive.');
 
     /*
-     * Absolute bounds — PLATFORM-CONVENTIONS R-5.1.
+     * Absolute bounds — PLATFORM-CONVENTIONS R-5.1 — in THIS CURRENCY's units.
      *
      * Balance and KYC level were already checked below, and they are the RIGHT
      * checks. What was missing is a ceiling that holds when something upstream
      * is wrong: a mispriced wallet, a bad rate, a compromised session draining
-     * an account in one move. Limits live in config as documented assumptions,
-     * so confirming a real figure with the client is an env change.
+     * an account in one move.
+     *
+     * The currency's own limits since 0162. They were one config number for
+     * every currency, so a client could not withdraw more than 50,000 LBP —
+     * about fifty cents — while the same number was a large USD withdrawal.
      */
-    const min = this.limits.minWithdrawal();
-    const max = this.limits.maxWithdrawal();
+    const min = toDecimal(limits.minWithdrawal);
+    const max = toDecimal(limits.maxWithdrawal);
     if (amount.lessThan(min)) {
-      throw new ValidationError(`The minimum withdrawal is ${min.toString()} ${currency}.`);
+      throw new ValidationError(`The minimum withdrawal is ${formatLimit(min)} ${currency}.`);
     }
     if (amount.greaterThan(max)) {
       throw new ValidationError(
-        `The maximum single withdrawal is ${max.toString()} ${currency}. ` +
+        `The maximum single withdrawal is ${formatLimit(max)} ${currency}. ` +
           'Please split the request or contact support.',
       );
     }
@@ -803,7 +809,7 @@ export class TransactionsService {
      * it caps the paperwork rather than the exposure. Counted over everything
      * not rejected — a pending withdrawal is money already on its way out.
      */
-    const dayCap = this.limits.maxWithdrawalPerDay();
+    const dayCap = toDecimal(limits.maxWithdrawalDaily);
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
     const recent = await db
       .select({ amount: transactions.amount })
@@ -820,8 +826,8 @@ export class TransactionsService {
     const already = recent.reduce((sum, row) => sum.plus(toDecimal(row.amount)), toDecimal('0'));
     if (already.plus(amount).greaterThan(dayCap)) {
       throw new ValidationError(
-        `This would exceed the ${dayCap.toString()} ${currency} rolling 24-hour ` +
-          `withdrawal limit — ${already.toString()} has already been requested in that window.`,
+        `This would exceed the ${formatLimit(dayCap)} ${currency} rolling 24-hour ` +
+          `withdrawal limit — ${formatLimit(already)} has already been requested in that window.`,
       );
     }
 
@@ -2873,19 +2879,12 @@ export class TransactionsService {
       );
     }
 
+    /*
+     * The method's resolved range: the tighter of its CURRENCY's deposit limits
+     * and its own optional one (0162). The platform-wide pair this used to
+     * re-check here is gone — it was one USD-sized number for every currency.
+     */
     this.paymentMethods.assertAmountWithin(paymentMethod, amount);
-
-    const min = this.limits.minDeposit();
-    const max = this.limits.maxDeposit();
-    if (amount.lessThan(min)) {
-      throw new ValidationError(`The minimum deposit is ${min.toString()} ${params.currency}.`);
-    }
-    if (amount.greaterThan(max)) {
-      throw new ValidationError(
-        `The maximum single deposit is ${max.toString()} ${params.currency}. ` +
-          'Please split the transfer or contact support.',
-      );
-    }
 
     /*
      * The chosen trading account, validated NOW rather than at settlement.

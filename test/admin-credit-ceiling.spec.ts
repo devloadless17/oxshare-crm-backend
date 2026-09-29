@@ -142,3 +142,32 @@ describe('a hand-credit is bounded, because it mints', () => {
     expect(await balanceOf(clientId)).toBe('50250.00000000');
   });
 });
+
+describe("the ceiling is the CURRENCY's (0162)", () => {
+  /*
+   * It was one config number for every currency, so crediting 50,001 LBP —
+   * about fifty cents — was refused as if it were a fortune. Each currency now
+   * carries its own `max_admin_credit`, in its own units, and the refusal names
+   * that figure and says where to raise it.
+   */
+  it("refuses above the currency's own cap, whatever it is, and names it", async () => {
+    await ctx.db.db.execute(sql`UPDATE currencies SET max_admin_credit = 1000 WHERE code = 'USD'`);
+    try {
+      const admin = await actingAs(ctx, 'admin', MASTER);
+      const before = await balanceOf(clientId);
+      const res = await admin.post(
+        '/v1/admin/wallets/credit',
+        { userId: clientId, amount: '1000.01', currency: 'USD', reason: 'Above this cap.' },
+        idem(),
+      );
+      expect(res.status).toBe(400);
+      expect(JSON.stringify(res.body)).toContain('in one action is 1000 USD');
+      expect(JSON.stringify(res.body)).toContain("currency's maximum admin credit");
+      expect(await balanceOf(clientId)).toBe(before);
+    } finally {
+      await ctx.db.db.execute(
+        sql`UPDATE currencies SET max_admin_credit = 50000 WHERE code = 'USD'`,
+      );
+    }
+  });
+});

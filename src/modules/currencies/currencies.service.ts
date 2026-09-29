@@ -3,7 +3,17 @@ import { and, asc, count, eq, ne, or, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { getDb } from '../../database/db';
 import { currencies, wallets } from '../../database/schema';
-import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/domain-errors';
+import {
+  ConflictError,
+  FieldValidationError,
+  NotFoundError,
+  ValidationError,
+} from '../../common/errors/domain-errors';
+import {
+  CURRENCY_LIMIT_FIELDS,
+  currencyLimitProblems,
+  type CurrencyLimits,
+} from '../../common/currency-limits';
 import { AdminAuditService } from '../admin/admin-audit.service';
 import type { Actor } from '../../common/security/actor';
 import { placeInOrder } from '../../common/ordering';
@@ -154,11 +164,11 @@ export class CurrenciesService {
   async assertUsableDetail(
     code: string,
     executor?: Executor,
-  ): Promise<{ code: string; decimals: number }> {
+  ): Promise<{ code: string; decimals: number; limits: CurrencyLimits }> {
     const db = executor ?? this.db;
     const normalised = this.normalise(code);
     const [row] = await db
-      .select({ enabled: currencies.enabled, decimals: currencies.decimals })
+      .select({ enabled: currencies.enabled, decimals: currencies.decimals, ...LIMIT_COLUMNS })
       .from(currencies)
       .where(eq(currencies.code, normalised))
       .limit(1);
@@ -167,7 +177,24 @@ export class CurrenciesService {
     if (!row.enabled) {
       throw new ValidationError(`${normalised} is not currently available on this platform.`);
     }
-    return { code: normalised, decimals: row.decimals };
+    const { enabled: _enabled, decimals, ...limits } = row;
+    return { code: normalised, decimals, limits };
+  }
+
+  /**
+   * A currency's money limits (0162), enabled or not — for a path that moves
+   * money in a currency it has already accepted (an admin credit into an
+   * existing wallet), where "is this currency still offered" is not the
+   * question. Null for an unknown code.
+   */
+  async limitsFor(code: string, executor?: Executor): Promise<CurrencyLimits | null> {
+    const db = executor ?? this.db;
+    const [row] = await db
+      .select(LIMIT_COLUMNS)
+      .from(currencies)
+      .where(eq(currencies.code, this.normalise(code)))
+      .limit(1);
+    return row ?? null;
   }
 
   /**
@@ -214,6 +241,8 @@ export class CurrenciesService {
 
   async create(dto: CreateCurrencyDto, actor: Actor) {
     const code = this.normalise(dto.code);
+    const limits = pickLimits(dto);
+    assertLimits(limits);
 
     const existing = await this.findOne(code);
     if (existing) throw new ConflictError(`Currency ${code} already exists.`);
@@ -233,6 +262,7 @@ export class CurrenciesService {
           decimals: dto.decimals ?? 2,
           enabled: dto.enabled ?? true,
           isDefault: dto.isDefault ?? false,
+          ...limits,
           /*
            * `?? 0` used to sit here, and it put EVERY new currency at the top
            * of the list — adding AED to a list led by USD moved USD down, with
@@ -258,6 +288,7 @@ export class CurrenciesService {
       decimals: row.decimals,
       enabled: row.enabled,
       isDefault: row.isDefault,
+      ...pickLimits(row),
     });
 
     return row;
@@ -294,6 +325,15 @@ export class CurrenciesService {
       );
     }
 
+    /*
+     * The limits are judged MERGED — what the row will hold, not only what was
+     * sent — so raising a minimum above the stored maximum is refused even when
+     * the request names only the minimum.
+     */
+    const sentLimits = pickLimits(dto);
+    const mergedLimits = { ...pickLimits(current), ...sentLimits };
+    if (Object.keys(sentLimits).length > 0) assertLimits(mergedLimits);
+
     const row = await this.db.transaction(async (tx) => {
       if (dto.isDefault && !current.isDefault) await this.clearDefaultWithin(tx);
 
@@ -305,6 +345,7 @@ export class CurrenciesService {
           ...(dto.decimals !== undefined ? { decimals: dto.decimals } : {}),
           ...(dto.enabled !== undefined ? { enabled: dto.enabled } : {}),
           ...(dto.isDefault !== undefined ? { isDefault: dto.isDefault } : {}),
+          ...sentLimits,
           ...(dto.sortOrder !== undefined
             ? { sortOrder: await this.placeOrder(tx, normalised, dto.sortOrder) }
             : {}),
@@ -332,6 +373,8 @@ export class CurrenciesService {
       'enabled',
       'isDefault',
       'sortOrder',
+      // A limit moving changes what every client may move — who and when matters.
+      ...CURRENCY_LIMIT_FIELDS,
     ] as const) {
       if (current[field] !== row[field])
         changed[field] = { before: current[field], after: row[field] };
@@ -443,4 +486,33 @@ export class CurrenciesService {
 function isForeignKeyViolation(error: unknown): boolean {
   const wrapped = error as { code?: string; cause?: { code?: string } } | null;
   return (wrapped?.cause?.code ?? wrapped?.code) === '23503';
+}
+
+/** The six limit columns, selected under their DTO names. */
+const LIMIT_COLUMNS = {
+  minDeposit: currencies.minDeposit,
+  maxDeposit: currencies.maxDeposit,
+  minWithdrawal: currencies.minWithdrawal,
+  maxWithdrawal: currencies.maxWithdrawal,
+  maxWithdrawalDaily: currencies.maxWithdrawalDaily,
+  maxAdminCredit: currencies.maxAdminCredit,
+};
+
+/** The limits a write carries — only the ones it names. */
+function pickLimits(
+  source: Partial<Record<keyof CurrencyLimits, string>>,
+): Partial<CurrencyLimits> {
+  const picked: Partial<CurrencyLimits> = {};
+  for (const field of CURRENCY_LIMIT_FIELDS) {
+    if (source[field] !== undefined) picked[field] = source[field];
+  }
+  return picked;
+}
+
+/** Refuses a set of limits that does not make sense, each sentence under its field. */
+function assertLimits(limits: Partial<CurrencyLimits>): void {
+  const problems = currencyLimitProblems(limits as CurrencyLimits);
+  if (Object.keys(problems).length > 0) {
+    throw new FieldValidationError(Object.values(problems)[0], problems);
+  }
 }

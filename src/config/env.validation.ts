@@ -455,7 +455,10 @@ const envSchema = z
     R2_BUCKET: z.string().min(1).optional(),
 
     /*
-     * The §12.4 money bounds — validated HERE, at boot.
+     * The D-11 commission backstops — validated HERE, at boot. (The deposit,
+     * withdrawal and admin-credit limits lived here too until 0162 moved them
+     * onto each currency, in its own units; `WITHDRAWAL_*` and
+     * `ADMIN_CREDIT_MAX` are no longer read.)
      *
      * `money-limits.ts` says these are "also validated at boot in
      * env.validation.ts". They were not. Its own reader falls back to the
@@ -466,39 +469,11 @@ const envSchema = z
      *
      * A positive finite decimal, or the process does not start.
      */
-    WITHDRAWAL_MIN: decimalLimit('WITHDRAWAL_MIN'),
-    WITHDRAWAL_MAX: decimalLimit('WITHDRAWAL_MAX'),
-    WITHDRAWAL_DAILY_MAX: decimalLimit('WITHDRAWAL_DAILY_MAX'),
-    ADMIN_CREDIT_MAX: decimalLimit('ADMIN_CREDIT_MAX'),
     COMMISSION_MAX_PER_DEAL: decimalLimit('COMMISSION_MAX_PER_DEAL'),
     COMMISSION_MAX_SHARE_OF_DEAL: decimalLimit('COMMISSION_MAX_SHARE_OF_DEAL'),
   })
   .passthrough() // unknown keys pass through untouched
   .superRefine((env, ctx) => {
-    // Ordering, because each bound is individually valid and collectively
-    // nonsense in the two ways that matter: a min above a max refuses every
-    // withdrawal, and a daily cap below the single-request cap refuses the
-    // second one for a reason the message will not explain.
-    const num = (v: unknown) => (typeof v === 'string' ? Number.parseFloat(v) : undefined);
-    const min = num(env.WITHDRAWAL_MIN);
-    const max = num(env.WITHDRAWAL_MAX);
-    const daily = num(env.WITHDRAWAL_DAILY_MAX);
-
-    if (min !== undefined && max !== undefined && min >= max) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['WITHDRAWAL_MIN'],
-        message: `WITHDRAWAL_MIN (${env.WITHDRAWAL_MIN}) must be below WITHDRAWAL_MAX (${env.WITHDRAWAL_MAX}); every withdrawal would be refused.`,
-      });
-    }
-    if (max !== undefined && daily !== undefined && daily < max) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['WITHDRAWAL_DAILY_MAX'],
-        message: `WITHDRAWAL_DAILY_MAX (${env.WITHDRAWAL_DAILY_MAX}) is below WITHDRAWAL_MAX (${env.WITHDRAWAL_MAX}); the per-request cap could never be reached.`,
-      });
-    }
-
     /*
      * The R2 block: all four, or none.
      *
