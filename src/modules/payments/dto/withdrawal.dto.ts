@@ -89,6 +89,16 @@ export class WithdrawalMethodDto {
     description: 'A crypto rail’s network: an address is valid on one only.',
   })
   destinationNetwork: string | null;
+
+  @ApiProperty({
+    type: [String],
+    nullable: true,
+    example: ['USD'],
+    description:
+      'The wallet currencies it pays out (0173); null for any. A withdrawal from another ' +
+      'currency’s wallet is refused.',
+  })
+  currencies: string[] | null;
 }
 
 /*
@@ -132,7 +142,9 @@ export class RequestWithdrawalDto {
   @ApiPropertyOptional({ description: DESTINATION_DESCRIPTION })
   @IsOptional()
   @IsString()
-  @MaxLength(500)
+  // The column's own size (varchar 255): a longer value was a database error,
+  // not a 400 under the field (found 30 Sep 2026).
+  @MaxLength(255)
   destination?: string;
 
   @ApiProperty({ description: METHOD_KEY_DESCRIPTION, example: 'whish' })
@@ -274,8 +286,20 @@ export class TransactionDto {
    *   theirs → `rivalExternalId`    (this field)
    *
    * Quote both in a ticket and neither side has to guess which row is meant.
+   *
+   * Superseded by `providerPaymentId` (0173 — every provider, not Rival
+   * alone); carried one more release for consoles and portals built before it.
    */
   rivalExternalId?: string | null;
+
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    description:
+      'The payment provider’s own id for this movement (its invoice, its payment id) — what ' +
+      'a ticket quotes beside our `providerRef`.',
+  })
+  providerPaymentId?: string | null;
 
   @ApiPropertyOptional({ type: String, nullable: true }) destination?: string | null;
   /*

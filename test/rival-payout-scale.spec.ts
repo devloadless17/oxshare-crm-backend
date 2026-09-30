@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { RIVAL_MONEY_SCALE, RivalClient } from '../src/modules/payments/rival/rival.client';
-import type { RivalConfigService } from '../src/modules/payments/rival/rival-config.service';
+import {
+  RIVAL_MONEY_SCALE,
+  RivalClient,
+} from '../src/modules/payments/providers/rival/rival.client';
+import type { RivalConfigService } from '../src/modules/payments/providers/rival/rival-config.service';
 
 /**
  * The CRM must never ask Rival for a different amount than it debited.

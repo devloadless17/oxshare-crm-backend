@@ -1219,6 +1219,13 @@
       "when": 1789141100750,
       "tag": "0172_withdrawal_provider_note",
       "breakpoints": true
+    },
+    {
+      "idx": 175,
+      "version": "7",
+      "when": 1789141200750,
+      "tag": "0173_payments_core",
+      "breakpoints": true
     }
   ]
 }

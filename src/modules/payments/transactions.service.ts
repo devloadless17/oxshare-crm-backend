@@ -2,7 +2,7 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { readProofDetails, type ProofDetail } from '../../common/payments/proof-fields';
 import Decimal from 'decimal.js';
 import { randomBytes } from 'crypto';
-import { and, asc, desc, eq, isNull, sql, type SQL, type SQLWrapper, lte } from 'drizzle-orm';
+import { and, asc, desc, eq, sql, type SQL, type SQLWrapper, lte } from 'drizzle-orm';
 import {
   paymentProviders,
   tradingAccounts,
@@ -96,11 +96,12 @@ interface CombinedRow {
   reviewed_by: string | null;
   reviewed_at: string | null;
   settled_at: string | null;
-  rival_external_id: string | null;
-  rival_withdrawal_id: string | null;
-  rival_submitted_at: string | null;
-  rival_needs_attention: boolean;
-  rival_attention_reason: string | null;
+  /* The payments core's neutral columns (0173), in the union's positions. */
+  provider_payment_id: string | null;
+  provider_payout_id: string | null;
+  provider_submitted_at: string | null;
+  needs_attention: boolean;
+  attention_reason: string | null;
   provider_note: string | null;
   created_at: string;
   /** Selected by `methodNamesOf`, for the rows a read shows. */
@@ -156,7 +157,7 @@ export interface AdminMovementsFilter {
   from?: string;
   to?: string;
   /**
-   * Only payments a PERSON must reconcile (`rival_needs_attention`) — where an
+   * Only payments a PERSON must reconcile (`needs_attention`, 0173) — where an
    * attention task's link lands, and the desk's "what is flagged" view. The
    * transfer arms carry no flag, so they never match.
    */
@@ -286,7 +287,9 @@ export interface AdminTransactionExportRow {
   methodName: string;
   provider: string;
   providerRef: string | null;
-  /** The payment platform's own id — see TransactionDto.rivalExternalId. */
+  /** The payment provider's own id for the movement (0173's neutral column). */
+  providerPaymentId: string | null;
+  /** The same id under its pre-0173 name — kept one release for older consoles. */
   rivalExternalId: string | null;
   destination: string | null;
   /** What the client gave to identify an offline payment (0163). */
@@ -424,7 +427,8 @@ function toMovementRow(row: AdminCombinedRow) {
     methodName: row.method_label ?? row.method_name ?? row.provider,
     provider: row.provider,
     providerRef: row.provider_ref,
-    rivalExternalId: row.rival_external_id,
+    providerPaymentId: row.provider_payment_id,
+    rivalExternalId: row.provider_payment_id,
     destination: row.destination,
     rejectionReason: row.rejection_reason,
     // The receipt on an offline deposit, so the desk can show the image beside
@@ -452,7 +456,6 @@ function toMovementRow(row: AdminCombinedRow) {
  */
 export const MANUAL_ADMIN_PROVIDER = 'manual_admin';
 import { LEDGER_REFERENCE } from '../../database/ledger-reference';
-import { ALERT_KINDS, raiseAlert } from '../../common/logging/alerts';
 import { assertActorCan, type Actor } from '../../common/security/actor';
 import { money, toDecimal } from '../wallet/money';
 import { buildCursorPage, pageSize, type CursorPosition } from '../../common/pagination';
@@ -460,29 +463,25 @@ import type { SortOrder } from '../../common/sorting';
 import { sortKey, sortOrder } from '../../common/sorting';
 import { formatLimit } from '../../common/currency-limits';
 import { PaymentMethodsService } from './payment-methods.service';
-import { isPayerReachableUrl } from './rival/payer-reachable-url';
+import { channelSwitchKey, readOffSwitches } from './core/channel-switches.service';
+import { isPayerReachableUrl } from './core/payer-reachable-url';
 import { Currency, Executor, WalletService } from '../wallet/wallet.service';
 import { CurrenciesService } from '../currencies/currencies.service';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
 import { ConfigService } from '@nestjs/config';
 import { EmailService } from '../email/email.service';
-import {} from '../../common/provisioning/commission-accrual.port';
 import {
   NOTIFICATION_DISPATCH,
   type NotificationDispatchPort,
 } from '../../common/provisioning/notification-dispatch.port';
-import { depositNamespace, PaymentProviderRegistry } from './providers/payment-provider-registry';
 import {
-  PaymentProviderEventsStore,
-  type ProviderEventOutcome,
-  type ProviderEventSource,
-  type ProviderEventType,
-} from '../../store/payment-provider-events.store';
+  depositNamespace,
+  PaymentProviderRegistry,
+  providerWebhookUrl,
+} from './providers/payment-provider-registry';
 import type { PaymentRoute } from './providers/payment-provider';
 import type { DepositAttentionReason } from '../../common/notifications/admin-notification-catalogue';
-import { AuditLogStore } from '../../store/audit-log.store';
-import { SYSTEM_ACTOR } from '../../common/security/actor';
 import {
   AuthorizationError,
   MoneyRuleError,
@@ -723,13 +722,6 @@ export interface ApproveWithdrawalOptions {
   awaitsProviderPayout: boolean;
 }
 
-/** Rival's deposit event names, in the provider event log's vocabulary. */
-const RIVAL_DEPOSIT_EVENT_TYPES: Record<'completed' | 'failed' | 'reversed', ProviderEventType> = {
-  completed: 'payment.succeeded',
-  failed: 'payment.failed',
-  reversed: 'payment.reversed',
-};
-
 @Injectable()
 export class TransactionsService {
   private readonly logger = new Logger(TransactionsService.name);
@@ -807,21 +799,11 @@ export class TransactionsService {
     private readonly transfers: TransfersService,
     private readonly transferExecutor: TransferExecutor,
     /*
-     * The forensic record for a deposit NOBODY approved.
-     *
-     * Appended, never inserted, for the reason the parameters above record:
-     * this class is constructed positionally in the suite, so a parameter added
-     * in the middle silently shifts every one after it.
+     * `AuditLogStore` is no longer injected: its one reader — the audit row
+     * for a deposit nobody approved — moved with the settle path into the
+     * core's `HostedDepositsService` (0173).
      */
-    private readonly auditLog: AuditLogStore,
-  ) {
-    // Built here rather than injected: a store over the same db, and the eleven
-    // positional parameters above are constructed by hand in every money spec.
-    this.providerEvents = new PaymentProviderEventsStore(db);
-  }
-
-  /** What each provider reported and what was done about it (0168). */
-  private readonly providerEvents: PaymentProviderEventsStore;
+  ) {}
 
   /**
    * The environment a provider runs in right now — recorded on every new
@@ -861,19 +843,34 @@ export class TransactionsService {
       .from(withdrawalPaymentMethods)
       .where(eq(withdrawalPaymentMethods.enabled, true))
       .orderBy(asc(withdrawalPaymentMethods.sortOrder), asc(withdrawalPaymentMethods.name));
+    const offered: typeof rows = [];
+    for (const row of rows) if (await this.payoutMethodOffered(row)) offered.push(row);
     // What the client must give, from the method's payout channel (0168) — the
     // portal renders the field by its kind, never by the method's key.
-    return rows.map(({ providerCode, channelCode, ...method }) => {
-      const destination = this.providers.findChannel(
-        { providerCode, channelCode },
-        'payout',
-      )?.destination;
+    return offered.map(({ providerCode, channelCode, ...method }) => {
+      const channel = this.providers.findChannel({ providerCode, channelCode }, 'payout');
+      const destination = channel?.destination;
       return {
         ...method,
         destinationKind: destination?.kind ?? 'text',
         destinationNetwork: destination?.network ?? null,
+        // The wallet currencies it pays out, or null for any (0173).
+        currencies: !channel || channel.currencies === 'any' ? null : [...channel.currencies],
       };
     });
+  }
+
+  /**
+   * Is a payout method one a client can use right now (0173)? Its network must
+   * be switched on for payouts, and an AUTOMATED one whose provider cannot pay
+   * must be one the desk may pay by hand instead (`whenUnavailable: 'desk'` —
+   * Rival). A `wait` provider (3pay) switched off takes no new requests.
+   */
+  private async payoutMethodOffered(route: PaymentRoute): Promise<boolean> {
+    if ((await readOffSwitches(this.db)).has(channelSwitchKey(route, 'payout'))) return false;
+    const found = this.providers.payoutRail(route);
+    if (!found || found.rail.whenUnavailable === 'desk') return true;
+    return found.adapter.isUsable();
   }
 
   async requestWithdrawal(params: {
@@ -1009,6 +1006,26 @@ export class TransactionsService {
       channelCode: method.channelCode,
     };
     const payoutChannel = this.providers.channel(payoutRoute, 'payout');
+    /*
+     * CAN IT BE PAID AT ALL right now (0173)? Refused at the door, with the
+     * same sentence the picker's absence implies — never accepted into a queue
+     * nobody can pay:
+     *   - its network is switched off in this direction (an admin's switch);
+     *   - it is an automated payout whose provider cannot pay and does not let
+     *     the desk pay by hand instead (`whenUnavailable: 'wait'` — 3pay).
+     * And the WALLET currency must be one the channel serves: a USD-only
+     * payout channel (3pay, USDT at par) never pays out a EUR wallet — this was
+     * not checked at all before 0173.
+     */
+    if (!(await this.payoutMethodOffered(method))) {
+      throw new ValidationError('That withdrawal method is not available.');
+    }
+    if (payoutChannel.currencies !== 'any' && !payoutChannel.currencies.includes(currency)) {
+      throw new ValidationError(
+        `${method.name} pays out ${payoutChannel.currencies.join(', ')} only — choose a ` +
+          `${payoutChannel.currencies.join(' or ')} wallet or another method.`,
+      );
+    }
     const railScale = payoutChannel.settlementScale;
     const payableDecimals = railScale === null ? decimals : Math.min(decimals, railScale);
     if (amount.decimalPlaces() > payableDecimals) {
@@ -1330,10 +1347,12 @@ export class TransactionsService {
         reviewedBy: transactions.reviewedBy,
         reviewedAt: transactions.reviewedAt,
         settledAt: transactions.settledAt,
-        rivalWithdrawalId: transactions.rivalWithdrawalId,
-        rivalSubmittedAt: transactions.rivalSubmittedAt,
-        rivalNeedsAttention: transactions.rivalNeedsAttention,
-        rivalAttentionReason: transactions.rivalAttentionReason,
+        providerPayoutId: transactions.providerPayoutId,
+        providerSubmittedAt: transactions.providerSubmittedAt,
+        providerRequestAmount: transactions.providerRequestAmount,
+        providerFee: transactions.providerFee,
+        needsAttention: transactions.needsAttention,
+        attentionReason: transactions.attentionReason,
         providerNote: transactions.providerNote,
         providerCode: transactions.providerCode,
         channelCode: transactions.channelCode,
@@ -1485,10 +1504,18 @@ export class TransactionsService {
       reviewedBy: r.reviewedBy,
       reviewedAt: r.reviewedAt,
       settledAt: r.settledAt,
-      rivalWithdrawalId: r.rivalWithdrawalId,
-      rivalSubmittedAt: r.rivalSubmittedAt,
-      rivalNeedsAttention: r.rivalNeedsAttention,
-      rivalAttentionReason: r.rivalAttentionReason,
+      /* The payout's state at its provider (0173's neutral columns). */
+      providerPayoutId: r.providerPayoutId,
+      providerSubmittedAt: r.providerSubmittedAt,
+      providerRequestAmount: r.providerRequestAmount,
+      providerFee: r.providerFee,
+      needsAttention: r.needsAttention,
+      attentionReason: r.attentionReason,
+      /* The same, under the pre-0173 names — one release, for older consoles. */
+      rivalWithdrawalId: r.providerPayoutId,
+      rivalSubmittedAt: r.providerSubmittedAt,
+      rivalNeedsAttention: r.needsAttention,
+      rivalAttentionReason: r.attentionReason,
       providerNote: r.providerNote,
       user: {
         id: r.userId,
@@ -1751,11 +1778,11 @@ export class TransactionsService {
           NULL::uuid,                             -- reviewed_by
           NULL::timestamptz,                      -- reviewed_at
           le.created_at                           AS settled_at,
-          NULL::varchar,                          -- rival_external_id
-          NULL::varchar,                          -- rival_withdrawal_id
-          NULL::timestamptz,                      -- rival_submitted_at
-          FALSE,                                  -- rival_needs_attention
-          NULL::text,                             -- rival_attention_reason
+          NULL::varchar,                          -- provider_payment_id
+          NULL::varchar,                          -- provider_payout_id
+          NULL::timestamptz,                      -- provider_submitted_at
+          FALSE,                                  -- needs_attention
+          NULL::text,                             -- attention_reason
           NULL::text,                             -- provider_note
           le.created_at,
           /*
@@ -1852,11 +1879,11 @@ export class TransactionsService {
           t.reviewed_by,
           t.reviewed_at,
           t.settled_at,
-          t.rival_external_id,
-          t.rival_withdrawal_id,
-          t.rival_submitted_at,
-          t.rival_needs_attention,
-          t.rival_attention_reason,
+          t.provider_payment_id,
+          t.provider_payout_id,
+          t.provider_submitted_at,
+          t.needs_attention,
+          t.attention_reason,
           t.provider_note,
           t.created_at,
           /*
@@ -1916,11 +1943,11 @@ export class TransactionsService {
           NULL::uuid,                             -- reviewed_by
           NULL::timestamptz,                      -- reviewed_at
           tr.settled_at,
-          NULL::varchar,                          -- rival_external_id
-          NULL::varchar,                          -- rival_withdrawal_id
-          NULL::timestamptz,                      -- rival_submitted_at
-          FALSE,                                  -- rival_needs_attention
-          NULL::text,                             -- rival_attention_reason
+          NULL::varchar,                          -- provider_payment_id
+          NULL::varchar,                          -- provider_payout_id
+          NULL::timestamptz,                      -- provider_submitted_at
+          FALSE,                                  -- needs_attention
+          NULL::text,                             -- attention_reason
           NULL::text,                             -- provider_note
           tr.created_at,
           NULL::varchar                           AS arm_method_name,
@@ -1985,11 +2012,11 @@ export class TransactionsService {
           NULL::uuid,                             -- reviewed_by
           NULL::timestamptz,                      -- reviewed_at
           iwt.created_at                          AS settled_at,
-          NULL::varchar,                          -- rival_external_id
-          NULL::varchar,                          -- rival_withdrawal_id
-          NULL::timestamptz,                      -- rival_submitted_at
-          FALSE,                                  -- rival_needs_attention
-          NULL::text,                             -- rival_attention_reason
+          NULL::varchar,                          -- provider_payment_id
+          NULL::varchar,                          -- provider_payout_id
+          NULL::timestamptz,                      -- provider_submitted_at
+          FALSE,                                  -- needs_attention
+          NULL::text,                             -- attention_reason
           NULL::text,                             -- provider_note
           iwt.created_at,
           NULL::varchar                           AS arm_method_name,
@@ -2129,8 +2156,8 @@ export class TransactionsService {
      * would quietly start shipping any column added to `transactions` later,
      * including ones a client should not see.
      *
-     * ⚠️ It named the desk's payout state anyway — `rivalWithdrawalId`,
-     * `rivalSubmittedAt`, `rivalNeedsAttention`, `rivalAttentionReason` — plus
+     * ⚠️ It named the desk's payout state anyway — the provider payout id,
+     * the submission claim, the attention flag and its reason — plus
      * the rail key and a transfer destination, and shipped them to the client.
      * The shape is `TransactionView` now (transaction-view.ts), so the compiler
      * refuses a field `TransactionDto` does not declare.
@@ -2154,7 +2181,8 @@ export class TransactionsService {
         reviewedBy: row.reviewed_by,
         reviewedAt: instantOrNull(row.reviewed_at),
         settledAt: instantOrNull(row.settled_at),
-        rivalExternalId: row.rival_external_id,
+        providerPaymentId: row.provider_payment_id,
+        rivalExternalId: row.provider_payment_id,
         createdAt: instantOf(row.created_at),
         methodName: row.method_name,
         kind: row.kind,
@@ -2389,7 +2417,7 @@ export class TransactionsService {
       if (filter.kind) conditions.push(sql`combined.kind = ${filter.kind}`);
       if (!omit.state && filter.state) conditions.push(sql`combined.state = ${filter.state}`);
       if (filter.currency) conditions.push(sql`combined.currency = ${filter.currency}`);
-      if (filter.attention) conditions.push(sql`combined.rival_needs_attention`);
+      if (filter.attention) conditions.push(sql`combined.needs_attention`);
       /*
        * INCLUSIVE at both ends, and SARGABLE: the bounds are computed on the
        * constants, never by casting the column. `created_at::date >= x` wraps
@@ -2534,8 +2562,8 @@ export class TransactionsService {
       walletId: row.wallet_id,
       // The row's badge and its "Mark resolved" — the finish line of the
       // attention task the admin followed here (0140).
-      needsAttention: row.rival_needs_attention,
-      attentionReason: row.rival_attention_reason,
+      needsAttention: row.needs_attention,
+      attentionReason: row.attention_reason,
       providerNote: row.provider_note,
       user: {
         id: row.user_id,
@@ -2725,7 +2753,7 @@ export class TransactionsService {
    *
    * So it is logged with the transaction id and swallowed. The deposit stands.
    */
-  private async chainTransferToAccount(tx: TransactionRow): Promise<void> {
+  async chainTransferToAccount(tx: TransactionRow): Promise<void> {
     if (!tx.destinationTradingAccountId) return;
 
     try {
@@ -2779,8 +2807,8 @@ export class TransactionsService {
     return this.db.transaction(async (dbTx) => {
       const [cleared] = await dbTx
         .update(transactions)
-        .set({ rivalNeedsAttention: false, rivalAttentionReason: null })
-        .where(and(eq(transactions.id, id), eq(transactions.rivalNeedsAttention, true)))
+        .set({ needsAttention: false, attentionReason: null })
+        .where(and(eq(transactions.id, id), eq(transactions.needsAttention, true)))
         .returning({ id: transactions.id });
       if (!cleared) return false;
       await withinTx(dbTx);
@@ -3370,6 +3398,7 @@ export class TransactionsService {
      * entries at all.
      */
     let paymentUrl: string | null = null;
+    let paymentExpiresAt: Date | null = null;
     if (isGateway) {
       try {
         const started = await this.providers.startPayment(route, {
@@ -3388,17 +3417,25 @@ export class TransactionsService {
           // the original `whish`.
           successRedirectUrl: this.payerRedirectUrl(namespace, reference, 'success'),
           failureRedirectUrl: this.payerRedirectUrl(namespace, reference, 'failure'),
+          // For providers that take their callback per request (3pay).
+          callbackUrl: this.providerCallbackUrl(route.providerCode),
         });
         paymentUrl = started.paymentUrl;
+        paymentExpiresAt = started.expiresAt ?? null;
         /*
-         * Rival's externalId, stored the moment it is known. It is the ONLY
-         * key inbound webhook events address this payment by (their
-         * `transaction.id` is null on pending/failed), so a row without it is
-         * invisible to the event stream and settles by poll alone.
+         * The provider's id, stored the moment it is known (0173's neutral
+         * column). It is the ONLY key inbound events address this payment by,
+         * so a row without it is invisible to the event stream and settles by
+         * poll alone. The page and its expiry are kept for the client's
+         * waiting card, which must survive a reload.
          */
         await this.db
           .update(transactions)
-          .set({ rivalExternalId: started.externalId })
+          .set({
+            providerPaymentId: started.externalId,
+            providerPaymentUrl: started.paymentUrl,
+            providerPaymentExpiresAt: started.expiresAt ?? null,
+          })
           .where(eq(transactions.id, tx.id));
       } catch (error) {
         if (error instanceof PaymentIndeterminateError) {
@@ -3408,11 +3445,11 @@ export class TransactionsService {
            * poller can then ask directly; without one, the poller replays the
            * create under the same idempotency key and converges either way.
            */
-          const externalId = error.details?.['rivalExternalId'];
+          const externalId = error.details?.['providerPaymentId'];
           if (typeof externalId === 'string' && externalId.length > 0) {
             await this.db
               .update(transactions)
-              .set({ rivalExternalId: externalId })
+              .set({ providerPaymentId: externalId })
               .where(eq(transactions.id, tx.id));
           }
         }
@@ -3504,7 +3541,37 @@ export class TransactionsService {
        * number that is not how this method works.
        */
       paymentUrl,
+      ...this.hostedPaymentFacts(route, paymentExpiresAt),
     };
+  }
+
+  /**
+   * What the client's screen needs about a hosted payment beyond its link
+   * (0173): when the link stops accepting money, whether the provider sends
+   * the payer back afterwards (3pay does not — the portal then keeps them on a
+   * live waiting card), and what to send when it is not the wallet currency
+   * ("USDT on Tron (TRC20)", credited at par).
+   */
+  hostedPaymentFacts(
+    route: PaymentRoute,
+    expiresAt: Date | null,
+  ): { paymentExpiresAt: string | null; returnsAfterPayment: boolean; payWith: string | null } {
+    const channel = this.providers.findChannel(route, 'deposit');
+    return {
+      paymentExpiresAt: expiresAt ? expiresAt.toISOString() : null,
+      returnsAfterPayment: channel?.hostedPageReturns ?? true,
+      payWith: channel?.asset?.label ?? null,
+    };
+  }
+
+  /**
+   * Where a provider that takes its callback per request (3pay) reports back —
+   * the same address the console shows for it.
+   */
+  providerCallbackUrl(providerCode: string): string | undefined {
+    const adapter = this.providers.find(providerCode);
+    if (!adapter) return undefined;
+    return providerWebhookUrl(this.config.get<string>('API_PUBLIC_URL'), adapter) ?? undefined;
   }
 
   /** Where the CLIENT's browser lands after paying. The portal, not the API. */
@@ -3549,7 +3616,7 @@ export class TransactionsService {
    *     result pages; settlement never depended on the redirect (webhook +
    *     poll own it).
    */
-  private payerRedirectUrl(
+  payerRedirectUrl(
     method: string,
     reference: string,
     outcome: 'success' | 'failure',
@@ -3565,28 +3632,6 @@ export class TransactionsService {
     return isPayerReachableUrl(direct) ? direct : undefined;
   }
 
-  /**
-   * Settle a gateway deposit by ASKING THE PLATFORM, never by trusting the
-   * trigger.
-   *
-   * ## Still the security boundary, with a stronger trigger
-   *
-   * The old trigger was Whish's unauthenticated GET; today it is either the
-   * client's browser landing on the portal, Rival's SIGNED webhook, or the
-   * poll backstop. The webhook is cryptographically verified — but this method
-   * keeps the ask-don't-trust shape anyway, because it costs one cheap read of
-   * Rival's stored state and means every trigger, however authenticated,
-   * converges on the same authoritative answer. Money is credited on Rival's
-   * status, never on the shape of whatever prompted the question.
-   *
-   * Safe to call repeatedly, and called from three places for that reason.
-   * Whichever arrives first settles it; the rest are no-ops.
-   *
-   * Idempotency is the DATABASE's, twice over: the state transition is
-   * conditional on the row still being pending, and `WalletService.post` is
-   * guarded by `ledger_entries_wallet_reference_uq`. Neither is a
-   * check-then-insert, because every check-then-insert loses under concurrency.
-   */
   /**
    * The deposit's CURRENT state, for the owner only — reads nothing from the
    * provider and changes nothing. The GET the portal polls used to be
@@ -3612,7 +3657,7 @@ export class TransactionsService {
    * reference and its OWNER find it — never a guessed provider, which is what
    * the old `whish` fallback was.
    */
-  private async findDepositByReference(
+  async findDepositByReference(
     method: string | undefined,
     reference: string,
     ownerId: number | undefined,
@@ -3851,471 +3896,6 @@ export class TransactionsService {
     return row;
   }
 
-  async settleGatewayDeposit(
-    method: string | undefined,
-    reference: string,
-    /**
-     * The client asking, when one is. The provider callback and the poller
-     * pass nothing; the portal's own call MUST, or the route is an oracle for
-     * — and a way to drive the settlement of — anybody else's payment. A
-     * mismatch is a 404, never a 403: the difference is an existence oracle.
-     *
-     * `source` is who asked, for the provider event log: the webhook, or a
-     * poll (the poller, or the client's own status check).
-     */
-    opts: { ownerId?: number; source?: ProviderEventSource } = {},
-  ): Promise<{ state: string }> {
-    const tx = await this.findDepositByReference(method, reference, opts.ownerId);
-
-    // Not found is not an error worth shouting about: a status poll for a
-    // reference this system never issued is noise, not an incident.
-    if (!tx) throw new NotFoundError('No deposit matches that reference.');
-    if (opts.ownerId !== undefined && tx.userId !== opts.ownerId) {
-      throw new NotFoundError('No deposit matches that reference.');
-    }
-
-    // Already settled — nothing to ask, nothing to do.
-    if (tx.state !== 'pending') return { state: tx.state };
-
-    /*
-     * No Rival externalId means the create never confirmed — the row exists
-     * here and MAY exist at Rival. Nothing can be asked yet; the poller
-     * replays the create under the same idempotency key, which either adopts
-     * the orphan or mints the payment, and settlement proceeds from there.
-     */
-    if (!tx.rivalExternalId) return { state: tx.state };
-
-    // Asked of the route the deposit was FILED on (0168), never of the query's word.
-    const route: PaymentRoute = { providerCode: tx.providerCode, channelCode: tx.channelCode };
-    if (!this.providers.isRedirect(route)) return { state: tx.state };
-    const result = await this.providers.checkPayment(route, tx.rivalExternalId);
-
-    if (!result.settled) {
-      /*
-       * Still payable. `pending` at Whish INCLUDES "the client tried and
-       * failed" — the link stays live until it is paid or expires — so a
-       * failure callback must not mark the deposit failed. Doing so would tell a
-       * client their payment did not work while the link they are still looking
-       * at continues to accept money.
-       */
-      return { state: tx.state };
-    }
-
-    if (!result.paid) {
-      const updated = await this.db
-        .update(transactions)
-        .set({ state: 'failure', settledAt: new Date() })
-        .where(and(eq(transactions.id, tx.id), eq(transactions.state, 'pending')))
-        .returning();
-      if (updated[0]?.state === 'failure') {
-        await this.providerEvents.append({
-          providerCode: tx.providerCode,
-          eventType: 'payment.failed',
-          subjectId: tx.rivalExternalId,
-          providerType: result.rawStatus,
-          source: opts.source ?? 'poll',
-          transactionId: tx.id,
-          outcome: 'applied',
-        });
-        // FR-CORE-13: the client is told the outcome. Post-write and deduped —
-        // a replayed callback that lost the conditional UPDATE race lands here
-        // with zero rows and says nothing.
-        void this.notifications.notify({
-          recipient: { kind: 'client', id: tx.userId },
-          kind: 'deposit.failed',
-          params: { transactionId: tx.id, amount: tx.amount, currency: tx.currency },
-          dedupeKey: `deposit.failed:${tx.id}`,
-        });
-        void this.sendDepositOutcomeEmail(tx.userId, 'failed', tx.amount, tx.currency);
-      }
-      return { state: updated[0]?.state ?? tx.state };
-    }
-
-    /*
-     * PAID — but check WHAT was paid before crediting it.
-     *
-     * The amount credited is `tx.amount`, the figure this system recorded when
-     * it created the payment link, and that is correct: a Whish link is
-     * fixed-amount, so the client cannot pay a different sum. What was missing
-     * is any confirmation that the provider AGREES — its answer carries the
-     * amount and currency, and both were being read and thrown away.
-     *
-     * The two have never diverged here, and this is defence rather than a
-     * repair. But the failure it guards is the worst shape a deposit can take:
-     * a mismatch means crediting a client money nobody paid in, silently, with
-     * the ledger perfectly self-consistent afterwards and nothing to reconcile
-     * against except the provider's dashboard months later. Divergence needs
-     * only a re-used external id, a link edited on the provider side, or a
-     * future rail whose amount is chosen by the PAYER rather than by us.
-     *
-     * So it REFUSES rather than guessing — the same choice `reversed` above
-     * makes, and the same one `checkPlausible` makes in the commission engine.
-     * Crediting the smaller figure would be inventing a business rule nobody
-     * agreed to; crediting the larger gives money away. The row stays
-     * `pending`, which is the only state that keeps every option open: it can
-     * still be settled by hand once a human has decided what actually happened.
-     */
-    const claimed = result.amount;
-    if (claimed !== undefined && !toDecimal(claimed).equals(toDecimal(tx.amount))) {
-      const reason =
-        `The payment platform reports ${claimed} ${result.currency ?? tx.currency} for this ` +
-        `deposit, but it was created for ${tx.amount} ${tx.currency}. Nothing has been ` +
-        'credited — confirm which figure is real before settling this by hand.';
-      await this.db
-        .update(transactions)
-        .set({ rivalNeedsAttention: true, rivalAttentionReason: reason })
-        .where(eq(transactions.id, tx.id));
-      raiseAlert(
-        this.logger,
-        ALERT_KINDS.PAYMENT_STATE_MISMATCH,
-        'page',
-        'A settled deposit does not match the amount the payment platform reports. NOTHING ' +
-          'was credited. Reconcile against the platform before settling it by hand.',
-        {
-          transactionId: tx.id,
-          expected: tx.amount,
-          reported: claimed,
-          currency: tx.currency,
-          // The alert context takes string|number; the gateway's currency is
-          // optional, and a rail that reports an amount without one is telling
-          // us so rather than erroring.
-          reportedCurrency: result.currency ?? '(not reported)',
-        },
-      );
-      this.announceDepositAttention(tx, 'amount_mismatch');
-      await this.providerEvents.append({
-        providerCode: tx.providerCode,
-        eventType: 'payment.succeeded',
-        subjectId: tx.rivalExternalId,
-        providerType: result.rawStatus,
-        source: opts.source ?? 'poll',
-        transactionId: tx.id,
-        outcome: 'rejected',
-        reason: `Reported ${claimed} ${result.currency ?? tx.currency}, created for ${tx.amount} ${tx.currency}; nothing credited.`,
-      });
-      return { state: tx.state };
-    }
-
-    /*
-     * The credit and the state change share one transaction, so a deposit
-     * marked success with no ledger entry behind it — or a credit with no
-     * transaction pointing at it — is a state this system cannot reach.
-     */
-    const transitioned = await this.db.transaction(async (dbTx) => {
-      await this.wallets.post(
-        {
-          userId: tx.userId,
-          currency: tx.currency,
-          amount: tx.amount,
-          entryType: 'deposit',
-          referenceType: LEDGER_REFERENCE.transaction,
-          referenceId: tx.id,
-        },
-        dbTx,
-      );
-
-      const updated = await dbTx
-        .update(transactions)
-        .set({ state: 'success', settledAt: new Date() })
-        .where(and(eq(transactions.id, tx.id), eq(transactions.state, 'pending')))
-        .returning({ id: transactions.id });
-
-      /*
-       * FR-CORE-07: "the client is notified of the outcome." In the SAME
-       * transaction as the credit, so a deposit can never be credited with the
-       * client untold — and deduped on the transaction id, because provider
-       * callbacks are at-least-once and two replays racing past the
-       * `state !== 'pending'` check above must still converge on one row.
-       */
-      await this.notifications.notify(
-        {
-          recipient: { kind: 'client', id: tx.userId },
-          kind: 'deposit.succeeded',
-          params: { transactionId: tx.id, amount: tx.amount, currency: tx.currency },
-          dedupeKey: `deposit.succeeded:${tx.id}`,
-        },
-        dbTx,
-      );
-
-      /*
-       * THE AUDIT ROW, IN THE SAME TRANSACTION AS THE CREDIT.
-       *
-       * Every OTHER way money enters a wallet writes one: `deposit.approve`
-       * for an offline deposit a person credited, `wallet.credit` for a hand
-       * adjustment. The gateway path — the one a client actually uses — wrote
-       * nothing at all, so eight settled deposits totalling 3,190.12 existed in
-       * the ledger with no entry in the trail. The ledger says money arrived;
-       * only this says on whose authority, against which provider reference.
-       *
-       * `actorKind: 'system'` because a provider callback IS the system
-       * acting, and recording it as an unknown admin would be a false statement
-       * in the one record that must not contain any. The withdrawal side
-       * already settles this way (`withdrawal.settle`, SYSTEM_ACTOR); this is
-       * the deposit half of the same pattern.
-       *
-       * ⚠️ `details.userId` IS LOAD-BEARING, not decoration. The audit scope
-       * predicate resolves a `transaction` row's client from exactly that key,
-       * and a row it cannot resolve is KEPT for every reader — so omitting it
-       * would publish each settled deposit to desks holding no territory over
-       * that client.
-       *
-       * Written only when the conditional UPDATE actually won. This method is
-       * deliberately reachable twice at once (provider callback plus the
-       * client's browser landing), and the loser of that race must not add a
-       * second row for one payment.
-       */
-      const settled = updated.length > 0;
-      if (settled) {
-        await this.auditLog.record(
-          {
-            actorId: SYSTEM_ACTOR.id,
-            actorEmail: SYSTEM_ACTOR.email,
-            actorKind: 'system',
-            action: 'deposit.settle',
-            subjectType: 'transaction',
-            subjectId: tx.id,
-            details: {
-              userId: tx.userId,
-              amount: tx.amount,
-              currency: tx.currency,
-              method: tx.methodKey ?? tx.provider,
-              providerRef: tx.providerRef,
-            },
-          },
-          dbTx,
-        );
-      }
-
-      return settled;
-    });
-
-    /*
-     * The outcome EMAIL, post-commit and fire-and-forget like every decision
-     * mail — and gated on the transition ACTUALLY happening. This method is
-     * deliberately reachable twice at once (provider callback + the client's
-     * browser landing); the loser of that race is absorbed idempotently by the
-     * ledger constraint and the bell dedupe, and it must not mail a second
-     * "Deposit Confirmed" for the same money.
-     */
-    if (transitioned) {
-      await this.providerEvents.append({
-        providerCode: tx.providerCode,
-        eventType: 'payment.succeeded',
-        subjectId: tx.rivalExternalId,
-        providerType: result.rawStatus,
-        source: opts.source ?? 'poll',
-        transactionId: tx.id,
-        outcome: 'applied',
-      });
-      void this.sendDepositOutcomeEmail(tx.userId, 'succeeded', tx.amount, tx.currency);
-
-      /*
-       * A deposit aimed at a trading account becomes TWO movements, and this is
-       * the second one. Gated on `transitioned` for the same reason the mail is:
-       * this method is deliberately reachable twice at once — the provider
-       * callback and the client's browser landing race each other — and only the
-       * winner of the conditional UPDATE gets here. That is what stops one
-       * deposit chaining two transfers.
-       */
-      await this.chainTransferToAccount(tx);
-    }
-
-    /*
-     * NO COMMISSION IS ACCRUED HERE, and it must not be re-added as a share.
-     *
-     * A deposit is not revenue. The money still belongs to the client and is a
-     * liability against it, so paying a partner a percentage handed them the
-     * BROKER's funds — $700 on a $1,000 deposit at 70%, while the client kept
-     * the right to withdraw all $1,000. Unbounded, and it scaled with volume.
-     *
-     * Partners are paid on CLOSED POSITIONS, from the broker’s own earning on
-     * the trade. See `CommissionService.accrueForClosedPosition`.
-     */
-
-    return { state: 'success' };
-  }
-
-  /**
-   * Recover the Rival externalId for a pending deposit whose create never
-   * confirmed — the poller's repair for the indeterminate-create case.
-   *
-   * The create is REPLAYED under the same idempotency key (our reference).
-   * Rival's documented replay semantics make this converge: an existing
-   * payment is returned unchanged, a linkless orphan is re-minted, and only if
-   * nothing exists is a fresh payment created. No client-visible effect either
-   * way — the row stays pending and simply becomes addressable.
-   */
-  async recoverRivalExternalId(txId: string): Promise<boolean> {
-    const [tx] = await this.db
-      .select()
-      .from(transactions)
-      .where(eq(transactions.id, txId))
-      .limit(1);
-    if (!tx || tx.state !== 'pending' || tx.rivalExternalId || !tx.providerRef) return false;
-    const route: PaymentRoute = { providerCode: tx.providerCode, channelCode: tx.channelCode };
-    if (tx.direction !== 'deposit' || !this.providers.isRedirect(route)) return false;
-
-    try {
-      const started = await this.providers.startPayment(route, {
-        amount: tx.amount,
-        currency: tx.currency,
-        invoice: `Deposit ${tx.providerRef}`,
-        idempotencyKey: tx.providerRef,
-        successRedirectUrl: this.payerRedirectUrl(tx.provider, tx.providerRef, 'success'),
-        failureRedirectUrl: this.payerRedirectUrl(tx.provider, tx.providerRef, 'failure'),
-      });
-      await this.db
-        .update(transactions)
-        .set({ rivalExternalId: started.externalId })
-        .where(and(eq(transactions.id, tx.id), isNull(transactions.rivalExternalId)));
-      return true;
-    } catch (error) {
-      if (error instanceof PaymentIndeterminateError) {
-        const externalId = error.details?.['rivalExternalId'];
-        if (typeof externalId === 'string' && externalId.length > 0) {
-          await this.db
-            .update(transactions)
-            .set({ rivalExternalId: externalId })
-            .where(and(eq(transactions.id, tx.id), isNull(transactions.rivalExternalId)));
-          return true;
-        }
-      }
-      this.logger.warn(
-        `Could not recover a Rival externalId for deposit ${txId}: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-      return false;
-    }
-  }
-
-  /**
-   * Apply one verified Rival deposit event — the webhook's and the poller's
-   * entry point, mapping the event onto the state machine and DELEGATING every
-   * actual settlement to `settleGatewayDeposit`, so there is exactly one code
-   * path that credits a deposit no matter which trigger fired.
-   *
-   * The return value is for the webhook's response mapping; every outcome
-   * except `unknown-reference` (503, Rival retries — the create/webhook race)
-   * and `pending` (also 503: the event says settled, Rival's stored state does
-   * not agree YET) answers 200.
-   *
-   * ## The two cases that flag a human instead of moving money
-   *
-   *  - `completed` against a TERMINALLY FAILED row: Rival holds the client's
-   *    money, our row says the deposit failed. Auto-crediting would resurrect
-   *    a terminal state; silently ignoring would strand real money. The row is
-   *    flagged and someone is paged.
-   *  - `reversed`, in any state: a reversal of settled client funds is a
-   *    compensating-entry decision a HUMAN makes (§6.4 — the ledger is
-   *    append-only and corrections are deliberate). The event is recorded, the
-   *    ledger is not touched.
-   */
-  async applyRivalDepositEvent(
-    rivalExternalId: string,
-    event: 'completed' | 'failed' | 'reversed',
-    source: ProviderEventSource = 'webhook',
-  ): Promise<
-    'applied' | 'duplicate' | 'stale' | 'pending' | 'needs-attention' | 'unknown-reference'
-  > {
-    const [tx] = await this.db
-      .select()
-      .from(transactions)
-      .where(eq(transactions.rivalExternalId, rivalExternalId))
-      .limit(1);
-    // The event log's row for this report. A deposit that settles or fails is
-    // recorded by `settleGatewayDeposit` itself, with what Rival's stored state
-    // actually said; these are the reports it never reaches.
-    const logged = (outcome: ProviderEventOutcome, reason: string) =>
-      this.providerEvents.append({
-        providerCode: 'rival',
-        eventType: RIVAL_DEPOSIT_EVENT_TYPES[event],
-        subjectId: rivalExternalId,
-        providerType: `transaction.${event}`,
-        source,
-        transactionId: tx?.id ?? null,
-        outcome,
-        reason,
-      });
-
-    // The create/webhook race: Rival's first delivery can outrun the UPDATE
-    // that stores the externalId. Answered as retryable — Rival's 60-second
-    // backoff comfortably outruns the race, and the poller sits behind it.
-    if (!tx) {
-      await logged('failed', 'No deposit carries this Rival payment yet; Rival retries.');
-      return 'unknown-reference';
-    }
-
-    if (event === 'reversed') {
-      await this.db
-        .update(transactions)
-        .set({
-          rivalNeedsAttention: true,
-          rivalAttentionReason:
-            'The platform REVERSED this deposit after it settled. The client wallet has not ' +
-            'been debited — a compensating entry is a human decision (§6.4). Reconcile ' +
-            "against the platform's dashboard.",
-        })
-        .where(eq(transactions.id, tx.id));
-      raiseAlert(
-        this.logger,
-        ALERT_KINDS.PAYMENT_STATE_MISMATCH,
-        'page',
-        'Rival reversed a deposit. The client wallet has NOT been debited — a compensating ' +
-          'entry is a human decision. Reconcile the transaction against the Rival dashboard.',
-        { transactionId: tx.id, rivalExternalId, state: tx.state },
-      );
-      this.announceDepositAttention(tx, 'reversed');
-      await logged('rejected', 'Reversed after it settled; nothing is debited without a person.');
-      return 'needs-attention';
-    }
-
-    if (tx.state === 'pending') {
-      const { state } = await this.settleGatewayDeposit(tx.provider, tx.providerRef ?? '', {
-        source,
-      });
-      if (state !== 'pending') return 'applied';
-      await logged('failed', 'Rival still reports the payment pending; checked again later.');
-      return 'pending';
-    }
-
-    if (event === 'completed') {
-      if (tx.state === 'success') return 'duplicate';
-      /*
-       * PAID at Rival, terminal-not-success here. Never resurrected: a state
-       * machine that can be argued backwards by an event replay is not a
-       * state machine. Flagged for the reconciliation an operator does with
-       * both dashboards open.
-       */
-      await this.db
-        .update(transactions)
-        .set({
-          rivalNeedsAttention: true,
-          rivalAttentionReason:
-            'The platform reports this deposit PAID, but this side had already recorded it ' +
-            'as failed. The money is at the platform and no wallet was credited — ' +
-            'reconcile by hand.',
-        })
-        .where(eq(transactions.id, tx.id));
-      raiseAlert(
-        this.logger,
-        ALERT_KINDS.PAYMENT_STATE_MISMATCH,
-        'page',
-        'Rival reports a deposit PAID against a CRM row that is terminally failed. The money ' +
-          'is at Rival and no wallet was credited — reconcile by hand.',
-        { transactionId: tx.id, rivalExternalId, state: tx.state },
-      );
-      this.announceDepositAttention(tx, 'paid_after_failure');
-      await logged('rejected', 'Reported paid after it was recorded as failed; a person decides.');
-      return 'needs-attention';
-    }
-
-    // A `failed` event against a terminal row: at-least-once delivery echoing
-    // history. Never regress a terminal state.
-    await logged('ignored', `Already ${tx.state}; a terminal deposit never moves back.`);
-    return 'stale';
-  }
-
   /**
    * Put a deposit only a person can settle in front of the people who can.
    *
@@ -4328,7 +3908,7 @@ export class TransactionsService {
    * resolved") or settles the row — migration 0140's trigger, not this code.
    * Post-write and never-throws, like every fan-out.
    */
-  private announceDepositAttention(
+  announceDepositAttention(
     tx: { id: string; userId: number; amount: string; currency: string },
     reason: DepositAttentionReason,
   ): void {
@@ -4347,7 +3927,7 @@ export class TransactionsService {
    * helper is `void`-dispatched, so a rejection would surface as an unhandled
    * rejection about a courtesy.
    */
-  private async sendDepositOutcomeEmail(
+  async sendDepositOutcomeEmail(
     userId: number,
     outcome: 'succeeded' | 'failed' | 'rejected',
     amount: string,

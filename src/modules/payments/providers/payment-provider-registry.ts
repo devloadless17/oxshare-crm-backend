@@ -8,6 +8,7 @@ import {
   type PaymentProviderAdapter,
   type PaymentRoute,
   type PaymentStatus,
+  type PayoutRail,
   type StartedPayment,
   type StartPaymentInput,
 } from './payment-provider';
@@ -200,6 +201,21 @@ export class PaymentProviderRegistry {
     return this.findChannel(route, 'payout')?.flow === 'automated';
   }
 
+  /**
+   * The provider's payout operations for an AUTOMATED payout route, or
+   * undefined for a route the desk pays. The boot guarantees every automated
+   * channel has them (`assertWellDeclared`), so undefined never means "an
+   * automated route nobody can submit".
+   */
+  payoutRail(
+    route: PaymentRoute,
+  ): { adapter: PaymentProviderAdapter; channel: PaymentChannel; rail: PayoutRail } | undefined {
+    const adapter = this.providers.get(route.providerCode);
+    const channel = this.findChannel(route, 'payout');
+    if (!adapter || !channel || channel.flow !== 'automated' || !adapter.payouts) return undefined;
+    return { adapter, channel, rail: adapter.payouts };
+  }
+
   /** The decimal places the route's provider settles in, or null for the platform's own. */
   settlementScale(route: PaymentRoute, direction: ChannelDirection): number | null {
     return this.findChannel(route, direction)?.settlementScale ?? null;
@@ -223,6 +239,25 @@ export class PaymentProviderRegistry {
     return adapter.checkPayment(channel, externalId);
   }
 
+  /**
+   * A hosted payment whose start never answered: found or re-made at the
+   * provider, or null when it provably holds none. A provider that cannot
+   * recover answers null — the start is then judged by age alone.
+   */
+  async recoverPayment(
+    route: PaymentRoute,
+    input: StartPaymentInput,
+  ): Promise<StartedPayment | null> {
+    const { adapter, channel } = this.redirect(route);
+    return adapter.recoverPayment ? adapter.recoverPayment(channel, input) : null;
+  }
+
+  /** Ask the provider to re-check a payment upstream, where it can. */
+  async refreshPayment(route: PaymentRoute, externalId: string): Promise<void> {
+    const { adapter, channel } = this.redirect(route);
+    if (adapter.refreshPayment) await adapter.refreshPayment(channel, externalId);
+  }
+
   private redirect(route: PaymentRoute): {
     adapter: PaymentProviderAdapter;
     channel: PaymentChannel;
@@ -234,6 +269,21 @@ export class PaymentProviderRegistry {
     }
     return { adapter, channel };
   }
+}
+
+/**
+ * Where a provider delivers its events, as the provider must be told it — the
+ * console shows it, and providers that take a callback per request (3pay) are
+ * sent it. Null for the built-in desk, and when the API has no public address
+ * (then no provider can reach it anyway).
+ */
+export function providerWebhookUrl(
+  apiPublicUrl: string | undefined,
+  adapter: Pick<PaymentProviderAdapter, 'builtIn' | 'code' | 'webhookPath'>,
+): string | null {
+  if (adapter.builtIn || !apiPublicUrl) return null;
+  const path = adapter.webhookPath ?? `/v1/payments/providers/${adapter.code}/webhook`;
+  return `${apiPublicUrl.replace(/\/+$/, '')}${path}`;
 }
 
 /**
@@ -250,17 +300,39 @@ export function depositNamespace(route: PaymentRoute, methodKey: string): string
   return `${route.providerCode}_${route.channelCode}`;
 }
 
-/** An adapter that declares two channels with one identity is refused at boot. */
-function assertWellDeclared(adapter: PaymentProviderAdapter): void {
+/**
+ * An adapter whose declarations the core cannot honour is refused at BOOT —
+ * never discovered by a client's money. Two channels with one identity; a
+ * payout with nowhere to send it; an AUTOMATED payout channel on a provider
+ * with no payout operations (approval would mark it paid with nothing sent —
+ * the failure the 0173 core exists to make impossible); a hosted deposit the
+ * core cannot open or ask about; deposit-only declarations on anything else.
+ */
+export function assertWellDeclared(adapter: PaymentProviderAdapter): void {
   const seen = new Set<string>();
   for (const channel of adapter.channels) {
     const identity = `${channel.direction}:${channel.code}`;
+    const named = `${adapter.code}'s ${channel.direction} channel ${channel.code}`;
     if (seen.has(identity)) {
       throw new Error(`${adapter.code} declares the ${identity} channel twice.`);
     }
     seen.add(identity);
     if (channel.direction === 'payout' && !channel.destination) {
-      throw new Error(`${adapter.code}'s payout channel ${channel.code} declares no destination.`);
+      throw new Error(`${named} declares no destination.`);
+    }
+    if (channel.flow === 'automated' && !adapter.payouts) {
+      throw new Error(`${named} is automated, but ${adapter.code} has no payout operations.`);
+    }
+    if (channel.flow === 'redirect' && (!adapter.startPayment || !adapter.checkPayment)) {
+      throw new Error(`${named} is a hosted deposit ${adapter.code} cannot open or report on.`);
+    }
+    const hostedOnly =
+      channel.creditPolicy !== undefined || channel.hostedPageReturns !== undefined;
+    if (hostedOnly && channel.flow !== 'redirect') {
+      throw new Error(`${named} declares hosted-deposit behaviour but is not a hosted deposit.`);
+    }
+    if (channel.asset && channel.currencies === 'any') {
+      throw new Error(`${named} moves ${channel.asset.code} but names no wallet currency for it.`);
     }
   }
 }

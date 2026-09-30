@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsBoolean, IsIn, IsObject, IsOptional } from 'class-validator';
+import { IsBoolean, IsIn, IsObject, IsOptional, IsString, MaxLength } from 'class-validator';
 import { NoClientFields } from '../../../common/security/client-field.decorator';
 import { METHOD_AVAILABILITIES, type MethodAvailability } from '../providers/provider-status';
 
@@ -97,6 +97,55 @@ export class ProviderChannelDto {
 
   @ApiProperty({ description: 'Deposits paid outside the platform may ask for a receipt.' })
   acceptsReceipt: boolean;
+
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    example: 'USDT on Tron (TRC20)',
+    description:
+      'What moves at the provider when it is not the wallet currency — credited and paid at ' +
+      'par (0173). Null when the provider moves the wallet currency itself.',
+  })
+  assetLabel: string | null;
+
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    enum: ['exact', 'received'],
+    description:
+      'Hosted deposits: `exact` credits the link’s amount (any other figure is a person’s ' +
+      'decision); `received` credits what arrived, rounded down. Null on other channels.',
+  })
+  creditPolicy: 'exact' | 'received' | null;
+
+  @ApiProperty({
+    description:
+      'The admin’s switch for this channel in this direction (0173). Off: its methods are ' +
+      'hidden and new movements refused; movements already under way still finish.',
+  })
+  enabled: boolean;
+
+  @ApiProperty({ type: String, nullable: true, description: 'Why it was switched off.' })
+  offReason: string | null;
+
+  @ApiProperty({ type: String, nullable: true, description: 'When it was switched off (ISO).' })
+  offSince: string | null;
+}
+
+/** Switch one channel on or off in one direction (0173). */
+export class SetProviderChannelDto {
+  @ApiProperty()
+  @IsBoolean()
+  enabled: boolean;
+
+  @ApiPropertyOptional({
+    maxLength: 500,
+    description: 'Required to switch a channel off — shown on the desk and the methods.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  reason?: string;
 }
 
 /** A method bound to one of the provider's channels. */

@@ -186,4 +186,30 @@ export class DepositRequestDto {
       'that method works.',
   })
   paymentUrl: string | null;
+
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    description:
+      'When the hosted page stops accepting money (ISO), when the provider says — the waiting ' +
+      'card’s countdown (0173). Null when unknown or for a manual method.',
+  })
+  paymentExpiresAt: string | null;
+
+  @ApiProperty({
+    description:
+      'Whether the provider sends the payer back here after paying (0173). False (3pay) means: ' +
+      'open `paymentUrl` in a new tab and keep the client on a live waiting card.',
+  })
+  returnsAfterPayment: boolean;
+
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    example: 'USDT on Tron (TRC20)',
+    description:
+      'What to send when it is not the wallet currency — credited at par. Null when the ' +
+      'client pays in the wallet currency itself.',
+  })
+  payWith: string | null;
 }

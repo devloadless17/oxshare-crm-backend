@@ -105,7 +105,7 @@ export class ReplayNonceStore {
       // REDIS_URL wherever the bridge secret is set. Kept as a refusal rather
       // than a non-null assertion, because the failure mode this guards is
       // "accepted silently".
-      throw new AuthenticationError(
+      throw new ReplayCheckUnavailableError(
         'Replay protection is unavailable: no Redis connection is configured. Refusing the ' +
           'request rather than accepting one that cannot be checked.',
       );
@@ -118,7 +118,7 @@ export class ReplayNonceStore {
       this.logger.error(
         `Replay check failed against Redis: ${error instanceof Error ? error.message : String(error)}`,
       );
-      throw new AuthenticationError(
+      throw new ReplayCheckUnavailableError(
         'Replay protection is unavailable. Refusing the request rather than accepting one that ' +
           'cannot be checked.',
       );
@@ -133,3 +133,13 @@ export class ReplayNonceStore {
     }
   }
 }
+
+/**
+ * The replay check could not RUN (no Redis, or Redis failed) — as opposed to a
+ * genuine replay. Still an `AuthenticationError`, so every caller that refuses
+ * on one refuses on this exactly as before; a caller whose sender RETRIES on a
+ * 5xx (Rival's webhook) can tell the two apart and answer "try again" rather
+ * than a 4xx the sender treats as permanent — which dropped a verified event
+ * for good whenever Redis blinked (found 30 Sep 2026).
+ */
+export class ReplayCheckUnavailableError extends AuthenticationError {}

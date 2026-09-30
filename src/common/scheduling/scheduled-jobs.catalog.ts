@@ -63,7 +63,8 @@ export const SCHEDULED_JOBS = [
     max: 3600,
   },
   {
-    key: 'rival.reconcile',
+    // Every payment provider's poll behind its webhook (0173; `rival.reconcile` before).
+    key: 'payments.reconcileProviders',
     group: 'money',
     runsOn: 'crm',
     defaultSeconds: 300,

@@ -612,15 +612,65 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
    * are the money-out trail between the two systems, beside the existing
    * approve/reject/settle rows.
    */
+  /*
+   * The payments core (0173), for every provider: the submit (carrying the
+   * provider's id, or its refusal), a lost answer ADOPTED from the provider's
+   * own records, and a refusal landing back as a refund. Rival's names below
+   * stay for the rows already written.
+   */
+  {
+    action: 'withdrawal.provider.submit',
+    label: 'Withdrawal sent to the payment provider',
+    group: 'Compliance',
+  },
+  {
+    action: 'withdrawal.provider.adopt',
+    label: 'Lost payout answer recovered from the provider',
+    group: 'Compliance',
+  },
+  {
+    action: 'withdrawal.provider.reject',
+    label: 'Withdrawal refused by the payment provider (refunded)',
+    group: 'Compliance',
+  },
+  {
+    action: 'deposit.settle_late',
+    label: 'Deposit credited after its payment link expired',
+    group: 'Compliance',
+  },
+  {
+    action: 'deposit.credit_received',
+    label: 'Flagged deposit credited with what arrived',
+    group: 'Compliance',
+  },
+  {
+    action: 'deposit.close_without_credit',
+    label: 'Flagged deposit closed with no credit',
+    group: 'Compliance',
+  },
+  {
+    action: 'payment_provider.channel_enable',
+    label: 'Payment channel switched on',
+    group: 'Security',
+  },
+  {
+    action: 'payment_provider.channel_disable',
+    label: 'Payment channel switched off',
+    group: 'Security',
+  },
   {
     action: 'withdrawal.rival.submit',
     label: 'Withdrawal submitted to the payment platform',
     group: 'Compliance',
+    // Written until 0173; `withdrawal.provider.submit` since.
+    historical: true,
   },
   {
     action: 'withdrawal.rival.reject',
     label: 'Withdrawal refused by the payment platform (refunded)',
     group: 'Compliance',
+    // Written until 0173; `withdrawal.provider.reject` since.
+    historical: true,
   },
   { action: 'withdrawal.cancel', label: 'Approved withdrawal cancelled', group: 'Compliance' },
 

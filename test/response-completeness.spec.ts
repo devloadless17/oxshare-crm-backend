@@ -8,7 +8,7 @@ import { eq } from 'drizzle-orm';
 import { IbPartnerDetailDto } from '../src/modules/ib/dto/ib-application.dto';
 import { CreatedMt5AccountDto } from '../src/modules/trading/mt5/dto/mt5-account.dto';
 import { Mt5BridgeClient } from '../src/modules/trading/mt5/mt5-bridge.client';
-import { RivalWithdrawalsService } from '../src/modules/payments/rival/rival-withdrawals.service';
+import { PayoutEngine } from '../src/modules/payments/core/payout-engine.service';
 import {
   admins,
   ibAccounts,
@@ -125,16 +125,29 @@ beforeAll(async () => {
       },
       {
         /*
-         * All THREE methods the rest of the code calls, not just the one this
-         * file drives. `willPayOut` stays FALSE so the no-rail behaviour the
+         * Every method the rest of the code calls, not just the one this
+         * file drives. `decide` stays DESK so the no-rail behaviour the
          * transition cases depend on is unchanged — approve settles in one
          * step, exactly as it does without this stub.
          */
-        token: RivalWithdrawalsService,
+        token: PayoutEngine,
         value: {
+          // The desk pays — the no-rail behaviour these journeys depend on.
+          decide: () => Promise.resolve({ kind: 'desk' }),
+          plan: () =>
+            Promise.resolve({
+              payer: 'desk',
+              provider: null,
+              reason: null,
+              gross: null,
+              fee: null,
+              net: null,
+            }),
           submitApproved: () => Promise.resolve(),
+          resubmit: () => Promise.resolve(),
           cancelApproved: () => Promise.resolve(),
-          willPayOut: () => Promise.resolve(false),
+          reconcile: () => Promise.resolve(),
+          onNotice: () => Promise.resolve('ignored'),
         },
       },
     ],

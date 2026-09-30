@@ -1258,9 +1258,10 @@ Three layers, and every money path reads them rather than a name (`modules/payme
   services only.
 - **State, one rule** (`provider-status.ts`): connected / unverified / failing / off / not_configured
   / sandbox_refused. A DEPOSIT method is offered only while its provider is usable (`availability`),
-  and switching one on while it is not is refused with the reason. A PAYOUT method is never hidden
-  for its provider's sake: the desk pays an automated one by hand while the provider is off
-  (`paidBy`).
+  and switching one on while it is not is refused with the reason. A PAYOUT method's availability
+  and payer come from `payoutMethodStatus`: the desk pays an automated one by hand while its
+  provider is off only if the provider declares `whenUnavailable: 'desk'` (Rival); a `wait`
+  provider's methods are hidden. A switched-off channel hides its methods either way (0173).
 - **Settings are the adapter's declared fields**, edited on `admin/payment-providers`
   (`payments.providers.view/.edit`, granted by 0168 to whoever held `settings.rival.*`). Secrets are
   sealed and write-only; a GENERATED one (a webhook key) is only ever rotated and shown once; a URL
@@ -1274,22 +1275,104 @@ Three layers, and every money path reads them rather than a name (`modules/payme
   (applied / ignored / rejected / failed). One row per fact by `UNIQUE(provider_code, event_key)`;
   only a `failed` row is replaced by its retry. It never throws and never runs inside a money
   transaction.
-- **Inbound events**: `POST /v1/payments/providers/:code/webhook` dispatches to the provider's
-  `ProviderWebhookReceiver`; Rival keeps `/v1/payments/rival/webhook` (its dashboard holds it).
+- **Inbound events**: `POST /v1/payments/providers/:code/webhook` → the provider's receiver →
+  the core's `ProviderWebhookIngress`. Rival keeps `/v1/payments/rival/webhook` (its dashboard holds
+  it) through the generic legacy door `POST /v1/payments/:code/webhook`, open only to an adapter
+  whose `webhookPath` is exactly that address.
 
-### Adding a provider (the USDT one is next)
+### The payments CORE: adapters translate, the core decides (0173, 30 Sep 2026)
 
-1. An adapter in `providers/<code>.provider.ts`: its channels, config fields, `isUsable()` (switched
-   on, set up, and refusing a sandbox row on a production deployment), `testConnection`,
-   `settingsChanged`, and `startPayment`/`checkPayment` for any `redirect` deposit channel.
-2. Register it in `PaymentsModule` (`PAYMENT_PROVIDER_ADAPTERS`) and in the `ADAPTERS` list of
-   `test/payment-provider-contract.spec.ts`, which it must pass.
-3. A migration seeding its `payment_providers` row (disabled, empty).
-4. Its inbound events: a `ProviderWebhookReceiver` in `PAYMENT_PROVIDER_WEBHOOKS` — verify the raw
-   bytes, refuse replays, record each report with `PaymentProviderEventsStore.append`.
-5. Payouts it automates: its own submit/reconcile service on a `JobLeaseService` lease, as
-   `RivalWithdrawalsService` does. (The provider-neutral reference/attention columns that replace
-   `rival_*` land with the first second provider.)
+The money flows were Rival's until 0173: a Rival-only payout service on `rival_*` columns, approval
+hardcoded to Rival, deposit settlement reading `rival_external_id`. A second provider would have
+copied the riskiest code. Now the owner's rule (30 Sep 2026: "world class") is structural:
+
+| `modules/payments/core/` — DECIDES, written once                                                                                                     | `modules/payments/providers/<code>/` — TRANSLATES, one provider each                     |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `payout-engine.service.ts`: claim first, hold an unknown outcome, adopt a lost payout, poll, settle/refund, shortfall, disagreements, cancel, resend | the HTTP client, auth, timeouts; every answer mapped to accepted / refused / **unknown** |
+| `hosted-deposits.service.ts`: the ONE path that credits a hosted deposit; the asset check; the credit policy; late credit; the desk's finish actions | signature verification; a delivery turned into NOTICES                                   |
+| `provider-reconcile.scheduler.ts`: `payments.reconcileProviders`, one lease per provider                                                             | the provider's status words → ours                                                       |
+| `provider-webhook-ingress.service.ts`: notices → the engines                                                                                         | channels, config fields, validators, the fee quote                                       |
+| `channel-switches.service.ts`: a network on/off per direction                                                                                        | nothing that touches money or the database                                               |
+
+- **LINT ENFORCES IT** (`eslint.config.mjs`, `PROVIDER_BOUNDARY` / `NO_PROVIDER_FOLDER`; proven in
+  `test/lint-composition.spec.ts`):
+  - a provider folder may import only the contract (`../payment-provider`), `common/`, and its own
+    settings stores — never another provider, the core, a feature module, drizzle or the money
+    stores. **An adapter cannot move money.**
+  - Nothing in the payments module outside `providers/<code>/` imports a provider folder, except
+    `payments.module.ts`, which wires them.
+- **A provider's differences are DECLARED** (`providers/payment-provider.ts`), never an `if` on its
+  code:
+  - `payouts.idempotency`: `key` | `reference` (Rival: `crm:<id>` notes) | `none` (3pay).
+  - `payouts.whenUnavailable`: `desk` (Rival: the desk pays by hand while it is off) | `wait` (3pay:
+    hidden and paused).
+  - `payouts.ratePerMinute`, `cancellable`, `quote` (the fee gross-up), `adoptWindowMs`.
+  - A channel's `creditPolicy` (`exact` | `received`), `asset` (what moves at the provider, at par
+    with the wallet currency), `hostedPageReturns`, `destination.normalize`.
+  - A new KIND of money movement (cards/chargebacks, a static address per client, FX with rates)
+    is a core feature, added once.
+- **The boot refuses** an automated payout channel without payout operations (approval would mark
+  it PAID with nothing sent), or a hosted deposit its adapter cannot open or check
+  (`assertWellDeclared`).
+- **THE DOORBELL RULE.** A verified webhook never moves money by itself. Its receiver returns
+  notices; the core re-reads the movement through the adapter and applies what the provider's API
+  says. Replays, reordering and a vocabulary mismatch cannot change state. The one exception is an
+  `alarm` (a reversal of a settled deposit): it moves no money and only flags a person.
+- **The neutral columns** (0173): `provider_payment_id`, `provider_payout_id`,
+  `provider_submitted_at`, `payout_fingerprint`, `provider_request_amount`, `provider_fee`,
+  `provider_net_amount`, `provider_amount_received`, `requested_amount`, `provider_status`,
+  `provider_checked_at`, `needs_attention`, `attention_reason`, plus
+  `provider_payment_url` / `_expires_at`.
+  - **Read and write these, never `rival_*`.** A BEFORE trigger (`transactions_sync_rival_columns`)
+    mirrors the pairs so the previous build still works after a rollback: attention on every row,
+    ids and claim on Rival's rows. It is NAMED to fire after `transactions_route_default`, because
+    same-kind triggers fire in name order. A later migration drops both.
+  - The 0140 task trigger fires on both flags.
+- **THE FINGERPRINT LOCK** (`transactions_payout_fingerprint_uq`). A provider with no idempotency
+  key and no reference can only be searched by what it was asked. The claim writes a hash of
+  (channel, normalized destination, gross, currency). At most ONE unresolved payout per fingerprint
+  exists, so an identical second payout WAITS (a queue, never a guess) and a lost answer is
+  attributable.
+- **A lost payout is never resent automatically.**
+  - Unknown → held.
+  - Exactly one unrecorded candidate in the provider's complete records → adopted.
+  - Several → a person.
+  - None after the adoption window → the claim is cleared, and a PERSON chooses Resend
+    (`POST admin/withdrawals/:id/provider-submit`; `rival-submit` is an alias for one release) or
+    cancel.
+  - A 429 (`refused` with `retryAfterMs`) is "definitely not created", so it requeues itself.
+- **Deposits.**
+  - `exact` (Rival): any other figure is a person's, and a failed row is never revived.
+  - `received` (3pay): credit what arrived, ROUNDED DOWN to the wallet's places, with `amount`
+    becoming the credited figure and `requested_amount` keeping the ask. Over the method's maximum
+    → credited AND flagged `over_limit`. A late confirmation on an expired link is credited
+    (`failure → success`, audited `deposit.settle_late`).
+  - Either policy: the wrong asset → `wrong_asset`, and money on an unconfirmed link →
+    `unconfirmed_funds`, both a person's.
+  - A flagged deposit leaves the sweep, and is finished with `PATCH
+admin/transactions/:id/attention/finish-deposit` (`credit` | `close`, a reason, audited).
+- **Channel switches** (`payment_provider_channels`, no row = ON, a reason required to switch
+  off; `PUT admin/payment-providers/:code/channels/:direction/:channel`):
+  - Off hides its methods (`channel_off`), refuses new movements, and pauses approval and
+    submission.
+  - Money already moving still finishes.
+- **Withdrawals must match the payout channel's currencies** at the door (not checked before 0173).
+
+### Adding a provider
+
+1. A folder `providers/<code>/`: the adapter (channels, config fields with `validate`, `isUsable()`
+   refusing sandbox on production, `testConnection`, `settingsChanged`), and for:
+   - a `redirect` deposit channel: `startPayment` / `checkPayment` (+ `recoverPayment`, and
+     `refreshPayment` if it can);
+   - an `automated` payout channel: a `PayoutRail` declaring its idempotency, `whenUnavailable`,
+     rate and window.
+2. A `ProviderWebhookReceiver` that verifies the raw bytes and returns NOTICES (it applies
+   nothing).
+3. Register both in `PaymentsModule`, and the adapter in `test/payment-provider-contract.spec.ts`'s
+   `ADAPTERS`.
+4. A migration seeding its `payment_providers` row (disabled, empty).
+5. A simulator spec for its translation. The core's behaviour is already held by
+   `payments-core.spec.ts`.
 
 ## An offline deposit carries the details that identify the payment (0163, 29 Sep 2026)
 

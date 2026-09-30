@@ -1,7 +1,7 @@
 import { ALL_PERMISSIONS } from './support/all-permissions';
 import { beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { RivalSettingsService } from '../src/modules/settings/rival-settings.service';
-import { RivalConfigService } from '../src/modules/payments/rival/rival-config.service';
+import { RivalConfigService } from '../src/modules/payments/providers/rival/rival-config.service';
 import { openSecret, sealSecret } from '../src/common/security/secret-box';
 import type { Actor } from '../src/common/security/actor';
 import type { RivalSettingsRow, RivalSettingsWrite } from '../src/store/app-settings.store';

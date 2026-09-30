@@ -12,12 +12,14 @@ import { notificationsStub } from './notifications-stub';
 import { transferExecutorStubAs, transfersStubAs } from './transfer-chain-stub';
 import { gatewayStub } from './gateway-stub';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
+import { HostedDepositsService } from '../src/modules/payments/core/hosted-deposits.service';
+import type { ProviderNotice } from '../src/modules/payments/providers/payment-provider';
 
 /**
- * The Rival deposit event mapping, against real Postgres.
- *
- * `applyRivalDepositEvent` is the webhook's and the poller's shared entry
- * point, and every row of its mapping table is asserted here, including the
+ * Rival's hosted deposits through the payments CORE (0173), against real
+ * Postgres. `HostedDepositsService.onNotice` is what every verified webhook
+ * reaches — a doorbell: it asks the provider (the stub below) and applies THAT
+ * — and every row of its mapping table is asserted here, including the
  * ones whose whole job is to do NOTHING to a balance: an out-of-order replay,
  * a late completion against a terminally failed row, a reversal. In a money
  * system the refusals are as load-bearing as the credit.
@@ -38,16 +40,36 @@ const bell = notificationsStub();
 let wallets: WalletService;
 let transactions: TransactionsService;
 let gateway: ReturnType<typeof gatewayStub>;
+let deposits: HostedDepositsService;
+
+/** A verified Rival deposit event, as its receiver turns it into a notice. */
+function event(externalId: string, kind: 'completed' | 'failed' | 'reversed'): ProviderNotice {
+  return {
+    subject: 'payment',
+    providerId: externalId,
+    providerType: `transaction.${kind}`,
+    eventType:
+      kind === 'completed'
+        ? 'payment.succeeded'
+        : kind === 'failed'
+          ? 'payment.failed'
+          : 'payment.reversed',
+    kind: kind === 'reversed' ? 'alarm' : 'status',
+  };
+}
+const applyEvent = (externalId: string, kind: 'completed' | 'failed' | 'reversed') =>
+  deposits.onNotice('rival', event(externalId, kind));
 
 beforeAll(async () => {
   ctx = await startMoneyTestDb();
   wallets = new WalletService(ctx.db);
   const currencies = new CurrenciesService(ctx.db, auditStubAs());
   gateway = gatewayStub();
+  const paymentMethods = new PaymentMethodsService(ctx.db, currencies, auditStubAs(), gateway);
   transactions = new TransactionsService(
     wallets,
     ctx.db,
-    new PaymentMethodsService(ctx.db, currencies, auditStubAs(), gateway),
+    paymentMethods,
     currencies,
     gateway,
     new ConfigService(),
@@ -55,7 +77,16 @@ beforeAll(async () => {
     bell,
     transfersStubAs(),
     transferExecutorStubAs(),
+  );
+  deposits = new HostedDepositsService(
+    ctx.db,
+    gateway,
+    wallets,
+    transactions,
+    paymentMethods,
+    currencies,
     new AuditLogStore(ctx.db),
+    bell,
   );
 }, 120_000);
 
@@ -105,16 +136,16 @@ async function stateOf(txId: string): Promise<{
 }> {
   const { rows } = await ctx.db.execute<{
     state: string;
-    rival_needs_attention: boolean;
-    rival_attention_reason: string | null;
+    needs_attention: boolean;
+    attention_reason: string | null;
   }>(
-    sql`SELECT state, rival_needs_attention, rival_attention_reason
+    sql`SELECT state, needs_attention, attention_reason
           FROM transactions WHERE id = ${txId}`,
   );
   return {
     state: rows[0].state,
-    needsAttention: rows[0].rival_needs_attention,
-    rivalAttentionReason: rows[0].rival_attention_reason,
+    needsAttention: rows[0].needs_attention,
+    rivalAttentionReason: rows[0].attention_reason,
   };
 }
 
@@ -161,12 +192,12 @@ describe('the mapping table, row by row', () => {
     const { txId, userId, externalId } = await makePendingDeposit('150');
     rivalSays('PAID');
 
-    expect(await transactions.applyRivalDepositEvent(externalId, 'completed')).toBe('applied');
+    expect(await applyEvent(externalId, 'completed')).toBe('applied');
     expect((await stateOf(txId)).state).toBe('success');
     expect(await balanceOf(userId)).toBe('150.00000000');
 
     // At-least-once delivery: the duplicate is absorbed, the balance holds.
-    expect(await transactions.applyRivalDepositEvent(externalId, 'completed')).toBe('duplicate');
+    expect(await applyEvent(externalId, 'completed')).toBe('duplicate');
     expect(await balanceOf(userId)).toBe('150.00000000');
     const { rows } = await ctx.db.execute<{ n: string }>(
       sql`SELECT count(*) AS n FROM ledger_entries le
@@ -192,7 +223,7 @@ describe('the mapping table, row by row', () => {
   it('a gateway settlement writes a system audit row naming the client', async () => {
     const { txId, userId, externalId } = await makePendingDeposit('150');
     rivalSays('PAID');
-    expect(await transactions.applyRivalDepositEvent(externalId, 'completed')).toBe('applied');
+    expect(await applyEvent(externalId, 'completed')).toBe('applied');
 
     const { rows } = await ctx.db.execute<{
       action: string;
@@ -217,7 +248,7 @@ describe('the mapping table, row by row', () => {
      * At-least-once delivery must not double the trail either. The replay is
      * absorbed before the conditional UPDATE, so the second call writes nothing.
      */
-    expect(await transactions.applyRivalDepositEvent(externalId, 'completed')).toBe('duplicate');
+    expect(await applyEvent(externalId, 'completed')).toBe('duplicate');
     const after = await ctx.db.execute<{ n: string }>(
       sql`SELECT count(*) AS n FROM audit_log
            WHERE subject_id = ${txId} AND action = 'deposit.settle'`,
@@ -241,7 +272,9 @@ describe('the mapping table, row by row', () => {
     const { txId, userId, externalId } = await makePendingDeposit('150');
     rivalSays('PAID', { amount: '40.00' });
 
-    expect(await transactions.applyRivalDepositEvent(externalId, 'completed')).toBe('pending');
+    // A person's now — answered 'needs-attention' (Rival stops retrying a
+    // delivery no retry can resolve), not 'pending'.
+    expect(await applyEvent(externalId, 'completed')).toBe('needs-attention');
 
     const row = await stateOf(txId);
     expect(row.state, 'a disputed deposit must stay settleable by hand').toBe('pending');
@@ -265,7 +298,7 @@ describe('the mapping table, row by row', () => {
     const { txId, userId, externalId } = await makePendingDeposit('150');
     rivalSays('PAID', { amount: '150.00' });
 
-    expect(await transactions.applyRivalDepositEvent(externalId, 'completed')).toBe('applied');
+    expect(await applyEvent(externalId, 'completed')).toBe('applied');
     expect((await stateOf(txId)).state).toBe('success');
     expect(await balanceOf(userId)).toBe('150.00000000');
   });
@@ -274,7 +307,7 @@ describe('the mapping table, row by row', () => {
     const { txId, userId, externalId } = await makePendingDeposit();
     rivalSays('FAILED');
 
-    expect(await transactions.applyRivalDepositEvent(externalId, 'failed')).toBe('applied');
+    expect(await applyEvent(externalId, 'failed')).toBe('applied');
     expect((await stateOf(txId)).state).toBe('failure');
     expect(await balanceOf(userId)).toBe('0.00000000');
   });
@@ -282,25 +315,24 @@ describe('the mapping table, row by row', () => {
   it('out-of-order events cannot regress a settled row: completed → failed → completed', async () => {
     const { txId, userId, externalId } = await makePendingDeposit('80');
     rivalSays('PAID');
-    await transactions.applyRivalDepositEvent(externalId, 'completed');
+    await applyEvent(externalId, 'completed');
 
-    expect(await transactions.applyRivalDepositEvent(externalId, 'failed')).toBe('stale');
+    expect(await applyEvent(externalId, 'failed')).toBe('stale');
     expect((await stateOf(txId)).state).toBe('success');
-    expect(await transactions.applyRivalDepositEvent(externalId, 'completed')).toBe('duplicate');
+    expect(await applyEvent(externalId, 'completed')).toBe('duplicate');
     expect(await balanceOf(userId)).toBe('80.00000000');
   });
 
   it('completed against a terminally FAILED row flags a human and never resurrects', async () => {
     const { txId, userId, externalId } = await makePendingDeposit();
     rivalSays('FAILED');
-    await transactions.applyRivalDepositEvent(externalId, 'failed');
+    await applyEvent(externalId, 'failed');
 
     // Rival now says the money arrived — after our row died. Money exists at
     // Rival, no wallet was credited, and no code path may decide which side
-    // is right.
-    expect(await transactions.applyRivalDepositEvent(externalId, 'completed')).toBe(
-      'needs-attention',
-    );
+    // is right. (The doorbell rule: it is Rival's STORED state that says so.)
+    rivalSays('PAID');
+    expect(await applyEvent(externalId, 'completed')).toBe('needs-attention');
     const after = await stateOf(txId);
     expect(after.state).toBe('failure');
     expect(after.needsAttention).toBe(true);
@@ -317,12 +349,10 @@ describe('the mapping table, row by row', () => {
   it('reversed NEVER touches the ledger — flag, alert, human decision (§6.4)', async () => {
     const { txId, userId, externalId } = await makePendingDeposit('60');
     rivalSays('PAID');
-    await transactions.applyRivalDepositEvent(externalId, 'completed');
+    await applyEvent(externalId, 'completed');
     expect(await balanceOf(userId)).toBe('60.00000000');
 
-    expect(await transactions.applyRivalDepositEvent(externalId, 'reversed')).toBe(
-      'needs-attention',
-    );
+    expect(await applyEvent(externalId, 'reversed')).toBe('needs-attention');
     const after = await stateOf(txId);
     expect(after.state).toBe('success');
     expect(after.needsAttention).toBe(true);
@@ -338,16 +368,14 @@ describe('the mapping table, row by row', () => {
   });
 
   it('an event for an unknown externalId reports the race, changing nothing', async () => {
-    expect(await transactions.applyRivalDepositEvent('424242424', 'completed')).toBe(
-      'unknown-reference',
-    );
+    expect(await applyEvent('424242424', 'completed')).toBe('unknown-reference');
   });
 
   it('an event whose settle still reads PENDING at Rival stays retryable', async () => {
     const { txId, externalId } = await makePendingDeposit();
     rivalSays('PENDING');
 
-    expect(await transactions.applyRivalDepositEvent(externalId, 'completed')).toBe('pending');
+    expect(await applyEvent(externalId, 'completed')).toBe('pending');
     expect((await stateOf(txId)).state).toBe('pending');
   });
 });
@@ -358,8 +386,8 @@ describe('the webhook races the portal status poll', () => {
     rivalSays('PAID');
 
     const [a, b] = await Promise.all([
-      transactions.applyRivalDepositEvent(externalId, 'completed'),
-      transactions.settleGatewayDeposit('whish', reference),
+      applyEvent(externalId, 'completed'),
+      deposits.settle('whish', reference),
     ]);
     // Whichever won, exactly one credit exists and both callers saw a settled row.
     expect([a, String(b.state)]).toBeTruthy();
@@ -373,36 +401,40 @@ describe('the webhook races the portal status poll', () => {
 });
 
 describe('the poller repairs an unconfirmed create', () => {
-  it('recoverRivalExternalId replays the create under the same idempotency key', async () => {
+  it('a lost start is recovered under the same idempotency key', async () => {
     const { txId, reference, externalId } = await makePendingDeposit();
     // Simulate the indeterminate create: the id was never stored.
-    await ctx.db.execute(sql`UPDATE transactions SET rival_external_id = NULL WHERE id = ${txId}`);
-    gateway.startPayment.mockResolvedValueOnce({
+    await ctx.db.execute(
+      sql`UPDATE transactions SET provider_payment_id = NULL WHERE id = ${txId}`,
+    );
+    gateway.recoverPayment.mockResolvedValueOnce({
       paymentUrl: 'https://pay.example.test/x',
       externalId,
     });
 
-    expect(await transactions.recoverRivalExternalId(txId)).toBe(true);
-    const call = gateway.startPayment.mock.calls.at(-1);
+    expect(await deposits.recoverStart(txId)).toBe(true);
+    const call = gateway.recoverPayment.mock.calls.at(-1);
     expect(call?.[1]).toMatchObject({ idempotencyKey: reference });
-    const { rows } = await ctx.db.execute<{ rival_external_id: string }>(
-      sql`SELECT rival_external_id FROM transactions WHERE id = ${txId}`,
+    const { rows } = await ctx.db.execute<{ provider_payment_id: string }>(
+      sql`SELECT provider_payment_id FROM transactions WHERE id = ${txId}`,
     );
-    expect(rows[0].rival_external_id).toBe(externalId);
+    expect(rows[0].provider_payment_id).toBe(externalId);
   });
 
   it('redirects point at the API return bounce when API_PUBLIC_URL is public, else are omitted', async () => {
     const { txId, reference, externalId } = await makePendingDeposit();
-    await ctx.db.execute(sql`UPDATE transactions SET rival_external_id = NULL WHERE id = ${txId}`);
+    await ctx.db.execute(
+      sql`UPDATE transactions SET provider_payment_id = NULL WHERE id = ${txId}`,
+    );
 
     // No public API address (and no reachable portal): the pair is OMITTED —
     // sending a localhost URL would fail the create at Rival (D-68).
-    gateway.startPayment.mockResolvedValueOnce({
+    gateway.recoverPayment.mockResolvedValueOnce({
       paymentUrl: 'https://pay.example.test/x',
       externalId,
     });
-    expect(await transactions.recoverRivalExternalId(txId)).toBe(true);
-    let input = gateway.startPayment.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+    expect(await deposits.recoverStart(txId)).toBe(true);
+    let input = gateway.recoverPayment.mock.calls.at(-1)?.[1] as Record<string, unknown>;
     expect(input.successRedirectUrl).toBeUndefined();
     expect(input.failureRedirectUrl).toBeUndefined();
 
@@ -411,14 +443,14 @@ describe('the poller repairs an unconfirmed create', () => {
     process.env.API_PUBLIC_URL = 'https://api.oxshare.example';
     try {
       await ctx.db.execute(
-        sql`UPDATE transactions SET rival_external_id = NULL WHERE id = ${txId}`,
+        sql`UPDATE transactions SET provider_payment_id = NULL WHERE id = ${txId}`,
       );
-      gateway.startPayment.mockResolvedValueOnce({
+      gateway.recoverPayment.mockResolvedValueOnce({
         paymentUrl: 'https://pay.example.test/x',
         externalId,
       });
-      expect(await transactions.recoverRivalExternalId(txId)).toBe(true);
-      input = gateway.startPayment.mock.calls.at(-1)?.[1] as Record<string, unknown>;
+      expect(await deposits.recoverStart(txId)).toBe(true);
+      input = gateway.recoverPayment.mock.calls.at(-1)?.[1] as Record<string, unknown>;
       expect(input.successRedirectUrl).toBe(
         `https://api.oxshare.example/v1/payments/deposits/${reference}/return/success?method=whish`,
       );
@@ -433,13 +465,15 @@ describe('the poller repairs an unconfirmed create', () => {
   it('refuses to touch a row that is settled, addressed, or not a gateway deposit', async () => {
     const { txId, externalId } = await makePendingDeposit();
     // Already addressed: nothing to recover.
-    expect(await transactions.recoverRivalExternalId(txId)).toBe(false);
+    expect(await deposits.recoverStart(txId)).toBe(false);
 
     rivalSays('PAID');
-    await transactions.applyRivalDepositEvent(externalId, 'completed');
-    await ctx.db.execute(sql`UPDATE transactions SET rival_external_id = NULL WHERE id = ${txId}`);
+    await applyEvent(externalId, 'completed');
+    await ctx.db.execute(
+      sql`UPDATE transactions SET provider_payment_id = NULL WHERE id = ${txId}`,
+    );
     // Settled: replaying a create for it would mint a payable link for money
     // that already arrived.
-    expect(await transactions.recoverRivalExternalId(txId)).toBe(false);
+    expect(await deposits.recoverStart(txId)).toBe(false);
   });
 });

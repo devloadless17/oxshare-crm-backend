@@ -5,11 +5,17 @@ import { TransactionsService } from '../src/modules/payments/transactions.servic
 import { PaymentMethodsService } from '../src/modules/payments/payment-methods.service';
 import {
   CLIENT_SAFE_PROVIDER_REFUSAL,
-  RivalWithdrawalsService,
-} from '../src/modules/payments/rival/rival-withdrawals.service';
+  PayoutEngine,
+} from '../src/modules/payments/core/payout-engine.service';
+import { ChannelSwitchesService } from '../src/modules/payments/core/channel-switches.service';
+import { PaymentProviderRegistry } from '../src/modules/payments/providers/payment-provider-registry';
+import { ManualPaymentProvider } from '../src/modules/payments/providers/manual/manual.provider';
+import { RivalPaymentProvider } from '../src/modules/payments/providers/rival/rival.provider';
+import type { ProviderNotice } from '../src/modules/payments/providers/payment-provider';
+import { ValidationError } from '../src/common/errors/domain-errors';
 import type { EmailService } from '../src/modules/email/email.service';
-import type { RivalClient } from '../src/modules/payments/rival/rival.client';
-import type { RivalConfigService } from '../src/modules/payments/rival/rival-config.service';
+import type { RivalClient } from '../src/modules/payments/providers/rival/rival.client';
+import type { RivalConfigService } from '../src/modules/payments/providers/rival/rival-config.service';
 import type { ResourceChangedPublisher } from '../src/common/realtime/resource-changed';
 import { WalletService } from '../src/modules/wallet/wallet.service';
 import { CurrenciesService } from '../src/modules/currencies/currencies.service';
@@ -23,7 +29,10 @@ import { gatewayStubAs } from './gateway-stub';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
 
 /**
- * The Rival withdrawal choreography, against real Postgres.
+ * Rival's payouts through the payments CORE (0173), against real Postgres:
+ * the core's `PayoutEngine` driving Rival's real adapter over a mocked HTTP
+ * client — the same scenarios Rival's own service was held to, now held by the
+ * engine every provider shares.
  *
  * The property everything here defends: **Rival's withdrawal create has no
  * idempotency key**, so the CRM's claim column and notes-match reconciler are
@@ -39,15 +48,34 @@ import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './mone
 let ctx: MoneyTestContext;
 let wallets: WalletService;
 let transactions: TransactionsService;
-let service: RivalWithdrawalsService;
+let service: PayoutEngine;
 
 const rival = {
   createWithdrawal: vi.fn(),
   getWithdrawal: vi.fn(),
   cancelWithdrawal: vi.fn(),
-  listPendingWithdrawals: vi.fn().mockResolvedValue([]),
+  listPendingWithdrawals: vi.fn().mockResolvedValue(pendingPage([])),
 };
-const rivalConfig = { isEnabled: vi.fn().mockResolvedValue(true) };
+const rivalConfig = {
+  isEnabled: vi.fn().mockResolvedValue(true),
+  invalidate: vi.fn(),
+};
+
+/** One page of Rival's pending list, as its API wraps it. */
+function pendingPage(data: unknown[], totalPages = 1) {
+  return { data, meta: { page: 1, pageSize: 100, total: data.length, totalPages } };
+}
+
+/** A verified Rival payout notice — a doorbell: the engine re-reads Rival. */
+function notice(payoutId: string, event = 'completed'): ProviderNotice {
+  return {
+    subject: 'payout',
+    providerId: payoutId,
+    providerType: `withdrawal.${event}`,
+    eventType: 'payout.completed',
+    kind: 'status',
+  };
+}
 // Untyped, so mock-call assertions do not trip the unbound-method rule.
 const notifications = notificationsStub();
 const email = emailStub();
@@ -72,18 +100,25 @@ beforeAll(async () => {
     notificationsStubAs(),
     transfersStubAs(),
     transferExecutorStubAs(),
-    new AuditLogStore(ctx.db),
   );
-  service = new RivalWithdrawalsService(
+  const registry = new PaymentProviderRegistry([
+    new ManualPaymentProvider(),
+    new RivalPaymentProvider(
+      rival as unknown as RivalClient,
+      rivalConfig as unknown as RivalConfigService,
+    ),
+  ]);
+  service = new PayoutEngine(
     ctx.db,
-    rival as unknown as RivalClient,
-    rivalConfig as unknown as RivalConfigService,
+    registry,
+    new ChannelSwitchesService(ctx.db, registry),
     transactions,
     new AuditLogStore(ctx.db),
     new UsersStore(ctx.db),
     email as unknown as EmailService,
     notifications,
     resourceChanged as unknown as ResourceChangedPublisher,
+    new ConfigService(),
   );
 }, 120_000);
 
@@ -94,7 +129,7 @@ afterAll(async () => {
 beforeEach(async () => {
   vi.clearAllMocks();
   rivalConfig.isEnabled.mockResolvedValue(true);
-  rival.listPendingWithdrawals.mockResolvedValue([]);
+  rival.listPendingWithdrawals.mockResolvedValue(pendingPage([]));
   await ctx.db.execute(sql`
     INSERT INTO currencies (code, name, symbol, enabled, is_default)
     VALUES ('USD', 'US Dollar', '$', true, true) ON CONFLICT (code) DO NOTHING
@@ -141,13 +176,13 @@ async function makeApprovedWithdrawal(amount = '100'): Promise<{
 async function rowOf(txId: string) {
   const { rows } = await ctx.db.execute<{
     state: string;
-    rival_withdrawal_id: string | null;
-    rival_submitted_at: Date | null;
-    rival_needs_attention: boolean;
-    rival_attention_reason: string | null;
+    provider_payout_id: string | null;
+    provider_submitted_at: Date | null;
+    needs_attention: boolean;
+    attention_reason: string | null;
     provider_ref: string | null;
-  }>(sql`SELECT state, rival_withdrawal_id, rival_submitted_at, rival_needs_attention,
-               rival_attention_reason, provider_ref
+  }>(sql`SELECT state, provider_payout_id, provider_submitted_at, needs_attention,
+               attention_reason, provider_ref
         FROM transactions WHERE id = ${txId}`);
   return rows[0];
 }
@@ -197,8 +232,8 @@ describe('submit on approval — the no-idempotency-key defence', () => {
     expect(input.recipientName).toBe('Payout Client');
 
     const row = await rowOf(txId);
-    expect(row.rival_withdrawal_id).toBe('rw-1');
-    expect(row.rival_submitted_at).not.toBeNull();
+    expect(row.provider_payout_id).toBe('rw-1');
+    expect(row.provider_submitted_at).not.toBeNull();
     expect(row.state).toBe('approved');
   });
 
@@ -228,27 +263,28 @@ describe('submit on approval — the no-idempotency-key defence', () => {
     await service.submitApproved(txId);
 
     const row = await rowOf(txId);
-    expect(row.rival_withdrawal_id, 'the payout still exists and is recorded').toBe('rw-short');
-    expect(row.rival_needs_attention).toBe(true);
-    expect(String(row.rival_attention_reason)).toMatch(/98/);
-    expect(String(row.rival_attention_reason)).toMatch(/2 USD short/);
+    expect(row.provider_payout_id, 'the payout still exists and is recorded').toBe('rw-short');
+    expect(row.needs_attention).toBe(true);
+    expect(String(row.attention_reason)).toMatch(/98/);
+    expect(String(row.attention_reason)).toMatch(/2 USD short/);
   });
 
   it('a definite refusal clears the claim, flags the row, tells the approvers', async () => {
     const { txId } = await makeApprovedWithdrawal();
-    rival.createWithdrawal.mockRejectedValue(new Error('INSUFFICIENT_BALANCE at Rival'));
+    // What Rival's client throws for its INSUFFICIENT_BALANCE refusal.
+    rival.createWithdrawal.mockRejectedValue(new ValidationError('INSUFFICIENT_BALANCE at Rival'));
 
     await service.submitApproved(txId);
 
     const row = await rowOf(txId);
-    expect(row.rival_submitted_at).toBeNull(); // one retry is possible
-    expect(row.rival_needs_attention).toBe(true);
+    expect(row.provider_submitted_at).toBeNull(); // one retry is possible
+    expect(row.needs_attention).toBe(true);
     // The operator can read WHY, in the platform's own words, on the row.
-    expect(row.rival_attention_reason).toContain('INSUFFICIENT_BALANCE at Rival');
+    expect(row.attention_reason).toContain('INSUFFICIENT_BALANCE at Rival');
     expect(row.state).toBe('approved'); // the approval itself stands
     expect(notifications.notifyAdmins).toHaveBeenCalledWith(
       expect.objectContaining({
-        kind: 'withdrawal.rival_submit_failed',
+        kind: 'withdrawal.payout_submit_failed',
         subject: expect.objectContaining({ id: txId }) as unknown,
       }),
     );
@@ -261,8 +297,8 @@ describe('submit on approval — the no-idempotency-key defence', () => {
 
     await service.submitApproved(txId);
     const row = await rowOf(txId);
-    expect(row.rival_submitted_at).not.toBeNull(); // HELD
-    expect(row.rival_needs_attention).toBe(true);
+    expect(row.provider_submitted_at).not.toBeNull(); // HELD
+    expect(row.needs_attention).toBe(true);
 
     // A second submit — the desk's retry button, a cron double-fire — no-ops.
     rival.createWithdrawal.mockResolvedValue(rivalRow('rw-x'));
@@ -279,14 +315,14 @@ describe('the reconciler resolves what a timeout left behind', () => {
     await service.submitApproved(txId);
 
     // The create DID land at Rival; only the answer was lost.
-    rival.listPendingWithdrawals.mockResolvedValue([
-      rivalRow('rw-orphan', { notes: `crm:${txId}` }),
-    ]);
-    await service.reconcile();
+    rival.listPendingWithdrawals.mockResolvedValue(
+      pendingPage([rivalRow('rw-orphan', { notes: `crm:${txId}` })]),
+    );
+    await service.reconcile('rival');
 
     const row = await rowOf(txId);
-    expect(row.rival_withdrawal_id).toBe('rw-orphan');
-    expect(row.rival_needs_attention).toBe(false); // resolved
+    expect(row.provider_payout_id).toBe('rw-orphan');
+    expect(row.needs_attention).toBe(false); // resolved
   });
 
   it('CLEARS a claim the pending list provably lacks, once the window has passed', async () => {
@@ -297,18 +333,18 @@ describe('the reconciler resolves what a timeout left behind', () => {
 
     // Fresh claim + empty list: INSIDE the window nothing changes (the create
     // could still be in flight at Rival).
-    await service.reconcile();
-    expect((await rowOf(txId)).rival_submitted_at).not.toBeNull();
+    await service.reconcile('rival');
+    expect((await rowOf(txId)).provider_submitted_at).not.toBeNull();
 
     // Age the claim past the adopt window; now absence is evidence.
     await ctx.db.execute(
-      sql`UPDATE transactions SET rival_submitted_at = now() - interval '20 minutes'
+      sql`UPDATE transactions SET provider_submitted_at = now() - interval '20 minutes'
           WHERE id = ${txId}`,
     );
-    await service.reconcile();
+    await service.reconcile('rival');
     const row = await rowOf(txId);
-    expect(row.rival_submitted_at).toBeNull();
-    expect(row.rival_needs_attention).toBe(true);
+    expect(row.provider_submitted_at).toBeNull();
+    expect(row.needs_attention).toBe(true);
   });
 
   it('holds every claim when the pending list itself is unavailable', async () => {
@@ -317,14 +353,14 @@ describe('the reconciler resolves what a timeout left behind', () => {
     rival.createWithdrawal.mockRejectedValue(new PaymentIndeterminateError('no answer'));
     await service.submitApproved(txId);
     await ctx.db.execute(
-      sql`UPDATE transactions SET rival_submitted_at = now() - interval '20 minutes'
+      sql`UPDATE transactions SET provider_submitted_at = now() - interval '20 minutes'
           WHERE id = ${txId}`,
     );
 
     rival.listPendingWithdrawals.mockRejectedValue(new Error('rival down'));
-    await service.reconcile();
+    await service.reconcile('rival');
     // Cannot judge absence without the list: the claim survives.
-    expect((await rowOf(txId)).rival_submitted_at).not.toBeNull();
+    expect((await rowOf(txId)).provider_submitted_at).not.toBeNull();
   });
 });
 
@@ -339,9 +375,10 @@ describe('inbound events — settle, refund, and the refusals', () => {
     await submitted(txId, 'rw-10');
     const debited = await balanceOf(userId); // debit-on-request already happened
 
-    const outcome = await service.applyEvent('rw-10', 'completed', {
-      externalReference: 'whish-tx-991',
-    });
+    rival.getWithdrawal.mockResolvedValue(
+      rivalRow('rw-10', { status: 'COMPLETED', externalReference: 'whish-tx-991' }),
+    );
+    const outcome = await service.onNotice('rival', notice('rw-10'));
     expect(outcome).toBe('applied');
 
     const row = await rowOf(txId);
@@ -350,7 +387,7 @@ describe('inbound events — settle, refund, and the refusals', () => {
     expect(await balanceOf(userId)).toBe(debited);
 
     // At-least-once: the echo is a no-op.
-    expect(await service.applyEvent('rw-10', 'completed', {})).toBe('duplicate');
+    expect(await service.onNotice('rival', notice('rw-10'))).toBe('duplicate');
   });
 
   it('rejected refunds EXACTLY once, with Rival’s reason, under replay', async () => {
@@ -358,9 +395,13 @@ describe('inbound events — settle, refund, and the refusals', () => {
     await submitted(txId, 'rw-11');
     const beforeRefund = await balanceOf(userId);
 
-    const outcome = await service.applyEvent('rw-11', 'rejected', {
-      adminNotes: 'Recipient number is not registered with Whish',
-    });
+    rival.getWithdrawal.mockResolvedValue(
+      rivalRow('rw-11', {
+        status: 'REJECTED',
+        adminNotes: 'Recipient number is not registered with Whish',
+      }),
+    );
+    const outcome = await service.onNotice('rival', notice('rw-11', 'rejected'));
     expect(outcome).toBe('applied');
 
     const row = await rowOf(txId);
@@ -369,7 +410,7 @@ describe('inbound events — settle, refund, and the refusals', () => {
     const afterRefund = await balanceOf(userId);
     expect(Number.parseFloat(afterRefund) > Number.parseFloat(beforeRefund)).toBe(true);
 
-    expect(await service.applyEvent('rw-11', 'rejected', {})).toBe('duplicate');
+    expect(await service.onNotice('rival', notice('rw-11', 'rejected'))).toBe('duplicate');
     expect(await balanceOf(userId)).toBe(afterRefund); // refunded once
 
     const { rows } = await ctx.db.execute<{ rejection_reason: string }>(
@@ -385,7 +426,10 @@ describe('inbound events — settle, refund, and the refusals', () => {
     vi.mocked(notifications.notify).mockClear();
     email.sendWithdrawalDecisionEmail.mockClear();
 
-    expect(await service.applyEvent('rw-13', 'rejected', { adminNotes: secret })).toBe('applied');
+    rival.getWithdrawal.mockResolvedValue(
+      rivalRow('rw-13', { status: 'REJECTED', adminNotes: secret }),
+    );
+    expect(await service.onNotice('rival', notice('rw-13', 'rejected'))).toBe('applied');
     await vi.waitFor(() => expect(email.sendWithdrawalDecisionEmail).toHaveBeenCalled());
 
     const toClient = vi
@@ -400,7 +444,7 @@ describe('inbound events — settle, refund, and the refusals', () => {
     // The note is kept for the desk: its own admin-only column, and the audit row.
     const { rows } = await ctx.db.execute<{ details: { providerNote?: string } }>(
       sql`SELECT details FROM audit_log WHERE subject_id = ${txId}
-          AND action = 'withdrawal.rival.reject'`,
+          AND action = 'withdrawal.provider.reject'`,
     );
     expect(rows[0].details.providerNote).toBe(secret);
     const stored = await ctx.db.execute<{ provider_note: string; rejection_reason: string }>(
@@ -424,32 +468,43 @@ describe('inbound events — settle, refund, and the refusals', () => {
   it('a rejected event against a row we settled DISAGREES — flag, never guess', async () => {
     const { txId } = await makeApprovedWithdrawal('100');
     await submitted(txId, 'rw-12');
-    await service.applyEvent('rw-12', 'completed', {});
+    rival.getWithdrawal.mockResolvedValue(rivalRow('rw-12', { status: 'COMPLETED' }));
+    await service.onNotice('rival', notice('rw-12'));
 
-    const outcome = await service.applyEvent('rw-12', 'rejected', { adminNotes: 'oops' });
+    rival.getWithdrawal.mockResolvedValue(
+      rivalRow('rw-12', { status: 'REJECTED', adminNotes: 'oops' }),
+    );
+    const outcome = await service.onNotice('rival', notice('rw-12', 'rejected'));
     expect(outcome).toBe('needs-attention');
     const row = await rowOf(txId);
     expect(row.state).toBe('success'); // untouched
-    expect(row.rival_needs_attention).toBe(true);
+    expect(row.needs_attention).toBe(true);
   });
 
-  it('unknown ids and pending echoes are acknowledged without effect', async () => {
-    expect(await service.applyEvent('rw-nobody', 'completed', {})).toBe('not-ours');
-    expect(await service.applyEvent('rw-nobody', 'pending', {})).toBe('ignored');
+  it('unknown ids and a still-pending re-read are acknowledged without effect', async () => {
+    expect(await service.onNotice('rival', notice('rw-nobody'))).toBe('not-ours');
+
+    const { txId } = await makeApprovedWithdrawal('100');
+    await submitted(txId, 'rw-14');
+    rival.getWithdrawal.mockResolvedValue(rivalRow('rw-14', { status: 'PENDING' }));
+    expect(await service.onNotice('rival', notice('rw-14'))).toBe('ignored');
+    expect((await rowOf(txId)).state).toBe('approved');
+  });
+
+  it('a notice CLAIMING completion changes nothing while Rival says otherwise (the doorbell rule)', async () => {
+    const { txId } = await makeApprovedWithdrawal('100');
+    await submitted(txId, 'rw-15');
+    // The delivery says "completed"; Rival's own API still says PENDING.
+    rival.getWithdrawal.mockResolvedValue(rivalRow('rw-15', { status: 'PENDING' }));
+    await service.onNotice('rival', notice('rw-15', 'completed'));
+    expect((await rowOf(txId)).state).toBe('approved');
   });
 });
 
 describe('cancel-after-approve, both shapes', () => {
   it('a never-submitted row cancels locally without touching Rival', async () => {
     const { txId } = await makeApprovedWithdrawal();
-    const row = await rowOf(txId);
-    await expect(
-      service.cancelApproved({
-        id: txId,
-        rivalWithdrawalId: row.rival_withdrawal_id,
-        rivalSubmittedAt: row.rival_submitted_at,
-      }),
-    ).resolves.toBeUndefined();
+    await expect(service.cancelApproved(await transactions.getById(txId))).resolves.toBeUndefined();
     expect(rival.cancelWithdrawal).not.toHaveBeenCalled();
   });
 
@@ -459,20 +514,17 @@ describe('cancel-after-approve, both shapes', () => {
     await service.submitApproved(txId);
 
     rival.cancelWithdrawal.mockRejectedValue(new Error('CONFLICT: PROCESSING'));
-    await expect(
-      service.cancelApproved({
-        id: txId,
-        rivalWithdrawalId: 'rw-20',
-        rivalSubmittedAt: new Date(),
-      }),
-    ).rejects.toThrow(/already processing/i);
+    await expect(service.cancelApproved(await transactions.getById(txId))).rejects.toThrow(
+      /already processing/i,
+    );
     expect((await rowOf(txId)).state).toBe('approved');
   });
 
   it('a claim still being reconciled refuses cancellation — the create may have landed', async () => {
     const { txId } = await makeApprovedWithdrawal();
+    const row = await transactions.getById(txId);
     await expect(
-      service.cancelApproved({ id: txId, rivalWithdrawalId: null, rivalSubmittedAt: new Date() }),
+      service.cancelApproved({ ...row, providerPayoutId: null, providerSubmittedAt: new Date() }),
     ).rejects.toThrow(/in flight/i);
   });
 });
@@ -534,5 +586,79 @@ describe('the request-time destination gate (Rival’s own rules, applied early)
         methodKey: 'whish',
       }),
     ).resolves.toBeTruthy();
+  });
+});
+
+describe('what the core changed (0173)', () => {
+  it('an UNEXPECTED adapter error holds the claim — the safe side of "did it pay?"', async () => {
+    const { txId } = await makeApprovedWithdrawal();
+    rival.createWithdrawal.mockRejectedValue(new TypeError('socket hang up mid-parse'));
+
+    await service.submitApproved(txId);
+    const row = await rowOf(txId);
+    expect(row.provider_submitted_at, 'held, never released on a guess').not.toBeNull();
+    expect(row.needs_attention).toBe(true);
+  });
+
+  it('adopts an orphan on the SECOND page of Rival’s pending list', async () => {
+    /*
+     * The scan used to read one page of 100 and call anything not on it
+     * absent — so with more than 100 payouts pending, an orphan that existed
+     * was cleared for a resend: a double payout waiting for a click.
+     */
+    const { txId } = await makeApprovedWithdrawal();
+    const { PaymentIndeterminateError } = await import('../src/common/errors/domain-errors');
+    rival.createWithdrawal.mockRejectedValue(new PaymentIndeterminateError('no answer'));
+    await service.submitApproved(txId);
+
+    rival.listPendingWithdrawals.mockImplementation((page: number) =>
+      Promise.resolve(
+        page === 1
+          ? pendingPage([rivalRow('rw-other', { notes: 'crm:somebody-else' })], 2)
+          : pendingPage([rivalRow('rw-page2', { notes: `crm:${txId}` })], 2),
+      ),
+    );
+    await service.reconcile('rival');
+
+    expect((await rowOf(txId)).provider_payout_id).toBe('rw-page2');
+    expect(rival.listPendingWithdrawals).toHaveBeenCalledWith(2);
+  });
+
+  it('keeps the rival_* columns in step with the neutral ones — the previous build can still read them', async () => {
+    const { txId } = await makeApprovedWithdrawal();
+    rival.createWithdrawal.mockResolvedValue(rivalRow('rw-mirror', { netAmount: '97.00' }));
+    await service.submitApproved(txId);
+
+    const { rows } = await ctx.db.execute<{
+      rival_withdrawal_id: string | null;
+      provider_payout_id: string | null;
+      rival_submitted_at: Date | null;
+      provider_submitted_at: Date | null;
+      rival_needs_attention: boolean;
+      needs_attention: boolean;
+      rival_attention_reason: string | null;
+      attention_reason: string | null;
+    }>(sql`SELECT rival_withdrawal_id, provider_payout_id, rival_submitted_at,
+                  provider_submitted_at, rival_needs_attention, needs_attention,
+                  rival_attention_reason, attention_reason
+             FROM transactions WHERE id = ${txId}`);
+    const row = rows[0];
+    expect(row.rival_withdrawal_id).toBe('rw-mirror');
+    expect(row.rival_withdrawal_id).toBe(row.provider_payout_id);
+    expect(row.rival_submitted_at).not.toBeNull();
+    expect(String(row.rival_submitted_at)).toBe(String(row.provider_submitted_at));
+    // The short payout flagged the row — on both sides.
+    expect(row.needs_attention).toBe(true);
+    expect(row.rival_needs_attention).toBe(true);
+    expect(row.rival_attention_reason).toBe(row.attention_reason);
+
+    // And a write the PREVIOUS build makes (rival_*) reaches the neutral side.
+    await ctx.db.execute(
+      sql`UPDATE transactions SET rival_needs_attention = false, rival_attention_reason = NULL
+          WHERE id = ${txId}`,
+    );
+    const after = await rowOf(txId);
+    expect(after.needs_attention).toBe(false);
+    expect(after.attention_reason).toBeNull();
   });
 });

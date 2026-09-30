@@ -4,7 +4,8 @@ import { and, asc, eq, ne, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
 import { paymentProviders, transactions, withdrawalPaymentMethods } from '../../database/schema';
-import type { ProviderState } from './providers/provider-status';
+import { payoutMethodStatus, type ProviderState } from './providers/provider-status';
+import { channelSwitchKey, readOffSwitches } from './core/channel-switches.service';
 import { ConflictError, NotFoundError } from '../../common/errors/domain-errors';
 import { AdminAuditService } from '../admin/admin-audit.service';
 import type { Actor } from '../../common/security/actor';
@@ -65,7 +66,8 @@ export class WithdrawalMethodsService {
       .from(withdrawalPaymentMethods)
       .orderBy(asc(withdrawalPaymentMethods.sortOrder), asc(withdrawalPaymentMethods.name));
     const providers = await this.providerStates();
-    return rows.map(({ row, inUse }) => this.adminView(row, inUse, providers));
+    const off = await readOffSwitches(this.db);
+    return rows.map(({ row, inUse }) => this.adminView(row, inUse, providers, off));
   }
 
   /** One method as the console sees it. */
@@ -75,7 +77,14 @@ export class WithdrawalMethodsService {
       .from(withdrawalPaymentMethods)
       .where(eq(withdrawalPaymentMethods.key, this.normalise(key)))
       .limit(1);
-    return found ? this.adminView(found.row, found.inUse, await this.providerStates()) : null;
+    return found
+      ? this.adminView(
+          found.row,
+          found.inUse,
+          await this.providerStates(),
+          await readOffSwitches(this.db),
+        )
+      : null;
   }
 
   /**
@@ -89,10 +98,16 @@ export class WithdrawalMethodsService {
     row: WithdrawalMethodRow,
     inUse: boolean,
     providers: Map<string, ProviderState>,
+    off: ReadonlyMap<string, unknown>,
   ): AdminWithdrawalMethodDto {
-    const automated = this.providers.isAutomatedPayout(row);
-    const paidBy = automated && providers.get(row.providerCode)?.usable ? 'provider' : 'desk';
-    return { ...row, builtIn: false, inUse, paidBy };
+    const rail = this.providers.payoutRail(row)?.rail;
+    const status = payoutMethodStatus(
+      row.enabled,
+      rail ? rail.whenUnavailable : null,
+      providers.get(row.providerCode),
+      !off.has(channelSwitchKey(row, 'payout')),
+    );
+    return { ...row, builtIn: false, inUse, ...status };
   }
 
   private async providerStates(): Promise<Map<string, ProviderState>> {
@@ -145,7 +160,7 @@ export class WithdrawalMethodsService {
       internalLabel: row.internalLabel,
       enabled: row.enabled,
     });
-    return this.adminView(row, false, await this.providerStates());
+    return this.adminView(row, false, await this.providerStates(), await readOffSwitches(this.db));
   }
 
   async update(

@@ -14,7 +14,7 @@ import {
 import { emailRecorder } from './email-recorder';
 import { EmailService } from '../src/modules/email/email.service';
 import { Mt5BridgeClient } from '../src/modules/trading/mt5/mt5-bridge.client';
-import { RivalWithdrawalsService } from '../src/modules/payments/rival/rival-withdrawals.service';
+import { PayoutEngine } from '../src/modules/payments/core/payout-engine.service';
 import { DealCommissionService } from '../src/modules/trading/mt5/deal-commission.service';
 import { CommissionService } from '../src/modules/ib/commission.service';
 import { PasswordService } from '../src/common/security/password.service';
@@ -206,11 +206,24 @@ beforeAll(async () => {
         },
       },
       {
-        token: RivalWithdrawalsService,
+        token: PayoutEngine,
         value: {
+          // The desk pays — the no-rail behaviour these journeys depend on.
+          decide: () => Promise.resolve({ kind: 'desk' }),
+          plan: () =>
+            Promise.resolve({
+              payer: 'desk',
+              provider: null,
+              reason: null,
+              gross: null,
+              fee: null,
+              net: null,
+            }),
           submitApproved: () => Promise.resolve(),
+          resubmit: () => Promise.resolve(),
           cancelApproved: () => Promise.resolve(),
-          willPayOut: () => Promise.resolve(false),
+          reconcile: () => Promise.resolve(),
+          onNotice: () => Promise.resolve('ignored'),
         },
       },
     ],

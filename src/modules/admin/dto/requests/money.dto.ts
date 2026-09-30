@@ -77,6 +77,26 @@ export class ResolveAttentionDto {
   note: string;
 }
 
+/**
+ * FINISH A FLAGGED HOSTED DEPOSIT (0173): credit what the provider reported
+ * arrived, or close it with no credit. Either way the reason is the audit
+ * record of a decision the system could not make on its own.
+ */
+export class FinishFlaggedDepositDto {
+  @ApiProperty({ enum: ['credit', 'close'] })
+  @IsIn(['credit', 'close'])
+  decision: 'credit' | 'close';
+
+  @ApiProperty({
+    minLength: 1,
+    maxLength: 500,
+    example: 'Confirmed on the provider dashboard: 90 USDT arrived on the 100 link.',
+  })
+  @IsString()
+  @Length(1, 500)
+  reason: string;
+}
+
 export class SettleWithdrawalDto {
   /**
    * The payment provider's own reference. Backs `UNIQUE(provider, provider_ref)`,

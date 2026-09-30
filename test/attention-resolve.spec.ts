@@ -88,6 +88,28 @@ async function flagged(
 }
 
 const resolvePath = (txId: string) => `/v1/admin/transactions/${txId}/attention/resolve`;
+const finishPath = (txId: string) => `/v1/admin/transactions/${txId}/attention/finish-deposit`;
+
+/**
+ * A HOSTED deposit only a person can finish (0173): still pending, flagged,
+ * with what the provider reported arrived.
+ */
+async function flaggedHostedDeposit(clientId: number): Promise<string> {
+  seq += 1;
+  const { rows: wallet } = await ctx.db.db.execute<{ id: string }>(sql`
+    INSERT INTO wallets (user_id, currency, balance) VALUES (${clientId}, 'USD', '0')
+    ON CONFLICT (user_id, currency, kind) DO UPDATE SET balance = wallets.balance
+    RETURNING id`);
+  const { rows: tx } = await ctx.db.db.execute<{ id: string }>(sql`
+    INSERT INTO transactions
+      (user_id, wallet_id, direction, amount, currency, state, provider, provider_ref,
+       provider_payment_id, provider_amount_received, needs_attention, attention_reason)
+    VALUES (${clientId}, ${wallet[0].id}, 'deposit', '100.00000000', 'USD', 'pending', 'whish',
+            ${`attn-hosted-${seq}`}, ${String(700_000 + seq)}, '90.00000000', true,
+            'The provider reports 90.00 USD for this deposit, but it was created for 100 USD.')
+    RETURNING id`);
+  return tx[0].id;
+}
 
 beforeAll(async () => {
   ctx = await startHttpTestApp();
@@ -229,6 +251,36 @@ describe('Mark resolved', () => {
     // Control: the same admin, the same kind of payment, inside the territory.
     const inside = await flagged(await client('north'), 'withdrawal');
     expect((await north.patch(resolvePath(inside.txId), { note: NOTE })).status).toBe(200);
+  });
+
+  it('FINISHING a flagged hosted deposit: 404 outside the territory; inside, credits once', async () => {
+    const north = await actingAs(ctx, 'admin', NORTH_SETTLER);
+    const outside = await flaggedHostedDeposit(await client('south'));
+    const refused = await north.patch(
+      finishPath(outside),
+      { decision: 'credit', reason: 'Checked the dashboard' },
+      { headers: { 'idempotency-key': `finish-out-${outside}` } },
+    );
+    expect(refused.status).toBe(404);
+    const untouched = await ctx.db.db.execute<{ state: string }>(
+      sql`SELECT state FROM transactions WHERE id = ${outside}`,
+    );
+    expect(untouched.rows[0].state).toBe('pending');
+
+    // Control: the same admin, inside the territory — credited what arrived, once.
+    const insideClient = await client('north');
+    const inside = await flaggedHostedDeposit(insideClient);
+    const done = await north.patch(
+      finishPath(inside),
+      { decision: 'credit', reason: 'Checked the dashboard' },
+      { headers: { 'idempotency-key': `finish-in-${inside}` } },
+    );
+    expect(done.status, JSON.stringify(done.body)).toBe(200);
+    expect(done.body).toMatchObject({ state: 'success', amount: '90.00000000' });
+    const balance = await ctx.db.db.execute<{ balance: string }>(
+      sql`SELECT balance FROM wallets WHERE user_id = ${insideClient} AND currency = 'USD'`,
+    );
+    expect(balance.rows[0].balance).toBe('90.00000000');
   });
 
   it('requires a note worth reading', async () => {

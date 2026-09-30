@@ -4,6 +4,7 @@ import {
   DefaultValuePipe,
   Get,
   Param,
+  ParseEnumPipe,
   ParseIntPipe,
   Post,
   Put,
@@ -26,6 +27,7 @@ import {
   ProviderEventDto,
   ProviderTestResultDto,
   RotatedProviderSecretDto,
+  SetProviderChannelDto,
   UpdatePaymentProviderDto,
 } from '../dto/payment-provider.dto';
 
@@ -146,5 +148,36 @@ export class AdminPaymentProvidersController {
     @Param('name') name: string,
   ) {
     return this.providers.rotateSecret(code, name, req.admin);
+  }
+
+  @Put(':code/channels/:direction/:channel')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('payments.providers.edit')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Switch one of the provider’s channels on or off, in one direction',
+    description:
+      'E.g. ERC20 payouts off while TRC20 stays on. Off: its methods leave the client’s lists, ' +
+      'new movements on it are refused and approving payouts on it pauses; movements already ' +
+      'under way still finish. A reason is required to switch one off.',
+  })
+  @ApiOkResponse({ type: PaymentProviderDto })
+  @NotClientScoped(NOT_SCOPED)
+  @Audited('payment_provider.channel_disable')
+  setChannel(
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+    @Param('code') code: string,
+    @Param('direction', new ParseEnumPipe(['deposit', 'payout'])) direction: 'deposit' | 'payout',
+    @Param('channel') channel: string,
+    @Body() dto: SetProviderChannelDto,
+  ) {
+    return this.providers.setChannel(
+      code,
+      direction,
+      channel,
+      dto.enabled,
+      dto.reason ?? null,
+      req.admin,
+    );
   }
 }

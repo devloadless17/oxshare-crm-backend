@@ -9,10 +9,12 @@ import type { AdminAuditService } from '../src/modules/admin/admin-audit.service
 import { AppSettingsStore } from '../src/store/app-settings.store';
 import { PaymentProvidersStore } from '../src/store/payment-providers.store';
 import { PaymentProviderEventsStore } from '../src/store/payment-provider-events.store';
-import { RivalConfigService } from '../src/modules/payments/rival/rival-config.service';
-import type { RivalClient } from '../src/modules/payments/rival/rival.client';
-import { ManualPaymentProvider } from '../src/modules/payments/providers/manual.provider';
-import { RivalPaymentProvider } from '../src/modules/payments/providers/rival.provider';
+import { RivalConfigService } from '../src/modules/payments/providers/rival/rival-config.service';
+import type { RivalClient } from '../src/modules/payments/providers/rival/rival.client';
+import { ChannelSwitchesService } from '../src/modules/payments/core/channel-switches.service';
+import type { ResourceChangedPublisher } from '../src/common/realtime/resource-changed';
+import { ManualPaymentProvider } from '../src/modules/payments/providers/manual/manual.provider';
+import { RivalPaymentProvider } from '../src/modules/payments/providers/rival/rival.provider';
 import { PaymentProviderRegistry } from '../src/modules/payments/providers/payment-provider-registry';
 import { PaymentProvidersService } from '../src/modules/payments/providers/payment-providers.service';
 
@@ -63,6 +65,8 @@ function build(env: Record<string, string> = {}) {
     events,
     config,
     audit as unknown as AdminAuditService,
+    new ChannelSwitchesService(ctx.db, registry),
+    { publish: vi.fn().mockResolvedValue(undefined) } as unknown as ResourceChangedPublisher,
   );
   return { service, registry, rivalConfig };
 }

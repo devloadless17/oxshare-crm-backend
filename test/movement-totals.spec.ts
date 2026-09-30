@@ -8,7 +8,6 @@ import {
 import { WalletService } from '../src/modules/wallet/wallet.service';
 import { CurrenciesService } from '../src/modules/currencies/currencies.service';
 import { PaymentMethodsService } from '../src/modules/payments/payment-methods.service';
-import { AuditLogStore } from '../src/store/audit-log.store';
 import { UNRESTRICTED, type ClientScope } from '../src/common/security/client-scope';
 import { auditStubAs } from './audit-stub';
 import { emailStubAs } from './email-stub';
@@ -156,7 +155,6 @@ beforeAll(async () => {
     notificationsStubAs(),
     transfersStubAs(),
     transferExecutorStubAs(),
-    new AuditLogStore(ctx.db),
   );
 
   await q(

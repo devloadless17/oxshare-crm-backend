@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { ConfigService } from '@nestjs/config';
+import { HostedDepositsService } from '../src/modules/payments/core/hosted-deposits.service';
 import { TransactionsService } from '../src/modules/payments/transactions.service';
 import { CommissionService } from '../src/modules/ib/commission.service';
 import { WalletService } from '../src/modules/wallet/wallet.service';
@@ -42,6 +43,7 @@ const alwaysLeads = () =>
 let ctx: MoneyTestContext;
 let wallets: WalletService;
 let transactions: TransactionsService;
+let deposits: HostedDepositsService;
 let commissions: CommissionService;
 let store: NotificationsStore;
 let dispatch: NotificationsService;
@@ -66,10 +68,11 @@ beforeAll(async () => {
 
   const currencies = new CurrenciesService(ctx.db, auditStubAs());
   gateway = gatewayStub();
+  const paymentMethods = new PaymentMethodsService(ctx.db, currencies, auditStubAs(), gateway);
   transactions = new TransactionsService(
     wallets,
     ctx.db,
-    new PaymentMethodsService(ctx.db, currencies, auditStubAs(), gateway),
+    paymentMethods,
     currencies,
     gateway,
     new ConfigService(),
@@ -77,7 +80,17 @@ beforeAll(async () => {
     dispatch,
     transfersStubAs(),
     transferExecutorStubAs(),
+  );
+  // Hosted deposits settle through the payments core (0173).
+  deposits = new HostedDepositsService(
+    ctx.db,
+    gateway,
+    wallets,
+    transactions,
+    paymentMethods,
+    currencies,
     new AuditLogStore(ctx.db),
+    dispatch,
   );
   /*
    * The maturation window is switched OFF for this spec, through the real
@@ -270,13 +283,9 @@ describe('deposit settlement', () => {
     await seedPendingDeposit(userId, 'replay-ref-1');
     gateway.checkPayment.mockResolvedValue({ settled: true, paid: true, rawStatus: 'paid' });
 
-    expect((await transactions.settleGatewayDeposit('whish', 'replay-ref-1')).state).toBe(
-      'success',
-    );
+    expect((await deposits.settle('whish', 'replay-ref-1')).state).toBe('success');
     // The replay — at-least-once delivery is the standing assumption.
-    expect((await transactions.settleGatewayDeposit('whish', 'replay-ref-1')).state).toBe(
-      'success',
-    );
+    expect((await deposits.settle('whish', 'replay-ref-1')).state).toBe('success');
 
     expect(await rowsFor(userId, 'deposit.succeeded')).toHaveLength(1);
   });
@@ -286,12 +295,8 @@ describe('deposit settlement', () => {
     await seedPendingDeposit(userId, 'failed-ref-1');
     gateway.checkPayment.mockResolvedValue({ settled: true, paid: false, rawStatus: 'expired' });
 
-    expect((await transactions.settleGatewayDeposit('whish', 'failed-ref-1')).state).toBe(
-      'failure',
-    );
-    expect((await transactions.settleGatewayDeposit('whish', 'failed-ref-1')).state).toBe(
-      'failure',
-    );
+    expect((await deposits.settle('whish', 'failed-ref-1')).state).toBe('failure');
+    expect((await deposits.settle('whish', 'failed-ref-1')).state).toBe('failure');
 
     // The dispatch is post-write and fire-and-forget; give it a beat to land.
     await vi.waitFor(async () => {

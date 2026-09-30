@@ -39,6 +39,7 @@ import { JwtAuthGuard } from '../identity/guards/jwt-auth.guard';
 import { EmailVerifiedGuard } from '../identity/guards/email-verified.guard';
 import { KycVerifiedGuard } from '../identity/guards/kyc-verified.guard';
 import { User } from '../../store/users.store';
+import { HostedDepositsService } from './core/hosted-deposits.service';
 import { TransactionsService } from './transactions.service';
 import { transactionView } from './transaction-view';
 import { transferView } from './transfer-view';
@@ -96,6 +97,8 @@ export class PaymentsController {
     /* The receipt an offline deposit carries. `UploadsModule` is @Global(), so
        this needs no module import. */
     private readonly files: StoredFilesService,
+    /* Every hosted deposit settles through the core's one credit path (0173). */
+    private readonly hostedDeposits: HostedDepositsService,
   ) {}
 
   /**
@@ -194,7 +197,7 @@ export class PaymentsController {
     @Query('method') method: string | undefined,
     @Req() req: Request & { user: User },
   ) {
-    return this.transactions.settleGatewayDeposit(method || undefined, reference, {
+    return this.hostedDeposits.settle(method || undefined, reference, {
       ownerId: req.user.id,
     });
   }

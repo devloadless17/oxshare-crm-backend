@@ -14,7 +14,7 @@ import {
 import { emailRecorder } from './email-recorder';
 import { EmailService } from '../src/modules/email/email.service';
 import { Mt5BridgeClient } from '../src/modules/trading/mt5/mt5-bridge.client';
-import { RivalWithdrawalsService } from '../src/modules/payments/rival/rival-withdrawals.service';
+import { PayoutEngine } from '../src/modules/payments/core/payout-engine.service';
 import { PasswordService } from '../src/common/security/password.service';
 import { admins, kycConfigSteps, roles, users } from '../src/database/schema';
 import { DEFAULT_KYC_STEPS } from '../src/store/kyc-config.store';
@@ -120,11 +120,24 @@ beforeAll(async () => {
       {
         // `willPayOut` false keeps the no-rail transition: approve settles in
         // one step, exactly as it does on a deployment with no payout rail.
-        token: RivalWithdrawalsService,
+        token: PayoutEngine,
         value: {
+          // The desk pays — the no-rail behaviour these journeys depend on.
+          decide: () => Promise.resolve({ kind: 'desk' }),
+          plan: () =>
+            Promise.resolve({
+              payer: 'desk',
+              provider: null,
+              reason: null,
+              gross: null,
+              fee: null,
+              net: null,
+            }),
           submitApproved: () => Promise.resolve(),
+          resubmit: () => Promise.resolve(),
           cancelApproved: () => Promise.resolve(),
-          willPayOut: () => Promise.resolve(false),
+          reconcile: () => Promise.resolve(),
+          onNotice: () => Promise.resolve('ignored'),
         },
       },
     ],

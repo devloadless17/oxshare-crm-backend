@@ -13,7 +13,7 @@ import {
 } from './http-setup';
 import { emailRecorder } from './email-recorder';
 import { EmailService } from '../src/modules/email/email.service';
-import { RivalWithdrawalsService } from '../src/modules/payments/rival/rival-withdrawals.service';
+import { PayoutEngine } from '../src/modules/payments/core/payout-engine.service';
 import { PasswordService } from '../src/common/security/password.service';
 import { DEFAULT_KYC_STEPS } from '../src/store/kyc-config.store';
 import { admins, kycConfigSteps, roles, users } from '../src/database/schema';
@@ -129,11 +129,24 @@ beforeAll(async () => {
     overrides: [
       { token: EmailService, value: mail.service },
       {
-        token: RivalWithdrawalsService,
+        token: PayoutEngine,
         value: {
+          // The desk pays — the no-rail behaviour these journeys depend on.
+          decide: () => Promise.resolve({ kind: 'desk' }),
+          plan: () =>
+            Promise.resolve({
+              payer: 'desk',
+              provider: null,
+              reason: null,
+              gross: null,
+              fee: null,
+              net: null,
+            }),
           submitApproved: () => Promise.resolve(),
+          resubmit: () => Promise.resolve(),
           cancelApproved: () => Promise.resolve(),
-          willPayOut: () => Promise.resolve(false),
+          reconcile: () => Promise.resolve(),
+          onNotice: () => Promise.resolve('ignored'),
         },
       },
     ],

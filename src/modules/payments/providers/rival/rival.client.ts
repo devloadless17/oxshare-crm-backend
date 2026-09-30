@@ -4,7 +4,7 @@ import {
   ExternalServiceError,
   PaymentIndeterminateError,
   ValidationError,
-} from '../../../common/errors/domain-errors';
+} from '../../../../common/errors/domain-errors';
 import { RivalConfigService } from './rival-config.service';
 
 /**
@@ -118,7 +118,7 @@ interface RivalEnvelope<T> {
 }
 
 /** Rival's list envelope nests a second level: `data: { data: [...], meta }`. */
-interface RivalList<T> {
+export interface RivalList<T> {
   data: T[];
   meta: { page: number; pageSize: number; total: number; totalPages: number };
 }
@@ -228,17 +228,17 @@ export class RivalClient {
   }
 
   /**
-   * Rival's PENDING withdrawals — the orphan-adoption scan. The reconciler
-   * matches our `crm:<txId>` note against rows a timed-out create may have
-   * made without telling us.
+   * One page of Rival's PENDING withdrawals — the orphan-adoption scan pages
+   * through ALL of them (`RivalPayouts.find`). It used to read the first page
+   * of 100 and call anything not on it absent, which is how a payout that
+   * existed could be judged missing once more than 100 were pending.
    */
-  async listPendingWithdrawals(): Promise<RivalWithdrawal[]> {
-    const page = await this.request<RivalList<RivalWithdrawal>>(
+  async listPendingWithdrawals(page = 1): Promise<RivalList<RivalWithdrawal>> {
+    return this.request<RivalList<RivalWithdrawal>>(
       'GET',
-      '/company/withdrawals?status=PENDING&pageSize=100',
+      `/company/withdrawals?status=PENDING&pageSize=100&page=${page}`,
       {},
     );
-    return page.data;
   }
 
   /**

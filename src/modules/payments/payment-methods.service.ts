@@ -19,6 +19,7 @@ import {
   type CurrencyLimits,
 } from '../../common/currency-limits';
 import { AdminAuditService } from '../admin/admin-audit.service';
+import { channelSwitchKey, readOffSwitches } from './core/channel-switches.service';
 import { methodAvailability, type MethodAvailability } from './providers/provider-status';
 import type { Actor } from '../../common/security/actor';
 import type { CreatePaymentMethodDto, UpdatePaymentMethodDto } from './dto/payment-method.dto';
@@ -111,11 +112,16 @@ export class PaymentMethodsService {
       .orderBy(asc(paymentMethods.sortOrder), asc(paymentMethods.key));
     const ranges = await this.depositRanges(rows.map(({ row }) => row.currency));
     const providers = await this.providerStates();
+    const off = await readOffSwitches(this.db);
     return rows.map(({ row, inUse }) => ({
       ...this.withEffectiveBounds(row, ranges),
       builtIn: false,
       inUse,
-      availability: methodAvailability(row.enabled, providers.get(row.providerCode)),
+      availability: methodAvailability(
+        row.enabled,
+        providers.get(row.providerCode),
+        !off.has(channelSwitchKey(row, 'deposit')),
+      ),
     }));
   }
 
@@ -129,11 +135,16 @@ export class PaymentMethodsService {
     if (!found) return null;
     const ranges = await this.depositRanges([found.row.currency]);
     const providers = await this.providerStates();
+    const off = await readOffSwitches(this.db);
     return {
       ...this.withEffectiveBounds(found.row, ranges),
       builtIn: false,
       inUse: found.inUse,
-      availability: methodAvailability(found.row.enabled, providers.get(found.row.providerCode)),
+      availability: methodAvailability(
+        found.row.enabled,
+        providers.get(found.row.providerCode),
+        !off.has(channelSwitchKey(found.row, 'deposit')),
+      ),
     };
   }
 
@@ -176,7 +187,11 @@ export class PaymentMethodsService {
     // after the first gateway row and a client holds a handful of methods.
     const available: typeof rows = [];
     const hidden: string[] = [];
+    // A network switched off by an admin (0173) hides its methods too — on
+    // purpose, and visible in the console, so it is not an unexplained hide.
+    const off = await readOffSwitches(this.db);
     for (const row of rows) {
+      if (off.has(channelSwitchKey(row, 'deposit'))) continue;
       if (await this.isConfigured(row)) available.push(row);
       else hidden.push(row.key);
     }
@@ -250,6 +265,19 @@ export class PaymentMethodsService {
    * (`effectiveDepositRange`) — so an LBP method is bounded in LBP, not by a
    * USD-sized number every currency used to share.
    */
+  /**
+   * A method's effective deposit MAXIMUM — its own, or its currency's —
+   * whether or not it is enabled today; null for an unknown method or no
+   * ceiling. The deposit engine reads it AFTER money arrived: a provider that
+   * credits what arrived can deliver more than the method allows, and that is
+   * credited and flagged for a compliance look, never refused (0173).
+   */
+  async effectiveMaximum(key: string): Promise<string | null> {
+    const row = await this.findOne(key);
+    if (!row) return null;
+    return this.withEffectiveBounds(row, await this.depositRanges([row.currency])).maxAmount;
+  }
+
   private withEffectiveBounds(
     row: PaymentMethodRow,
     ranges: Map<string, DepositRange>,
@@ -352,7 +380,10 @@ export class PaymentMethodsService {
     if (!row.enabled) {
       throw new ValidationError(`${row.name} is not currently available. Choose another method.`);
     }
-    if (!(await this.isConfigured(row))) {
+    if (
+      !(await this.isConfigured(row)) ||
+      (await readOffSwitches(this.db)).has(channelSwitchKey(row, 'deposit'))
+    ) {
       /*
        * Reachable only if an operator enabled a gateway this deployment holds no
        * credentials for, since `listAvailable` hides those. The message says

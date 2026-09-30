@@ -201,9 +201,9 @@ describe('Settings → Scheduled jobs', () => {
   });
 
   it('runs a CRM job now — but not the commission pair or a bridge job', async () => {
-    await store.claimJob('rival.reconcile');
-    await settings.runJobNow('rival.reconcile', ACTOR);
-    expect((await row('rival.reconcile')).lastStartedAt).toBeNull();
+    await store.claimJob('payments.reconcileProviders');
+    await settings.runJobNow('payments.reconcileProviders', ACTOR);
+    expect((await row('payments.reconcileProviders')).lastStartedAt).toBeNull();
     await expect(settings.runJobNow('ib.accrueDeals', ACTOR)).rejects.toBeInstanceOf(
       ValidationError,
     );

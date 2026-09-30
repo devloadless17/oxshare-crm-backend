@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { PaymentChannel, PaymentProviderAdapter } from './payment-provider';
+import type { PaymentChannel, PaymentProviderAdapter } from '../payment-provider';
 
 /**
  * MANUAL — the desk, as a provider (0168).
