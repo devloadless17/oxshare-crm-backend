@@ -4780,6 +4780,109 @@
         ]
       }
     },
+    "/v1/admin/payment-providers/{code}/unmatched-records": {
+      "get": {
+        "description": "Filed by the unmatched-records audit: a payout made by hand in the provider’s dashboard, a deposit on a link this platform never made. `open=false` lists every one filed, explained or not.",
+        "operationId": "AdminPaymentProvidersController_unmatched",
+        "parameters": [
+          {
+            "name": "code",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "open",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/UnmatchedProviderRecordDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Movements at the provider that no transaction here explains (0174)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/payment-providers/{code}/unmatched-records/{id}/acknowledge": {
+      "post": {
+        "description": "A note is required. It moves no money and changes no transaction.",
+        "operationId": "AdminPaymentProvidersController_acknowledge",
+        "parameters": [
+          {
+            "name": "code",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcknowledgeProviderRecordDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnmatchedProviderRecordDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Explain a provider record as a company movement",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/wallet": {
       "get": {
         "operationId": "WalletController_myWallets",
@@ -17046,6 +17149,15 @@
           "updatedAt": {
             "type": "string",
             "nullable": true
+          },
+          "auditsRecords": {
+            "type": "boolean",
+            "description": "Are this provider’s own records audited for movements no transaction here explains (0174)?"
+          },
+          "unexplainedRecords": {
+            "type": "number",
+            "description": "Movements at the provider no transaction here explains, not yet acknowledged.",
+            "example": 0
           }
         },
         "required": [
@@ -17064,7 +17176,9 @@
           "channels",
           "methods",
           "last24h",
-          "updatedAt"
+          "updatedAt",
+          "auditsRecords",
+          "unexplainedRecords"
         ]
       },
       "ProviderEventDto": {
@@ -17218,6 +17332,100 @@
         },
         "required": [
           "enabled"
+        ]
+      },
+      "UnmatchedProviderRecordDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string",
+            "enum": [
+              "payment",
+              "payout"
+            ]
+          },
+          "providerId": {
+            "type": "string",
+            "description": "The provider’s id for it.",
+            "example": "WD-1788182251668-6a47bbcf"
+          },
+          "rawStatus": {
+            "type": "string",
+            "example": "completed"
+          },
+          "amount": {
+            "type": "string",
+            "nullable": true,
+            "example": "500.00000000"
+          },
+          "asset": {
+            "type": "string",
+            "nullable": true,
+            "example": "USDT-TRC20"
+          },
+          "counterparty": {
+            "type": "string",
+            "nullable": true,
+            "description": "The address paid, or the deposit address, as the provider reported it."
+          },
+          "reference": {
+            "type": "string",
+            "nullable": true,
+            "description": "Our reference, when echoed."
+          },
+          "occurredAt": {
+            "type": "string",
+            "description": "When the provider recorded it (ISO)."
+          },
+          "foundAt": {
+            "type": "string",
+            "description": "When the audit filed it (ISO)."
+          },
+          "matchedTransactionId": {
+            "type": "string",
+            "nullable": true,
+            "description": "A transaction that holds it since."
+          },
+          "acknowledgedAt": {
+            "type": "string",
+            "nullable": true
+          },
+          "acknowledgement": {
+            "type": "string",
+            "nullable": true,
+            "description": "Why it is a company movement."
+          }
+        },
+        "required": [
+          "id",
+          "subject",
+          "providerId",
+          "rawStatus",
+          "amount",
+          "asset",
+          "counterparty",
+          "reference",
+          "occurredAt",
+          "foundAt",
+          "matchedTransactionId",
+          "acknowledgedAt",
+          "acknowledgement"
+        ]
+      },
+      "AcknowledgeProviderRecordDto": {
+        "type": "object",
+        "properties": {
+          "note": {
+            "type": "string",
+            "description": "What this movement was — required, shown on the record and in the audit log.",
+            "example": "Treasury sweep to the cold wallet, approved by finance."
+          }
+        },
+        "required": [
+          "note"
         ]
       },
       "StatementLineDto": {

@@ -6,6 +6,7 @@ import {
   Param,
   ParseEnumPipe,
   ParseIntPipe,
+  ParseUUIDPipe,
   Post,
   Put,
   Query,
@@ -23,11 +24,13 @@ import { NotClientScoped } from '../../admin/guards/client-scope.decorator';
 import { Audited, NotAudited } from '../../admin/guards/audited.decorator';
 import { PaymentProvidersService } from './payment-providers.service';
 import {
+  AcknowledgeProviderRecordDto,
   PaymentProviderDto,
   ProviderEventDto,
   ProviderTestResultDto,
   RotatedProviderSecretDto,
   SetProviderChannelDto,
+  UnmatchedProviderRecordDto,
   UpdatePaymentProviderDto,
 } from '../dto/payment-provider.dto';
 
@@ -179,5 +182,45 @@ export class AdminPaymentProvidersController {
       dto.reason ?? null,
       req.admin,
     );
+  }
+
+  @Get(':code/unmatched-records')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('payments.providers.view')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Movements at the provider that no transaction here explains (0174)',
+    description:
+      'Filed by the unmatched-records audit: a payout made by hand in the provider’s ' +
+      'dashboard, a deposit on a link this platform never made. `open=false` lists every one ' +
+      'filed, explained or not.',
+  })
+  @ApiOkResponse({ type: UnmatchedProviderRecordDto, isArray: true })
+  @NotClientScoped(NOT_SCOPED)
+  unmatched(
+    @Param('code') code: string,
+    @Query('open', new DefaultValuePipe('true')) open: string,
+  ) {
+    return this.providers.unmatchedRecords(code, open !== 'false');
+  }
+
+  @Post(':code/unmatched-records/:id/acknowledge')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('payments.providers.edit')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Explain a provider record as a company movement',
+    description: 'A note is required. It moves no money and changes no transaction.',
+  })
+  @ApiOkResponse({ type: UnmatchedProviderRecordDto })
+  @NotClientScoped(NOT_SCOPED)
+  @Audited('payment_provider.record_acknowledge')
+  acknowledge(
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+    @Param('code') code: string,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: AcknowledgeProviderRecordDto,
+  ) {
+    return this.providers.acknowledgeRecord(code, id, dto.note, req.admin);
   }
 }

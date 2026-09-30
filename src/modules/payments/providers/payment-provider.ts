@@ -1,3 +1,4 @@
+import { ExternalServiceError } from '../../../common/errors/domain-errors';
 import type { ProviderEventType } from '../../../store/payment-provider-events.store';
 
 /**
@@ -219,6 +220,59 @@ export interface ConnectionCheck {
   message: string;
 }
 
+/**
+ * The provider is at its REQUEST LIMIT — a 429, or the adapter's own pacing
+ * (3pay allows 60 reads a minute) — and NOTHING WAS SENT (0174). A sweep stops
+ * its pass and resumes on the next run instead of failing row after row; a
+ * payout is requeued; a single call a person or client made reports it.
+ */
+export class ProviderBusyError extends ExternalServiceError {
+  constructor(
+    message: string,
+    readonly retryAfterMs: number,
+  ) {
+    super(message);
+  }
+}
+
+/**
+ * One movement in the provider's own records, as the unmatched-records audit
+ * reads it (0174).
+ */
+export interface ProviderRecord {
+  subject: 'payment' | 'payout';
+  /** The id a transaction here would hold (`provider_payment_id` / `provider_payout_id`). */
+  providerId: string;
+  /**
+   * Did money move — a confirmed deposit, a payout not refused? Only those must
+   * be explained; an unpaid link nobody used explains itself.
+   */
+  moved: boolean;
+  rawStatus: string;
+  amount?: string;
+  /** The asset it moved in (`USDT-TRC20`). */
+  asset?: string;
+  /** The other side — the address paid or paid from — when reported. */
+  counterparty?: string;
+  /** Our reference, when the provider echoes one. */
+  reference?: string;
+  occurredAt: Date;
+}
+
+/** A window of the provider's records; incomplete when it could not all be read. */
+export type ProviderRecordPage =
+  { complete: true; records: readonly ProviderRecord[] } | { complete: false; reason: string };
+
+/** What a provider holds for the company right now, in the asset it moves. */
+export interface ProviderBalance {
+  /** Withdrawable now (3pay's `totalAmt`). */
+  available: string;
+  /** Locked in payouts under way (3pay's `pendingAmt`), when reported. */
+  inFlight?: string;
+  /** The asset it is counted in ("USDT"). */
+  asset: string;
+}
+
 /* ── Automated payouts ───────────────────────────────────────────────────── */
 
 /**
@@ -376,6 +430,21 @@ export interface PaymentProviderAdapter {
 
   /** Ask the provider whether the saved settings work. Absent on built-in providers. */
   testConnection?(): Promise<ConnectionCheck>;
+
+  /**
+   * The company's balance at the provider, for a provider that pays out of a
+   * prefunded balance (3pay). The core compares it with the payouts waiting to
+   * be sent and warns BEFORE they start failing for want of funds.
+   */
+  balance?(): Promise<ProviderBalance>;
+
+  /**
+   * Every movement the provider recorded in a window — for the core's
+   * UNMATCHED-RECORDS audit: a record no transaction here explains (a payout
+   * made by hand in the provider's dashboard, a deposit on a link we did not
+   * make) is raised for a person. Absent: the provider cannot list its records.
+   */
+  listRecords?(since: Date, until: Date): Promise<ProviderRecordPage>;
 
   /** Its configuration row changed: drop anything cached from the old one. */
   settingsChanged?(): void;

@@ -9,6 +9,8 @@ import { PaymentProviderRegistry } from '../providers/payment-provider-registry'
 import type { PaymentProviderAdapter } from '../providers/payment-provider';
 import { HostedDepositsService } from './hosted-deposits.service';
 import { PayoutEngine } from './payout-engine.service';
+import { ProviderBalanceWatch } from './provider-balance-watch.service';
+import { ProviderRecordsAudit } from './provider-records-audit.service';
 
 /**
  * THE POLL BEHIND EVERY PROVIDER'S WEBHOOK — the sweep half of push + sweep
@@ -29,12 +31,20 @@ import { PayoutEngine } from './payout-engine.service';
  * movement on it is still open; the payout engine sends nothing new unless it
  * is usable.
  *
- * ## One instance per provider
+ * ## One instance per provider, every provider at once
  *
  * Every step is idempotent, so the lease is about COST: several replicas
  * polling one provider for the same rows multiply the traffic against APIs
- * that rate-limit. Each provider has its own lease, so one slow provider does
+ * that rate-limit. Each provider has its own lease AND runs alongside the
+ * others, so one slow provider (3pay paces itself to 60 reads a minute) does
  * not hold the others.
+ *
+ * ## After the money: what the provider holds
+ *
+ * Once its movements are settled, a usable provider's own records are audited
+ * (`ProviderRecordsAudit`: anything there that no transaction explains is
+ * raised) and its prefunded balance is compared with the payouts waiting on it
+ * (`ProviderBalanceWatch`). Neither moves money.
  *
  * A sweep that fails is "unchecked, not known-bad": logged at error, not paged
  * — the webhook remains the primary path.
@@ -49,16 +59,27 @@ export class ProviderReconcileScheduler {
     private readonly deposits: HostedDepositsService,
     private readonly payouts: PayoutEngine,
     private readonly leases: JobLeaseService,
+    private readonly records: ProviderRecordsAudit,
+    private readonly balances: ProviderBalanceWatch,
   ) {}
 
   @ScheduledJob('payments.reconcileProviders')
   async sweep(): Promise<void> {
-    for (const adapter of this.registry.list()) {
-      if (adapter.builtIn) continue;
-      if (!(await this.worthSweeping(adapter))) continue;
-      await this.leases.run(`payments.reconcile:${adapter.code}`, 10 * 60_000, () =>
-        this.runOnce(adapter),
-      );
+    const results = await Promise.allSettled(
+      this.registry
+        .list()
+        .filter((adapter) => !adapter.builtIn)
+        .map(async (adapter) => {
+          if (!(await this.worthSweeping(adapter))) return;
+          await this.leases.run(`payments.reconcile:${adapter.code}`, 10 * 60_000, () =>
+            this.runOnce(adapter),
+          );
+        }),
+    );
+    for (const result of results) {
+      if (result.status === 'rejected') {
+        this.logger.error(`A provider reconcile did not run: ${messageOf(result.reason)}`);
+      }
     }
   }
 
@@ -79,6 +100,17 @@ export class ProviderReconcileScheduler {
         `${adapter.name} payout reconcile did not complete — payouts in flight are UNCHECKED ` +
           `this round, not known-bad. ${messageOf(error)}`,
       );
+    }
+    if (!(await adapter.isUsable())) return;
+    try {
+      await this.records.run(adapter);
+    } catch (error) {
+      this.logger.error(`${adapter.name} records audit did not complete: ${messageOf(error)}`);
+    }
+    try {
+      await this.balances.check(adapter);
+    } catch (error) {
+      this.logger.warn(`${adapter.name} balance could not be checked: ${messageOf(error)}`);
     }
   }
 

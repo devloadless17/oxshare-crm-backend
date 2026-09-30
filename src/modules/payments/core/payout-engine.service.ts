@@ -29,15 +29,16 @@ import {
   PaymentProviderRegistry,
   providerWebhookUrl,
 } from '../providers/payment-provider-registry';
-import type {
-  NoticeOutcome,
-  PaymentChannel,
-  PaymentProviderAdapter,
-  PaymentRoute,
-  PayoutQuote,
-  PayoutRail,
-  PayoutReport,
-  ProviderNotice,
+import {
+  ProviderBusyError,
+  type NoticeOutcome,
+  type PaymentChannel,
+  type PaymentProviderAdapter,
+  type PaymentRoute,
+  type PayoutQuote,
+  type PayoutRail,
+  type PayoutReport,
+  type ProviderNotice,
 } from '../providers/payment-provider';
 import { ChannelSwitchesService, type ChannelSwitch } from './channel-switches.service';
 
@@ -572,6 +573,49 @@ export class PayoutEngine {
       .where(eq(transactions.id, tx.id));
 
     /*
+     * PAID SOMEWHERE ELSE — the provider reports this payout going to another
+     * destination, or in another asset, than was asked. 3pay's "Static Wallet"
+     * force-routes payouts above a threshold to a pre-approved cold wallet
+     * "regardless of what your integration sends" (its guide, §10), so a
+     * payout can COMPLETE without the client receiving anything. It is never
+     * settled as paid (the client would be told so) and never refunded by the
+     * engine (the money did leave the company): a person pays the client from
+     * where it went and marks it paid. Judged only while money may be moving —
+     * a refused payout went nowhere, and its refund is right.
+     */
+    if (report.status === 'pending' || report.status === 'completed') {
+      const elsewhere = this.paidElsewhere(tx, adapter, report);
+      if (elsewhere) {
+        const fresh = !(tx.needsAttention && tx.attentionReason === elsewhere);
+        await this.flagOnce(tx, elsewhere);
+        if (fresh) {
+          await this.notifications.notifyAdmins({
+            kind: 'withdrawal.payout_attention',
+            params: {
+              transactionId: tx.id,
+              ourState: tx.state,
+              event: report.status,
+              provider: adapter.name,
+            },
+            dedupeKey: `withdrawal.payout_attention:${tx.id}`,
+            subject: { id: tx.id, clientId: tx.userId },
+          });
+        }
+        await this.providerEvents.append({
+          providerCode: adapter.code,
+          eventType: report.status === 'completed' ? 'payout.completed' : 'payout.submitted',
+          subjectId: report.payoutId,
+          providerType: report.rawStatus,
+          source,
+          transactionId: tx.id,
+          outcome: 'rejected',
+          reason: elsewhere,
+        });
+        return 'needs-attention';
+      }
+    }
+
+    /*
      * SHORT — the provider will deliver less than the client was debited (a fee
      * deducted rather than charged on top, or one changed since it was
      * configured). Flagged the moment ANY report says so — the create's own
@@ -832,6 +876,11 @@ export class PayoutEngine {
           since: sinceOf(tx),
         });
       } catch (error) {
+        // At its request limit: nothing more this pass; the next resumes here.
+        if (error instanceof ProviderBusyError) {
+          this.logger.warn(`${adapter.name} orphan scan paused: ${error.message}`);
+          return;
+        }
         lookup = { complete: false, reason: messageOf(error) };
       }
       if (!lookup.complete) {
@@ -946,6 +995,7 @@ export class PayoutEngine {
         );
       } catch (error) {
         this.logger.warn(`Could not read ${adapter.name} payouts: ${messageOf(error)}`);
+        if (error instanceof ProviderBusyError) return;
         continue;
       }
       for (const tx of rows) {
@@ -1087,6 +1137,39 @@ export class PayoutEngine {
       .update(transactions)
       .set({ needsAttention: true, attentionReason: reason })
       .where(eq(transactions.id, txId));
+  }
+
+  /**
+   * Why a report does not describe the payout that was asked for — another
+   * asset, or another destination — or null when it does (or does not say).
+   */
+  private paidElsewhere(
+    tx: TransactionRow,
+    adapter: PaymentProviderAdapter,
+    report: PayoutReport,
+  ): string | null {
+    const channel = this.registry.findChannel(tx, 'payout');
+    if (!channel) return null;
+    const asset = channel.asset?.code ?? tx.currency;
+    if (report.currency !== undefined && report.currency.toUpperCase() !== asset.toUpperCase()) {
+      return (
+        `${adapter.name} reports this payout in ${report.currency}, but it was asked to send ` +
+        `${asset}. The client may not have received it: check ${adapter.name}'s dashboard, pay ` +
+        'the client what they are owed, then mark it paid.'
+      );
+    }
+    if (report.destination !== undefined) {
+      const asked = normalizedDestination(channel, tx.destination ?? '');
+      if (normalizedDestination(channel, report.destination) !== asked) {
+        return (
+          `${adapter.name} reports this payout sent to ${report.destination}, not to the ` +
+          `client's ${tx.destination ?? '(none)'} — the client did NOT receive it. Check ` +
+          `${adapter.name}'s dashboard (a forced cold-wallet route does this), pay the client ` +
+          'from where it went, then mark it paid.'
+        );
+      }
+    }
+    return null;
   }
 
   /** Flag and page a payout that lands short of what the client was debited — once. */

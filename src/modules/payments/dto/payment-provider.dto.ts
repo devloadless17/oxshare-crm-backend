@@ -1,5 +1,13 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsBoolean, IsIn, IsObject, IsOptional, IsString, MaxLength } from 'class-validator';
+import {
+  IsBoolean,
+  IsIn,
+  IsNotEmpty,
+  IsObject,
+  IsOptional,
+  IsString,
+  MaxLength,
+} from 'class-validator';
 import { NoClientFields } from '../../../common/security/client-field.decorator';
 import { METHOD_AVAILABILITIES, type MethodAvailability } from '../providers/provider-status';
 
@@ -277,6 +285,80 @@ export class PaymentProviderDto {
 
   @ApiProperty({ type: String, nullable: true })
   updatedAt: string | null;
+
+  @ApiProperty({
+    description:
+      'Are this provider’s own records audited for movements no transaction here explains (0174)?',
+  })
+  auditsRecords: boolean;
+
+  @ApiProperty({
+    description: 'Movements at the provider no transaction here explains, not yet acknowledged.',
+    example: 0,
+  })
+  unexplainedRecords: number;
+}
+
+/**
+ * A movement the provider recorded that no transaction here explains (0174):
+ * a payout made by hand in its dashboard, a deposit on a link this platform
+ * never made. Named by the provider, never tied to a client here.
+ */
+@NoClientFields('operator records - a provider’s own movement, tied to no client here')
+export class UnmatchedProviderRecordDto {
+  @ApiProperty()
+  id: string;
+
+  @ApiProperty({ enum: ['payment', 'payout'] })
+  subject: 'payment' | 'payout';
+
+  @ApiProperty({ description: 'The provider’s id for it.', example: 'WD-1788182251668-6a47bbcf' })
+  providerId: string;
+
+  @ApiProperty({ example: 'completed' })
+  rawStatus: string;
+
+  @ApiProperty({ type: 'string', nullable: true, example: '500.00000000' })
+  amount: string | null;
+
+  @ApiProperty({ type: String, nullable: true, example: 'USDT-TRC20' })
+  asset: string | null;
+
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    description: 'The address paid, or the deposit address, as the provider reported it.',
+  })
+  counterparty: string | null;
+
+  @ApiProperty({ type: String, nullable: true, description: 'Our reference, when echoed.' })
+  reference: string | null;
+
+  @ApiProperty({ description: 'When the provider recorded it (ISO).' })
+  occurredAt: string;
+
+  @ApiProperty({ description: 'When the audit filed it (ISO).' })
+  foundAt: string;
+
+  @ApiProperty({ type: String, nullable: true, description: 'A transaction that holds it since.' })
+  matchedTransactionId: string | null;
+
+  @ApiProperty({ type: String, nullable: true })
+  acknowledgedAt: string | null;
+
+  @ApiProperty({ type: String, nullable: true, description: 'Why it is a company movement.' })
+  acknowledgement: string | null;
+}
+
+export class AcknowledgeProviderRecordDto {
+  @ApiProperty({
+    description: 'What this movement was — required, shown on the record and in the audit log.',
+    example: 'Treasury sweep to the cold wallet, approved by finance.',
+  })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(500)
+  note: string;
 }
 
 /**

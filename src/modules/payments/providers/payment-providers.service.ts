@@ -27,6 +27,7 @@ import type {
   ProviderMethodDto,
   ProviderTestResultDto,
   RotatedProviderSecretDto,
+  UnmatchedProviderRecordDto,
   UpdatePaymentProviderDto,
 } from '../dto/payment-provider.dto';
 import type {
@@ -47,6 +48,7 @@ import {
   readOffSwitches,
   type ChannelSwitch,
 } from '../core/channel-switches.service';
+import { ProviderRecordsAudit } from '../core/provider-records-audit.service';
 
 const MAX_SETTING_LENGTH = 2048;
 const MAX_EVENTS = 200;
@@ -82,6 +84,8 @@ export class PaymentProvidersService {
     /* The network switches (0173) — appended last, the positional-construction rule. */
     private readonly switches: ChannelSwitchesService,
     private readonly resourceChanged: ResourceChangedPublisher,
+    /* The unmatched-records audit (0174) — appended last, the positional-construction rule. */
+    private readonly records: ProviderRecordsAudit,
   ) {}
 
   async list(): Promise<PaymentProviderDto[]> {
@@ -90,19 +94,37 @@ export class PaymentProvidersService {
     const methods = await this.methodsByProvider(states);
     const activity = await this.activityByProvider();
     const off = await this.switches.offSwitches();
+    const unexplained = await this.records.openCounts();
     const byCode = new Map(rows.map((row) => [row.code, row]));
-    return this.registry
-      .list()
-      .map((adapter) =>
-        this.view(
-          adapter,
-          byCode.get(adapter.code) ?? null,
-          states.get(adapter.code),
-          methods,
-          activity,
-          off,
-        ),
-      );
+    return this.registry.list().map((adapter) => ({
+      ...this.view(
+        adapter,
+        byCode.get(adapter.code) ?? null,
+        states.get(adapter.code),
+        methods,
+        activity,
+        off,
+      ),
+      auditsRecords: typeof adapter.listRecords === 'function',
+      unexplainedRecords: unexplained.get(adapter.code) ?? 0,
+    }));
+  }
+
+  /** What the provider holds that no transaction here explains (0174). */
+  async unmatchedRecords(code: string, open: boolean): Promise<UnmatchedProviderRecordDto[]> {
+    this.registry.provider(code);
+    return (await this.records.list(code, open)).map(unmatchedView);
+  }
+
+  /** A person explains one as a company movement, with a note (audited). */
+  async acknowledgeRecord(
+    code: string,
+    id: string,
+    note: string,
+    actor: Actor,
+  ): Promise<UnmatchedProviderRecordDto> {
+    this.registry.provider(code);
+    return unmatchedView(await this.records.acknowledge(code, id, actor, note));
   }
 
   async get(code: string): Promise<PaymentProviderDto> {
@@ -338,7 +360,7 @@ export class PaymentProvidersService {
     methods: Map<string, ProviderMethodDto[]>,
     activity: Map<string, ProviderActivityDto>,
     off: ReadonlyMap<string, ChannelSwitch>,
-  ): PaymentProviderDto {
+  ): Omit<PaymentProviderDto, 'auditsRecords' | 'unexplainedRecords'> {
     const saved = row !== null && missingSettings(adapter, row).length === 0;
     return {
       code: adapter.code,
@@ -623,4 +645,37 @@ function mergeThreeState(
 /** sha256[:8] — displayable and audit-safe, useless for recovering the secret. */
 function fingerprint(secret: string): string {
   return createHash('sha256').update(secret).digest('hex').slice(0, 8);
+}
+
+/** A filed provider record as the console shows it. */
+function unmatchedView(row: {
+  id: string;
+  subject: string;
+  providerId: string;
+  rawStatus: string;
+  amount: string | null;
+  asset: string | null;
+  counterparty: string | null;
+  reference: string | null;
+  occurredAt: Date;
+  foundAt: Date;
+  matchedTransactionId: string | null;
+  acknowledgedAt: Date | null;
+  acknowledgement: string | null;
+}): UnmatchedProviderRecordDto {
+  return {
+    id: row.id,
+    subject: row.subject === 'payout' ? 'payout' : 'payment',
+    providerId: row.providerId,
+    rawStatus: row.rawStatus,
+    amount: row.amount,
+    asset: row.asset,
+    counterparty: row.counterparty,
+    reference: row.reference,
+    occurredAt: row.occurredAt.toISOString(),
+    foundAt: row.foundAt.toISOString(),
+    matchedTransactionId: row.matchedTransactionId,
+    acknowledgedAt: row.acknowledgedAt?.toISOString() ?? null,
+    acknowledgement: row.acknowledgement,
+  };
 }

@@ -1226,6 +1226,13 @@
       "when": 1789141200750,
       "tag": "0173_payments_core",
       "breakpoints": true
+    },
+    {
+      "idx": 176,
+      "version": "7",
+      "when": 1789141300750,
+      "tag": "0174_threepay_provider",
+      "breakpoints": true
     }
   ]
 }

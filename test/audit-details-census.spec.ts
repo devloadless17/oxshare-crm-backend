@@ -207,6 +207,8 @@ const WRITES_DETAILS: readonly string[] = [
   // A channel switched (0173): provider, channel, direction, the admin's reason.
   'payment_provider.channel_enable',
   'payment_provider.enable',
+  // A provider's own movement (0174) — tied to no client here, names none.
+  'payment_provider.record_acknowledge',
   'payment_provider.secret_rotate',
   'payment_provider.update',
   'platform_link.set',

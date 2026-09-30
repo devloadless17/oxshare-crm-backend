@@ -29,13 +29,14 @@ import { CurrenciesService } from '../../currencies/currencies.service';
 import { TransactionsService } from '../transactions.service';
 import { PaymentMethodsService } from '../payment-methods.service';
 import { PaymentProviderRegistry } from '../providers/payment-provider-registry';
-import type {
-  DepositCreditPolicy,
-  NoticeOutcome,
-  PaymentChannel,
-  PaymentRoute,
-  PaymentStatus,
-  ProviderNotice,
+import {
+  ProviderBusyError,
+  type DepositCreditPolicy,
+  type NoticeOutcome,
+  type PaymentChannel,
+  type PaymentRoute,
+  type PaymentStatus,
+  type ProviderNotice,
 } from '../providers/payment-provider';
 
 type TransactionRow = typeof transactions.$inferSelect;
@@ -150,9 +151,15 @@ export class HostedDepositsService {
         reason,
       });
 
-    // The start/webhook race: the first delivery can outrun the UPDATE that
-    // stores the provider's id. Worth a retry; the sweep sits behind it.
     if (!tx) {
+      // An alarm names a deposit that SETTLED here; none carries this id, so
+      // it is about something else (3pay's `refund` rings both doorbells).
+      if (notice.kind === 'alarm') {
+        await log('ignored', 'No deposit here carries this payment.');
+        return 'not-ours';
+      }
+      // The start/webhook race: the first delivery can outrun the UPDATE that
+      // stores the provider's id. Worth a retry; the sweep sits behind it.
       await log('failed', 'No deposit carries this payment yet; it is retried.');
       return 'unknown-reference';
     }
@@ -161,11 +168,15 @@ export class HostedDepositsService {
       await this.flag(
         tx,
         'reversed',
-        'The provider REVERSED this deposit after it settled. The client wallet has not been ' +
-          'debited — a compensating entry is a person’s decision (§6.4). Reconcile against ' +
-          'the provider.',
+        tx.state === 'success'
+          ? 'The provider REVERSED this deposit after it settled. The client wallet has not been ' +
+              'debited — a compensating entry is a person’s decision (§6.4). Reconcile against ' +
+              'the provider.'
+          : 'The provider reports a REFUND on this deposit, which was never credited here. ' +
+              'Nothing has moved on this side — check with the provider where the money went ' +
+              'before finishing it.',
       );
-      await log('rejected', 'Reversed after it settled; nothing is debited without a person.');
+      await log('rejected', 'Reported reversed; nothing is debited without a person.');
       return 'needs-attention';
     }
 
@@ -652,6 +663,7 @@ export class HostedDepositsService {
       .limit(BATCH);
 
     let settled = 0;
+    let busy: ProviderBusyError | null = null;
     for (const tx of open) {
       try {
         if (!this.registry.isRedirect(tx)) continue;
@@ -680,18 +692,34 @@ export class HostedDepositsService {
           );
         }
       } catch (error) {
+        // At its request limit, the provider answers nothing more this pass:
+        // stop, and the next sweep resumes where this one left off.
+        if (error instanceof ProviderBusyError) {
+          busy = error;
+          break;
+        }
         this.logger.error(`Sweep could not resolve deposit ${tx.id}: ${messageOf(error)}`);
       }
     }
 
-    const late = await this.lateCandidates(providerCode);
+    const late = busy ? [] : await this.lateCandidates(providerCode);
     for (const tx of late) {
       try {
         const { state } = await this.settleRow(tx, 'poll');
         if (state === 'success') settled += 1;
       } catch (error) {
+        if (error instanceof ProviderBusyError) {
+          busy = error;
+          break;
+        }
         this.logger.error(`Late re-check of deposit ${tx.id} failed: ${messageOf(error)}`);
       }
+    }
+    if (busy) {
+      this.logger.warn(
+        `${providerCode} deposit sweep paused at the provider's request limit; the rest waits ` +
+          `for the next sweep. ${busy.message}`,
+      );
     }
 
     if (open.length + late.length > 0) {

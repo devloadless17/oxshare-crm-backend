@@ -12,6 +12,8 @@ import { PaymentProviderEventsStore } from '../src/store/payment-provider-events
 import { RivalConfigService } from '../src/modules/payments/providers/rival/rival-config.service';
 import type { RivalClient } from '../src/modules/payments/providers/rival/rival.client';
 import { ChannelSwitchesService } from '../src/modules/payments/core/channel-switches.service';
+import { AuditLogStore } from '../src/store/audit-log.store';
+import { ProviderRecordsAudit } from '../src/modules/payments/core/provider-records-audit.service';
 import type { ResourceChangedPublisher } from '../src/common/realtime/resource-changed';
 import { ManualPaymentProvider } from '../src/modules/payments/providers/manual/manual.provider';
 import { RivalPaymentProvider } from '../src/modules/payments/providers/rival/rival.provider';
@@ -67,6 +69,7 @@ function build(env: Record<string, string> = {}) {
     audit as unknown as AdminAuditService,
     new ChannelSwitchesService(ctx.db, registry),
     { publish: vi.fn().mockResolvedValue(undefined) } as unknown as ResourceChangedPublisher,
+    new ProviderRecordsAudit(ctx.db, new AuditLogStore(ctx.db)),
   );
   return { service, registry, rivalConfig };
 }

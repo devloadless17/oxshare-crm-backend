@@ -659,6 +659,11 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
     group: 'Security',
   },
   {
+    action: 'payment_provider.record_acknowledge',
+    label: 'Provider movement acknowledged as a company movement',
+    group: 'Compliance',
+  },
+  {
     action: 'withdrawal.rival.submit',
     label: 'Withdrawal submitted to the payment platform',
     group: 'Compliance',

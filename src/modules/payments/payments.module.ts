@@ -30,12 +30,17 @@ import { PayoutEngine } from './core/payout-engine.service';
 import { HostedDepositsService } from './core/hosted-deposits.service';
 import { ProviderWebhookIngress } from './core/provider-webhook-ingress.service';
 import { ProviderReconcileScheduler } from './core/provider-reconcile.scheduler';
+import { ProviderRecordsAudit } from './core/provider-records-audit.service';
+import { ProviderBalanceWatch } from './core/provider-balance-watch.service';
 // THE PROVIDERS: each translates for one provider, in its own folder. This file
 // is the only place outside a provider's folder that names it (lint enforces).
 import { ManualPaymentProvider } from './providers/manual/manual.provider';
 import { RivalModule } from './providers/rival/rival.module';
 import { RivalPaymentProvider } from './providers/rival/rival.provider';
 import { RivalWebhookReceiver } from './providers/rival/rival-webhook.receiver';
+import { ThreePayModule } from './providers/threepay/threepay.module';
+import { ThreePayPaymentProvider } from './providers/threepay/threepay.provider';
+import { ThreePayWebhookReceiver } from './providers/threepay/threepay-webhook.receiver';
 
 /** Deposits · withdrawals · transfers · the payment providers and the core that runs them */
 @Module({
@@ -62,6 +67,7 @@ import { RivalWebhookReceiver } from './providers/rival/rival-webhook.receiver';
     AdminAuthModule,
     TradingModule,
     RivalModule,
+    ThreePayModule,
   ],
   /*
    * `RivalWebhookController` carries no session auth, uniquely in this module
@@ -113,25 +119,36 @@ import { RivalWebhookReceiver } from './providers/rival/rival-webhook.receiver';
      */
     ManualPaymentProvider,
     RivalPaymentProvider,
+    ThreePayPaymentProvider,
     {
       provide: PAYMENT_PROVIDER_ADAPTERS,
-      useFactory: (manual: ManualPaymentProvider, rival: RivalPaymentProvider) => [manual, rival],
-      inject: [ManualPaymentProvider, RivalPaymentProvider],
+      useFactory: (
+        manual: ManualPaymentProvider,
+        rival: RivalPaymentProvider,
+        threepay: ThreePayPaymentProvider,
+      ) => [manual, rival, threepay],
+      inject: [ManualPaymentProvider, RivalPaymentProvider, ThreePayPaymentProvider],
     },
     PaymentProviderRegistry,
     PaymentProvidersService,
     // Each provider's inbound events: verified into notices, applied by the core.
     RivalWebhookReceiver,
+    ThreePayWebhookReceiver,
     {
       provide: PAYMENT_PROVIDER_WEBHOOKS,
-      useFactory: (rival: RivalWebhookReceiver) => [rival],
-      inject: [RivalWebhookReceiver],
+      useFactory: (rival: RivalWebhookReceiver, threepay: ThreePayWebhookReceiver) => [
+        rival,
+        threepay,
+      ],
+      inject: [RivalWebhookReceiver, ThreePayWebhookReceiver],
     },
     ChannelSwitchesService,
     PayoutEngine,
     HostedDepositsService,
     ProviderWebhookIngress,
     ProviderReconcileScheduler,
+    ProviderRecordsAudit,
+    ProviderBalanceWatch,
   ],
   /*
    * `PaymentsService` is gone from this list, and it was an empty

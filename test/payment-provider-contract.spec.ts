@@ -5,6 +5,9 @@ import { PaymentProviderRegistry } from '../src/modules/payments/providers/payme
 import type { PaymentProviderAdapter } from '../src/modules/payments/providers/payment-provider';
 import type { RivalClient } from '../src/modules/payments/providers/rival/rival.client';
 import type { RivalConfigService } from '../src/modules/payments/providers/rival/rival-config.service';
+import { ThreePayPaymentProvider } from '../src/modules/payments/providers/threepay/threepay.provider';
+import type { ThreePayClient } from '../src/modules/payments/providers/threepay/threepay.client';
+import type { ThreePayConfigService } from '../src/modules/payments/providers/threepay/threepay-config.service';
 
 /**
  * THE CONTRACT EVERY PAYMENT PROVIDER ADAPTER PASSES (0168).
@@ -21,6 +24,10 @@ const ADAPTERS: PaymentProviderAdapter[] = [
   new RivalPaymentProvider(
     {} as RivalClient,
     { isEnabled: () => Promise.resolve(false) } as unknown as RivalConfigService,
+  ),
+  new ThreePayPaymentProvider(
+    {} as ThreePayClient,
+    { isUsable: () => Promise.resolve(false) } as unknown as ThreePayConfigService,
   ),
 ];
 

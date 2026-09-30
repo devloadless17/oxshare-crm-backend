@@ -2360,6 +2360,11 @@ export const paymentProviders = pgTable(
     lastCheckAt: timestamp('last_check_at', { withTimezone: true }),
     lastCheckOk: boolean('last_check_ok'),
     lastCheckMessage: varchar('last_check_message', { length: 500 }),
+    /**
+     * The unmatched-records audit's cursor (0174): the provider's records up to
+     * here have been judged. Null until the audit first runs.
+     */
+    recordsAuditedUntil: timestamp('records_audited_until', { withTimezone: true }),
     updatedBy: uuid('updated_by'),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -2403,6 +2408,60 @@ export const paymentProviderChannels = pgTable(
       'payment_provider_channels_reason_ck',
       sql`${t.enabled} OR length(btrim(coalesce(${t.reason}, ''))) > 0`,
     ),
+  ],
+);
+
+/**
+ * A movement a provider recorded that NO transaction here explains (0174) — a
+ * payout made by hand in the provider's dashboard, a deposit on a link this
+ * platform never made, a payout given up on that appeared after all. Filed by
+ * the core's unmatched-records audit; a person matches it or acknowledges it
+ * as a company movement, with a note.
+ */
+export const paymentProviderUnmatchedRecords = pgTable(
+  'payment_provider_unmatched_records',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    providerCode: varchar('provider_code', { length: 40 })
+      .notNull()
+      .references(() => paymentProviders.code, { onDelete: 'restrict' }),
+    /** `payment` (money in) or `payout` (money out). */
+    subject: varchar('subject', { length: 10 }).notNull(),
+    providerId: varchar('provider_id', { length: 128 }).notNull(),
+    rawStatus: varchar('raw_status', { length: 40 }).notNull(),
+    amount: numeric('amount', { precision: 28, scale: 8 }),
+    asset: varchar('asset', { length: 40 }),
+    counterparty: varchar('counterparty', { length: 255 }),
+    reference: varchar('reference', { length: 255 }),
+    occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull(),
+    foundAt: timestamp('found_at', { withTimezone: true }).notNull().defaultNow(),
+    matchedTransactionId: uuid('matched_transaction_id').references(() => transactions.id, {
+      onDelete: 'restrict',
+    }),
+    matchedAt: timestamp('matched_at', { withTimezone: true }),
+    acknowledgedBy: uuid('acknowledged_by'),
+    acknowledgedAt: timestamp('acknowledged_at', { withTimezone: true }),
+    acknowledgement: text('acknowledgement'),
+  },
+  (t) => [
+    check(
+      'payment_provider_unmatched_records_subject_ck',
+      sql`${t.subject} IN ('payment', 'payout')`,
+    ),
+    check(
+      'payment_provider_unmatched_records_ack_ck',
+      sql`(${t.acknowledgedAt} IS NULL AND ${t.acknowledgedBy} IS NULL AND ${t.acknowledgement} IS NULL)
+        OR (${t.acknowledgedAt} IS NOT NULL AND ${t.acknowledgedBy} IS NOT NULL
+            AND length(btrim(coalesce(${t.acknowledgement}, ''))) > 0)`,
+    ),
+    check(
+      'payment_provider_unmatched_records_match_ck',
+      sql`(${t.matchedTransactionId} IS NULL) = (${t.matchedAt} IS NULL)`,
+    ),
+    unique('payment_provider_unmatched_records_uq').on(t.providerCode, t.subject, t.providerId),
+    index('payment_provider_unmatched_records_open_idx')
+      .on(t.providerCode, t.occurredAt.desc())
+      .where(sql`${t.acknowledgedAt} IS NULL AND ${t.matchedTransactionId} IS NULL`),
   ],
 );
 

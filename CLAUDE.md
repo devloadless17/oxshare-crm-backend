@@ -1373,6 +1373,67 @@ admin/transactions/:id/attention/finish-deposit` (`credit` | `close`, a reason, 
 4. A migration seeding its `payment_providers` row (disabled, empty).
 5. A simulator spec for its translation. The core's behaviour is already held by
    `payments-core.spec.ts`.
+6. Optional capabilities the core uses when declared: `balance()` (a prefunded balance, watched
+   against the payouts waiting) and `listRecords(since, until)` (the unmatched-records audit). A
+   rate-limited provider throws the contract's `ProviderBusyError`: sweeps stop their pass, a
+   payout is requeued.
+
+### 3pay, the USDT provider (0174, 30 Sep 2026)
+
+Guide: `docs/integration-guide.pdf` (read it with python `pypdf`). **3pay cannot be asked to change
+anything**, so every gap in its API is closed here. Code `threepay` (a code may not start with a
+digit), folder `providers/threepay/`, and the settings live on the generic `payment_providers` row:
+base URL, `apikey` (public), `x-api-secret` (sealed) and the two payout fees.
+
+- **Channels**: `usdt_trc20` and `usdt_erc20`, each in both directions. A 3pay method is a **USD
+  method**: the wallet moves at par, 1 USDT = 1 USD (the owner). One method per network, on
+  purpose: each network has its own fee, minimum, switch and address rule.
+- **Deposits** credit what 3pay's API says ARRIVED (`actualBalance` on `/transaction/verify`), rounded
+  down to cents, never the link's figure. `clientReference` is our `OX-` reference, and a start whose
+  answer was lost is FOUND by it, never made twice. 3pay takes no return URL
+  (`hostedPageReturns: false`), so the portal keeps the client on a waiting card.
+- **Payouts**: `idempotency: 'none'`. `/withdrawal-request` takes no key, stores no reference of
+  ours, and broadcasts at once. Every answer maps to accepted / refused / unknown in
+  `threepay.client.ts`: a 500, a timeout or an unreadable 2xx is UNKNOWN. The quote grosses up by the
+  configured fee, so the client receives exactly what they withdrew. There is no single-withdrawal
+  GET, so `read`/`find` page through `/withdrawal-requests` from the claim time. **No
+  `Idempotency-Key` header is sent**: 3pay documents none, and a key it quietly cached would replay
+  an old refusal at a person's Resend.
+- **Paid somewhere else**: 3pay's "Static Wallet" force-routes big payouts to a cold wallet
+  "regardless of what your integration sends". So the CORE compares every report's destination
+  and asset with what was asked (`paidElsewhere`). A mismatch is never settled as paid and never
+  refunded: a person pays the client and marks it paid.
+- **Webhook**: `x-3pay-signature` is the hex HMAC-SHA256 of the raw body, keyed by the API
+  secret, and is checked in constant time. There is NO replay nonce: a delivery carries no
+  timestamp, and 3pay retries with the same bytes, so a nonce would refuse its own retries. The
+  doorbell rule makes a replay harmless. `refund` rings both a payout re-read and a deposit ALARM.
+  The answer is 200 for every verified event (as 3pay asks), except 503 when every notice hit
+  "not stored yet" or "not caught up".
+- **Numbers**: 3pay sends amounts as JSON NUMBERS. `threepay-json.ts` parses losslessly (the reviver's
+  `context.source`, Node ≥ 21) and writes exact number literals.
+- **Rate limits** (60 reads, 30 links, 30 payouts a minute) are paced client-side
+  (`threepay-rate-limit.ts`, a little under 3pay's figures). A 429 pauses for `Retry-After`.
+- **Addresses**: TRC20 Base58Check and ERC20 EIP-55 (`@noble/hashes`, pinned 1.8.0: v2 is ESM-only)
+  are checked at the withdrawal door. The zero address and the USDT contract itself are refused.
+- **The unmatched-records audit** (core, `provider-records-audit.service.ts`, 0174's table): every
+  3pay record, two hours behind now, must be held by a transaction. Otherwise it is filed, paged,
+  and listed on the provider page for a person to acknowledge as a company movement
+  (`payments.providers.edit`, audited `payment_provider.record_acknowledge`). The cursor starts at
+  the first run.
+- **The balance watch** (`provider-balance-watch.service.ts`): 3pay's `totalAmt` against the grossed-up
+  payouts waiting to be sent. It pages hourly while the balance falls short.
+- **Proof**: `providers/threepay/threepay.spec.ts` (pure) and `test/threepay-flow.spec.ts` (the real
+  adapter through the real core against `test/support/threepay-sim.ts`, every documented answer and
+  failure).
+- **Go-live, the owner's steps**:
+  1. Whitelist the production server's public IP in 3pay's dashboard.
+  2. Enter the credentials and fees (2.00 TRC20 / 2.50 ERC20 in the guide).
+  3. Test the connection; it shows the balance.
+  4. Check `depositFeePayer`.
+  5. Create the USD methods, with a minimum of at least 1 (3pay's), higher on ERC20.
+  6. Test with small real money, including an UNDERPAYMENT (send 4 on a 5 link: it proves what
+     `actualBalance` reports) and a small payout.
+  7. Watch the first payout's reconcile, which proves `fromDate` behaves as documented.
 
 ## An offline deposit carries the details that identify the payment (0163, 29 Sep 2026)
 
