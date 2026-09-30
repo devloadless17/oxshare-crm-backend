@@ -132,6 +132,13 @@ export interface PaymentChannel {
   currencies: readonly string[] | 'any';
   /** What moves at the provider when it is not the wallet currency (at par). */
   asset?: ChannelAsset;
+  /**
+   * The smallest amount the provider takes on this channel, in the wallet
+   * currency (at par for an `asset`), when it has one — 3pay: 1 (guide §04,
+   * §05). A method's minimum is never below it: the effective minimum clients
+   * are held to is the higher of the two, and the doors refuse less.
+   */
+  minimumAmount?: string;
   /** May a method bind it? False for the desk's own `adjustment`. */
   bindable: boolean;
   /** Payouts: what the client must give. Absent on deposits. */
@@ -250,6 +257,16 @@ export interface ProviderRecord {
   moved: boolean;
   rawStatus: string;
   amount?: string;
+  /**
+   * A deposit's NET — what reached the provider balance after its fee — when
+   * reported; the provider-balance books add it (0175).
+   */
+  net?: string;
+  /**
+   * When it moved the provider's balance, where that differs from
+   * `occurredAt` (a deposit created at one time and confirmed at another).
+   */
+  movedAt?: Date;
   /** The asset it moved in (`USDT-TRC20`). */
   asset?: string;
   /** The other side — the address paid or paid from — when reported. */
@@ -420,6 +437,15 @@ export interface PaymentProviderAdapter {
   readonly webhookPath?: string;
   /** Automated payouts — required when a payout channel is `automated`. */
   readonly payouts?: PayoutRail;
+  /**
+   * It keeps an EXCHANGE LOG (0175): every call to it and every delivery from
+   * it, bodies included, kept 90 days and shown to whoever may view providers.
+   * Declared only by a provider whose exchanges carry NO client identity — 3pay
+   * is sent amounts, our reference and payout addresses, never a name, email or
+   * phone — because the log is shown unmasked. The adapter's own client records
+   * its calls (`PaymentProviderExchangesStore`); the core records deliveries.
+   */
+  readonly keepsExchangeLog?: boolean;
 
   /**
    * Can it move money on this deployment right now: switched on, its required

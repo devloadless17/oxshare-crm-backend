@@ -4842,6 +4842,117 @@
         ]
       }
     },
+    "/v1/admin/payment-providers/{code}/exchanges": {
+      "get": {
+        "description": "Every call and every delivery, bodies as sent and received, kept 90 days — for a provider that keeps an exchange log. Newest first, at most 200 (`limit`, default 50); `before` pages to older ones; `reference` narrows to one deposit reference, withdrawal or provider id. Never a credential and never a webhook signature.",
+        "operationId": "AdminPaymentProvidersController_exchanges",
+        "parameters": [
+          {
+            "name": "code",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "before",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "reference",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ProviderExchangeDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "What the provider was asked and answered, and what it sent us (0175)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/payment-providers/{code}/books/reset": {
+      "post": {
+        "description": "Clears where the books start; the next reading taken while nothing is travelling starts them again. A note is required. Moves no money.",
+        "operationId": "AdminPaymentProvidersController_resetBooks",
+        "parameters": [
+          {
+            "name": "code",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResetProviderBooksDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentProviderDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Restart the provider’s books (after a top-up or a move its records do not show)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/payment-providers/{code}/unmatched-records/{id}/acknowledge": {
       "post": {
         "description": "A note is required. It moves no money and changes no transaction.",
@@ -17163,6 +17274,69 @@
           "pending"
         ]
       },
+      "ProviderBooksDto": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "starting",
+              "matches",
+              "differs",
+              "incomplete"
+            ],
+            "description": "`starting`: waiting for a reading taken while nothing is travelling. `matches` / `differs`: the last comparison. `incomplete`: a movement has no figure from the provider, so the last reading was not compared."
+          },
+          "asset": {
+            "type": "string",
+            "nullable": true,
+            "example": "USDT"
+          },
+          "available": {
+            "type": "string",
+            "nullable": true,
+            "example": "80342.55000000",
+            "description": "What the provider held at the last check."
+          },
+          "expected": {
+            "type": "string",
+            "nullable": true,
+            "example": "80342.55000000",
+            "description": "What our books say it should hold."
+          },
+          "difference": {
+            "type": "string",
+            "nullable": true,
+            "example": "0.00000000",
+            "description": "Held minus expected: positive, the provider holds more than our books say."
+          },
+          "checkedAt": {
+            "type": "string",
+            "nullable": true,
+            "description": "The last check (ISO)."
+          },
+          "startedAt": {
+            "type": "string",
+            "nullable": true,
+            "description": "Where the books start (ISO)."
+          },
+          "differsSince": {
+            "type": "string",
+            "nullable": true,
+            "description": "Since when the difference stands (ISO); a person is paged after two hours."
+          }
+        },
+        "required": [
+          "status",
+          "asset",
+          "available",
+          "expected",
+          "difference",
+          "checkedAt",
+          "startedAt",
+          "differsSince"
+        ]
+      },
       "PaymentProviderDto": {
         "type": "object",
         "properties": {
@@ -17269,6 +17443,20 @@
             "type": "number",
             "description": "Movements at the provider no transaction here explains, not yet acknowledged.",
             "example": 0
+          },
+          "books": {
+            "nullable": true,
+            "description": "Its balance against our books — null for a provider with no balance of ours.",
+            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ProviderBooksDto"
+              }
+            ]
+          },
+          "exchangeLog": {
+            "type": "boolean",
+            "description": "Does it keep an exchange log (every call and delivery, kept 90 days)?"
           }
         },
         "required": [
@@ -17289,7 +17477,9 @@
           "last24h",
           "updatedAt",
           "auditsRecords",
-          "unexplainedRecords"
+          "unexplainedRecords",
+          "books",
+          "exchangeLog"
         ]
       },
       "ProviderEventDto": {
@@ -17524,6 +17714,88 @@
           "matchedTransactionId",
           "acknowledgedAt",
           "acknowledgement"
+        ]
+      },
+      "ProviderExchangeDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "number",
+            "description": "Ever-increasing; pass the last one as `before` for older ones."
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "outbound",
+              "inbound"
+            ],
+            "description": "We called it, or it called us."
+          },
+          "method": {
+            "type": "string",
+            "example": "POST"
+          },
+          "path": {
+            "type": "string",
+            "example": "/withdrawal-request",
+            "description": "With its query, when it had one."
+          },
+          "requestBody": {
+            "type": "string",
+            "nullable": true
+          },
+          "status": {
+            "type": "number",
+            "nullable": true,
+            "description": "The provider’s answer (outbound) or ours (inbound); null when none came."
+          },
+          "responseBody": {
+            "type": "string",
+            "nullable": true
+          },
+          "error": {
+            "type": "string",
+            "nullable": true,
+            "description": "What went wrong, when it did."
+          },
+          "durationMs": {
+            "type": "number",
+            "nullable": true
+          },
+          "reference": {
+            "type": "string",
+            "nullable": true,
+            "description": "Ours or the provider’s id for what it was about: an OX- reference, a withdrawal."
+          },
+          "occurredAt": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "direction",
+          "method",
+          "path",
+          "requestBody",
+          "status",
+          "responseBody",
+          "error",
+          "durationMs",
+          "reference",
+          "occurredAt"
+        ]
+      },
+      "ResetProviderBooksDto": {
+        "type": "object",
+        "properties": {
+          "note": {
+            "type": "string",
+            "description": "Why the books restart — required, kept in the audit log.",
+            "example": "Topped up 5,000 USDT from the treasury wallet."
+          }
+        },
+        "required": [
+          "note"
         ]
       },
       "AcknowledgeProviderRecordDto": {

@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { assertPublicOutboundHost } from '../../../../common/security/outbound-host';
+import { PaymentProviderExchangesStore } from '../../../../store/payment-provider-exchanges.store';
 import { countOf, objectOf, parseLossless, textOf } from './threepay-json';
 import { SlidingWindowLimit, busy } from './threepay-rate-limit';
 import { ThreePayConfigService, type ThreePayConfig } from './threepay-config.service';
@@ -117,6 +118,8 @@ export class ThreePayClient {
   constructor(
     private readonly settings: ThreePayConfigService,
     private readonly config: ConfigService,
+    /* Every exchange, kept 90 days (the guide, §10) — 0175. */
+    private readonly exchanges: PaymentProviderExchangesStore,
   ) {}
 
   /** The configuration in force, or a definite refusal: nothing is sent without one. */
@@ -131,13 +134,23 @@ export class ThreePayClient {
     return config;
   }
 
-  get(path: string, query: Record<string, string | undefined> = {}): Promise<ThreePayResponse> {
-    return this.request('read', 'GET', path, { query });
+  /** `reference`: ours, when the caller knows it — kept with the exchange for finding it later. */
+  get(
+    path: string,
+    query: Record<string, string | undefined> = {},
+    reference?: string,
+  ): Promise<ThreePayResponse> {
+    return this.request('read', 'GET', path, { query, reference });
   }
 
   /** A POST whose body is already exact JSON text (amounts as number literals). */
-  post(call: 'create' | 'payout', path: string, body: string): Promise<ThreePayResponse> {
-    return this.request(call, 'POST', path, { body });
+  post(
+    call: 'create' | 'payout',
+    path: string,
+    body: string,
+    reference?: string,
+  ): Promise<ThreePayResponse> {
+    return this.request(call, 'POST', path, { body, reference });
   }
 
   /** One page of `/transaction/list` or `/withdrawal-requests`. */
@@ -169,7 +182,7 @@ export class ThreePayClient {
     call: ThreePayCall,
     method: 'GET' | 'POST',
     path: string,
-    options: { query?: Record<string, string | undefined>; body?: string },
+    options: { query?: Record<string, string | undefined>; body?: string; reference?: string },
   ): Promise<ThreePayResponse> {
     const config = await this.configured();
     await this.assertHost(config.baseUrl);
@@ -183,6 +196,26 @@ export class ThreePayClient {
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), TIMEOUT_MS[call]);
+    const started = Date.now();
+    /*
+     * What was asked and what came back, whatever came back — the path with its
+     * query (no credentials travel there) and the bodies; never the headers,
+     * which carry the key and the secret.
+     */
+    const log = (status: number | null, responseBody: string | null, error?: string) =>
+      this.exchanges.record({
+        providerCode: 'threepay',
+        direction: 'outbound',
+        method,
+        // The API path as the guide names it (the base URL is configuration), with its query.
+        path: `${path}${url.search}`,
+        requestBody: options.body ?? null,
+        status,
+        responseBody,
+        error: error ?? null,
+        durationMs: Date.now() - started,
+        reference: options.reference ?? null,
+      });
     let response: Response;
     let text: string;
     try {
@@ -203,10 +236,12 @@ export class ThreePayClient {
       // No answer — 3pay may or may not have acted. The secret is in a header
       // and never reaches a log line; neither does the body.
       this.logger.warn(`3pay ${method} ${path} got no answer: ${messageOf(error)}`);
+      log(null, null, messageOf(error));
       throw new ThreePayRequestError('unreachable', `3pay did not answer (${messageOf(error)}).`);
     } finally {
       clearTimeout(timer);
     }
+    log(response.status, text);
 
     if (response.status === 429) {
       const wait = retryAfterMs(response.headers.get('retry-after'));

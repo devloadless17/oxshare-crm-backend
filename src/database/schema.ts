@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 import {
   bigint,
+  bigserial,
   boolean,
   char,
   check,
@@ -2365,6 +2366,20 @@ export const paymentProviders = pgTable(
      * here have been judged. Null until the audit first runs.
      */
     recordsAuditedUntil: timestamp('records_audited_until', { withTimezone: true }),
+    /*
+     * The provider's balance against our books (0175): where the books start,
+     * and the last comparison — what the provider held, what our books said,
+     * since when they disagree, and when a person was last paged about it.
+     */
+    /** The asset its balance is counted in ("USDT"), as it reports it. */
+    booksAsset: varchar('books_asset', { length: 40 }),
+    booksBaseline: numeric('books_baseline', { precision: 28, scale: 8 }),
+    booksBaselineAt: timestamp('books_baseline_at', { withTimezone: true }),
+    booksCheckedAt: timestamp('books_checked_at', { withTimezone: true }),
+    booksAvailable: numeric('books_available', { precision: 28, scale: 8 }),
+    booksExpected: numeric('books_expected', { precision: 28, scale: 8 }),
+    booksDriftSince: timestamp('books_drift_since', { withTimezone: true }),
+    booksAlertedAt: timestamp('books_alerted_at', { withTimezone: true }),
     updatedBy: uuid('updated_by'),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -2418,6 +2433,44 @@ export const paymentProviderChannels = pgTable(
  * the core's unmatched-records audit; a person matches it or acknowledges it
  * as a company movement, with a note.
  */
+/**
+ * What the platform asked a provider and what it answered, and every delivery a
+ * provider made to us (0175) — kept 90 days, append-only (3pay's guide, §10).
+ * Never a credential or a webhook signature.
+ */
+export const paymentProviderExchanges = pgTable(
+  'payment_provider_exchanges',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    providerCode: varchar('provider_code', { length: 40 })
+      .notNull()
+      .references(() => paymentProviders.code, { onDelete: 'restrict' }),
+    /** `outbound` (we called it) or `inbound` (it called us). */
+    direction: varchar('direction', { length: 10 }).notNull(),
+    method: varchar('method', { length: 10 }).notNull(),
+    path: varchar('path', { length: 512 }).notNull(),
+    requestBody: text('request_body'),
+    /** The answer's HTTP status; null when no answer came. */
+    status: integer('status'),
+    responseBody: text('response_body'),
+    error: varchar('error', { length: 500 }),
+    durationMs: integer('duration_ms'),
+    reference: varchar('reference', { length: 128 }),
+    occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check(
+      'payment_provider_exchanges_direction_ck',
+      sql`${t.direction} IN ('outbound', 'inbound')`,
+    ),
+    index('payment_provider_exchanges_provider_id_idx').on(t.providerCode, t.id.desc()),
+    index('payment_provider_exchanges_occurred_at_idx').on(t.occurredAt),
+    index('payment_provider_exchanges_reference_idx')
+      .on(t.reference)
+      .where(sql`${t.reference} IS NOT NULL`),
+  ],
+);
+
 export const paymentProviderUnmatchedRecords = pgTable(
   'payment_provider_unmatched_records',
   {
@@ -2433,7 +2486,14 @@ export const paymentProviderUnmatchedRecords = pgTable(
     asset: varchar('asset', { length: 40 }),
     counterparty: varchar('counterparty', { length: 255 }),
     reference: varchar('reference', { length: 255 }),
+    /** A deposit's NET — what reached the provider balance (0175, for the books). */
+    netAmount: numeric('net_amount', { precision: 28, scale: 8 }),
     occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull(),
+    /**
+     * When it moved the provider's balance, where that is not when it was
+     * created (a deposit: its confirmation). The books count it from here (0175).
+     */
+    movedAt: timestamp('moved_at', { withTimezone: true }),
     foundAt: timestamp('found_at', { withTimezone: true }).notNull().defaultNow(),
     matchedTransactionId: uuid('matched_transaction_id').references(() => transactions.id, {
       onDelete: 'restrict',
@@ -3573,6 +3633,20 @@ export const transactions = pgTable(
     requestedAmount: numeric('requested_amount', { precision: 28, scale: 8 }),
     /** The provider's last word on the movement, raw ("expired", "COMPLETED"). */
     providerStatus: varchar('provider_status', { length: 40 }),
+    /**
+     * A payout's provider's last word in the core's terms (0175): `pending`
+     * (it took the money and is sending it), `completed`, or `returned`
+     * (refused, failed or cancelled — the money came back to its balance).
+     * The provider-balance books read it.
+     */
+    providerOutcome: varchar('provider_outcome', { length: 10 }),
+    /** When `providerOutcome` last CHANGED — money back after the baseline counts once (0175). */
+    providerOutcomeAt: timestamp('provider_outcome_at', { withTimezone: true }),
+    /**
+     * When this side first saw the provider CONFIRM a deposit's money, whatever
+     * was then decided about it (0175). The provider's balance moved then.
+     */
+    providerPaidAt: timestamp('provider_paid_at', { withTimezone: true }),
     /** When the core last asked the provider — the reconciler's order. */
     providerCheckedAt: timestamp('provider_checked_at', { withTimezone: true }),
     /** A person must look — for every provider (the desk, the bell, the Financial filter). */
@@ -3595,6 +3669,10 @@ export const transactions = pgTable(
       .where(
         sql`${t.payoutFingerprint} IS NOT NULL AND ${t.providerPayoutId} IS NULL AND ${t.state} = 'approved'`,
       ),
+    check(
+      'transactions_provider_outcome_ck',
+      sql`${t.providerOutcome} IS NULL OR ${t.providerOutcome} IN ('pending', 'completed', 'returned')`,
+    ),
     // The console filters and counts by route (0168).
     index('transactions_route_idx').on(t.providerCode, t.channelCode, t.createdAt),
     // The console's "in use" flag and a delete's RESTRICT check look up by these (0161).

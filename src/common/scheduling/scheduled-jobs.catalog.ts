@@ -80,6 +80,15 @@ export const SCHEDULED_JOBS = [
     max: 3600,
   },
   {
+    // What each payment provider was asked and answered, kept 90 days (0175).
+    key: 'payments.pruneExchanges',
+    group: 'money',
+    runsOn: 'crm',
+    defaultSeconds: 86_400,
+    min: 3600,
+    max: 604_800,
+  },
+  {
     key: 'wallet.reconcile',
     group: 'money',
     runsOn: 'crm',

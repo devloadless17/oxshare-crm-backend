@@ -484,7 +484,14 @@ export class PayoutEngine {
     try {
       const updated = await this.db
         .update(transactions)
-        .set({ providerPayoutId: payoutId, needsAttention: false, attentionReason: null })
+        .set({
+          providerPayoutId: payoutId,
+          // The provider holds it: its money is committed until it says otherwise.
+          providerOutcome: 'pending',
+          providerOutcomeAt: new Date(),
+          needsAttention: false,
+          attentionReason: null,
+        })
         .where(and(eq(transactions.id, tx.id), isNull(transactions.providerPayoutId)))
         .returning({ id: transactions.id });
       return updated.length > 0;
@@ -562,11 +569,22 @@ export class PayoutEngine {
     report: PayoutReport,
     source: ProviderEventSource,
   ): Promise<PayoutOutcome> {
+    // In the core's words, for the provider-balance books (0175), with when it last changed.
+    const said =
+      report.status === 'completed'
+        ? 'completed'
+        : report.status === 'pending'
+          ? 'pending'
+          : 'returned';
+    const now = new Date();
     await this.db
       .update(transactions)
       .set({
         providerStatus: report.rawStatus.slice(0, 40),
-        providerCheckedAt: new Date(),
+        providerOutcome: said,
+        providerOutcomeAt: sql`CASE WHEN ${transactions.providerOutcome} IS DISTINCT FROM ${said}
+          THEN ${now}::timestamptz ELSE ${transactions.providerOutcomeAt} END`,
+        providerCheckedAt: now,
         ...(report.fee !== undefined ? { providerFee: report.fee } : {}),
         ...(report.net !== undefined ? { providerNetAmount: report.net } : {}),
       })
@@ -895,7 +913,13 @@ export class PayoutEngine {
       if (unclaimed.length === 1) {
         const adopted = await this.db
           .update(transactions)
-          .set({ providerPayoutId: unclaimed[0], needsAttention: false, attentionReason: null })
+          .set({
+            providerPayoutId: unclaimed[0],
+            providerOutcome: 'pending',
+            providerOutcomeAt: new Date(),
+            needsAttention: false,
+            attentionReason: null,
+          })
           .where(and(eq(transactions.id, tx.id), isNull(transactions.providerPayoutId)))
           .returning();
         if (adopted[0]) {
@@ -1337,12 +1361,25 @@ export class PayoutEngine {
   ): Promise<void> {
     const shortfall = shortOf(tx.amount, net);
     if (shortfall === null) return;
+    /*
+     * The company carries the provider's fee (the owner, 30 Sep 2026), so a
+     * client receiving less than they withdrew means the fee the provider
+     * actually took is not the one configured — the company owes the client the
+     * difference. Said in those words, so nobody reads it as a client fee.
+     */
+    const grossedUp =
+      tx.providerRequestAmount !== null &&
+      new Decimal(tx.providerRequestAmount).greaterThan(tx.amount);
     const reason =
-      `${adapter.name} will deliver ${new Decimal(net).toFixed()} ${tx.currency} on a ` +
-      `${new Decimal(tx.amount).toFixed()} ${tx.currency} ` +
-      `withdrawal — the client is ${shortfall} ${tx.currency} short (a fee deducted rather ` +
-      'than charged on top, or one changed since it was configured). The client was debited ' +
-      'the full amount: make them whole, and check the provider’s fee settings.';
+      `${adapter.name} delivered ${new Decimal(net).toFixed()} ${tx.currency} of this ` +
+      `${new Decimal(tx.amount).toFixed()} ${tx.currency} withdrawal, so the client is ` +
+      `${shortfall} ${tx.currency} short. ${adapter.name}'s fee is the company's, not the ` +
+      "client's: " +
+      (grossedUp
+        ? 'the fee it took is not the one configured. Pay the client the difference, and ' +
+          `update the fee in Payment providers → ${adapter.name}.`
+        : `it took its fee out of the client's amount. Pay the client the difference, and ` +
+          `ask ${adapter.name} to charge its fee to the company instead.`);
     const [current] = await this.db
       .select({ reason: transactions.attentionReason })
       .from(transactions)

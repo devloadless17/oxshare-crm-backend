@@ -290,7 +290,11 @@ export class PaymentMethodsService {
       minAmount: row.ownMinAmount,
       maxAmount: row.ownMaxAmount,
     });
-    return { ...row, minAmount: min, maxAmount: max };
+    // The provider's own floor on this channel (0175): never offered below it.
+    const floor = this.providers.findChannel(row, 'deposit')?.minimumAmount;
+    const minAmount =
+      floor !== undefined && toDecimal(floor).greaterThan(min) ? toDecimal(floor).toFixed(8) : min;
+    return { ...row, minAmount, maxAmount: max };
   }
 
   /**
@@ -302,6 +306,7 @@ export class PaymentMethodsService {
     currency: string,
     ownMinAmount: string | null,
     ownMaxAmount: string | null,
+    route: { providerCode: string; channelCode: string },
   ): Promise<void> {
     const ranges = await this.depositRanges([currency]);
     const problems = methodRangeProblems(currency, ranges.get(currency) as DepositRange, {
@@ -310,6 +315,20 @@ export class PaymentMethodsService {
     });
     const fields: Record<string, string> = {};
     if (problems.minAmount) fields.ownMinAmount = problems.minAmount;
+    // Below the provider's own floor on this channel: a minimum no client could
+    // actually pay at — refused where the admin can fix it (0175).
+    const channel = this.providers.findChannel(route, 'deposit');
+    if (
+      !fields.ownMinAmount &&
+      ownMinAmount !== null &&
+      channel?.minimumAmount !== undefined &&
+      toDecimal(ownMinAmount).lessThan(channel.minimumAmount)
+    ) {
+      fields.ownMinAmount =
+        `${this.providers.provider(route.providerCode).name} takes at least ` +
+        `${toDecimal(channel.minimumAmount).toFixed(2)} ${currency} on ${channel.label}; the ` +
+        'minimum here cannot be lower.';
+    }
     if (problems.maxAmount) fields.ownMaxAmount = problems.maxAmount;
     if (Object.keys(fields).length > 0) {
       throw new FieldValidationError(Object.values(fields)[0], fields);
@@ -462,7 +481,7 @@ export class PaymentMethodsService {
     const currency = await this.currencies.assertUsable(dto.currency);
     const ownMinAmount = dto.ownMinAmount ?? null;
     const ownMaxAmount = dto.ownMaxAmount ?? null;
-    await this.assertOwnRange(currency, ownMinAmount, ownMaxAmount);
+    await this.assertOwnRange(currency, ownMinAmount, ownMaxAmount, route);
 
     const [row] = await this.db
       .insert(paymentMethods)
@@ -553,7 +572,10 @@ export class PaymentMethodsService {
       dto.ownMinAmount !== undefined ||
       dto.ownMaxAmount !== undefined
     ) {
-      await this.assertOwnRange(currency ?? current.currency, ownMinAmount, ownMaxAmount);
+      await this.assertOwnRange(currency ?? current.currency, ownMinAmount, ownMaxAmount, {
+        providerCode: current.providerCode,
+        channelCode: current.channelCode,
+      });
     }
     const proofFields =
       dto.proofFields !== undefined ? normaliseProofFields(dto.proofFields) : undefined;

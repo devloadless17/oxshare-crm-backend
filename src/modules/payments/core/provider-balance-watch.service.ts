@@ -6,7 +6,7 @@ import type { Db } from '../../../database/db';
 import { transactions } from '../../../database/schema';
 import { ALERT_KINDS, raiseAlert } from '../../../common/logging/alerts';
 import { PaymentProviderRegistry } from '../providers/payment-provider-registry';
-import type { PaymentProviderAdapter } from '../providers/payment-provider';
+import type { PaymentProviderAdapter, ProviderBalance } from '../providers/payment-provider';
 
 /** A standing shortfall is repeated at most this often. */
 const REPEAT_MS = 60 * 60_000;
@@ -34,9 +34,14 @@ export class ProviderBalanceWatch {
     private readonly registry: PaymentProviderRegistry,
   ) {}
 
-  async check(adapter: PaymentProviderAdapter, now: number = Date.now()): Promise<void> {
+  /** Against a balance the caller just read (one read serves the books too). */
+  async check(
+    adapter: PaymentProviderAdapter,
+    balance: ProviderBalance,
+    now: number = Date.now(),
+  ): Promise<void> {
     const rail = adapter.payouts;
-    if (!adapter.balance || !rail) return;
+    if (!rail) return;
     const waiting = await this.db
       .select({
         amount: transactions.amount,
@@ -65,7 +70,6 @@ export class ProviderBalanceWatch {
       if (!channel) continue;
       needed = needed.plus((await rail.quote(channel, tx.amount, tx.currency)).gross);
     }
-    const balance = await adapter.balance();
     if (new Decimal(balance.available).gte(needed)) {
       this.warnedAt.delete(adapter.code);
       return;

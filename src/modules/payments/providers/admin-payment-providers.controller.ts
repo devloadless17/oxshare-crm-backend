@@ -27,7 +27,9 @@ import {
   AcknowledgeProviderRecordDto,
   PaymentProviderDto,
   ProviderEventDto,
+  ProviderExchangeDto,
   ProviderTestResultDto,
+  ResetProviderBooksDto,
   RotatedProviderSecretDto,
   SetProviderChannelDto,
   UnmatchedProviderRecordDto,
@@ -202,6 +204,50 @@ export class AdminPaymentProvidersController {
     @Query('open', new DefaultValuePipe('true')) open: string,
   ) {
     return this.providers.unmatchedRecords(code, open !== 'false');
+  }
+
+  @Get(':code/exchanges')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('payments.providers.view')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'What the provider was asked and answered, and what it sent us (0175)',
+    description:
+      'Every call and every delivery, bodies as sent and received, kept 90 days — for a ' +
+      'provider that keeps an exchange log. Newest first, at most 200 (`limit`, default 50); ' +
+      '`before` pages to older ones; `reference` narrows to one deposit reference, withdrawal ' +
+      'or provider id. Never a credential and never a webhook signature.',
+  })
+  @ApiOkResponse({ type: ProviderExchangeDto, isArray: true })
+  @NotClientScoped(NOT_SCOPED)
+  exchanges(
+    @Param('code') code: string,
+    @Query('limit', new DefaultValuePipe(50), ParseIntPipe) limit: number,
+    @Query('before', new ParseIntPipe({ optional: true })) before?: number,
+    @Query('reference') reference?: string,
+  ) {
+    return this.providers.exchangeLog(code, limit, before, reference);
+  }
+
+  @Post(':code/books/reset')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('payments.providers.edit')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Restart the provider’s books (after a top-up or a move its records do not show)',
+    description:
+      'Clears where the books start; the next reading taken while nothing is travelling starts ' +
+      'them again. A note is required. Moves no money.',
+  })
+  @ApiOkResponse({ type: PaymentProviderDto })
+  @NotClientScoped(NOT_SCOPED)
+  @Audited('payment_provider.books_reset')
+  resetBooks(
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+    @Param('code') code: string,
+    @Body() dto: ResetProviderBooksDto,
+  ) {
+    return this.providers.resetBooks(code, dto.note, req.admin);
   }
 
   @Post(':code/unmatched-records/:id/acknowledge')

@@ -93,6 +93,7 @@ export class ThreePayPayouts implements PayoutRail {
             currencyType: asset,
             callbackUrl: request.callbackUrl,
           }),
+          request.transactionId,
         )
       ).body;
     } catch (error) {

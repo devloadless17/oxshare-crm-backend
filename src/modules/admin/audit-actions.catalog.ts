@@ -674,6 +674,12 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
     group: 'Compliance',
   },
   {
+    // 0175: the provider's balance against our books, restarted after a top-up.
+    action: 'payment_provider.books_reset',
+    label: 'Provider balance books restarted',
+    group: 'Compliance',
+  },
+  {
     action: 'withdrawal.rival.submit',
     label: 'Withdrawal submitted to the payment platform',
     group: 'Compliance',

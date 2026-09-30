@@ -101,6 +101,10 @@ function withdrawalResponse<T extends { proofFilename?: unknown; proofDetails?: 
     requestedAmount: _askedIsDepositOnly,
     payoutFingerprint: _fingerprintIsTheCores,
     providerCheckedAt: _checkedAtIsTheCores,
+    // The provider-balance books' own bookkeeping (0175); the confirmation is a deposit's.
+    providerOutcome: _outcomeIsTheBooks,
+    providerOutcomeAt: _outcomeAtIsTheBooks,
+    providerPaidAt: _paidAtIsDepositOnly,
     ...withdrawalFields
   } = row as T & Record<string, unknown>;
   return {

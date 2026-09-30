@@ -1026,6 +1026,16 @@ export class TransactionsService {
           `${payoutChannel.currencies.join(' or ')} wallet or another method.`,
       );
     }
+    // The provider's own floor on this channel (0175) — 3pay pays at least 1.
+    if (
+      payoutChannel.minimumAmount !== undefined &&
+      amount.lessThan(toDecimal(payoutChannel.minimumAmount))
+    ) {
+      throw new ValidationError(
+        `${method.name} pays out at least ${formatLimit(toDecimal(payoutChannel.minimumAmount))} ` +
+          `${currency}.`,
+      );
+    }
     const railScale = payoutChannel.settlementScale;
     const payableDecimals = railScale === null ? decimals : Math.min(decimals, railScale);
     if (amount.decimalPlaces() > payableDecimals) {

@@ -11,6 +11,7 @@ import { HostedDepositsService } from './hosted-deposits.service';
 import { PayoutEngine } from './payout-engine.service';
 import { ProviderBalanceWatch } from './provider-balance-watch.service';
 import { ProviderRecordsAudit } from './provider-records-audit.service';
+import { ProviderBooks } from './provider-books.service';
 
 /**
  * THE POLL BEHIND EVERY PROVIDER'S WEBHOOK — the sweep half of push + sweep
@@ -41,10 +42,11 @@ import { ProviderRecordsAudit } from './provider-records-audit.service';
  *
  * ## After the money: what the provider holds
  *
- * Once its movements are settled, a usable provider's own records are audited
- * (`ProviderRecordsAudit`: anything there that no transaction explains is
- * raised) and its prefunded balance is compared with the payouts waiting on it
- * (`ProviderBalanceWatch`). Neither moves money.
+ * Once its movements are settled, a usable provider's prefunded balance is
+ * read once and compared with our books (`ProviderBooks`, 0175) and with the
+ * payouts waiting on it (`ProviderBalanceWatch`), and its own records are
+ * audited (`ProviderRecordsAudit`: anything there that no transaction explains
+ * is raised). None of them moves money.
  *
  * A sweep that fails is "unchecked, not known-bad": logged at error, not paged
  * — the webhook remains the primary path.
@@ -61,6 +63,7 @@ export class ProviderReconcileScheduler {
     private readonly leases: JobLeaseService,
     private readonly records: ProviderRecordsAudit,
     private readonly balances: ProviderBalanceWatch,
+    private readonly books: ProviderBooks,
   ) {}
 
   @ScheduledJob('payments.reconcileProviders')
@@ -85,8 +88,9 @@ export class ProviderReconcileScheduler {
 
   /** Reconcile one provider now — the scheduled sweep's unit, for a person or a spec. */
   async runOnce(adapter: PaymentProviderAdapter): Promise<void> {
+    let depositsSwept = false;
     try {
-      await this.deposits.sweep(adapter.code);
+      depositsSwept = (await this.deposits.sweep(adapter.code)).complete;
     } catch (error) {
       this.logger.error(
         `${adapter.name} deposit sweep did not complete — open deposits are UNCHECKED this ` +
@@ -102,15 +106,26 @@ export class ProviderReconcileScheduler {
       );
     }
     if (!(await adapter.isUsable())) return;
+    if (adapter.balance) {
+      try {
+        /*
+         * Read right after the sweeps, before the records audit pages through
+         * the provider's lists: the books can start only on a reading taken
+         * while what the sweeps just learned is still the whole story. One read
+         * serves both the books (§6.5 step 3) and the payout funds warning.
+         */
+        const readAt = new Date();
+        const balance = await adapter.balance();
+        await this.books.check(adapter, { balance, readAt }, depositsSwept);
+        await this.balances.check(adapter, balance);
+      } catch (error) {
+        this.logger.warn(`${adapter.name} balance could not be checked: ${messageOf(error)}`);
+      }
+    }
     try {
       await this.records.run(adapter);
     } catch (error) {
       this.logger.error(`${adapter.name} records audit did not complete: ${messageOf(error)}`);
-    }
-    try {
-      await this.balances.check(adapter);
-    } catch (error) {
-      this.logger.warn(`${adapter.name} balance could not be checked: ${messageOf(error)}`);
     }
   }
 

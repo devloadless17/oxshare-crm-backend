@@ -1,5 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { PaymentProvidersStore } from '../../../store/payment-providers.store';
+import { PaymentProviderExchangesStore } from '../../../store/payment-provider-exchanges.store';
 import { PaymentProviderRegistry } from '../providers/payment-provider-registry';
 import {
   PAYMENT_PROVIDER_WEBHOOKS,
@@ -33,6 +34,8 @@ export class ProviderWebhookIngress {
     private readonly deposits: HostedDepositsService,
     private readonly payouts: PayoutEngine,
     private readonly providers: PaymentProvidersStore,
+    /* Every delivery and our answer, kept 90 days (0175) — appended last. */
+    private readonly exchanges: PaymentProviderExchangesStore,
   ) {
     this.receivers = new Map(receivers.map((receiver) => [receiver.providerCode, receiver]));
   }
@@ -54,7 +57,11 @@ export class ProviderWebhookIngress {
     );
   }
 
-  /** One delivery, from raw bytes to the answer the provider's retries read. */
+  /**
+   * One delivery, from raw bytes to the answer the provider's retries read —
+   * and the delivery and that answer kept for 90 days (0175): the raw body as
+   * it came, never its signature header.
+   */
   async receive(
     code: string,
     rawBody: Buffer | undefined,
@@ -62,9 +69,48 @@ export class ProviderWebhookIngress {
   ): Promise<WebhookAnswer> {
     const receiver = this.receivers.get(code);
     if (!receiver) return { status: 404, body: { received: false, outcome: 'unknown-provider' } };
+    if (!this.registry.find(code)?.keepsExchangeLog) {
+      return this.apply(code, receiver, rawBody, header, () => undefined);
+    }
+    const started = Date.now();
+    let reference: string | undefined;
+    const log = (status: number, body: unknown, error?: string) =>
+      this.exchanges.record({
+        providerCode: code,
+        direction: 'inbound',
+        method: 'POST',
+        path: 'webhook',
+        requestBody: rawBody ? rawBody.toString('utf8') : null,
+        status,
+        responseBody: body === null ? null : JSON.stringify(body),
+        error: error ?? null,
+        durationMs: Date.now() - started,
+        reference: reference ?? null,
+      });
+    try {
+      const answer = await this.apply(code, receiver, rawBody, header, (id) => {
+        reference ??= id;
+      });
+      log(answer.status, answer.body);
+      return answer;
+    } catch (error) {
+      // Nothing was applied; the provider retries on the 500 this becomes.
+      log(500, null, error instanceof Error ? error.message : String(error));
+      throw error;
+    }
+  }
 
+  private async apply(
+    code: string,
+    receiver: ProviderWebhookReceiver,
+    rawBody: Buffer | undefined,
+    header: (name: string) => string | undefined,
+    // The provider's id for what the delivery is about — the log's reference.
+    about: (providerId: string) => void,
+  ): Promise<WebhookAnswer> {
     const reading = await receiver.read(rawBody, header);
     if (!reading.verified) return reading.answer;
+    for (const notice of reading.notices) about(notice.providerId);
 
     /*
      * The pipe-liveness stamp, for EVERY verified delivery whatever it says —

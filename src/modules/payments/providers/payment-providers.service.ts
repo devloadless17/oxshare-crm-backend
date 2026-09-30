@@ -24,6 +24,7 @@ import type {
   PaymentProviderDto,
   ProviderActivityDto,
   ProviderEventDto,
+  ProviderExchangeDto,
   ProviderMethodDto,
   ProviderTestResultDto,
   RotatedProviderSecretDto,
@@ -49,9 +50,12 @@ import {
   type ChannelSwitch,
 } from '../core/channel-switches.service';
 import { ProviderRecordsAudit } from '../core/provider-records-audit.service';
+import { ProviderBooks, providerBooksView } from '../core/provider-books.service';
+import { PaymentProviderExchangesStore } from '../../../store/payment-provider-exchanges.store';
 
 const MAX_SETTING_LENGTH = 2048;
 const MAX_EVENTS = 200;
+const MAX_EXCHANGES = 200;
 
 /**
  * THE CONSOLE'S SIDE OF EVERY PAYMENT PROVIDER (0168) — System → Payment providers.
@@ -86,6 +90,9 @@ export class PaymentProvidersService {
     private readonly resourceChanged: ResourceChangedPublisher,
     /* The unmatched-records audit (0174) — appended last, the positional-construction rule. */
     private readonly records: ProviderRecordsAudit,
+    /* The balance against our books and the exchange log (0175) — appended last. */
+    private readonly books: ProviderBooks,
+    private readonly exchanges: PaymentProviderExchangesStore,
   ) {}
 
   async list(): Promise<PaymentProviderDto[]> {
@@ -125,6 +132,51 @@ export class PaymentProvidersService {
   ): Promise<UnmatchedProviderRecordDto> {
     this.registry.provider(code);
     return unmatchedView(await this.records.acknowledge(code, id, actor, note));
+  }
+
+  /**
+   * A person restarts a provider's books (after a top-up or a move its records
+   * do not show): the next reading with nothing travelling starts them again.
+   */
+  async resetBooks(code: string, note: string, actor: Actor): Promise<PaymentProviderDto> {
+    const adapter = this.registry.provider(code);
+    if (!adapter.balance) {
+      throw new ValidationError(`${adapter.name} holds no balance of ours, so it keeps no books.`);
+    }
+    await this.books.reset(code, actor, note);
+    return this.get(code);
+  }
+
+  /** What the provider was asked and answered, newest first (0175). */
+  async exchangeLog(
+    code: string,
+    limit: number,
+    before?: number,
+    reference?: string,
+  ): Promise<ProviderExchangeDto[]> {
+    const adapter = this.registry.provider(code);
+    if (!adapter.keepsExchangeLog) {
+      throw new NotFoundError(`${adapter.name} keeps no exchange log.`);
+    }
+    const rows = await this.exchanges.list(
+      code,
+      Math.min(Math.max(limit, 1), MAX_EXCHANGES),
+      before,
+      reference?.trim() || undefined,
+    );
+    return rows.map((row) => ({
+      id: row.id,
+      direction: row.direction === 'inbound' ? 'inbound' : 'outbound',
+      method: row.method,
+      path: row.path,
+      requestBody: row.requestBody,
+      status: row.status,
+      responseBody: row.responseBody,
+      error: row.error,
+      durationMs: row.durationMs,
+      reference: row.reference,
+      occurredAt: row.occurredAt.toISOString(),
+    }));
   }
 
   async get(code: string): Promise<PaymentProviderDto> {
@@ -363,6 +415,9 @@ export class PaymentProvidersService {
   ): Omit<PaymentProviderDto, 'auditsRecords' | 'unexplainedRecords'> {
     const saved = row !== null && missingSettings(adapter, row).length === 0;
     return {
+      // Its balance against our books, for a provider that holds one of ours (0175).
+      books: adapter.balance ? providerBooksView(row) : null,
+      exchangeLog: adapter.keepsExchangeLog === true,
       code: adapter.code,
       name: adapter.name,
       builtIn: adapter.builtIn,

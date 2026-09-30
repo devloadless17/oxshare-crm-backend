@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 import { ConfigService } from '@nestjs/config';
+import Decimal from 'decimal.js';
 import { TransactionsService } from '../src/modules/payments/transactions.service';
 import { PaymentMethodsService } from '../src/modules/payments/payment-methods.service';
 import { WalletService } from '../src/modules/wallet/wallet.service';
@@ -16,6 +17,11 @@ import { PayoutEngine } from '../src/modules/payments/core/payout-engine.service
 import { ChannelSwitchesService } from '../src/modules/payments/core/channel-switches.service';
 import { ProviderWebhookIngress } from '../src/modules/payments/core/provider-webhook-ingress.service';
 import { ProviderRecordsAudit } from '../src/modules/payments/core/provider-records-audit.service';
+import {
+  ProviderBooks,
+  providerBooksView,
+} from '../src/modules/payments/core/provider-books.service';
+import { PaymentProviderExchangesStore } from '../src/store/payment-provider-exchanges.store';
 import { PaymentProviderRegistry } from '../src/modules/payments/providers/payment-provider-registry';
 import { ManualPaymentProvider } from '../src/modules/payments/providers/manual/manual.provider';
 import { ThreePayPaymentProvider } from '../src/modules/payments/providers/threepay/threepay.provider';
@@ -50,6 +56,8 @@ let deposits: HostedDepositsService;
 let payouts: PayoutEngine;
 let ingress: ProviderWebhookIngress;
 let records: ProviderRecordsAudit;
+let books: ProviderBooks;
+let exchanges: PaymentProviderExchangesStore;
 let settings: ThreePayConfigService;
 let adapter: ThreePayPaymentProvider;
 const bell = notificationsStub();
@@ -63,7 +71,8 @@ beforeAll(async () => {
   const config = new ConfigService({ API_PUBLIC_URL: 'https://api.oxshare.test' });
   const providersStore = new PaymentProvidersStore(ctx.db);
   settings = new ThreePayConfigService(providersStore, config);
-  adapter = new ThreePayPaymentProvider(new ThreePayClient(settings, config), settings);
+  exchanges = new PaymentProviderExchangesStore(ctx.db);
+  adapter = new ThreePayPaymentProvider(new ThreePayClient(settings, config, exchanges), settings);
   const registry = new PaymentProviderRegistry([new ManualPaymentProvider(), adapter]);
   wallets = new WalletService(ctx.db);
   const currencies = new CurrenciesService(ctx.db, auditStubAs());
@@ -108,8 +117,10 @@ beforeAll(async () => {
     deposits,
     payouts,
     providersStore,
+    exchanges,
   );
   records = new ProviderRecordsAudit(ctx.db, new AuditLogStore(ctx.db));
+  books = new ProviderBooks(ctx.db, new AuditLogStore(ctx.db));
 
   await ctx.db.execute(sql`
     INSERT INTO currencies (code, name, symbol, enabled, is_default)
@@ -508,5 +519,166 @@ describe('what 3pay holds that nothing here explains', () => {
       sql`SELECT count(*)::int AS n FROM audit_log WHERE action = 'payment_provider.record_acknowledge'`,
     );
     expect(rows[0].n).toBe(1);
+  });
+});
+
+describe('3pay’s minimum (1 USDT, guide §05)', () => {
+  it('is refused at the deposit door, the withdrawal door and on a method, below 1', async () => {
+    const userId = await client('1000');
+    await expect(
+      transactions.requestDeposit({
+        userId,
+        amount: '0.5',
+        currency: 'USD',
+        method: 'usdt_trc20_in',
+      }),
+    ).rejects.toBeInstanceOf(ValidationError);
+    await expect(
+      transactions.requestWithdrawal({
+        userId,
+        amount: '0.99',
+        currency: 'USD',
+        destination: TRON,
+        methodKey: 'usdt_trc20_out',
+      }),
+    ).rejects.toBeInstanceOf(ValidationError);
+    expect(sim.createRequests).toEqual([]);
+    expect(sim.payoutRequests).toEqual([]);
+  });
+});
+
+describe('the exchange log (guide §10: every request and response, 90 days)', () => {
+  it('keeps every call and delivery with our reference — never a credential or a signature', async () => {
+    const { tx } = await deposit('100');
+    sim.confirm(tx.providerPaymentId!, '100');
+    const delivery = { type: 'deposit', status: 'confirmed', invoiceNo: tx.providerPaymentId };
+    const { signature } = sim.webhook(delivery);
+    await deliver(delivery);
+    // Kept off the money path, so written a moment later.
+    await vi.waitFor(async () => {
+      const rows = await exchanges.list('threepay', 50);
+      expect(
+        rows.some((r) => r.direction === 'inbound' && r.reference === tx.providerPaymentId),
+      ).toBe(true);
+      expect(
+        rows.some((r) => r.path === '/transaction/create' && r.reference === tx.providerRef),
+      ).toBe(true);
+    });
+
+    const rows = await exchanges.list('threepay', 50);
+    const create = rows.find((r) => r.path === '/transaction/create');
+    expect(create?.method).toBe('POST');
+    expect(create?.status).toBe(200);
+    expect(create?.reference).toBe(tx.providerRef);
+    expect(create?.requestBody).toMatch(/^\{"amount":100,/);
+    const inbound = rows.find((r) => r.direction === 'inbound');
+    expect(inbound?.reference).toBe(tx.providerPaymentId);
+    expect(inbound?.status).toBe(200);
+    const everything = JSON.stringify(rows);
+    expect(everything).not.toContain(sim.apiSecret);
+    expect(everything).not.toContain(signature);
+  });
+
+  it('is append-only until its 90 days are up; the prune removes only what is older', async () => {
+    const [latest] = await exchanges.list('threepay', 1);
+    await expect(
+      ctx.db.execute(sql`UPDATE payment_provider_exchanges SET status = 1 WHERE id = ${latest.id}`),
+    ).rejects.toThrow();
+    await expect(
+      ctx.db.execute(sql`DELETE FROM payment_provider_exchanges WHERE id = ${latest.id}`),
+    ).rejects.toThrow();
+    await ctx.db.execute(sql`
+      INSERT INTO payment_provider_exchanges (provider_code, direction, method, path, occurred_at)
+      VALUES ('threepay', 'outbound', 'GET', '/old', now() - interval '100 days')`);
+    expect(await exchanges.prune()).toBe(1);
+    expect((await exchanges.list('threepay', 1))[0].id).toBe(latest.id);
+  });
+});
+
+describe('3pay’s balance against our books (guide §6.5 step 3)', () => {
+  const DESK = { id: ADMIN, email: 'desk@oxshare.test', permissions: ['payments.providers.edit'] };
+
+  /** Everything earlier cases moved happened long ago, and the books have not started. */
+  async function quietHistory() {
+    await ctx.db.execute(sql`
+      UPDATE transactions
+         SET provider_submitted_at = provider_submitted_at - interval '1 day',
+             provider_outcome_at = provider_outcome_at - interval '1 day',
+             provider_paid_at = provider_paid_at - interval '1 day'
+       WHERE provider_code = 'threepay'`);
+  }
+  async function read(at = new Date()) {
+    await books.check(adapter, { balance: await adapter.balance(), readAt: at }, true, at);
+    const [provider] = await ctx.db
+      .select()
+      .from(paymentProviders)
+      .where(eq(paymentProviders.code, 'threepay'));
+    return { provider, view: providerBooksView(provider) };
+  }
+
+  it('start only when nothing is travelling, then follow every deposit and payout exactly', async () => {
+    await ctx.db
+      .update(paymentProviders)
+      .set({ booksBaseline: null, booksBaselineAt: null, booksExpected: null })
+      .where(eq(paymentProviders.code, 'threepay'));
+
+    // A payout 3pay is still sending: the balance already lacks it, so no start.
+    sim.nextWithdrawal.push('executing');
+    const travelling = await approvedWithdrawal('20');
+    await payouts.submitApproved(travelling);
+    await quietHistory();
+    expect((await read()).view.status).toBe('starting');
+
+    // It fails: the money is back. Nothing travels now — the books start.
+    sim.finish(sim.withdrawals.at(-1)!._id, 'failed');
+    await payouts.reconcile('threepay');
+    await quietHistory();
+    const started = await read();
+    expect(started.view.status).toBe('matches');
+    expect(started.provider.booksBaseline).toBe('10000.00000000');
+
+    // +98 (100 arrived, 3pay kept 2), −102 (a 100 payout grossed up), and one
+    // that came back: 10000 + 98 − 102 = 9996, to the cent.
+    const { tx } = await deposit('100');
+    sim.confirm(tx.providerPaymentId!, '100');
+    await deliver({ type: 'deposit', status: 'confirmed', invoiceNo: tx.providerPaymentId });
+    expect((await row(tx.id)).state).toBe('success');
+    await payouts.submitApproved(await approvedWithdrawal('100'));
+    sim.nextWithdrawal.push('executing');
+    await payouts.submitApproved(await approvedWithdrawal('30'));
+    const failed = sim.finish(sim.withdrawals.at(-1)!._id, 'failed');
+    await deliver({ type: 'payout', status: 'failed', transactionId: failed._id });
+
+    const after = await read();
+    expect(sim.balance).toBe('9996.00');
+    expect(after.provider.booksExpected).toBe('9996.00000000');
+    expect(after.view.status).toBe('matches');
+  });
+
+  it('money that moved with no record is a difference, paged only once it stands; a reset restarts', async () => {
+    // 3pay holds what the books expect (the simulator restarted between cases)…
+    const [before] = await ctx.db
+      .select({ expected: paymentProviders.booksExpected })
+      .from(paymentProviders)
+      .where(eq(paymentProviders.code, 'threepay'));
+    sim.balance = new Decimal(before.expected!).toFixed(2);
+    // …then 5 USDT leaves with no record anywhere.
+    sim.adjust('-5');
+    const first = await read();
+    expect(first.view.status).toBe('differs');
+    expect(first.view.difference).toBe('-5.00000000');
+    expect(first.provider.booksAlertedAt).toBeNull(); // a lag, until it stands
+
+    const later = await read(new Date(Date.now() + 151 * 60_000));
+    expect(later.provider.booksAlertedAt).not.toBeNull();
+
+    await books.reset('threepay', DESK, 'Fee taken by 3pay outside a movement, confirmed.');
+    const { rows } = await ctx.db.execute<{ n: number }>(sql`
+      SELECT count(*)::int AS n FROM audit_log WHERE action = 'payment_provider.books_reset'`);
+    expect(rows[0].n).toBe(1);
+    await quietHistory();
+    const restarted = await read();
+    expect(restarted.view.status).toBe('matches');
+    expect(restarted.view.difference).toBe('0.00000000');
   });
 });

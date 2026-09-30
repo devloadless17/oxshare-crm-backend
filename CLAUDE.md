@@ -1374,9 +1374,10 @@ admin/transactions/:id/attention/finish-deposit` (`credit` | `close`, a reason, 
 5. A simulator spec for its translation. The core's behaviour is already held by
    `payments-core.spec.ts`.
 6. Optional capabilities the core uses when declared: `balance()` (a prefunded balance, watched
-   against the payouts waiting) and `listRecords(since, until)` (the unmatched-records audit). A
-   rate-limited provider throws the contract's `ProviderBusyError`: sweeps stop their pass, a
-   payout is requeued.
+   against the payouts waiting and compared with our books), `listRecords(since, until)` (the
+   unmatched-records audit), and `keepsExchangeLog` (only if its exchanges carry no client
+   identity; its client then records each call). A rate-limited provider throws the contract's
+   `ProviderBusyError`: sweeps stop their pass, a payout is requeued.
 
 ### 3pay, the USDT provider (0174, 30 Sep 2026)
 
@@ -1422,6 +1423,35 @@ base URL, `apikey` (public), `x-api-secret` (sealed) and the two payout fees.
   the first run.
 - **The balance watch** (`provider-balance-watch.service.ts`): 3pay's `totalAmt` against the grossed-up
   payouts waiting to be sent. It pages hourly while the balance falls short.
+- **The exchange log** (0175, guide §10): every call to 3pay and every delivery from it, bodies as
+  sent and received, in `payment_provider_exchanges`. It is kept 90 days (a trigger refuses UPDATE,
+  and refuses DELETE before 90 days, even from a superuser), pruned daily by `payments.pruneExchanges`,
+  and listed at `GET admin/payment-providers/:code/exchanges` (`reference=` narrows it).
+  - It never holds headers, so no credential and no webhook signature is kept.
+  - Only an adapter declaring `keepsExchangeLog` has one, because it is shown UNMASKED: 3pay is
+    sent amounts, our reference and payout addresses (`client.payoutDestination` is not
+    maskable), never a name, email or phone. Rival's bodies are undocumented, so it keeps none.
+  - `record()` never throws and is never awaited by a money path.
+- **The books** (0175, guide §6.5 step 3; `provider-books.service.ts`): 3pay's `totalAmt` against
+  what our books say it should hold. That is a baseline, plus deposits CONFIRMED since
+  (`provider_paid_at`, whatever was then decided about them), minus payouts sent since unless
+  returned (`provider_outcome`), plus money back since on one sent before (`provider_outcome_at`),
+  plus or minus the unexplained records at the provider's own time (`moved_at`, 3pay's
+  `confirmedAt` for a deposit).
+  - ⚠️ **The baseline is taken ONLY at a quiet reading.** The deposit sweep just asked about
+    every open link (`sweep()` returns `complete`), no payout sits between 3pay and its final
+    word, and none of our movements landed within 2 minutes of the read. A reading taken while
+    money travels would be wrong for ever: `totalAmt` drops the moment 3pay accepts a payout and
+    rises again if it fails, and a deposit confirmed just before the read but seen here just
+    after would count twice.
+  - A difference that stands for 150 minutes (past the records audit's 2-hour lag) pages, then
+    repeats hourly while it stands.
+  - `POST admin/payment-providers/:code/books/reset` (a note, `payments.providers.edit`, audited
+    `payment_provider.books_reset`) CLEARS the baseline, and the next quiet reading restarts
+    the books. Use it after a top-up or a move 3pay's records do not show.
+- **Minimum**: 3pay moves at least 1 USDT (`PaymentChannel.minimumAmount`). A method's minimum
+  cannot go below it, the effective deposit minimum is raised to it, and the withdrawal door
+  refuses below it.
 - **Proof**: `providers/threepay/threepay.spec.ts` (pure) and `test/threepay-flow.spec.ts` (the real
   adapter through the real core against `test/support/threepay-sim.ts`, every documented answer and
   failure).

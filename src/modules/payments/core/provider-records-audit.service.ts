@@ -301,6 +301,8 @@ function rowOf(
     providerId: record.providerId.slice(0, 128),
     rawStatus: record.rawStatus.slice(0, 40),
     amount: record.amount ?? null,
+    netAmount: record.net ?? null,
+    movedAt: record.movedAt ?? null,
     asset: record.asset?.slice(0, 40) ?? null,
     counterparty: record.counterparty?.slice(0, 255) ?? null,
     reference: record.reference?.slice(0, 255) ?? null,

@@ -42,6 +42,8 @@ const DEPOSIT = {
   direction: 'deposit',
   flow: 'redirect',
   settlementScale: 2,
+  // "amount … Minimum 1" (guide §04).
+  minimumAmount: '1',
   // The client's USD wallet moves at PAR with the USDT (the owner, 30 Sep 2026).
   currencies: ['USD'],
   bindable: true,
@@ -55,6 +57,9 @@ const PAYOUT = {
   direction: 'payout',
   flow: 'automated',
   settlementScale: 2,
+  // "Minimum withdrawal: 1 USDT (net amount must be positive after fee)" (guide §05):
+  // the client's amount is the net, so it is held to 1.
+  minimumAmount: '1',
   currencies: ['USD'],
   bindable: true,
 } as const;
@@ -87,6 +92,8 @@ export class ThreePayPaymentProvider implements PaymentProviderAdapter {
 
   readonly code = THREEPAY_CODE;
   readonly name = '3pay';
+  // Its exchanges carry no client identity: amounts, our reference, payout addresses (0175).
+  readonly keepsExchangeLog = true;
   readonly builtIn = false;
 
   readonly configFields: readonly ProviderConfigField[] = [
@@ -225,6 +232,7 @@ export class ThreePayPaymentProvider implements PaymentProviderAdapter {
             clientReference: input.idempotencyKey,
             description: input.invoice,
           }),
+          input.idempotencyKey,
         )
       ).body;
     } catch (error) {
@@ -273,7 +281,8 @@ export class ThreePayPaymentProvider implements PaymentProviderAdapter {
     depositAsset(channel);
     let body: Record<string, unknown>;
     try {
-      body = (await this.client.get('/transaction/verify', { invoiceNo: externalId })).body;
+      body = (await this.client.get('/transaction/verify', { invoiceNo: externalId }, externalId))
+        .body;
     } catch (error) {
       throw readFailure(error);
     }
@@ -459,6 +468,9 @@ function depositRecord(item: Record<string, unknown>): ProviderRecord | null {
   if (!providerId || !occurredAt) return null;
   const rawStatus = textOf(item['status']) ?? 'unknown';
   const amount = amountOf(item['actualBalance']) ?? amountOf(item['amount']);
+  const net = amountOf(item['netAmount']);
+  // The balance moves at the confirmation; the list is filtered by creation.
+  const movedAt = dateOf(item['confirmedAt']);
   const asset = textOf(item['currencyType']);
   const counterparty = textOf(item['walletAddress']);
   const reference = textOf(item['clientReference']);
@@ -469,6 +481,8 @@ function depositRecord(item: Record<string, unknown>): ProviderRecord | null {
     rawStatus,
     occurredAt,
     ...(amount !== undefined ? { amount } : {}),
+    ...(net !== undefined ? { net } : {}),
+    ...(movedAt !== undefined ? { movedAt } : {}),
     ...(asset !== undefined ? { asset } : {}),
     ...(counterparty !== undefined ? { counterparty } : {}),
     ...(reference !== undefined ? { reference } : {}),

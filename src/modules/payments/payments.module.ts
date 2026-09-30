@@ -32,6 +32,8 @@ import { ProviderWebhookIngress } from './core/provider-webhook-ingress.service'
 import { ProviderReconcileScheduler } from './core/provider-reconcile.scheduler';
 import { ProviderRecordsAudit } from './core/provider-records-audit.service';
 import { ProviderBalanceWatch } from './core/provider-balance-watch.service';
+import { ProviderBooks } from './core/provider-books.service';
+import { ProviderExchangesPruner } from './core/provider-exchanges-pruner.service';
 // THE PROVIDERS: each translates for one provider, in its own folder. This file
 // is the only place outside a provider's folder that names it (lint enforces).
 import { ManualPaymentProvider } from './providers/manual/manual.provider';
@@ -149,6 +151,8 @@ import { ThreePayWebhookReceiver } from './providers/threepay/threepay-webhook.r
     ProviderReconcileScheduler,
     ProviderRecordsAudit,
     ProviderBalanceWatch,
+    ProviderBooks,
+    ProviderExchangesPruner,
   ],
   /*
    * `PaymentsService` is gone from this list, and it was an empty

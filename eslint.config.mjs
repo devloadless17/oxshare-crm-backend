@@ -74,7 +74,7 @@ const PROVIDER_BOUNDARY = [
   },
   {
     regex:
-      '^drizzle-orm|^\\.\\./\\.\\./\\.\\./\\.\\./database/|^\\.\\./\\.\\./\\.\\./\\.\\./store/(?!(payment-providers|app-settings|payment-provider-events)\\.store$)',
+      '^drizzle-orm|^\\.\\./\\.\\./\\.\\./\\.\\./database/|^\\.\\./\\.\\./\\.\\./\\.\\./store/(?!(payment-providers|app-settings|payment-provider-events|payment-provider-exchanges)\\.store$)',
     message:
       'A payment provider does not touch the database or the money stores (0173) — its settings come through its own store, and the core records everything else.',
   },

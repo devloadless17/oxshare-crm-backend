@@ -76,7 +76,13 @@ export class ThreePaySim {
   /** Say `currencyType` on verify (the guide's example omits it). */
   verifyNamesNetwork = true;
   ipBlocked = false;
+  /**
+   * The merchant balance, moved as the guide's table says: a confirmed deposit
+   * adds its net; an accepted payout leaves `totalAmt` for `pendingAmt` at
+   * once, and leaves for good when completed or comes back when failed.
+   */
   balance = '10000.00';
+  pending = '0.00';
 
   private server: Server | null = null;
   private seq = 0;
@@ -110,6 +116,7 @@ export class ThreePaySim {
     this.verifyNamesNetwork = true;
     this.ipBlocked = false;
     this.balance = '10000.00';
+    this.pending = '0.00';
   }
 
   /* ── what happens on the chain ─────────────────────────────────────────── */
@@ -123,6 +130,7 @@ export class ThreePaySim {
     invoice.fee = fee;
     invoice.netAmount = new Decimal(arrived).minus(fee).toFixed(2);
     invoice.confirmedAt = new Date().toISOString();
+    this.balance = new Decimal(this.balance).plus(invoice.netAmount).toFixed(2);
     return invoice;
   }
 
@@ -140,14 +148,22 @@ export class ThreePaySim {
     withdrawal.status = status;
     withdrawal.processedAt = new Date().toISOString();
     if (status === 'completed') withdrawal.transactionHash = randomBytes(16).toString('hex');
+    this.pending = new Decimal(this.pending).minus(withdrawal.amount).toFixed(2);
+    if (status === 'failed') {
+      this.balance = new Decimal(this.balance).plus(withdrawal.amount).toFixed(2);
+    }
     return withdrawal;
   }
 
   /** A payout made by hand in 3pay's dashboard — nothing on our side asked for it. */
   manualWithdrawal(amount: string, walletAddress: string, createdAt: Date): SimWithdrawal {
     const withdrawal = this.newWithdrawal(amount, walletAddress, 'USDT-TRC20', createdAt);
-    withdrawal.status = 'completed';
-    return withdrawal;
+    return this.finish(withdrawal._id, 'completed');
+  }
+
+  /** Money moved at 3pay with no record anywhere (an adjustment, a fee taken aside). */
+  adjust(delta: string): void {
+    this.balance = new Decimal(this.balance).plus(delta).toFixed(2);
   }
 
   /** A webhook exactly as 3pay would POST it: the raw body and its signature. */
@@ -189,7 +205,7 @@ export class ThreePaySim {
           _id: 'm1',
           name: 'Sim Merchant',
           totalAmt: num(this.balance),
-          pendingAmt: num('0'),
+          pendingAmt: num(this.pending),
         },
       });
     }
@@ -345,6 +361,9 @@ export class ThreePaySim {
       createdAt: createdAt.toISOString(),
     };
     this.withdrawals.push(withdrawal);
+    // Taken at once, atomically (guide §05, step 3).
+    this.balance = new Decimal(this.balance).minus(amount).toFixed(2);
+    this.pending = new Decimal(this.pending).plus(amount).toFixed(2);
     return withdrawal;
   }
 
