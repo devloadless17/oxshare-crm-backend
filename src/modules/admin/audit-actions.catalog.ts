@@ -659,6 +659,16 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
     group: 'Security',
   },
   {
+    action: 'withdrawal.finish_paid',
+    label: 'Flagged payout marked paid by a person',
+    group: 'Compliance',
+  },
+  {
+    action: 'withdrawal.finish_refund',
+    label: 'Flagged payout refunded by a person',
+    group: 'Compliance',
+  },
+  {
     action: 'payment_provider.record_acknowledge',
     label: 'Provider movement acknowledged as a company movement',
     group: 'Compliance',

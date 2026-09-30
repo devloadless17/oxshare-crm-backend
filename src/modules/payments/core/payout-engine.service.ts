@@ -7,7 +7,7 @@ import { DRIZZLE_DB } from '../../../database/database.module';
 import type { Db } from '../../../database/db';
 import { transactions } from '../../../database/schema';
 import { ALERT_KINDS, raiseAlert } from '../../../common/logging/alerts';
-import { SYSTEM_ACTOR } from '../../../common/security/actor';
+import { SYSTEM_ACTOR, assertActorCan, type Actor } from '../../../common/security/actor';
 import {
   NOTIFICATION_DISPATCH,
   type NotificationDispatchPort,
@@ -583,7 +583,7 @@ export class PayoutEngine {
      * where it went and marks it paid. Judged only while money may be moving —
      * a refused payout went nowhere, and its refund is right.
      */
-    if (report.status === 'pending' || report.status === 'completed') {
+    if (tx.state === 'approved' && (report.status === 'pending' || report.status === 'completed')) {
       const elsewhere = this.paidElsewhere(tx, adapter, report);
       if (elsewhere) {
         const fresh = !(tx.needsAttention && tx.attentionReason === elsewhere);
@@ -1056,6 +1056,163 @@ export class PayoutEngine {
     return unique.filter((id) => !taken.has(id));
   }
 
+  /* ── a person finishes a flagged payout ─────────────────────────────────── */
+
+  /**
+   * A PERSON finishes a flagged payout the provider already holds (0174) — one
+   * the engine will neither settle nor refund on its own: the provider reported
+   * it paid to ANOTHER destination (3pay's forced cold-wallet route), or several
+   * of its records could be it. After checking the provider's dashboard:
+   *
+   *   `paid`   — the client did receive it (another way, or after all): settled
+   *              with the reference of what paid them, and the client is told.
+   *   `refund` — nothing reached the client: failed and refunded to their
+   *              wallet with the fixed client-safe sentence. The desk's reason is
+   *              the audit record, never the client's.
+   *
+   * Only an APPROVED, FLAGGED payout that reached the provider (a payout id, or
+   * a held claim). One that never did is resent or cancelled instead, and one no
+   * longer flagged is the engine's again.
+   */
+  async finishFlagged(
+    txId: string,
+    actor: Actor,
+    decision: 'paid' | 'refund',
+    reason: string,
+    reference?: string,
+  ): Promise<TransactionRow> {
+    assertActorCan(actor, 'withdrawals.settle', 'finish a flagged payout');
+    const tx = await this.transactions.getById(txId);
+    const found = this.registry.payoutRail(tx);
+    if (tx.direction !== 'withdrawal' || !found) {
+      throw new ValidationError('Only a payout a provider sends is finished here.');
+    }
+    if (tx.state !== 'approved' || !tx.needsAttention) {
+      throw new ValidationError(
+        'This payout is not waiting for a person any more — it may be finished already.',
+      );
+    }
+    if (!tx.providerPayoutId && !tx.providerSubmittedAt) {
+      throw new ValidationError(
+        `It never reached ${found.adapter.name}: resend it, or cancel it, instead.`,
+      );
+    }
+    /*
+     * A held claim with no payout id may be an answer still coming: the
+     * reconciler adopts it from the provider's records within its window. A
+     * person refunding it before then could pay the client twice.
+     */
+    if (!tx.providerPayoutId) {
+      const claimedAt = tx.providerSubmittedAt?.getTime() ?? 0;
+      if (Date.now() - claimedAt < found.rail.adoptWindowMs) {
+        throw new ValidationError(
+          `${found.adapter.name} may still answer for this payout. The reconciler settles it ` +
+            `from ${found.adapter.name}'s records first — try again ${Math.round(
+              found.rail.adoptWindowMs / 60_000,
+            )} minutes after it was sent.`,
+        );
+      }
+    }
+    const why = reason.trim();
+    if (why.length === 0) throw new ValidationError('Say what you found, for the record.');
+    const details = {
+      userId: tx.userId,
+      amount: tx.amount,
+      currency: tx.currency,
+      provider: found.adapter.code,
+      payoutId: tx.providerPayoutId,
+      reason: why,
+    };
+
+    if (decision === 'paid') {
+      const ref = reference?.trim() ?? '';
+      if (ref.length === 0) {
+        throw new ValidationError('Give the reference of the payment that reached the client.');
+      }
+      let row: TransactionRow;
+      try {
+        row = await this.transactions.settle(tx.id, actor.id, ref, async (dbTx, settled) => {
+          await dbTx
+            .update(transactions)
+            .set({ needsAttention: false, attentionReason: null })
+            .where(eq(transactions.id, tx.id));
+          await this.auditLog.record(
+            {
+              actorId: actor.id,
+              actorEmail: actor.email,
+              actorKind: 'admin',
+              action: 'withdrawal.finish_paid',
+              subjectType: 'transaction',
+              subjectId: tx.id,
+              details: { ...details, reference: ref },
+            },
+            dbTx,
+          );
+          await this.notifications.notify(
+            {
+              recipient: { kind: 'client', id: settled.userId },
+              kind: 'withdrawal.paid',
+              params: {
+                transactionId: settled.id,
+                amount: settled.amount,
+                currency: settled.currency,
+              },
+            },
+            dbTx,
+          );
+        });
+      } catch (error) {
+        if (violatesConstraint(error, 'transactions_provider_ref_uq')) {
+          throw new ValidationError('That reference already belongs to another movement.');
+        }
+        throw error;
+      }
+      void this.emailDecision(row, 'paid');
+      await this.resourceChanged.publish({ resource: 'withdrawals' });
+      return this.transactions.getById(tx.id);
+    }
+
+    const row = await this.transactions.markFailed(
+      tx.id,
+      CLIENT_SAFE_PROVIDER_REFUSAL,
+      actor,
+      async (dbTx, failed) => {
+        await dbTx
+          .update(transactions)
+          .set({ needsAttention: false, attentionReason: null })
+          .where(eq(transactions.id, tx.id));
+        await this.auditLog.record(
+          {
+            actorId: actor.id,
+            actorEmail: actor.email,
+            actorKind: 'admin',
+            action: 'withdrawal.finish_refund',
+            subjectType: 'transaction',
+            subjectId: tx.id,
+            details,
+          },
+          dbTx,
+        );
+        await this.notifications.notify(
+          {
+            recipient: { kind: 'client', id: failed.userId },
+            kind: 'withdrawal.rejected',
+            params: {
+              transactionId: failed.id,
+              amount: failed.amount,
+              currency: failed.currency,
+              reason: CLIENT_SAFE_PROVIDER_REFUSAL,
+            },
+          },
+          dbTx,
+        );
+      },
+    );
+    void this.emailDecision(row, 'rejected', CLIENT_SAFE_PROVIDER_REFUSAL);
+    await this.resourceChanged.publish({ resource: 'withdrawals' });
+    return this.transactions.getById(tx.id);
+  }
+
   /* ── the desk's cancel ──────────────────────────────────────────────────── */
 
   /**
@@ -1181,7 +1338,8 @@ export class PayoutEngine {
     const shortfall = shortOf(tx.amount, net);
     if (shortfall === null) return;
     const reason =
-      `${adapter.name} will deliver ${net} ${tx.currency} on a ${tx.amount} ${tx.currency} ` +
+      `${adapter.name} will deliver ${new Decimal(net).toFixed()} ${tx.currency} on a ` +
+      `${new Decimal(tx.amount).toFixed()} ${tx.currency} ` +
       `withdrawal — the client is ${shortfall} ${tx.currency} short (a fee deducted rather ` +
       'than charged on top, or one changed since it was configured). The client was debited ' +
       'the full amount: make them whole, and check the provider’s fee settings.';

@@ -3487,7 +3487,14 @@
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DepositStateDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -3517,7 +3524,14 @@
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DepositStateDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -11760,6 +11774,62 @@
         ]
       }
     },
+    "/v1/admin/transactions/{id}/attention/finish-payout": {
+      "patch": {
+        "description": "For an approved payout the provider holds and the engine flagged for a person. `paid` settles it with the reference of the payment that reached the client; `refund` fails it and returns the amount to their wallet. Refuses a payout that is no longer flagged, or one that never reached the provider (resend or cancel that instead).",
+        "operationId": "AdminMoneyController_finishFlaggedPayout",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "description": "A unique value per intended action (PLATFORM-CONVENTIONS R-5.2).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FinishFlaggedPayoutDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FlaggedPayoutFinishedDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Mark a flagged provider payout paid, or refund the client",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/transactions/export": {
       "get": {
         "description": "The same filters as GET /admin/transactions, over every matching row rather than one page. Amounts are the exact decimal strings the ledger holds — never rounded, never locale-formatted (§6.1).",
@@ -15740,6 +15810,47 @@
           "sortOrder",
           "requiresProof",
           "proofFields"
+        ]
+      },
+      "DepositStateDto": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "success",
+              "failure",
+              "rejected"
+            ],
+            "example": "success"
+          },
+          "amount": {
+            "type": "string",
+            "example": "25.50000000",
+            "description": "Credited, once it settled; until then, what was asked."
+          },
+          "requestedAmount": {
+            "type": "string",
+            "nullable": true,
+            "example": "30.00000000",
+            "description": "What the link asked for, when the credited amount differs from it."
+          },
+          "currency": {
+            "type": "string",
+            "example": "USD"
+          },
+          "underReview": {
+            "type": "boolean",
+            "description": "Still open because a PERSON is checking it (money arrived the provider did not confirm, a figure it disputes) — not because nothing has arrived."
+          }
+        },
+        "required": [
+          "state",
+          "amount",
+          "requestedAmount",
+          "currency",
+          "underReview"
         ]
       },
       "RequestDepositDto": {
@@ -24016,6 +24127,62 @@
           "amount": {
             "type": "string",
             "description": "The credited amount (decimal string) — or the asked one when closed."
+          },
+          "currency": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "state",
+          "amount",
+          "currency"
+        ]
+      },
+      "FinishFlaggedPayoutDto": {
+        "type": "object",
+        "properties": {
+          "decision": {
+            "type": "string",
+            "enum": [
+              "paid",
+              "refund"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500,
+            "example": "The provider force-routed it to our cold wallet; paid the client from it."
+          },
+          "reference": {
+            "type": "string",
+            "maxLength": 128,
+            "description": "Required to mark it paid: the reference of the payment that reached the client.",
+            "example": "4839cb944414ae2559c327…"
+          }
+        },
+        "required": [
+          "decision",
+          "reason"
+        ]
+      },
+      "FlaggedPayoutFinishedDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "success",
+              "failure"
+            ]
+          },
+          "amount": {
+            "type": "string",
+            "example": "100.00000000"
           },
           "currency": {
             "type": "string"

@@ -1897,4 +1897,22 @@ export class AdminMoneyService {
         : await this.hostedDeposits.closeWithoutCredit(id, actor, why);
     return { id: row.id, state: row.state, amount: row.amount, currency: row.currency };
   }
+
+  /**
+   * FINISH A FLAGGED PAYOUT (0174): one the provider holds that the engine will
+   * not finish itself — reported paid to another destination, or several
+   * provider records could be it. `paid` settles it with the reference of what
+   * reached the client; `refund` fails it and refunds their wallet.
+   */
+  async finishFlaggedPayout(
+    id: string,
+    actor: AuthenticatedAdmin,
+    decision: 'paid' | 'refund',
+    reason: string,
+    reference?: string,
+  ) {
+    await this.assertWithdrawalVisible(id, actor.clientScope);
+    const row = await this.payouts.finishFlagged(id, actor, decision, reason, reference);
+    return { id: row.id, state: row.state, amount: row.amount, currency: row.currency };
+  }
 }

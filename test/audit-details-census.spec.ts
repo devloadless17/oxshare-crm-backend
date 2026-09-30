@@ -240,6 +240,9 @@ const WRITES_DETAILS: readonly string[] = [
   'wallet.create',
   'wallet.credit',
   'wallet.delete',
+  // A person finishes a flagged payout (0174): names the client by `userId`.
+  'withdrawal.finish_paid',
+  'withdrawal.finish_refund',
   'withdrawal.provider.reject',
   'withdrawal.provider.submit',
   'withdrawal.settle',

@@ -3320,6 +3320,22 @@ export class DepositDecisionDto {
   settledAt: Date | null;
 }
 
+/** A flagged provider payout, finished by a person (0174). */
+@NoClientFields('the outcome of one payout’s finishing: its state and amount, no client attribute')
+export class FlaggedPayoutFinishedDto {
+  @ApiProperty()
+  id: string;
+
+  @ApiProperty({ enum: ['success', 'failure'] })
+  state: string;
+
+  @ApiProperty({ type: 'string', example: '100.00000000' })
+  amount: string;
+
+  @ApiProperty()
+  currency: string;
+}
+
 /** A flagged hosted deposit, finished by a person (0173). */
 @NoClientFields(
   'the outcome of one deposit’s finishing: its state and credited figure, no client attribute',

@@ -179,6 +179,7 @@
   "PATCH /v1/admin/tags/{id}",
   "PATCH /v1/admin/trading-accounts/{id}/product",
   "PATCH /v1/admin/transactions/{id}/attention/finish-deposit",
+  "PATCH /v1/admin/transactions/{id}/attention/finish-payout",
   "PATCH /v1/admin/transactions/{id}/attention/resolve",
   "PATCH /v1/admin/users/{id}",
   "PATCH /v1/admin/users/{id}/status",

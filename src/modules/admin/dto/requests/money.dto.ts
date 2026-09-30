@@ -97,6 +97,32 @@ export class FinishFlaggedDepositDto {
   reason: string;
 }
 
+/** A person finishes a flagged provider payout (0174). */
+export class FinishFlaggedPayoutDto {
+  @ApiProperty({ enum: ['paid', 'refund'] })
+  @IsIn(['paid', 'refund'])
+  decision: 'paid' | 'refund';
+
+  @ApiProperty({
+    minLength: 1,
+    maxLength: 500,
+    example: 'The provider force-routed it to our cold wallet; paid the client from it.',
+  })
+  @IsString()
+  @Length(1, 500)
+  reason: string;
+
+  @ApiPropertyOptional({
+    maxLength: 128,
+    description: 'Required to mark it paid: the reference of the payment that reached the client.',
+    example: '4839cb944414ae2559c327…',
+  })
+  @IsOptional()
+  @IsString()
+  @Length(1, 128)
+  reference?: string;
+}
+
 export class SettleWithdrawalDto {
   /**
    * The payment provider's own reference. Backs `UNIQUE(provider, provider_ref)`,

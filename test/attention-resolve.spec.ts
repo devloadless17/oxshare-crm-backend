@@ -111,6 +111,30 @@ async function flaggedHostedDeposit(clientId: number): Promise<string> {
   return tx[0].id;
 }
 
+const finishPayoutPath = (txId: string) => `/v1/admin/transactions/${txId}/attention/finish-payout`;
+
+/**
+ * A PAYOUT the provider holds that the engine will not finish on its own
+ * (0174): approved, sent (a payout id), flagged — here, reported paid to
+ * another destination.
+ */
+async function flaggedProviderPayout(clientId: number): Promise<string> {
+  seq += 1;
+  const { rows: wallet } = await ctx.db.db.execute<{ id: string }>(sql`
+    INSERT INTO wallets (user_id, currency, balance) VALUES (${clientId}, 'USD', '0')
+    ON CONFLICT (user_id, currency, kind) DO UPDATE SET balance = wallets.balance
+    RETURNING id`);
+  const { rows: tx } = await ctx.db.db.execute<{ id: string }>(sql`
+    INSERT INTO transactions
+      (user_id, wallet_id, direction, amount, currency, state, provider, provider_ref,
+       destination, provider_payout_id, provider_submitted_at, needs_attention, attention_reason)
+    VALUES (${clientId}, ${wallet[0].id}, 'withdrawal', '100.00000000', 'USD', 'approved', 'whish',
+            ${`attn-payout-${seq}`}, '+96170123456', ${`po-${seq}`}, now(), true,
+            'The provider reports this payout sent to another destination.')
+    RETURNING id`);
+  return tx[0].id;
+}
+
 beforeAll(async () => {
   ctx = await startHttpTestApp();
   const db = ctx.db.db;
@@ -281,6 +305,42 @@ describe('Mark resolved', () => {
       sql`SELECT balance FROM wallets WHERE user_id = ${insideClient} AND currency = 'USD'`,
     );
     expect(balance.rows[0].balance).toBe('90.00000000');
+  });
+
+  it('FINISHING a flagged provider payout: 404 outside the territory; inside, refunds once', async () => {
+    const north = await actingAs(ctx, 'admin', NORTH_SETTLER);
+    const outside = await flaggedProviderPayout(await client('south'));
+    const refused = await north.patch(
+      finishPayoutPath(outside),
+      { decision: 'refund', reason: 'Checked the dashboard' },
+      { headers: { 'idempotency-key': `finish-po-out-${outside}` } },
+    );
+    expect(refused.status).toBe(404);
+    const untouched = await ctx.db.db.execute<{ state: string }>(
+      sql`SELECT state FROM transactions WHERE id = ${outside}`,
+    );
+    expect(untouched.rows[0].state).toBe('approved');
+
+    // Inside the territory: refunded to the wallet, once; a second click is refused.
+    const insideClient = await client('north');
+    const inside = await flaggedProviderPayout(insideClient);
+    const done = await north.patch(
+      finishPayoutPath(inside),
+      { decision: 'refund', reason: 'Nothing reached the client' },
+      { headers: { 'idempotency-key': `finish-po-in-${inside}` } },
+    );
+    expect(done.status, JSON.stringify(done.body)).toBe(200);
+    expect(done.body).toMatchObject({ state: 'failure' });
+    const again = await north.patch(
+      finishPayoutPath(inside),
+      { decision: 'refund', reason: 'Nothing reached the client' },
+      { headers: { 'idempotency-key': `finish-po-again-${inside}` } },
+    );
+    expect(again.status).toBeGreaterThanOrEqual(400);
+    const balance = await ctx.db.db.execute<{ balance: string }>(
+      sql`SELECT balance FROM wallets WHERE user_id = ${insideClient} AND currency = 'USD'`,
+    );
+    expect(balance.rows[0].balance).toBe('100.00000000');
   });
 
   it('requires a note worth reading', async () => {

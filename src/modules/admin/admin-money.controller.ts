@@ -58,6 +58,7 @@ import {
   DepositRejectDto,
   ResolveAttentionDto,
   FinishFlaggedDepositDto,
+  FinishFlaggedPayoutDto,
   WithdrawalRejectDto,
 } from './dto/requests/money.dto';
 import {
@@ -69,6 +70,7 @@ import {
   WithdrawalRowDto,
   AttentionResolvedDto,
   FlaggedDepositFinishedDto,
+  FlaggedPayoutFinishedDto,
   TradingAccountFundResultDto,
   WalletCreditResultDto,
 } from './dto/responses.dto';
@@ -1069,5 +1071,42 @@ export class AdminMoneyController {
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
     return this.money.finishFlaggedDeposit(id, req.admin, dto.decision, dto.reason);
+  }
+
+  /**
+   * FINISH A FLAGGED PAYOUT (0174) — the one the engine will not finish on its
+   * own: the provider reported it paid to another destination, or several of
+   * its records could be it. A person checks the provider's dashboard, then
+   * marks it paid (with what reached the client) or refunds the client.
+   */
+  @Patch('transactions/:id/attention/finish-payout')
+  @Idempotent()
+  @ApiHeader({
+    name: IDEMPOTENCY_HEADER,
+    required: true,
+    description: 'A unique value per intended action (PLATFORM-CONVENTIONS R-5.2).',
+  })
+  @AnnouncesChange('withdrawals')
+  @UseGuards(PermissionsGuard)
+  // Completing or unwinding a payout is the settle key's (R-5.4).
+  @RequirePermissions('withdrawals.settle')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Mark a flagged provider payout paid, or refund the client',
+    description:
+      'For an approved payout the provider holds and the engine flagged for a person. `paid` ' +
+      'settles it with the reference of the payment that reached the client; `refund` fails it ' +
+      'and returns the amount to their wallet. Refuses a payout that is no longer flagged, or ' +
+      'one that never reached the provider (resend or cancel that instead).',
+  })
+  @ApiOkResponse({ type: FlaggedPayoutFinishedDto })
+  @ScopedToClients('Checks the withdrawal’s owner; out-of-scope 404s like a missing one.')
+  @Audited('withdrawal.finish_paid')
+  finishFlaggedPayout(
+    @Param('id', UuidParam) id: string,
+    @Body() dto: FinishFlaggedPayoutDto,
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+  ) {
+    return this.money.finishFlaggedPayout(id, req.admin, dto.decision, dto.reason, dto.reference);
   }
 }

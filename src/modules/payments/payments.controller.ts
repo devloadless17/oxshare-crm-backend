@@ -44,7 +44,12 @@ import { TransactionsService } from './transactions.service';
 import { transactionView } from './transaction-view';
 import { transferView } from './transfer-view';
 import { RequestWithdrawalDto, TransactionDto, WithdrawalMethodDto } from './dto/withdrawal.dto';
-import { DepositRequestDto, OfflineDepositDto, RequestDepositDto } from './dto/deposit.dto';
+import {
+  DepositRequestDto,
+  DepositStateDto,
+  OfflineDepositDto,
+  RequestDepositDto,
+} from './dto/deposit.dto';
 import {
   ListTransactionsQueryDto,
   TransactionPageDto,
@@ -173,6 +178,7 @@ export class PaymentsController {
   @UseGuards(KycVerifiedGuard)
   @ApiCookieAuth()
   @ApiOperation({ summary: "The current state of one of the caller's own gateway deposits" })
+  @ApiOkResponse({ type: DepositStateDto })
   depositStatus(
     @Param('reference') reference: string,
     @Query('method') method: string | undefined,
@@ -192,6 +198,7 @@ export class PaymentsController {
       'Safe to call repeatedly: settlement is idempotent, so this and the provider callback ' +
       "converge on the same outcome whichever arrives first. Only the deposit's owner may ask.",
   })
+  @ApiOkResponse({ type: DepositStateDto })
   settleDeposit(
     @Param('reference') reference: string,
     @Query('method') method: string | undefined,

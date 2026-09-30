@@ -503,6 +503,8 @@ describe('by-id routes answer 404 for an out-of-scope client, never 403', () => 
       'a transaction id — withdrawal-desk-scope.spec.ts (the same handler as rival-submit)',
     'PATCH /admin/transactions/:id/attention/finish-deposit':
       'a transaction id, resolved to its owner — attention-resolve.spec.ts drives it out of scope',
+    'PATCH /admin/transactions/:id/attention/finish-payout':
+      'a transaction id, resolved to its owner — attention-resolve.spec.ts drives it out of scope',
     'POST /admin/transfers/:id/abandon': 'a transfer id',
     'PATCH /admin/ib/applications/:id/approve': 'an application id — ib-applications.spec.ts',
     'PATCH /admin/ib/applications/:id/reject': 'an application id — ib-applications.spec.ts',

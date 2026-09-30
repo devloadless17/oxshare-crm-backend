@@ -26,7 +26,7 @@ import {
 import { WalletService } from '../../wallet/wallet.service';
 import { money, toDecimal } from '../../wallet/money';
 import { CurrenciesService } from '../../currencies/currencies.service';
-import { TransactionsService } from '../transactions.service';
+import { TransactionsService, depositStateOf } from '../transactions.service';
 import { PaymentMethodsService } from '../payment-methods.service';
 import { PaymentProviderRegistry } from '../providers/payment-provider-registry';
 import {
@@ -53,6 +53,15 @@ const STALE_AFTER_MS = 7 * 24 * 60 * 60_000;
 const LATE_WATCH_MS = 30 * 24 * 60 * 60_000;
 const LATE_RECHECK_MS = 60 * 60_000;
 const BATCH = 50;
+
+/**
+ * What a client reads on a hosted deposit the desk closed without credit. The
+ * desk's reason is an internal finding ("3pay returned it to the sender") and
+ * is kept in the audit log, never shown to the client.
+ */
+export const CLIENT_SAFE_DEPOSIT_CLOSED =
+  'This deposit was closed after a check and nothing was credited. If you sent money for it, ' +
+  'contact support with your reference.';
 
 /**
  * THE HOSTED-DEPOSIT ENGINE — every deposit a client pays on a provider's own
@@ -113,13 +122,15 @@ export class HostedDepositsService {
     method: string | undefined,
     reference: string,
     opts: { ownerId?: number; source?: ProviderEventSource } = {},
-  ): Promise<{ state: string }> {
+  ): Promise<ReturnType<typeof depositStateOf>> {
     const tx = await this.transactions.findDepositByReference(method, reference, opts.ownerId);
     if (!tx) throw new NotFoundError('No deposit matches that reference.');
     if (opts.ownerId !== undefined && tx.userId !== opts.ownerId) {
       throw new NotFoundError('No deposit matches that reference.');
     }
-    return this.settleRow(tx, opts.source ?? 'poll');
+    await this.settleRow(tx, opts.source ?? 'poll');
+    // Re-read: settling may have changed the amount to what arrived.
+    return depositStateOf(await this.transactions.getById(tx.id));
   }
 
   /**
@@ -591,7 +602,9 @@ export class HostedDepositsService {
           settledAt: new Date(),
           needsAttention: false,
           attentionReason: null,
-          rejectionReason: reason,
+          // The CLIENT reads this on their transaction; the desk's own finding
+          // stays in the audit row below — it was written for colleagues.
+          rejectionReason: CLIENT_SAFE_DEPOSIT_CLOSED,
           reviewedBy: actor.id,
           reviewedAt: new Date(),
         })
