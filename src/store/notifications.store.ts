@@ -7,6 +7,7 @@ import {
   inArray,
   isNotNull,
   isNull,
+  gte,
   lte,
   ne,
   sql,
@@ -317,7 +318,12 @@ export class NotificationsStore {
   /** The feed, newest first, keyset-paged (R-2.4). */
   async findPage(
     recipient: NotificationRecipient,
-    filter: { cursor?: CursorPosition; limit?: number; unreadOnly?: boolean } = {},
+    filter: {
+      cursor?: CursorPosition;
+      limit?: number;
+      unreadOnly?: boolean;
+      readOnly?: boolean;
+    } = {},
   ): Promise<CursorPage<AppNotification>> {
     const limit = pageSize(filter.limit);
 
@@ -326,6 +332,7 @@ export class NotificationsStore {
       eq(notifications.recipientId, String(recipient.id)),
     ];
     if (filter.unreadOnly) conditions.push(isNull(notifications.readAt));
+    else if (filter.readOnly) conditions.push(isNotNull(notifications.readAt));
     if (filter.cursor) conditions.push(this.after(filter.cursor));
 
     const rows = await this.db
@@ -410,8 +417,11 @@ export class NotificationsStore {
    * landing between the panel rendering and this request would be marked read
    * unseen — the portal marks what it displays, so that race is its ordinary
    * case, not an edge.
+   *
+   * `from` is the OLDEST row shown. The panel loads one page, so without it an
+   * unread row beyond that page would be marked read without ever being seen.
    */
-  async markAllRead(recipient: NotificationRecipient, upTo?: Date): Promise<number> {
+  async markAllRead(recipient: NotificationRecipient, upTo?: Date, from?: Date): Promise<number> {
     const updated = await this.db
       .update(notifications)
       .set({ readAt: sql`now()` })
@@ -421,6 +431,7 @@ export class NotificationsStore {
           eq(notifications.recipientId, String(recipient.id)),
           isNull(notifications.readAt),
           upTo ? lte(notifications.createdAt, upTo) : undefined,
+          from ? gte(notifications.createdAt, from) : undefined,
         ),
       )
       .returning({ id: notifications.id });

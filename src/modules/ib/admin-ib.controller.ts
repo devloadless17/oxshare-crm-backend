@@ -29,7 +29,7 @@ import {
   IB_PARTNER_SORT_COLUMNS,
 } from '../../store/ib.store';
 import { ibAccrualKindEnum, ibAccrualStatusEnum } from '../../database/schema';
-import { enumQuery } from '../../common/query-params';
+import { enumQuery, uuidQuery } from '../../common/query-params';
 import { ClientRefPipe } from '../../common/client-ref.pipe';
 import { AdminExportService } from '../admin/admin-export.service';
 import { AdminAuditService } from '../admin/admin-audit.service';
@@ -117,6 +117,14 @@ export class AdminIbController {
   @ApiQuery({ name: 'limit', required: false })
   @ApiQuery({ name: 'sort', required: false, enum: Object.keys(IB_APPLICATION_SORT_COLUMNS) })
   @ApiQuery({ name: 'order', required: false, enum: ['asc', 'desc'] })
+  @ApiQuery({
+    name: 'id',
+    required: false,
+    description:
+      'One application by its uuid — where a notification deep link lands. AND-ed ' +
+      "with every other filter and the reader's scope, so a record outside it answers an " +
+      'empty page, like any filtered-out row. No status is implied.',
+  })
   @ScopedToClients('IbStore.findPageWithUsers applies the predicate to ib_applications.user_id.')
   async list(
     @Req() req: Request & { admin: AuthenticatedAdmin },
@@ -126,9 +134,11 @@ export class AdminIbController {
     @Query('limit') limit?: string,
     @Query('sort') sort?: string,
     @Query('order') order?: string,
+    @Query('id') id?: string,
   ) {
     const result = await this.applications.list(
       {
+        id: uuidQuery(id, 'id'),
         // `ib_application_status` is a Postgres enum, so an unrecognised value
         // would error in the database rather than at the edge.
         status: parseStatus(status),
@@ -338,6 +348,14 @@ export class AdminIbController {
   })
   @ApiQuery({ name: 'sort', required: false, enum: Object.keys(IB_ACCRUAL_SORT_COLUMNS) })
   @ApiQuery({ name: 'order', required: false, enum: ['asc', 'desc'] })
+  @ApiQuery({
+    name: 'id',
+    required: false,
+    description:
+      'One accrual by its uuid — where a notification deep link lands. AND-ed ' +
+      "with every other filter and the reader's scope, so a record outside it answers an " +
+      'empty page, like any filtered-out row. No status is implied.',
+  })
   @ScopedToClients(
     'IbStore.findAccrualsPage applies the predicate to the row BENEFICIARY — ' +
       'ib_accruals.client_user_id on a rebate, ib_user_id on a commission. Not ib_user_id ' +
@@ -355,9 +373,11 @@ export class AdminIbController {
     @Query('kind') kind?: string,
     @Query('sort') sort?: string,
     @Query('order') order?: string,
+    @Query('id') id?: string,
   ) {
     const result = await this.applications.listAccruals(
       {
+        id: uuidQuery(id, 'id'),
         page: parsePositive(page),
         limit: parsePositive(limit),
         /*

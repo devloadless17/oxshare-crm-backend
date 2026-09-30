@@ -524,6 +524,8 @@ export class IbApplicationsService {
    */
   async list(
     filter: {
+      /** One application by its uuid — see the store. */
+      id?: string;
       status?: IbApplicationStatus;
       page?: number;
       limit?: number;
@@ -537,6 +539,7 @@ export class IbApplicationsService {
     const page = Math.max(1, filter.page ?? 1);
     const limit = Math.min(100, Math.max(1, filter.limit ?? 20));
     const result = await this.ib.findPageWithUsers({
+      id: filter.id,
       status: filter.status,
       page,
       limit,
@@ -1326,6 +1329,8 @@ export class IbApplicationsService {
    */
   listAccruals(
     filter: {
+      /** One accrual by its uuid — see the store. */
+      id?: string;
       page?: number;
       limit?: number;
       sort?: string;
@@ -1345,6 +1350,7 @@ export class IbApplicationsService {
       page,
       limit,
       scope,
+      id: filter.id,
       ibUserId: filter.ibUserId,
       clientUserId: filter.clientUserId,
       q: filter.q,

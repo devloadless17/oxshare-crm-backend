@@ -107,6 +107,10 @@ const PAYOUT_EVENT_OUTCOMES: Record<
   },
 };
 
+/** What a client is told when Rival refuses or cancels an approved payout. */
+export const CLIENT_SAFE_PROVIDER_REFUSAL =
+  'The payment provider could not complete this withdrawal.';
+
 @Injectable()
 export class RivalWithdrawalsService {
   private readonly logger = new Logger(RivalWithdrawalsService.name);
@@ -402,12 +406,19 @@ export class RivalWithdrawalsService {
       case 'cancelled': {
         if (tx.state === 'failure') return 'duplicate';
         if (tx.state !== 'approved') return this.flagDisagreement(tx.id, tx.state, event);
-        const reason =
-          payload.adminNotes?.trim() ||
-          (event === 'rejected'
-            ? 'Rejected by the payment platform.'
-            : 'Cancelled on the payment platform.');
-        await this.refundBySystem(tx.id, reason, event);
+        /*
+         * `adminNotes` is Rival's OPERATOR note ("AML flag, matches watchlist")
+         * and must never reach the client: the stored rejection reason, the
+         * client's notification and the email all carry a fixed, client-safe
+         * sentence. The note is kept for the desk: `provider_note` (0172,
+         * admin-only) and the audit row.
+         */
+        await this.refundBySystem(
+          tx.id,
+          CLIENT_SAFE_PROVIDER_REFUSAL,
+          event,
+          payload.adminNotes?.trim() || null,
+        );
         return 'applied';
       }
     }
@@ -472,6 +483,7 @@ export class RivalWithdrawalsService {
     txId: string,
     reason: string,
     event: 'rejected' | 'cancelled',
+    providerNote: string | null,
   ): Promise<void> {
     const row = await this.transactions.markFailed(
       txId,
@@ -486,7 +498,13 @@ export class RivalWithdrawalsService {
             action: 'withdrawal.rival.reject',
             subjectType: 'transaction',
             subjectId: txId,
-            details: { amount: failed.amount, currency: failed.currency, reason, event },
+            details: {
+              amount: failed.amount,
+              currency: failed.currency,
+              reason,
+              event,
+              providerNote,
+            },
           },
           tx,
         );
@@ -504,6 +522,7 @@ export class RivalWithdrawalsService {
           tx,
         );
       },
+      providerNote,
     );
     void this.emailDecision(row, 'rejected', reason);
     /*

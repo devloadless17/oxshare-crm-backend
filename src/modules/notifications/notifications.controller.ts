@@ -46,11 +46,19 @@ export class NotificationsController {
   @ApiQuery({ name: 'limit', required: false })
   @ApiQuery({ name: 'cursor', required: false, description: 'Opaque keyset cursor (R-2.4).' })
   @ApiQuery({ name: 'unread', required: false, description: "Pass 'true' to see only unread." })
+  @ApiQuery({
+    name: 'read',
+    required: false,
+    description:
+      "Pass 'true' to see only what was already seen — the portal's Earlier tab, paged on its own " +
+      'so it never mixes with New.',
+  })
   list(
     @Req() req: Request & { user: User },
     @Query('limit') limit?: string,
     @Query('cursor') cursor?: string,
     @Query('unread') unread?: string,
+    @Query('read') read?: string,
   ) {
     return this.notifications.list(
       { kind: 'client', id: req.user.id },
@@ -58,6 +66,7 @@ export class NotificationsController {
         limit: limit ? Number.parseInt(limit, 10) : undefined,
         cursor: cursor ? decodeCursor(cursor) : undefined,
         unreadOnly: unread === 'true',
+        readOnly: read === 'true',
       },
     );
   }
@@ -95,6 +104,7 @@ export class NotificationsController {
       updated: await this.notifications.markAllRead(
         { kind: 'client', id: req.user.id },
         body.upTo ? new Date(body.upTo) : undefined,
+        body.from ? new Date(body.from) : undefined,
       ),
     };
   }

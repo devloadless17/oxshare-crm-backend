@@ -52,6 +52,15 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "read",
+            "required": false,
+            "in": "query",
+            "description": "Pass 'true' to see only what was already seen — the portal's Earlier tab, paged on its own so it never mixes with New.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -2447,6 +2456,15 @@
               ],
               "type": "string"
             }
+          },
+          {
+            "name": "id",
+            "required": false,
+            "in": "query",
+            "description": "One application by its uuid — where a notification deep link lands. AND-ed with every other filter and the reader's scope, so a record outside it answers an empty page, like any filtered-out row. No status is implied.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -2710,6 +2728,15 @@
                 "asc",
                 "desc"
               ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "required": false,
+            "in": "query",
+            "description": "One accrual by its uuid — where a notification deep link lands. AND-ed with every other filter and the reader's scope, so a record outside it answers an empty page, like any filtered-out row. No status is implied.",
+            "schema": {
               "type": "string"
             }
           }
@@ -10544,6 +10571,15 @@
               ],
               "type": "string"
             }
+          },
+          {
+            "name": "id",
+            "required": false,
+            "in": "query",
+            "description": "One record by its uuid — where a notification deep link lands. AND-ed with every other filter and the reader's scope, so a record outside it answers an empty page, like any filtered-out row. No state is implied: a handled record is still returned.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -11581,6 +11617,15 @@
               ],
               "type": "string"
             }
+          },
+          {
+            "name": "id",
+            "required": false,
+            "in": "query",
+            "description": "One movement by its row uuid (a deposit’s transaction, a transfer’s transfer) — where a notification deep link lands. AND-ed with every other filter and the reader's scope, so a record outside it answers an empty result. No state is implied.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -11720,6 +11765,15 @@
               ],
               "type": "string"
             }
+          },
+          {
+            "name": "id",
+            "required": false,
+            "in": "query",
+            "description": "One movement by its row uuid (a deposit’s transaction, a transfer’s transfer) — where a notification deep link lands. AND-ed with every other filter and the reader's scope, so a record outside it answers an empty result. No state is implied.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -11856,6 +11910,15 @@
               "enum": [
                 "desk"
               ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "required": false,
+            "in": "query",
+            "description": "One movement by its row uuid (a deposit’s transaction, a transfer’s transfer) — where a notification deep link lands. AND-ed with every other filter and the reader's scope, so a record outside it answers an empty result. No state is implied.",
+            "schema": {
               "type": "string"
             }
           },
@@ -12704,6 +12767,11 @@
             "type": "string",
             "description": "The `createdAt` of the newest notification the reader was shown.",
             "example": "2026-09-25T10:15:00.000Z"
+          },
+          "from": {
+            "type": "string",
+            "description": "The `createdAt` of the oldest notification the reader was shown.",
+            "example": "2026-09-20T08:00:00.000Z"
           }
         }
       },
@@ -22816,6 +22884,11 @@
             "nullable": true,
             "description": "WHY the row needs attention, in words the operator can act on. Written whenever rivalNeedsAttention flips true; null once a retry lands or the flag was never raised."
           },
+          "providerNote": {
+            "type": "string",
+            "nullable": true,
+            "description": "The payment provider OPERATOR’s own note on a refused payout (Rival adminNotes). Admin-only: the client is told a fixed sentence in rejectionReason. Null when none."
+          },
           "user": {
             "$ref": "#/components/schemas/WithdrawalUserDto"
           },
@@ -23543,6 +23616,11 @@
             "type": "string",
             "nullable": true,
             "description": "WHY it needs attention, in words the operator can act on. Null when not flagged."
+          },
+          "providerNote": {
+            "type": "string",
+            "nullable": true,
+            "description": "The payment provider operator’s own note on a refused payout. Admin-only; the client sees a fixed sentence. Null on every other row."
           },
           "user": {
             "$ref": "#/components/schemas/WithdrawalUserDto"

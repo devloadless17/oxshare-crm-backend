@@ -223,6 +223,23 @@ describe('read markers', () => {
     const unread = await store.findPage(recipient, { unreadOnly: true });
     expect(unread.items.map((n) => n.kind)).toEqual(['arrived-later']);
   });
+
+  it('markAllRead never marks before `from` — an unread row past the first page stays unread', async () => {
+    const recipient: NotificationRecipient = { kind: 'client', id: 1000077 };
+    await store.insert({ recipient, kind: 'beyond-the-page', params: {} });
+    const [old] = (await store.findPage(recipient)).items;
+    await ctx.db.execute(
+      sql`UPDATE notifications SET created_at = now() - interval '1 hour' WHERE id = ${old.id}`,
+    );
+    await store.insert({ recipient, kind: 'shown', params: {} });
+    const [shown] = (await store.findPage(recipient)).items;
+
+    expect(
+      await store.markAllRead(recipient, new Date(shown.createdAt), new Date(shown.createdAt)),
+    ).toBe(1);
+    const unread = await store.findPage(recipient, { unreadOnly: true });
+    expect(unread.items.map((n) => n.kind)).toEqual(['beyond-the-page']);
+  });
 });
 
 describe('keyset paging', () => {

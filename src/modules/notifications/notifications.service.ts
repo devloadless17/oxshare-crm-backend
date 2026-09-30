@@ -203,7 +203,12 @@ export class NotificationsService implements NotificationDispatchPort {
 
   async list(
     recipient: NotificationRecipient,
-    filter: { cursor?: CursorPosition; limit?: number; unreadOnly?: boolean } = {},
+    filter: {
+      cursor?: CursorPosition;
+      limit?: number;
+      unreadOnly?: boolean;
+      readOnly?: boolean;
+    } = {},
   ): Promise<CursorPage<AppNotification>> {
     return this.store.findPage(recipient, filter);
   }
@@ -216,8 +221,8 @@ export class NotificationsService implements NotificationDispatchPort {
     return this.store.markRead(recipient, id);
   }
 
-  async markAllRead(recipient: NotificationRecipient, upTo?: Date): Promise<number> {
-    return this.store.markAllRead(recipient, upTo);
+  async markAllRead(recipient: NotificationRecipient, upTo?: Date, from?: Date): Promise<number> {
+    return this.store.markAllRead(recipient, upTo, from);
   }
 
   // ── The admin read API: tasks, re-checked against the session every time ──

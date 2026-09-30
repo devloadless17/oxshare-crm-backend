@@ -226,6 +226,14 @@ export class AdminMoneyController {
     description: 'amount sorts on the NUMERIC column in SQL — never cast, never in JS (§6).',
   })
   @ApiQuery({ name: 'order', required: false, enum: ['asc', 'desc'] })
+  @ApiQuery({
+    name: 'id',
+    required: false,
+    description:
+      'One record by its uuid — where a notification deep link lands. AND-ed with every other ' +
+      "filter and the reader's scope, so a record outside it answers an empty page, like any " +
+      'filtered-out row. No state is implied: a handled record is still returned.',
+  })
   @ScopedToClients(
     'TransactionsService.listForAdmin applies the predicate to transactions.user_id.',
   )
@@ -238,9 +246,11 @@ export class AdminMoneyController {
     @Query('cursor') cursor?: string,
     @Query('sort') sort?: string,
     @Query('order') order?: string,
+    @Query('id') id?: string,
   ) {
     return this.money.listWithdrawals(
       {
+        id: uuidQuery(id, 'id'),
         // `transactions.service.ts` compared this against a Postgres enum column
         // behind a cast, so an unrecognised value came back as a 500 carrying a
         // database error. Checked against the schema's own value list instead.

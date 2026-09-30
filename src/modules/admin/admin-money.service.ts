@@ -790,6 +790,8 @@ export class AdminMoneyService {
   // Every transition here moves client money, so every one is audited.
   async listWithdrawals(
     query: {
+      /** One withdrawal by its uuid (a notification's link) — see `listForAdmin`. */
+      id?: string;
       state?: string;
       /** Free text over the client's email and name — see `listForAdmin`. */
       q?: string;
@@ -820,6 +822,7 @@ export class AdminMoneyService {
 
     const page = await this.transactions.listForAdmin({
       scope: actor.clientScope,
+      id: query.id,
       state: query.state,
       q: query.q,
       page: parseInt(query.page ?? '1', 10) || 1,

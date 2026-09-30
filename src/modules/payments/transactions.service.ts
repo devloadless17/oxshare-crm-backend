@@ -101,6 +101,7 @@ interface CombinedRow {
   rival_submitted_at: string | null;
   rival_needs_attention: boolean;
   rival_attention_reason: string | null;
+  provider_note: string | null;
   created_at: string;
   /** Selected by `methodNamesOf`, for the rows a read shows. */
   method_name: string | null;
@@ -167,6 +168,12 @@ export interface AdminMovementsFilter {
    * the provider, and offering Approve on it only earned a refusal.
    */
   deskDecided?: boolean;
+  /**
+   * One movement by its row uuid — where a notification's link lands: a
+   * payment's `transactions.id`, a transfer's `transfers.id`. Applied inside
+   * EACH arm beside the scope, so an out-of-scope id is simply no row.
+   */
+  id?: string;
 }
 
 /**
@@ -204,7 +211,8 @@ interface MovementArm {
  *    own rows instead (see `adminMovements`).
  */
 export function movementTotalsSource(filter: AdminMovementsFilter): 'daily' | 'client' | undefined {
-  if (filter.q?.trim() || filter.attention || filter.deskDecided) return undefined;
+  // One record (`id`) is a live read — no total is kept per row.
+  if (filter.q?.trim() || filter.attention || filter.deskDecided || filter.id) return undefined;
   if (filter.scope.unrestricted && filter.userId === undefined) return 'daily';
   if (!filter.from && !filter.to) return 'client';
   return undefined;
@@ -1169,6 +1177,12 @@ export class TransactionsService {
   }
 
   async listForAdmin(filter: {
+    /**
+     * One withdrawal by its uuid — where a notification's link lands. AND-ed
+     * with the scope below, so an out-of-scope id is an empty page, never a
+     * "it exists elsewhere" answer.
+     */
+    id?: string;
     state?: string;
     page?: number;
     limit?: number;
@@ -1207,6 +1221,7 @@ export class TransactionsService {
     // so it also cannot appear in the per-state counts computed alongside it.
     const scoped = clientScopePredicate(filter.scope ?? UNRESTRICTED, transactions.userId);
     if (scoped) conditions.push(scoped);
+    if (filter.id) conditions.push(eq(transactions.id, filter.id));
     if (filter.state) {
       conditions.push(eq(transactions.state, filter.state as 'pending'));
     }
@@ -1319,6 +1334,7 @@ export class TransactionsService {
         rivalSubmittedAt: transactions.rivalSubmittedAt,
         rivalNeedsAttention: transactions.rivalNeedsAttention,
         rivalAttentionReason: transactions.rivalAttentionReason,
+        providerNote: transactions.providerNote,
         providerCode: transactions.providerCode,
         channelCode: transactions.channelCode,
         providerEnvironment: transactions.providerEnvironment,
@@ -1473,6 +1489,7 @@ export class TransactionsService {
       rivalSubmittedAt: r.rivalSubmittedAt,
       rivalNeedsAttention: r.rivalNeedsAttention,
       rivalAttentionReason: r.rivalAttentionReason,
+      providerNote: r.providerNote,
       user: {
         id: r.userId,
         portalId: r.userPortalId,
@@ -1739,6 +1756,7 @@ export class TransactionsService {
           NULL::timestamptz,                      -- rival_submitted_at
           FALSE,                                  -- rival_needs_attention
           NULL::text,                             -- rival_attention_reason
+          NULL::text,                             -- provider_note
           le.created_at,
           /*
            * NAMED rather than null, unlike the transfer and commission arms.
@@ -1839,6 +1857,7 @@ export class TransactionsService {
           t.rival_submitted_at,
           t.rival_needs_attention,
           t.rival_attention_reason,
+          t.provider_note,
           t.created_at,
           /*
            * The method's NAME is not looked up here: methodNamesOf names the
@@ -1902,6 +1921,7 @@ export class TransactionsService {
           NULL::timestamptz,                      -- rival_submitted_at
           FALSE,                                  -- rival_needs_attention
           NULL::text,                             -- rival_attention_reason
+          NULL::text,                             -- provider_note
           tr.created_at,
           NULL::varchar                           AS arm_method_name,
           'transfer'::text                        AS kind,
@@ -1970,6 +1990,7 @@ export class TransactionsService {
           NULL::timestamptz,                      -- rival_submitted_at
           FALSE,                                  -- rival_needs_attention
           NULL::text,                             -- rival_attention_reason
+          NULL::text,                             -- provider_note
           iwt.created_at,
           NULL::varchar                           AS arm_method_name,
           'commission_transfer'::text             AS kind,
@@ -2278,6 +2299,8 @@ export class TransactionsService {
         if (scoped) conditions.push(scoped);
         // Validated as a Portal ID at the edge.
         if (filter.userId) conditions.push(sql`${owner} = ${filter.userId}::integer`);
+        // Validated as a uuid at the edge; every arm's id column is a uuid.
+        if (filter.id) conditions.push(sql`${id} = ${filter.id}::uuid`);
         if (searched) {
           const byClient = sql`${owner} = ANY(ARRAY(SELECT searched.id FROM searched))`;
           conditions.push(
@@ -2513,6 +2536,7 @@ export class TransactionsService {
       // attention task the admin followed here (0140).
       needsAttention: row.rival_needs_attention,
       attentionReason: row.rival_attention_reason,
+      providerNote: row.provider_note,
       user: {
         id: row.user_id,
         portalId: row.user_portal_id,
@@ -2977,7 +3001,14 @@ export class TransactionsService {
    * an implicit bypass — a callback IS the system acting, and the audit row
    * should say so.
    */
-  async markFailed(id: string, reason: string, actor: Actor, withinTx?: WithinTransaction) {
+  async markFailed(
+    id: string,
+    reason: string,
+    actor: Actor,
+    withinTx?: WithinTransaction,
+    /** A provider operator's note (0172) — admin-only, never the client's reason. */
+    providerNote: string | null = null,
+  ) {
     // Failing a withdrawal RETURNS the money to the client, so it belongs with
     // settlement rather than with approval — it is the settle step's error
     // path, and whoever may complete a payout may also unwind one (R-5.4).
@@ -2986,7 +3017,7 @@ export class TransactionsService {
       const row = await this.transition(
         id,
         'approved',
-        { state: 'failure', rejectionReason: reason, settledAt: new Date() },
+        { state: 'failure', rejectionReason: reason, providerNote, settledAt: new Date() },
         dbTx,
       );
       if (!row) {

@@ -3429,6 +3429,12 @@ export const transactions = pgTable(
      * this submission because X".
      */
     rivalAttentionReason: text('rival_attention_reason'),
+    /**
+     * The payment provider's OPERATOR note on a refused payout (Rival's
+     * `adminNotes`) — admin eyes only (0172). The client is told a fixed
+     * sentence in `rejection_reason`; this is never in `TransactionView`.
+     */
+    providerNote: text('provider_note'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [

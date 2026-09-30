@@ -207,6 +207,11 @@ export class IbStore {
    * predicate is applied here rather than filtered in the controller.
    */
   async findPageWithUsers(filter: {
+    /**
+     * One application by its uuid (a notification's link). AND-ed with the
+     * scope, so an out-of-scope id is an empty page — no existence answer.
+     */
+    id?: string;
     status?: IbApplicationStatus;
     page: number;
     limit: number;
@@ -253,6 +258,7 @@ export class IbStore {
 
     const where = and(
       filter.status ? eq(ibApplications.status, filter.status) : undefined,
+      filter.id ? eq(ibApplications.id, filter.id) : undefined,
       visible,
       matches,
     );
@@ -632,6 +638,8 @@ export class IbStore {
    * client's rebates from the desk that actually holds that client.
    */
   async findAccrualsPage(filter: {
+    /** One accrual by its uuid, AND-ed with `visible` — see `findPageWithUsers`. */
+    id?: string;
     page: number;
     limit: number;
     scope?: ClientScope;
@@ -723,6 +731,7 @@ export class IbStore {
 
     const where = and(
       visible,
+      ...(filter.id ? [eq(ibAccruals.id, filter.id)] : []),
       ...(filter.ibUserId
         ? [eq(ibAccruals.ibUserId, filter.ibUserId), seesPerson(filter.ibUserId)]
         : []),
