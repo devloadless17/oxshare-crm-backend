@@ -57,6 +57,8 @@ import {
   AbandonTransferDto,
   DepositRejectDto,
   ResolveAttentionDto,
+  FinishFlaggedDepositDto,
+  FinishFlaggedPayoutDto,
   WithdrawalRejectDto,
 } from './dto/requests/money.dto';
 import {
@@ -67,6 +69,8 @@ import {
   DepositDecisionDto,
   WithdrawalRowDto,
   AttentionResolvedDto,
+  FlaggedDepositFinishedDto,
+  FlaggedPayoutFinishedDto,
   TradingAccountFundResultDto,
   WalletCreditResultDto,
 } from './dto/responses.dto';
@@ -736,7 +740,12 @@ export class AdminMoneyController {
     return this.money.cancelWithdrawal(id, req.admin, dto.reason, dto.reasonId);
   }
 
-  @Post('withdrawals/:id/rival-submit')
+  /*
+   * RESEND a payout a person must decide (0173, every provider). The old
+   * `rival-submit` path stays an alias for one release — the console that
+   * predates 0173 still calls it.
+   */
+  @Post(['withdrawals/:id/provider-submit', 'withdrawals/:id/rival-submit'])
   @Idempotent()
   @ApiHeader({
     name: IDEMPOTENCY_HEADER,
@@ -747,21 +756,21 @@ export class AdminMoneyController {
   @RequirePermissions('withdrawals.approve')
   @ApiCookieAuth()
   @ApiOperation({
-    summary: 'Retry submitting an approved withdrawal to the payment platform',
+    summary: 'Resend an approved withdrawal to its payment provider',
     description:
-      'For rows whose submission definitively failed (the desk shows "needs attention"). Safe ' +
-      'under double-click: the claim column admits one in-flight create, and a submission ' +
-      'whose outcome is still unknown is left for reconciliation rather than retried — a ' +
-      'blind retry against a platform with no idempotency key on payouts is a double payment.',
+      'For rows the provider refused, or held nothing for after the adoption window (the desk ' +
+      'shows "needs attention"). Safe under double-click: the claim admits one in-flight create, ' +
+      'and a submission whose outcome is still unknown is left for reconciliation rather than ' +
+      'resent — no provider takes an idempotency key on payouts, so a blind resend pays twice.',
   })
   @ApiOkResponse({ type: WithdrawalRowDto })
   @ScopedToClients('Predicate joins the withdrawal lookup.')
-  @Audited('withdrawal.rival.submit')
-  retryRivalSubmission(
+  @Audited('withdrawal.provider.submit')
+  resendPayout(
     @Param('id', UuidParam) id: string,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
-    return this.money.retryRivalSubmission(id, req.admin);
+    return this.money.resendPayout(id, req.admin);
   }
 
   // ── Ledger (ADM-13) ───────────────────────────────────────────────────────
@@ -1026,5 +1035,78 @@ export class AdminMoneyController {
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
     return this.money.resolveAttention(id, req.admin, dto.note);
+  }
+
+  /**
+   * FINISH A FLAGGED HOSTED DEPOSIT (0173): credit what the provider reported
+   * arrived, or close it with no credit. The two ways a deposit paid on a
+   * provider's page — which the offline desk refuses — can be finished once a
+   * person has decided; "Mark resolved" moves no money, these do.
+   */
+  @Patch('transactions/:id/attention/finish-deposit')
+  @Idempotent()
+  @ApiHeader({
+    name: IDEMPOTENCY_HEADER,
+    required: true,
+    description: 'A unique value per intended action (PLATFORM-CONVENTIONS R-5.2).',
+  })
+  @AnnouncesChange('withdrawals')
+  @UseGuards(PermissionsGuard)
+  // Any-of here; the engine asserts deposits.approve to credit, deposits.reject to close.
+  @RequirePermissions('deposits.approve', 'deposits.reject')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Credit what arrived on a flagged hosted deposit, or close it without credit',
+    description:
+      'For a deposit paid on a provider’s page and flagged for a person. `credit` credits the ' +
+      'amount the provider reported (rounded down to the wallet’s places); `close` credits ' +
+      'nothing. Refuses a deposit that is no longer flagged or already finished.',
+  })
+  @ApiOkResponse({ type: FlaggedDepositFinishedDto })
+  @ScopedToClients('Checks the deposit’s owner; out-of-scope 404s like a missing one.')
+  @Audited('deposit.credit_received')
+  finishFlaggedDeposit(
+    @Param('id', UuidParam) id: string,
+    @Body() dto: FinishFlaggedDepositDto,
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+  ) {
+    return this.money.finishFlaggedDeposit(id, req.admin, dto.decision, dto.reason);
+  }
+
+  /**
+   * FINISH A FLAGGED PAYOUT (0174) — the one the engine will not finish on its
+   * own: the provider reported it paid to another destination, or several of
+   * its records could be it. A person checks the provider's dashboard, then
+   * marks it paid (with what reached the client) or refunds the client.
+   */
+  @Patch('transactions/:id/attention/finish-payout')
+  @Idempotent()
+  @ApiHeader({
+    name: IDEMPOTENCY_HEADER,
+    required: true,
+    description: 'A unique value per intended action (PLATFORM-CONVENTIONS R-5.2).',
+  })
+  @AnnouncesChange('withdrawals')
+  @UseGuards(PermissionsGuard)
+  // Completing or unwinding a payout is the settle key's (R-5.4).
+  @RequirePermissions('withdrawals.settle')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Mark a flagged provider payout paid, or refund the client',
+    description:
+      'For an approved payout the provider holds and the engine flagged for a person. `paid` ' +
+      'settles it with the reference of the payment that reached the client; `refund` fails it ' +
+      'and returns the amount to their wallet. Refuses a payout that is no longer flagged, or ' +
+      'one that never reached the provider (resend or cancel that instead).',
+  })
+  @ApiOkResponse({ type: FlaggedPayoutFinishedDto })
+  @ScopedToClients('Checks the withdrawal’s owner; out-of-scope 404s like a missing one.')
+  @Audited('withdrawal.finish_paid')
+  finishFlaggedPayout(
+    @Param('id', UuidParam) id: string,
+    @Body() dto: FinishFlaggedPayoutDto,
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+  ) {
+    return this.money.finishFlaggedPayout(id, req.admin, dto.decision, dto.reason, dto.reference);
   }
 }

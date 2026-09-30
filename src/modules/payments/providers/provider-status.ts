@@ -117,21 +117,60 @@ export function providerState(input: {
  *   provider_not_configured — its provider is not set up (or cannot be used)
  */
 export type MethodAvailability =
-  'offered' | 'disabled' | 'provider_off' | 'provider_not_configured';
+  | 'offered'
+  | 'disabled'
+  | 'provider_off'
+  | 'provider_not_configured'
+  /** Its provider's network is switched off in this direction (0173). */
+  | 'channel_off';
 
 export const METHOD_AVAILABILITIES: readonly MethodAvailability[] = [
   'offered',
   'disabled',
   'provider_off',
   'provider_not_configured',
+  'channel_off',
 ];
 
+/**
+ * Whether clients actually see a method, and if not, why — the method's own
+ * switch first, then its channel's (0173), then its provider's.
+ */
 export function methodAvailability(
   methodEnabled: boolean,
   provider: ProviderState | undefined,
+  channelOn = true,
 ): MethodAvailability {
   if (!methodEnabled) return 'disabled';
+  if (!channelOn) return 'channel_off';
   if (!provider) return 'provider_not_configured';
   if (provider.usable) return 'offered';
   return provider.status === 'off' ? 'provider_off' : 'provider_not_configured';
+}
+
+/**
+ * A PAYOUT method's availability and who pays it (0168; 0173 adds switches and
+ * `wait` providers). Before 0173 a payout method was offered whenever it was
+ * enabled, because the desk paid an automated one by hand while its provider
+ * could not. That still holds for a provider declaring `whenUnavailable:
+ * 'desk'` (Rival); one declaring `wait` (3pay) is hidden while it cannot pay,
+ * and a switched-off network hides its methods either way.
+ *
+ * `automated` is the channel's provider's `whenUnavailable`, or null for a
+ * route the desk always pays.
+ */
+export function payoutMethodStatus(
+  methodEnabled: boolean,
+  automated: 'desk' | 'wait' | null,
+  provider: ProviderState | undefined,
+  channelOn = true,
+): { availability: MethodAvailability; paidBy: 'provider' | 'desk' } {
+  const providerPays = automated !== null && (provider?.usable ?? false);
+  const paidBy = providerPays || automated === 'wait' ? 'provider' : 'desk';
+  if (!methodEnabled) return { availability: 'disabled', paidBy };
+  if (!channelOn) return { availability: 'channel_off', paidBy };
+  if (automated === 'wait' && !providerPays) {
+    return { availability: methodAvailability(true, provider), paidBy };
+  }
+  return { availability: 'offered', paidBy };
 }

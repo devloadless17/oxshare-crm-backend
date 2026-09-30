@@ -3,7 +3,7 @@ import { legacyRoute } from './support/payment-route';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { actingAs, startHttpTestApp, stopHttpTestApp, type HttpTestContext } from './http-setup';
 import { PasswordService } from '../src/common/security/password.service';
-import { RivalClient } from '../src/modules/payments/rival/rival.client';
+import { RivalClient } from '../src/modules/payments/providers/rival/rival.client';
 import { randomUUID } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 import { admins, roles, transactions, users, wallets } from '../src/database/schema';

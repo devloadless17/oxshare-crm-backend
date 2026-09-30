@@ -143,6 +143,42 @@ export class OfflineDepositDto extends RequestDepositDto {
  * the reference is what ties one incoming payment to one declared deposit
  * without a phone call.
  */
+/**
+ * A hosted deposit's state as its OWNER sees it (0174): the waiting card and
+ * the return page. `amount` is what was CREDITED once it settled — on a
+ * provider that credits what arrived (3pay) it can differ from what was asked,
+ * and the client must be told the real figure, not the one they typed.
+ */
+export class DepositStateDto {
+  @ApiProperty({ enum: ['pending', 'success', 'failure', 'rejected'], example: 'success' })
+  state: string;
+
+  @ApiProperty({
+    type: 'string',
+    example: '25.50000000',
+    description: 'Credited, once it settled; until then, what was asked.',
+  })
+  amount: string;
+
+  @ApiProperty({
+    type: 'string',
+    nullable: true,
+    example: '30.00000000',
+    description: 'What the link asked for, when the credited amount differs from it.',
+  })
+  requestedAmount: string | null;
+
+  @ApiProperty({ example: 'USD' })
+  currency: string;
+
+  @ApiProperty({
+    description:
+      'Still open because a PERSON is checking it (money arrived the provider did not confirm, ' +
+      'a figure it disputes) — not because nothing has arrived.',
+  })
+  underReview: boolean;
+}
+
 export class DepositRequestDto {
   @ApiProperty({ description: 'The transaction id. Also shown on /transactions.' })
   id: string;
@@ -186,4 +222,30 @@ export class DepositRequestDto {
       'that method works.',
   })
   paymentUrl: string | null;
+
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    description:
+      'When the hosted page stops accepting money (ISO), when the provider says — the waiting ' +
+      'card’s countdown (0173). Null when unknown or for a manual method.',
+  })
+  paymentExpiresAt: string | null;
+
+  @ApiProperty({
+    description:
+      'Whether the provider sends the payer back here after paying (0173). False (3pay) means: ' +
+      'open `paymentUrl` in a new tab and keep the client on a live waiting card.',
+  })
+  returnsAfterPayment: boolean;
+
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    example: 'USDT on Tron (TRC20)',
+    description:
+      'What to send when it is not the wallet currency — credited at par. Null when the ' +
+      'client pays in the wallet currency itself.',
+  })
+  payWith: string | null;
 }

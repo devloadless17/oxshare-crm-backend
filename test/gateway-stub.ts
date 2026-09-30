@@ -1,9 +1,9 @@
 import { vi } from 'vitest';
 import { PaymentProviderRegistry } from '../src/modules/payments/providers/payment-provider-registry';
-import { ManualPaymentProvider } from '../src/modules/payments/providers/manual.provider';
-import { RivalPaymentProvider } from '../src/modules/payments/providers/rival.provider';
-import type { RivalClient } from '../src/modules/payments/rival/rival.client';
-import type { RivalConfigService } from '../src/modules/payments/rival/rival-config.service';
+import { ManualPaymentProvider } from '../src/modules/payments/providers/manual/manual.provider';
+import { RivalPaymentProvider } from '../src/modules/payments/providers/rival/rival.provider';
+import type { RivalClient } from '../src/modules/payments/providers/rival/rival.client';
+import type { RivalConfigService } from '../src/modules/payments/providers/rival/rival-config.service';
 
 /**
  * The payment provider registry the money specs run against (0168).
@@ -19,6 +19,7 @@ import type { RivalConfigService } from '../src/modules/payments/rival/rival-con
  *                   usable, answered by the real adapter.
  *   startPayment  — a hosted payment opened: `{ paymentUrl, externalId }`.
  *   checkPayment  — what the provider says it is now.
+ *   recoverPayment / refreshPayment — the sweep's repairs (0173).
  */
 export function gatewayStub() {
   const rivalUsable = vi.fn().mockResolvedValue(false);
@@ -39,6 +40,9 @@ export function gatewayStub() {
       rawStatus: 'PENDING',
       needsAttention: false,
     }),
+    // A start whose answer was lost, found or re-made (0173); null = none.
+    recoverPayment: vi.fn().mockResolvedValue(null),
+    refreshPayment: vi.fn().mockResolvedValue(undefined),
   });
 }
 

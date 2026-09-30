@@ -7,8 +7,8 @@ import { sealSecret } from '../../common/security/secret-box';
 import { AppSettingsStore } from '../../store/app-settings.store';
 import { AdminAuditService } from '../admin/admin-audit.service';
 import type { Actor } from '../../common/security/actor';
-import { RivalClient } from '../payments/rival/rival.client';
-import { RivalConfigService } from '../payments/rival/rival-config.service';
+import { RivalClient } from '../payments/providers/rival/rival.client';
+import { RivalConfigService } from '../payments/providers/rival/rival-config.service';
 import type {
   RivalSettingsDto,
   RivalTestResultDto,

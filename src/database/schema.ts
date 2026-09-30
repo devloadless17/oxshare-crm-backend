@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 import {
   bigint,
+  bigserial,
   boolean,
   char,
   check,
@@ -2360,6 +2361,25 @@ export const paymentProviders = pgTable(
     lastCheckAt: timestamp('last_check_at', { withTimezone: true }),
     lastCheckOk: boolean('last_check_ok'),
     lastCheckMessage: varchar('last_check_message', { length: 500 }),
+    /**
+     * The unmatched-records audit's cursor (0174): the provider's records up to
+     * here have been judged. Null until the audit first runs.
+     */
+    recordsAuditedUntil: timestamp('records_audited_until', { withTimezone: true }),
+    /*
+     * The provider's balance against our books (0175): where the books start,
+     * and the last comparison — what the provider held, what our books said,
+     * since when they disagree, and when a person was last paged about it.
+     */
+    /** The asset its balance is counted in ("USDT"), as it reports it. */
+    booksAsset: varchar('books_asset', { length: 40 }),
+    booksBaseline: numeric('books_baseline', { precision: 28, scale: 8 }),
+    booksBaselineAt: timestamp('books_baseline_at', { withTimezone: true }),
+    booksCheckedAt: timestamp('books_checked_at', { withTimezone: true }),
+    booksAvailable: numeric('books_available', { precision: 28, scale: 8 }),
+    booksExpected: numeric('books_expected', { precision: 28, scale: 8 }),
+    booksDriftSince: timestamp('books_drift_since', { withTimezone: true }),
+    booksAlertedAt: timestamp('books_alerted_at', { withTimezone: true }),
     updatedBy: uuid('updated_by'),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -2367,6 +2387,141 @@ export const paymentProviders = pgTable(
     check('payment_providers_environment_ck', sql`${t.environment} IN ('live', 'sandbox')`),
     check('payment_providers_config_object_ck', sql`jsonb_typeof(${t.config}) = 'object'`),
     check('payment_providers_secrets_object_ck', sql`jsonb_typeof(${t.secrets}) = 'object'`),
+  ],
+);
+
+/**
+ * A CHANNEL SWITCH — one of a provider's networks on or off, per direction
+ * (0173; the owner, 30 Sep 2026: "enable disable the trc or the erc if needed").
+ *
+ * No row means ON: a channel the adapter declares is usable until an admin
+ * says otherwise, with a reason. Switched off, its methods leave the client's
+ * lists and new movements on it are refused; movements already under way —
+ * a paid deposit link, a payout already sent — still finish, because a switch
+ * must never strand money that is moving. Provider-neutral: Rival's Whish and
+ * 3pay's TRC20/ERC20 are all switched here.
+ */
+export const paymentProviderChannels = pgTable(
+  'payment_provider_channels',
+  {
+    providerCode: varchar('provider_code', { length: 40 })
+      .notNull()
+      .references(() => paymentProviders.code, { onDelete: 'restrict' }),
+    /** `deposit` or `payout` — a channel's identity includes its direction. */
+    direction: varchar('direction', { length: 10 }).notNull(),
+    channelCode: varchar('channel_code', { length: 40 }).notNull(),
+    enabled: boolean('enabled').notNull().default(true),
+    /** Why it is off — required to switch one off, shown on the desk and the methods. */
+    reason: text('reason'),
+    updatedBy: uuid('updated_by'),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.providerCode, t.direction, t.channelCode] }),
+    check('payment_provider_channels_direction_ck', sql`${t.direction} IN ('deposit', 'payout')`),
+    check(
+      'payment_provider_channels_reason_ck',
+      sql`${t.enabled} OR length(btrim(coalesce(${t.reason}, ''))) > 0`,
+    ),
+  ],
+);
+
+/**
+ * A movement a provider recorded that NO transaction here explains (0174) — a
+ * payout made by hand in the provider's dashboard, a deposit on a link this
+ * platform never made, a payout given up on that appeared after all. Filed by
+ * the core's unmatched-records audit; a person matches it or acknowledges it
+ * as a company movement, with a note.
+ */
+/**
+ * What the platform asked a provider and what it answered, and every delivery a
+ * provider made to us (0175) — kept 90 days, append-only (3pay's guide, §10).
+ * Never a credential or a webhook signature.
+ */
+export const paymentProviderExchanges = pgTable(
+  'payment_provider_exchanges',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    providerCode: varchar('provider_code', { length: 40 })
+      .notNull()
+      .references(() => paymentProviders.code, { onDelete: 'restrict' }),
+    /** `outbound` (we called it) or `inbound` (it called us). */
+    direction: varchar('direction', { length: 10 }).notNull(),
+    method: varchar('method', { length: 10 }).notNull(),
+    path: varchar('path', { length: 512 }).notNull(),
+    requestBody: text('request_body'),
+    /** The answer's HTTP status; null when no answer came. */
+    status: integer('status'),
+    responseBody: text('response_body'),
+    error: varchar('error', { length: 500 }),
+    durationMs: integer('duration_ms'),
+    reference: varchar('reference', { length: 128 }),
+    occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check(
+      'payment_provider_exchanges_direction_ck',
+      sql`${t.direction} IN ('outbound', 'inbound')`,
+    ),
+    index('payment_provider_exchanges_provider_id_idx').on(t.providerCode, t.id.desc()),
+    index('payment_provider_exchanges_occurred_at_idx').on(t.occurredAt),
+    index('payment_provider_exchanges_reference_idx')
+      .on(t.reference)
+      .where(sql`${t.reference} IS NOT NULL`),
+  ],
+);
+
+export const paymentProviderUnmatchedRecords = pgTable(
+  'payment_provider_unmatched_records',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    providerCode: varchar('provider_code', { length: 40 })
+      .notNull()
+      .references(() => paymentProviders.code, { onDelete: 'restrict' }),
+    /** `payment` (money in) or `payout` (money out). */
+    subject: varchar('subject', { length: 10 }).notNull(),
+    providerId: varchar('provider_id', { length: 128 }).notNull(),
+    rawStatus: varchar('raw_status', { length: 40 }).notNull(),
+    amount: numeric('amount', { precision: 28, scale: 8 }),
+    asset: varchar('asset', { length: 40 }),
+    counterparty: varchar('counterparty', { length: 255 }),
+    reference: varchar('reference', { length: 255 }),
+    /** A deposit's NET — what reached the provider balance (0175, for the books). */
+    netAmount: numeric('net_amount', { precision: 28, scale: 8 }),
+    occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull(),
+    /**
+     * When it moved the provider's balance, where that is not when it was
+     * created (a deposit: its confirmation). The books count it from here (0175).
+     */
+    movedAt: timestamp('moved_at', { withTimezone: true }),
+    foundAt: timestamp('found_at', { withTimezone: true }).notNull().defaultNow(),
+    matchedTransactionId: uuid('matched_transaction_id').references(() => transactions.id, {
+      onDelete: 'restrict',
+    }),
+    matchedAt: timestamp('matched_at', { withTimezone: true }),
+    acknowledgedBy: uuid('acknowledged_by'),
+    acknowledgedAt: timestamp('acknowledged_at', { withTimezone: true }),
+    acknowledgement: text('acknowledgement'),
+  },
+  (t) => [
+    check(
+      'payment_provider_unmatched_records_subject_ck',
+      sql`${t.subject} IN ('payment', 'payout')`,
+    ),
+    check(
+      'payment_provider_unmatched_records_ack_ck',
+      sql`(${t.acknowledgedAt} IS NULL AND ${t.acknowledgedBy} IS NULL AND ${t.acknowledgement} IS NULL)
+        OR (${t.acknowledgedAt} IS NOT NULL AND ${t.acknowledgedBy} IS NOT NULL
+            AND length(btrim(coalesce(${t.acknowledgement}, ''))) > 0)`,
+    ),
+    check(
+      'payment_provider_unmatched_records_match_ck',
+      sql`(${t.matchedTransactionId} IS NULL) = (${t.matchedAt} IS NULL)`,
+    ),
+    unique('payment_provider_unmatched_records_uq').on(t.providerCode, t.subject, t.providerId),
+    index('payment_provider_unmatched_records_open_idx')
+      .on(t.providerCode, t.occurredAt.desc())
+      .where(sql`${t.acknowledgedAt} IS NULL AND ${t.matchedTransactionId} IS NULL`),
   ],
 );
 
@@ -3435,12 +3590,89 @@ export const transactions = pgTable(
      * sentence in `rejection_reason`; this is never in `TransactionView`.
      */
     providerNote: text('provider_note'),
+    /*
+     * ── THE PAYMENTS CORE'S STATE, PROVIDER-NEUTRAL (0173) ───────────────────
+     *
+     * What every provider shares, written by the core engines
+     * (`modules/payments/core/`) and never by an adapter. The `rival_*` columns
+     * above are the previous build's names for the first five of these; a
+     * trigger keeps the pairs in step until a later migration drops them —
+     * READ AND WRITE THESE, never those.
+     */
+    /** The provider's id for a hosted deposit — what its reports name. */
+    providerPaymentId: varchar('provider_payment_id', { length: 128 }),
+    /** The hosted page the client pays on, and when it stops accepting money. */
+    providerPaymentUrl: text('provider_payment_url'),
+    providerPaymentExpiresAt: timestamp('provider_payment_expires_at', { withTimezone: true }),
+    /** The provider's id for a payout. */
+    providerPayoutId: varchar('provider_payout_id', { length: 128 }),
+    /**
+     * The payout CLAIM: taken by a conditional UPDATE before the provider is
+     * called, so two submitters resolve to one call. Held while the outcome is
+     * unknown; cleared only when the provider provably holds nothing.
+     */
+    providerSubmittedAt: timestamp('provider_submitted_at', { withTimezone: true }),
+    /**
+     * For a provider whose payout API takes no idempotency key and echoes no
+     * reference: a hash of what it was asked (channel, destination, amount).
+     * `transactions_payout_fingerprint_uq` allows ONE unresolved payout per
+     * fingerprint, so a payout whose answer was lost is findable by it.
+     */
+    payoutFingerprint: varchar('payout_fingerprint', { length: 64 }),
+    /** What the provider was asked to move (a payout grossed up by its fee). */
+    providerRequestAmount: numeric('provider_request_amount', { precision: 28, scale: 8 }),
+    /** What the provider reported it took, and what it moved — recorded, never posted. */
+    providerFee: numeric('provider_fee', { precision: 28, scale: 8 }),
+    providerNetAmount: numeric('provider_net_amount', { precision: 28, scale: 8 }),
+    /** A deposit's figure as the provider reported it, at full precision. */
+    providerAmountReceived: numeric('provider_amount_received', { precision: 28, scale: 8 }),
+    /**
+     * What a hosted deposit's link asked for, when the credited `amount`
+     * differs — a provider that credits what ARRIVED. Null means "as `amount`".
+     */
+    requestedAmount: numeric('requested_amount', { precision: 28, scale: 8 }),
+    /** The provider's last word on the movement, raw ("expired", "COMPLETED"). */
+    providerStatus: varchar('provider_status', { length: 40 }),
+    /**
+     * A payout's provider's last word in the core's terms (0175): `pending`
+     * (it took the money and is sending it), `completed`, or `returned`
+     * (refused, failed or cancelled — the money came back to its balance).
+     * The provider-balance books read it.
+     */
+    providerOutcome: varchar('provider_outcome', { length: 10 }),
+    /** When `providerOutcome` last CHANGED — money back after the baseline counts once (0175). */
+    providerOutcomeAt: timestamp('provider_outcome_at', { withTimezone: true }),
+    /**
+     * When this side first saw the provider CONFIRM a deposit's money, whatever
+     * was then decided about it (0175). The provider's balance moved then.
+     */
+    providerPaidAt: timestamp('provider_paid_at', { withTimezone: true }),
+    /** When the core last asked the provider — the reconciler's order. */
+    providerCheckedAt: timestamp('provider_checked_at', { withTimezone: true }),
+    /** A person must look — for every provider (the desk, the bell, the Financial filter). */
+    needsAttention: boolean('needs_attention').notNull().default(false),
+    attentionReason: text('attention_reason'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     index('transactions_user_idx').on(t.userId),
     index('transactions_state_idx').on(t.state),
     index('transactions_created_at_idx').on(t.createdAt),
+    uniqueIndex('transactions_provider_payment_id_uq')
+      .on(t.providerCode, t.providerPaymentId)
+      .where(sql`${t.providerPaymentId} IS NOT NULL`),
+    uniqueIndex('transactions_provider_payout_id_uq')
+      .on(t.providerCode, t.providerPayoutId)
+      .where(sql`${t.providerPayoutId} IS NOT NULL`),
+    uniqueIndex('transactions_payout_fingerprint_uq')
+      .on(t.providerCode, t.payoutFingerprint)
+      .where(
+        sql`${t.payoutFingerprint} IS NOT NULL AND ${t.providerPayoutId} IS NULL AND ${t.state} = 'approved'`,
+      ),
+    check(
+      'transactions_provider_outcome_ck',
+      sql`${t.providerOutcome} IS NULL OR ${t.providerOutcome} IN ('pending', 'completed', 'returned')`,
+    ),
     // The console filters and counts by route (0168).
     index('transactions_route_idx').on(t.providerCode, t.channelCode, t.createdAt),
     // The console's "in use" flag and a delete's RESTRICT check look up by these (0161).

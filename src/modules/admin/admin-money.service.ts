@@ -33,7 +33,9 @@ import { enumQuery } from '../../common/query-params';
 import { ledgerEntryTypeEnum, tradingAccounts } from '../../database/schema';
 import { ClientVisibilityService } from '../../common/security/client-visibility.service';
 import { CurrenciesService } from '../currencies/currencies.service';
-import { RivalWithdrawalsService } from '../payments/rival/rival-withdrawals.service';
+import { PayoutEngine } from '../payments/core/payout-engine.service';
+import { HostedDepositsService } from '../payments/core/hosted-deposits.service';
+import { ChannelSwitchesService } from '../payments/core/channel-switches.service';
 import { DEPOSIT_PROOF_BUCKET } from '../../common/uploads/stored-files.service';
 import { storedPath } from '../../common/uploads/storage/storage-key';
 import { DepositDecisionDto } from './dto/responses.dto';
@@ -88,8 +90,23 @@ function withdrawalResponse<T extends { proofFilename?: unknown; proofDetails?: 
   const {
     proofFilename: _proofIsDepositOnly,
     proofDetails: _detailsAreDepositOnly,
+    /*
+     * The payments core's columns a withdrawal response does not carry (0173):
+     * a hosted deposit's page, expiry, received and asked amounts, and the
+     * core's own bookkeeping (the fingerprint, when it last asked).
+     */
+    providerPaymentUrl: _pageIsDepositOnly,
+    providerPaymentExpiresAt: _expiryIsDepositOnly,
+    providerAmountReceived: _receivedIsDepositOnly,
+    requestedAmount: _askedIsDepositOnly,
+    payoutFingerprint: _fingerprintIsTheCores,
+    providerCheckedAt: _checkedAtIsTheCores,
+    // The provider-balance books' own bookkeeping (0175); the confirmation is a deposit's.
+    providerOutcome: _outcomeIsTheBooks,
+    providerOutcomeAt: _outcomeAtIsTheBooks,
+    providerPaidAt: _paidAtIsDepositOnly,
     ...withdrawalFields
-  } = row;
+  } = row as T & Record<string, unknown>;
   return {
     ...withdrawalFields,
     maskedFields: maskedFieldsFor('withdrawal', actor.fieldMask),
@@ -122,8 +139,12 @@ export class AdminMoneyService {
     private readonly currencies: CurrenciesService,
     /** Bell rows for the client. Same append-last rule as `currencies` above. */
     @Inject(NOTIFICATION_DISPATCH) private readonly notifications: NotificationDispatchPort,
-    /** The Rival payout leg. Appended LAST — the positional-construction rule. */
-    private readonly rivalWithdrawals: RivalWithdrawalsService,
+    /**
+     * The payments core's payout engine (0173) — every automated payout, every
+     * provider. In the slot Rival's own payout service held, so positional
+     * construction keeps its shape.
+     */
+    private readonly payouts: PayoutEngine,
     /** Reviewer names for the desk. Same append-last rule as above. */
     private readonly admins: AdminsStore,
     /*
@@ -139,6 +160,13 @@ export class AdminMoneyService {
      * LAST for the same reason as every parameter above it.
      */
     @Inject(DRIZZLE_DB) private readonly db: Db,
+    /*
+     * The core's hosted-deposit engine (0173): the desk's two ways to finish a
+     * deposit only a person can settle. Appended LAST — the positional rule.
+     */
+    private readonly hostedDeposits: HostedDepositsService,
+    /* Which networks are switched off — read once per desk page (0173). LAST. */
+    private readonly channelSwitches: ChannelSwitchesService,
   ) {}
 
   /**
@@ -876,12 +904,27 @@ export class AdminMoneyService {
       page.items.map((item) => item.reviewedBy).filter((id): id is string => Boolean(id)),
     );
 
-    return {
-      ...page,
-      items: page.items.map((item) => ({
+    /*
+     * WHO WILL PAY each open row, and what it costs (0173) — the approval
+     * dialog's line ("3pay sends 102.00 USDT: 100.00 to the client, 2.00
+     * fee") and the "paused" badge (a network switched off, a provider that
+     * waits). The channel switches are read once for the page.
+     */
+    const offSwitches = await this.channelSwitches.offSwitches();
+    const items = await Promise.all(
+      page.items.map(async (item) => ({
         ...item,
         reviewedByName: item.reviewedBy ? (reviewerNames.get(item.reviewedBy) ?? null) : null,
+        payoutPlan:
+          item.state === 'pending' || (item.state === 'approved' && !item.providerSubmittedAt)
+            ? await this.payouts.plan({ ...item, direction: 'withdrawal' as const }, offSwitches)
+            : null,
       })),
+    );
+
+    return {
+      ...page,
+      items,
       maskedFields: maskedFieldsFor('withdrawal', actor.fieldMask),
     };
   }
@@ -918,10 +961,13 @@ export class AdminMoneyService {
      * rail while Rival is switched off — goes straight to `success`, because the
      * operator approving it is the one sending the money.
      *
-     * The predicate lives beside the claim that does the submitting
-     * (`RivalWithdrawalsService.willPayOut`) precisely so the two cannot drift: if
-     * this said yes and the claim found nothing, the row would sit in `approved`
-     * with the client already debited and nobody paying it.
+     * The decision lives beside the claim that does the submitting
+     * (`PayoutEngine.decide`) precisely so the two cannot drift: if this said
+     * yes and the claim found nothing, the row would sit in `approved` with the
+     * client already debited and nobody paying it. A payout NOBODY can pay right
+     * now — its channel switched off, or a provider that waits rather than
+     * letting the desk pay by hand — is refused here with the reason, never
+     * approved into a state that goes nowhere.
      *
      * This replaces a hard refusal that stood here while the two flows were
      * irreconcilable — approving with the rail enabled used to throw, because a
@@ -929,7 +975,9 @@ export class AdminMoneyService {
      * it for payout.
      */
     const withdrawal = await this.transactions.getById(id);
-    const awaitsProviderPayout = await this.rivalWithdrawals.willPayOut(withdrawal);
+    const decision = await this.payouts.decide(withdrawal);
+    if (decision.kind === 'paused') throw new ValidationError(decision.reason);
+    const awaitsProviderPayout = decision.kind === 'provider';
 
     const row = await this.transactions.approve(
       id,
@@ -990,7 +1038,7 @@ export class AdminMoneyService {
      * SAME `awaitsProviderPayout` value rather than re-deriving one, so the two
      * channels cannot drift into telling a client different things:
      *
-     *  - rail → say nothing here. `RivalWithdrawalsService` emails 'paid' or
+     *  - rail → say nothing here. `PayoutEngine` emails 'paid' or
      *    'rejected' when the provider actually answers, and that outcome is the
      *    only one worth a client's attention.
      *  - desk → 'paid', matching both the row's state and the bell.
@@ -1002,14 +1050,14 @@ export class AdminMoneyService {
      */
     if (!awaitsProviderPayout) void this.emailWithdrawalDecision(row, 'paid');
     /*
-     * The Rival submission, POST-COMMIT and detached: the approval is a fact
-     * the moment its transaction commits, and a Rival outage must not turn a
+     * The provider submission, POST-COMMIT and detached: the approval is a fact
+     * the moment its transaction commits, and a provider outage must not turn a
      * successful approval into an error on the admin's screen. `submitApproved`
-     * never throws, claims before it creates (Rival's withdrawal API has no
-     * idempotency key), and no-ops for non-whish rows — a needs-attention flag
-     * on the desk is the failure surface.
+     * never throws, claims before it creates (no provider's payout API takes an
+     * idempotency key), and no-ops for rows the desk pays — a needs-attention
+     * flag on the desk is the failure surface.
      */
-    void this.rivalWithdrawals.submitApproved(row.id);
+    if (awaitsProviderPayout) void this.payouts.submitApproved(row.id);
     /*
      * RBAC-03 on the DECISION's own response.
      *
@@ -1041,10 +1089,11 @@ export class AdminMoneyService {
    * makes the effective requirement approve+settle — acceptable strictness on
    * an action that reverses money already promised.
    *
-   * Two shapes, decided by `RivalWithdrawalsService.cancelApproved`:
-   * never-submitted cancels locally; submitted asks Rival FIRST and refuses
-   * cleanly if the payout is already being processed (its 409) — "cancelled
-   * here, paid there" is the split-brain this integration exists to prevent.
+   * The provider's half is `PayoutEngine.cancelApproved`: never-sent cancels
+   * locally; in flight with an unknown outcome is refused; held by a provider
+   * that can recall it is recalled FIRST (and refused cleanly when it is
+   * already being paid); held by one that cannot (3pay pays at once) is
+   * refused — "cancelled here, paid there" is the split-brain this prevents.
    */
   async cancelWithdrawal(
     id: string,
@@ -1098,13 +1147,9 @@ export class AdminMoneyService {
       );
     }
 
-    // Rival next: if the payout can no longer be stopped this throws and
-    // NOTHING local changes — the desk is told to act on the outcome instead.
-    await this.rivalWithdrawals.cancelApproved({
-      id: current.id,
-      rivalWithdrawalId: current.rivalWithdrawalId,
-      rivalSubmittedAt: current.rivalSubmittedAt,
-    });
+    // The provider next: if the payout can no longer be stopped this throws
+    // and NOTHING local changes — the desk is told to act on the outcome.
+    await this.payouts.cancelApproved(current);
 
     const row = await this.transactions.markFailed(
       id,
@@ -1115,7 +1160,8 @@ export class AdminMoneyService {
           amount: failed.amount,
           currency: failed.currency,
           reason: effectiveReason,
-          rivalWithdrawalId: current.rivalWithdrawalId,
+          provider: current.providerCode,
+          providerPayoutId: current.providerPayoutId,
         });
         await this.notifications.notify(
           {
@@ -1149,18 +1195,19 @@ export class AdminMoneyService {
   }
 
   /**
-   * Re-run the Rival submission for a row whose first attempt definitively
-   * failed. Safe under double-click and races: the claim column admits one
-   * in-flight create, and a still-held claim (the indeterminate case) makes
-   * this a no-op until the reconciler resolves it.
+   * RESEND a payout a person must decide — the provider refused it outright,
+   * or was proven to hold nothing for it after the adoption window. Safe under
+   * double-click and races: the claim admits one in-flight create, and a
+   * still-held claim (an outcome not known yet) makes this a no-op until the
+   * reconciler resolves it. The flag clears only when the provider accepts it.
    */
-  async retryRivalSubmission(id: string, actor: AuthenticatedAdmin) {
-    assertActorCan(actor, 'withdrawals.approve', 'retry a payout submission');
+  async resendPayout(id: string, actor: AuthenticatedAdmin) {
+    assertActorCan(actor, 'withdrawals.approve', 'resend a payout');
     await this.assertWithdrawalVisible(id, actor.clientScope);
-    this.audit.record(actor.id, 'withdrawal.rival.submit', 'transaction', id, {
+    this.audit.record(actor.id, 'withdrawal.provider.submit', 'transaction', id, {
       retriedBy: 'admin',
     });
-    await this.rivalWithdrawals.submitApproved(id);
+    await this.payouts.resubmit(id);
     /*
      * Through the same seam as its four siblings, which it was not: this one
      * returned the raw `transactions` row, so it shipped `proofFilename` and
@@ -1804,7 +1851,7 @@ export class AdminMoneyService {
       new ValidationError(
         'This payment no longer needs attention — somebody resolved it while you were looking.',
       );
-    if (!payment.rivalNeedsAttention) throw stale();
+    if (!payment.needsAttention) throw stale();
 
     const resolved = await this.transactions.resolveAttention(id, (tx) =>
       this.audit.recordWithin(tx, actor.id, 'transaction.attention_resolve', 'transaction', id, {
@@ -1812,11 +1859,64 @@ export class AdminMoneyService {
         direction: payment.direction,
         amount: payment.amount,
         currency: payment.currency,
-        reason: payment.rivalAttentionReason,
+        reason: payment.attentionReason,
         note: note.trim(),
       }),
     );
     if (!resolved) throw stale();
     return { id, needsAttention: false };
+  }
+
+  /**
+   * FINISH A FLAGGED HOSTED DEPOSIT (0173) — a deposit paid on a provider's
+   * page that only a person can settle: an amount a fixed link did not
+   * expect, funds the provider did not confirm, a payment reported after the
+   * row had failed. Until 0173 these could never be finished: the desk
+   * refused hosted deposits and "Mark resolved" only cleared the flag.
+   *
+   *   credit — credits the figure the PROVIDER REPORTED, rounded down to the
+   *            wallet's places, with the person's reason (deposits.approve);
+   *   close  — no credit, the reason kept on the row (deposits.reject).
+   *
+   * Scope first (an out-of-territory deposit 404s like a missing one), the
+   * engine checks the rest and audits in the same transaction as the money.
+   */
+  async finishFlaggedDeposit(
+    id: string,
+    actor: AuthenticatedAdmin,
+    decision: 'credit' | 'close',
+    reason: string,
+  ) {
+    const payment = await this.transactions.getById(id);
+    await this.visibility.assertVisible(
+      payment.userId,
+      actor.clientScope,
+      () => new NotFoundError('Transaction not found.'),
+    );
+    const why = reason.trim();
+    if (why.length === 0) throw new ValidationError('Say why, for the record.');
+    const row =
+      decision === 'credit'
+        ? await this.hostedDeposits.creditReceived(id, actor, why)
+        : await this.hostedDeposits.closeWithoutCredit(id, actor, why);
+    return { id: row.id, state: row.state, amount: row.amount, currency: row.currency };
+  }
+
+  /**
+   * FINISH A FLAGGED PAYOUT (0174): one the provider holds that the engine will
+   * not finish itself — reported paid to another destination, or several
+   * provider records could be it. `paid` settles it with the reference of what
+   * reached the client; `refund` fails it and refunds their wallet.
+   */
+  async finishFlaggedPayout(
+    id: string,
+    actor: AuthenticatedAdmin,
+    decision: 'paid' | 'refund',
+    reason: string,
+    reference?: string,
+  ) {
+    await this.assertWithdrawalVisible(id, actor.clientScope);
+    const row = await this.payouts.finishFlagged(id, actor, decision, reason, reference);
+    return { id: row.id, state: row.state, amount: row.amount, currency: row.currency };
   }
 }

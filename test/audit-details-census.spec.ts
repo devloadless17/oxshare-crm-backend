@@ -161,7 +161,13 @@ const WRITES_DETAILS: readonly string[] = [
   'currency.create',
   'currency.delete',
   'currency.update',
+  // A deposit credited or closed (0173): the client named by `userId` (a
+  // scoped key); amounts, the method, the provider reference, a desk reason —
+  // nothing the client owns.
+  'deposit.close_without_credit',
+  'deposit.credit_received',
   'deposit.settle',
+  'deposit.settle_late',
   'export.audit_log',
   'export.clients',
   'export.ib_applications',
@@ -198,7 +204,13 @@ const WRITES_DETAILS: readonly string[] = [
   'payment_method.create',
   'payment_method.delete',
   'payment_method.update',
+  // The books restarted (0175): the figures replaced and the admin's note; names no client.
+  'payment_provider.books_reset',
+  // A channel switched (0173): provider, channel, direction, the admin's reason.
+  'payment_provider.channel_enable',
   'payment_provider.enable',
+  // A provider's own movement (0174) — tied to no client here, names none.
+  'payment_provider.record_acknowledge',
   'payment_provider.secret_rotate',
   'payment_provider.update',
   'platform_link.set',
@@ -230,8 +242,11 @@ const WRITES_DETAILS: readonly string[] = [
   'wallet.create',
   'wallet.credit',
   'wallet.delete',
-  'withdrawal.rival.reject',
-  'withdrawal.rival.submit',
+  // A person finishes a flagged payout (0174): names the client by `userId`.
+  'withdrawal.finish_paid',
+  'withdrawal.finish_refund',
+  'withdrawal.provider.reject',
+  'withdrawal.provider.submit',
   'withdrawal.settle',
   'withdrawal_method.create',
   'withdrawal_method.delete',

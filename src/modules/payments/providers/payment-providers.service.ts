@@ -5,7 +5,12 @@ import { asc, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../../database/database.module';
 import type { Db } from '../../../database/db';
 import { paymentMethods, transactions, withdrawalPaymentMethods } from '../../../database/schema';
-import { NotFoundError, ValidationError } from '../../../common/errors/domain-errors';
+import {
+  FieldValidationError,
+  NotFoundError,
+  ValidationError,
+} from '../../../common/errors/domain-errors';
+import { ResourceChangedPublisher } from '../../../common/realtime/resource-changed';
 import { assertPublicOutboundHost } from '../../../common/security/outbound-host';
 import { sealSecret } from '../../../common/security/secret-box';
 import type { Actor } from '../../../common/security/actor';
@@ -19,17 +24,38 @@ import type {
   PaymentProviderDto,
   ProviderActivityDto,
   ProviderEventDto,
+  ProviderExchangeDto,
   ProviderMethodDto,
   ProviderTestResultDto,
   RotatedProviderSecretDto,
+  UnmatchedProviderRecordDto,
   UpdatePaymentProviderDto,
 } from '../dto/payment-provider.dto';
-import type { PaymentProviderAdapter, ProviderConfigField } from './payment-provider';
-import { PaymentProviderRegistry } from './payment-provider-registry';
-import { methodAvailability, missingSettings, type ProviderState } from './provider-status';
+import type {
+  ChannelDirection,
+  PaymentProviderAdapter,
+  ProviderConfigField,
+} from './payment-provider';
+import { PaymentProviderRegistry, providerWebhookUrl } from './payment-provider-registry';
+import {
+  methodAvailability,
+  missingSettings,
+  payoutMethodStatus,
+  type ProviderState,
+} from './provider-status';
+import {
+  ChannelSwitchesService,
+  channelSwitchKey,
+  readOffSwitches,
+  type ChannelSwitch,
+} from '../core/channel-switches.service';
+import { ProviderRecordsAudit } from '../core/provider-records-audit.service';
+import { ProviderBooks, providerBooksView } from '../core/provider-books.service';
+import { PaymentProviderExchangesStore } from '../../../store/payment-provider-exchanges.store';
 
 const MAX_SETTING_LENGTH = 2048;
 const MAX_EVENTS = 200;
+const MAX_EXCHANGES = 200;
 
 /**
  * THE CONSOLE'S SIDE OF EVERY PAYMENT PROVIDER (0168) — System → Payment providers.
@@ -59,6 +85,14 @@ export class PaymentProvidersService {
     private readonly events: PaymentProviderEventsStore,
     private readonly config: ConfigService,
     private readonly audit: AdminAuditService,
+    /* The network switches (0173) — appended last, the positional-construction rule. */
+    private readonly switches: ChannelSwitchesService,
+    private readonly resourceChanged: ResourceChangedPublisher,
+    /* The unmatched-records audit (0174) — appended last, the positional-construction rule. */
+    private readonly records: ProviderRecordsAudit,
+    /* The balance against our books and the exchange log (0175) — appended last. */
+    private readonly books: ProviderBooks,
+    private readonly exchanges: PaymentProviderExchangesStore,
   ) {}
 
   async list(): Promise<PaymentProviderDto[]> {
@@ -66,18 +100,83 @@ export class PaymentProvidersService {
     const states = await this.registry.states(rows);
     const methods = await this.methodsByProvider(states);
     const activity = await this.activityByProvider();
+    const off = await this.switches.offSwitches();
+    const unexplained = await this.records.openCounts();
     const byCode = new Map(rows.map((row) => [row.code, row]));
-    return this.registry
-      .list()
-      .map((adapter) =>
-        this.view(
-          adapter,
-          byCode.get(adapter.code) ?? null,
-          states.get(adapter.code),
-          methods,
-          activity,
-        ),
-      );
+    return this.registry.list().map((adapter) => ({
+      ...this.view(
+        adapter,
+        byCode.get(adapter.code) ?? null,
+        states.get(adapter.code),
+        methods,
+        activity,
+        off,
+      ),
+      auditsRecords: typeof adapter.listRecords === 'function',
+      unexplainedRecords: unexplained.get(adapter.code) ?? 0,
+    }));
+  }
+
+  /** What the provider holds that no transaction here explains (0174). */
+  async unmatchedRecords(code: string, open: boolean): Promise<UnmatchedProviderRecordDto[]> {
+    this.registry.provider(code);
+    return (await this.records.list(code, open)).map(unmatchedView);
+  }
+
+  /** A person explains one as a company movement, with a note (audited). */
+  async acknowledgeRecord(
+    code: string,
+    id: string,
+    note: string,
+    actor: Actor,
+  ): Promise<UnmatchedProviderRecordDto> {
+    this.registry.provider(code);
+    return unmatchedView(await this.records.acknowledge(code, id, actor, note));
+  }
+
+  /**
+   * A person restarts a provider's books (after a top-up or a move its records
+   * do not show): the next reading with nothing travelling starts them again.
+   */
+  async resetBooks(code: string, note: string, actor: Actor): Promise<PaymentProviderDto> {
+    const adapter = this.registry.provider(code);
+    if (!adapter.balance) {
+      throw new ValidationError(`${adapter.name} holds no balance of ours, so it keeps no books.`);
+    }
+    await this.books.reset(code, actor, note);
+    return this.get(code);
+  }
+
+  /** What the provider was asked and answered, newest first (0175). */
+  async exchangeLog(
+    code: string,
+    limit: number,
+    before?: number,
+    reference?: string,
+  ): Promise<ProviderExchangeDto[]> {
+    const adapter = this.registry.provider(code);
+    if (!adapter.keepsExchangeLog) {
+      throw new NotFoundError(`${adapter.name} keeps no exchange log.`);
+    }
+    const rows = await this.exchanges.list(
+      code,
+      Math.min(Math.max(limit, 1), MAX_EXCHANGES),
+      before,
+      reference?.trim() || undefined,
+    );
+    return rows.map((row) => ({
+      id: row.id,
+      direction: row.direction === 'inbound' ? 'inbound' : 'outbound',
+      method: row.method,
+      path: row.path,
+      requestBody: row.requestBody,
+      status: row.status,
+      responseBody: row.responseBody,
+      error: row.error,
+      durationMs: row.durationMs,
+      reference: row.reference,
+      occurredAt: row.occurredAt.toISOString(),
+    }));
   }
 
   async get(code: string): Promise<PaymentProviderDto> {
@@ -187,6 +286,49 @@ export class PaymentProvidersService {
   }
 
   /**
+   * Switch one of a provider's channels on or off in one direction (0173) —
+   * e.g. 3pay's ERC20 payouts off while TRC20 stays on. A reason is required
+   * to switch one off; both directions are audited and every desk and list
+   * refreshes live. Money already moving on it still finishes (see
+   * `ChannelSwitchesService`).
+   */
+  async setChannel(
+    code: string,
+    direction: ChannelDirection,
+    channelCode: string,
+    enabled: boolean,
+    reason: string | null,
+    actor: Actor,
+  ): Promise<PaymentProviderDto> {
+    const adapter = this.registry.provider(code);
+    const channel = this.registry.channel({ providerCode: code, channelCode }, direction);
+    if (!channel.bindable) {
+      throw new ValidationError(`${channel.label} is the desk's own; it has no switch.`);
+    }
+    const before = await this.switches.offSwitch({ providerCode: code, channelCode }, direction);
+    const saved = await this.switches.set(
+      { providerCode: code, channelCode },
+      direction,
+      enabled,
+      reason,
+      actor.id,
+    );
+    if ((before === undefined) !== enabled || (!enabled && before?.reason !== saved.reason)) {
+      this.audit.record(
+        actor.id,
+        enabled ? 'payment_provider.channel_enable' : 'payment_provider.channel_disable',
+        'payment_provider',
+        code,
+        { provider: adapter.name, channel: channel.label, direction, reason: saved.reason },
+      );
+    }
+    // The withdrawals desk shows "paused" by channel — data, no chime. The
+    // acting admin's own screens refresh from the mutation itself.
+    await this.resourceChanged.publish({ resource: 'withdrawals', actorAdminId: actor.id });
+    return this.get(code);
+  }
+
+  /**
    * Mint a new value for a GENERATED secret (a webhook key). The plaintext
    * leaves once, in the response, for the operator to paste into the
    * provider's dashboard; afterwards only its fingerprint is shown.
@@ -269,9 +411,13 @@ export class PaymentProvidersService {
     state: ProviderState | undefined,
     methods: Map<string, ProviderMethodDto[]>,
     activity: Map<string, ProviderActivityDto>,
-  ): PaymentProviderDto {
+    off: ReadonlyMap<string, ChannelSwitch>,
+  ): Omit<PaymentProviderDto, 'auditsRecords' | 'unexplainedRecords'> {
     const saved = row !== null && missingSettings(adapter, row).length === 0;
     return {
+      // Its balance against our books, for a provider that holds one of ours (0175).
+      books: adapter.balance ? providerBooksView(row) : null,
+      exchangeLog: adapter.keepsExchangeLog === true,
       code: adapter.code,
       name: adapter.name,
       builtIn: adapter.builtIn,
@@ -298,18 +444,33 @@ export class PaymentProvidersService {
           : null,
       webhookEndpoint: this.webhookEndpoint(adapter),
       settings: adapter.configFields.map((field) => settingView(field, row)),
-      channels: adapter.channels.map((channel) => ({
-        code: channel.code,
-        direction: channel.direction,
-        label: channel.label,
-        flow: channel.flow,
-        bindable: channel.bindable,
-        currencies: channel.currencies === 'any' ? null : [...channel.currencies],
-        destinationKind: channel.destination?.kind ?? null,
-        destinationNetwork: channel.destination?.network ?? null,
-        destinationLabel: channel.destination?.label ?? null,
-        acceptsReceipt: channel.acceptsReceipt ?? false,
-      })),
+      channels: adapter.channels.map((channel) => {
+        const switched = off.get(
+          channelSwitchKey(
+            { providerCode: adapter.code, channelCode: channel.code },
+            channel.direction,
+          ),
+        );
+        return {
+          code: channel.code,
+          direction: channel.direction,
+          label: channel.label,
+          flow: channel.flow,
+          bindable: channel.bindable,
+          currencies: channel.currencies === 'any' ? null : [...channel.currencies],
+          destinationKind: channel.destination?.kind ?? null,
+          destinationNetwork: channel.destination?.network ?? null,
+          destinationLabel: channel.destination?.label ?? null,
+          acceptsReceipt: channel.acceptsReceipt ?? false,
+          // What moves at the provider when it is not the wallet currency (0173).
+          assetLabel: channel.asset?.label ?? null,
+          creditPolicy: channel.flow === 'redirect' ? (channel.creditPolicy ?? 'exact') : null,
+          // The admin's switch (0173): on unless somebody switched it off, with why.
+          enabled: switched === undefined,
+          offReason: switched?.reason ?? null,
+          offSince: switched ? switched.updatedAt.toISOString() : null,
+        };
+      }),
       methods: methods.get(adapter.code) ?? [],
       last24h: activity.get(adapter.code) ?? { total: 0, succeeded: 0, failed: 0, pending: 0 },
       updatedAt: row && row.updatedBy ? row.updatedAt.toISOString() : null,
@@ -331,6 +492,7 @@ export class PaymentProvidersService {
     const add = (providerCode: string, method: ProviderMethodDto) => {
       grouped.set(providerCode, [...(grouped.get(providerCode) ?? []), method]);
     };
+    const off = await readOffSwitches(this.db);
     for (const row of deposits) {
       add(row.providerCode, {
         key: row.key,
@@ -339,12 +501,16 @@ export class PaymentProvidersService {
         direction: 'deposit',
         channelCode: row.channelCode,
         enabled: row.enabled,
-        availability: methodAvailability(row.enabled, states.get(row.providerCode)),
+        availability: methodAvailability(
+          row.enabled,
+          states.get(row.providerCode),
+          !off.has(channelSwitchKey(row, 'deposit')),
+        ),
         paidBy: null,
       });
     }
     for (const row of payouts) {
-      const automated = this.registry.isAutomatedPayout(row);
+      const rail = this.registry.payoutRail(row)?.rail;
       add(row.providerCode, {
         key: row.key,
         internalLabel: row.internalLabel,
@@ -352,10 +518,14 @@ export class PaymentProvidersService {
         direction: 'payout',
         channelCode: row.channelCode,
         enabled: row.enabled,
-        // A payout method is never hidden for its provider's sake: the desk pays
-        // an automated one by hand while its provider cannot (0168).
-        availability: row.enabled ? 'offered' : 'disabled',
-        paidBy: automated && states.get(row.providerCode)?.usable ? 'provider' : 'desk',
+        // The desk pays an automated one by hand while its provider cannot —
+        // unless the provider waits instead (0173's `whenUnavailable`).
+        ...payoutMethodStatus(
+          row.enabled,
+          rail ? rail.whenUnavailable : null,
+          states.get(row.providerCode),
+          !off.has(channelSwitchKey(row, 'payout')),
+        ),
       });
     }
     return grouped;
@@ -409,6 +579,13 @@ export class PaymentProvidersService {
       }
       const value = normaliseValue(raw, field);
       if (value !== null && field.kind === 'url') await this.assertSafeUrl(adapter, field, value);
+      // The adapter's own rule for the value (a payout fee must be a decimal).
+      const problem = value === null ? undefined : field.validate?.(value);
+      if (problem) {
+        throw new FieldValidationError(`${adapter.name} · ${field.label}: ${problem}`, {
+          [`settings.${name}`]: problem,
+        });
+      }
       judged[name] = value;
     }
     return judged;
@@ -467,11 +644,7 @@ export class PaymentProvidersService {
   }
 
   private webhookEndpoint(adapter: PaymentProviderAdapter): string | null {
-    if (adapter.builtIn) return null;
-    const base = this.config.get<string>('API_PUBLIC_URL');
-    if (!base) return null;
-    const path = adapter.webhookPath ?? `/v1/payments/providers/${adapter.code}/webhook`;
-    return `${base.replace(/\/+$/, '')}${path}`;
+    return providerWebhookUrl(this.config.get<string>('API_PUBLIC_URL'), adapter);
   }
 
   private seal(value: string): string {
@@ -527,4 +700,37 @@ function mergeThreeState(
 /** sha256[:8] — displayable and audit-safe, useless for recovering the secret. */
 function fingerprint(secret: string): string {
   return createHash('sha256').update(secret).digest('hex').slice(0, 8);
+}
+
+/** A filed provider record as the console shows it. */
+function unmatchedView(row: {
+  id: string;
+  subject: string;
+  providerId: string;
+  rawStatus: string;
+  amount: string | null;
+  asset: string | null;
+  counterparty: string | null;
+  reference: string | null;
+  occurredAt: Date;
+  foundAt: Date;
+  matchedTransactionId: string | null;
+  acknowledgedAt: Date | null;
+  acknowledgement: string | null;
+}): UnmatchedProviderRecordDto {
+  return {
+    id: row.id,
+    subject: row.subject === 'payout' ? 'payout' : 'payment',
+    providerId: row.providerId,
+    rawStatus: row.rawStatus,
+    amount: row.amount,
+    asset: row.asset,
+    counterparty: row.counterparty,
+    reference: row.reference,
+    occurredAt: row.occurredAt.toISOString(),
+    foundAt: row.foundAt.toISOString(),
+    matchedTransactionId: row.matchedTransactionId,
+    acknowledgedAt: row.acknowledgedAt?.toISOString() ?? null,
+    acknowledgement: row.acknowledgement,
+  };
 }

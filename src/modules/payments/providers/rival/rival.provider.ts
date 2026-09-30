@@ -1,8 +1,12 @@
 import { Injectable } from '@nestjs/common';
-import { PaymentIndeterminateError, ValidationError } from '../../../common/errors/domain-errors';
-import { RIVAL_MONEY_SCALE, RivalClient } from '../rival/rival.client';
-import { RivalConfigService } from '../rival/rival-config.service';
-import { wishDestinationIssue } from '../rival/wish-phone';
+import {
+  PaymentIndeterminateError,
+  ValidationError,
+} from '../../../../common/errors/domain-errors';
+import { RIVAL_MONEY_SCALE, RivalClient } from './rival.client';
+import { RivalConfigService } from './rival-config.service';
+import { RivalPayouts } from './rival-payouts';
+import { wishDestinationIssue } from './wish-phone';
 import type {
   ConnectionCheck,
   PaymentChannel,
@@ -11,28 +15,23 @@ import type {
   ProviderConfigField,
   StartedPayment,
   StartPaymentInput,
-} from './payment-provider';
+} from '../payment-provider';
+
+export { RIVAL_PAYOUT_METHODS } from './rival-payouts';
 
 /**
- * Rival's payout type for each of its payout channels. Rival's create accepts
- * `CASH`, `WISH` and `CRYPTO`; each is one entry here plus one declared channel,
- * with the fields that type requires. A Rival payout channel missing from this
- * map cannot be submitted — the desk pays it — rather than being sent as Whish.
- */
-export const RIVAL_PAYOUT_METHODS: Readonly<Record<string, 'WISH'>> = { whish: 'WISH' };
-
-/**
- * RIVAL — the company's payment platform, as a provider (0168).
+ * RIVAL — the company's payment platform, as a provider (0168; a thin adapter
+ * since 0173).
  *
  * Whish is a rail INSIDE Rival, so it is one of Rival's channels, not a
  * provider of its own: deposits through Rival's hosted Whish page, payouts
  * through Rival's `WISH` payout. Rival's docs also accept `CASH` and `CRYPTO`
- * payouts — each becomes one more channel here the day it is wanted, and
- * nothing outside this adapter changes.
+ * payouts — each becomes one more channel here the day it is wanted.
  *
- * The client, the configuration, the payout pipeline and the webhook are the
- * existing Rival services; this adapter is what lets every other part of the
- * platform reach them without naming Rival or Whish.
+ * This folder only TRANSLATES: Rival's HTTP (`rival.client.ts`), its settings
+ * (`rival-config.service.ts`), its signature (`rival-signature.ts`), its
+ * webhook (`rival-webhook.receiver.ts`), its payouts (`rival-payouts.ts`). The
+ * money — settling, refunding, adopting, asking people — is the core's.
  */
 @Injectable()
 export class RivalPaymentProvider implements PaymentProviderAdapter {
@@ -76,6 +75,9 @@ export class RivalPaymentProvider implements PaymentProviderAdapter {
       // Rival judges which currencies its Whish rail carries for this company.
       currencies: 'any',
       bindable: true,
+      // A Whish link is fixed-amount: any other figure is a person's.
+      creditPolicy: 'exact',
+      hostedPageReturns: true,
     },
     {
       code: 'whish',
@@ -94,10 +96,14 @@ export class RivalPaymentProvider implements PaymentProviderAdapter {
     },
   ];
 
+  readonly payouts: RivalPayouts;
+
   constructor(
     private readonly rival: RivalClient,
     private readonly config: RivalConfigService,
-  ) {}
+  ) {
+    this.payouts = new RivalPayouts(rival);
+  }
 
   /** Switched on, configured, and not sandbox on production (`RivalConfigService`). */
   isUsable(): Promise<boolean> {
@@ -128,12 +134,12 @@ export class RivalPaymentProvider implements PaymentProviderAdapter {
     if (!payment.collectUrl) {
       /*
        * Rival recorded the payment but produced no page. The deposit exists on
-       * both sides, so it must not be created again — the poller finishes it.
+       * both sides, so it must not be created again — the sweep finishes it.
        */
       throw new PaymentIndeterminateError(
         'The payment platform recorded the deposit but could not produce a payment page. ' +
           'It will be retried automatically — do not create a second deposit.',
-        { rivalExternalId: payment.externalId },
+        { providerPaymentId: payment.externalId },
       );
     }
     return { paymentUrl: payment.collectUrl, externalId: payment.externalId };
@@ -150,6 +156,36 @@ export class RivalPaymentProvider implements PaymentProviderAdapter {
       amount: payment.amount,
       currency: payment.currency,
     };
+  }
+
+  /**
+   * A start whose answer was lost: Rival's documented replay semantics make a
+   * create under the SAME idempotency key converge — an existing payment is
+   * returned unchanged, a linkless one re-minted, and only when nothing exists
+   * is one made. Never "absent": the replay always answers with the payment.
+   */
+  async recoverPayment(
+    channel: PaymentChannel,
+    input: StartPaymentInput,
+  ): Promise<StartedPayment | null> {
+    this.assertWhishDeposit(channel);
+    try {
+      const payment = await this.rival.createWhishPayment(input);
+      return { paymentUrl: payment.collectUrl ?? '', externalId: payment.externalId };
+    } catch (error) {
+      const externalId =
+        error instanceof PaymentIndeterminateError ? error.details?.['providerPaymentId'] : null;
+      if (typeof externalId === 'string' && externalId.length > 0) {
+        return { paymentUrl: '', externalId };
+      }
+      throw error;
+    }
+  }
+
+  /** Rival re-asks Whish — its documented recovery for a callback Rival itself missed. */
+  async refreshPayment(channel: PaymentChannel, externalId: string): Promise<void> {
+    this.assertWhishDeposit(channel);
+    await this.rival.refreshWhishPayment(externalId);
   }
 
   private assertWhishDeposit(channel: PaymentChannel): void {

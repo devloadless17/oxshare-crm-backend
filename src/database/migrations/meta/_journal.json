@@ -1219,6 +1219,27 @@
       "when": 1789141100750,
       "tag": "0172_withdrawal_provider_note",
       "breakpoints": true
+    },
+    {
+      "idx": 175,
+      "version": "7",
+      "when": 1789141200750,
+      "tag": "0173_payments_core",
+      "breakpoints": true
+    },
+    {
+      "idx": 176,
+      "version": "7",
+      "when": 1789141300750,
+      "tag": "0174_threepay_provider",
+      "breakpoints": true
+    },
+    {
+      "idx": 177,
+      "version": "7",
+      "when": 1789141400750,
+      "tag": "0175_provider_exchanges_and_books",
+      "breakpoints": true
     }
   ]
 }

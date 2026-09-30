@@ -216,10 +216,12 @@ const PUBLIC_ROUTES: Record<string, string> = {
    * This replaced the anonymous GET callback the direct Whish integration
    * carried: same greppable-surface rule, far stronger authentication.
    */
-  'POST /payments/rival/webhook':
-    'Rival delivers signed CRM events here (bearer + HMAC over raw bytes + replay nonce, ' +
-    'verified before parsing). Response codes are shaped to its retry policy; settlement ' +
-    'still re-reads Rival’s stored state.',
+  'POST /payments/:code/webhook':
+    'The pre-0168 address a provider’s dashboard still holds — Rival delivers signed CRM ' +
+    'events to /payments/rival/webhook (bearer + HMAC over raw bytes + replay nonce, verified ' +
+    'before parsing). Open ONLY to a provider whose adapter declares exactly this address; any ' +
+    'other code is a 404 that reads nothing. Money moves only on the provider’s re-read stored ' +
+    'state (the doorbell rule, 0173).',
   'POST /payments/providers/:code/webhook':
     'Every payment provider’s events, one door (0168): routed by code to that provider’s ' +
     'receiver, which verifies the raw bytes with the provider’s own signature before parsing ' +
@@ -704,7 +706,7 @@ describe('R-4.2 every route declares how it is protected', () => {
    */
   it('exempts every public write from the session-bound token', () => {
     const NOT_A_BROWSER_WRITE: Record<string, string> = {
-      'POST /payments/rival/webhook':
+      'POST /payments/:code/webhook':
         'Server-to-server: Rival calls it with an HMAC signature and carries no session cookie, so the token check never applies.',
       'POST /payments/providers/:code/webhook':
         'Server-to-server: a payment provider calls it with its own signature and carries no session cookie, so the token check never applies.',

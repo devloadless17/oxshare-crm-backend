@@ -16,20 +16,35 @@ import { TradingModule } from '../trading/trading.module';
 import { IdentityModule } from '../identity/identity.module';
 import { CurrenciesModule } from '../currencies/currencies.module';
 import { AdminAuditService } from '../admin/admin-audit.service';
-import { ManualPaymentProvider } from './providers/manual.provider';
-import { RivalPaymentProvider } from './providers/rival.provider';
 import { PaymentProviderRegistry } from './providers/payment-provider-registry';
 import { PAYMENT_PROVIDER_ADAPTERS, PAYMENT_PROVIDER_WEBHOOKS } from './providers/payment-provider';
 import { PaymentProvidersService } from './providers/payment-providers.service';
 import { AdminPaymentProvidersController } from './providers/admin-payment-providers.controller';
-import { PaymentProviderWebhookController } from './providers/payment-provider-webhook.controller';
-import { RivalModule } from './rival/rival.module';
-import { RivalWebhookController } from './rival/rival-webhook.controller';
-import { RivalWebhookService } from './rival/rival-webhook.service';
-import { RivalWithdrawalsService } from './rival/rival-withdrawals.service';
-import { RivalPollScheduler } from './rival/rival-poll.scheduler';
+import {
+  LegacyProviderWebhookController,
+  PaymentProviderWebhookController,
+} from './providers/payment-provider-webhook.controller';
+// THE CORE (0173): decides — state, money, retries, people. Names no provider.
+import { ChannelSwitchesService } from './core/channel-switches.service';
+import { PayoutEngine } from './core/payout-engine.service';
+import { HostedDepositsService } from './core/hosted-deposits.service';
+import { ProviderWebhookIngress } from './core/provider-webhook-ingress.service';
+import { ProviderReconcileScheduler } from './core/provider-reconcile.scheduler';
+import { ProviderRecordsAudit } from './core/provider-records-audit.service';
+import { ProviderBalanceWatch } from './core/provider-balance-watch.service';
+import { ProviderBooks } from './core/provider-books.service';
+import { ProviderExchangesPruner } from './core/provider-exchanges-pruner.service';
+// THE PROVIDERS: each translates for one provider, in its own folder. This file
+// is the only place outside a provider's folder that names it (lint enforces).
+import { ManualPaymentProvider } from './providers/manual/manual.provider';
+import { RivalModule } from './providers/rival/rival.module';
+import { RivalPaymentProvider } from './providers/rival/rival.provider';
+import { RivalWebhookReceiver } from './providers/rival/rival-webhook.receiver';
+import { ThreePayModule } from './providers/threepay/threepay.module';
+import { ThreePayPaymentProvider } from './providers/threepay/threepay.provider';
+import { ThreePayWebhookReceiver } from './providers/threepay/threepay-webhook.receiver';
 
-/** Deposits · withdrawals · OTP · the Rival platform connection */
+/** Deposits · withdrawals · transfers · the payment providers and the core that runs them */
 @Module({
   // CurrenciesModule so the money paths can refuse an unknown or DISABLED
   // currency at runtime — the check that replaced the old `'USD' | 'USDT'`
@@ -54,6 +69,7 @@ import { RivalPollScheduler } from './rival/rival-poll.scheduler';
     AdminAuthModule,
     TradingModule,
     RivalModule,
+    ThreePayModule,
   ],
   /*
    * `RivalWebhookController` carries no session auth, uniquely in this module
@@ -66,8 +82,9 @@ import { RivalPollScheduler } from './rival/rival-poll.scheduler';
   controllers: [
     PaymentsController,
     PaymentsReturnController,
-    RivalWebhookController,
     PaymentProviderWebhookController,
+    // Rival's dashboard still delivers to `/v1/payments/rival/webhook` (0168).
+    LegacyProviderWebhookController,
     AdminPaymentMethodsController,
     AdminWithdrawalMethodsController,
     AdminPaymentProvidersController,
@@ -104,22 +121,38 @@ import { RivalPollScheduler } from './rival/rival-poll.scheduler';
      */
     ManualPaymentProvider,
     RivalPaymentProvider,
+    ThreePayPaymentProvider,
     {
       provide: PAYMENT_PROVIDER_ADAPTERS,
-      useFactory: (manual: ManualPaymentProvider, rival: RivalPaymentProvider) => [manual, rival],
-      inject: [ManualPaymentProvider, RivalPaymentProvider],
+      useFactory: (
+        manual: ManualPaymentProvider,
+        rival: RivalPaymentProvider,
+        threepay: ThreePayPaymentProvider,
+      ) => [manual, rival, threepay],
+      inject: [ManualPaymentProvider, RivalPaymentProvider, ThreePayPaymentProvider],
     },
     PaymentProviderRegistry,
     PaymentProvidersService,
-    // Each provider's inbound events, for the generic webhook route.
+    // Each provider's inbound events: verified into notices, applied by the core.
+    RivalWebhookReceiver,
+    ThreePayWebhookReceiver,
     {
       provide: PAYMENT_PROVIDER_WEBHOOKS,
-      useFactory: (rival: RivalWebhookService) => [rival],
-      inject: [RivalWebhookService],
+      useFactory: (rival: RivalWebhookReceiver, threepay: ThreePayWebhookReceiver) => [
+        rival,
+        threepay,
+      ],
+      inject: [RivalWebhookReceiver, ThreePayWebhookReceiver],
     },
-    RivalWebhookService,
-    RivalWithdrawalsService,
-    RivalPollScheduler,
+    ChannelSwitchesService,
+    PayoutEngine,
+    HostedDepositsService,
+    ProviderWebhookIngress,
+    ProviderReconcileScheduler,
+    ProviderRecordsAudit,
+    ProviderBalanceWatch,
+    ProviderBooks,
+    ProviderExchangesPruner,
   ],
   /*
    * `PaymentsService` is gone from this list, and it was an empty
@@ -127,8 +160,8 @@ import { RivalPollScheduler } from './rival/rival-poll.scheduler';
    * survived the module's whole life without gaining a method. The real work is
    * in the three services beside it.
    */
-  // `RivalWithdrawalsService` is exported for AdminModule: the approve hook
-  // and the desk's cancel/retry actions live behind admin routes.
+  // The core's engines are exported for AdminModule: approving, cancelling,
+  // resending and finishing flagged deposits live behind admin routes.
   /*
    * `TransferExecutor` is exported for `AdminMoneyService.fundTradingAccount`,
    * which funds a client's trading account by hand as a wallet credit followed
@@ -143,7 +176,9 @@ import { RivalPollScheduler } from './rival/rival-poll.scheduler';
     TransfersService,
     TransferExecutor,
     PaymentMethodsService,
-    RivalWithdrawalsService,
+    PayoutEngine,
+    HostedDepositsService,
+    ChannelSwitchesService,
   ],
 })
 export class PaymentsModule {}

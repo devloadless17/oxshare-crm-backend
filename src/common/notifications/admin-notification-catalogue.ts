@@ -86,7 +86,31 @@ export const ADMIN_NOTIFICATION_KINDS = {
     permissions: ['withdrawals.settle', 'withdrawals.approve'],
     stillOpen: 'pending',
   },
-  /** The payment rail refused an approved payout: retry it or cancel it. */
+  /**
+   * A provider refused an approved payout, or was proven never to have
+   * received it: resend it or cancel it (0173, every provider). Params carry
+   * the provider's NAME for the sentence.
+   */
+  'withdrawal.payout_submit_failed': {
+    category: 'withdrawals',
+    subjectKind: 'transaction',
+    permissions: ['withdrawals.approve'],
+    stillOpen: 'needs-attention',
+  },
+  /**
+   * A provider and the CRM disagree about whether a payout's money moved
+   * (0173, every provider) — `withdrawals.settle`'s judgement, as below.
+   */
+  'withdrawal.payout_attention': {
+    category: 'withdrawals',
+    subjectKind: 'transaction',
+    permissions: ['withdrawals.settle'],
+    stillOpen: 'needs-attention',
+  },
+  /**
+   * Rival's names for the two above, raised before 0173 — kept so the rows
+   * already in the bell keep their meaning. Nothing raises them any more.
+   */
   'withdrawal.rival_submit_failed': {
     category: 'withdrawals',
     subjectKind: 'transaction',
@@ -160,6 +184,12 @@ export const DEPOSIT_ATTENTION_REASONS = [
   'amount_mismatch',
   'reversed',
   'paid_after_failure',
+  /** The provider reports a different asset or network than the link's (0173). */
+  'wrong_asset',
+  /** Credited — the money arrived — but above the method's maximum: a compliance look (0173). */
+  'over_limit',
+  /** Money arrived on a link the provider has not confirmed (0173). */
+  'unconfirmed_funds',
 ] as const;
 export type DepositAttentionReason = (typeof DEPOSIT_ATTENTION_REASONS)[number];
 

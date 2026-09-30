@@ -3487,7 +3487,14 @@
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DepositStateDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -3517,7 +3524,14 @@
         ],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DepositStateDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4712,6 +4726,283 @@
           }
         ],
         "summary": "Generate a new value for a generated secret (a webhook key)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/payment-providers/{code}/channels/{direction}/{channel}": {
+      "put": {
+        "description": "E.g. ERC20 payouts off while TRC20 stays on. Off: its methods leave the client’s lists, new movements on it are refused and approving payouts on it pauses; movements already under way still finish. A reason is required to switch one off.",
+        "operationId": "AdminPaymentProvidersController_setChannel",
+        "parameters": [
+          {
+            "name": "code",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "direction",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "channel",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetProviderChannelDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentProviderDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Switch one of the provider’s channels on or off, in one direction",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/payment-providers/{code}/unmatched-records": {
+      "get": {
+        "description": "Filed by the unmatched-records audit: a payout made by hand in the provider’s dashboard, a deposit on a link this platform never made. `open=false` lists every one filed, explained or not.",
+        "operationId": "AdminPaymentProvidersController_unmatched",
+        "parameters": [
+          {
+            "name": "code",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "open",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/UnmatchedProviderRecordDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Movements at the provider that no transaction here explains (0174)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/payment-providers/{code}/exchanges": {
+      "get": {
+        "description": "Every call and every delivery, bodies as sent and received, kept 90 days — for a provider that keeps an exchange log. Newest first, at most 200 (`limit`, default 50); `before` pages to older ones; `reference` narrows to one deposit reference, withdrawal or provider id. Never a credential and never a webhook signature.",
+        "operationId": "AdminPaymentProvidersController_exchanges",
+        "parameters": [
+          {
+            "name": "code",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "before",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "reference",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ProviderExchangeDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "What the provider was asked and answered, and what it sent us (0175)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/payment-providers/{code}/books/reset": {
+      "post": {
+        "description": "Clears where the books start; the next reading taken while nothing is travelling starts them again. A note is required. Moves no money.",
+        "operationId": "AdminPaymentProvidersController_resetBooks",
+        "parameters": [
+          {
+            "name": "code",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResetProviderBooksDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentProviderDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Restart the provider’s books (after a top-up or a move its records do not show)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/payment-providers/{code}/unmatched-records/{id}/acknowledge": {
+      "post": {
+        "description": "A note is required. It moves no money and changes no transaction.",
+        "operationId": "AdminPaymentProvidersController_acknowledge",
+        "parameters": [
+          {
+            "name": "code",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AcknowledgeProviderRecordDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UnmatchedProviderRecordDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Explain a provider record as a company movement",
         "tags": [
           "admin"
         ]
@@ -11202,10 +11493,10 @@
         ]
       }
     },
-    "/v1/admin/withdrawals/{id}/rival-submit": {
+    "/v1/admin/withdrawals/{id}/provider-submit": {
       "post": {
-        "description": "For rows whose submission definitively failed (the desk shows \"needs attention\"). Safe under double-click: the claim column admits one in-flight create, and a submission whose outcome is still unknown is left for reconciliation rather than retried — a blind retry against a platform with no idempotency key on payouts is a double payment.",
-        "operationId": "AdminMoneyController_retryRivalSubmission",
+        "description": "For rows the provider refused, or held nothing for after the adoption window (the desk shows \"needs attention\"). Safe under double-click: the claim admits one in-flight create, and a submission whose outcome is still unknown is left for reconciliation rather than resent — no provider takes an idempotency key on payouts, so a blind resend pays twice.",
+        "operationId": "AdminMoneyController_resendPayout[0]",
         "parameters": [
           {
             "name": "id",
@@ -11242,7 +11533,53 @@
             "cookie": []
           }
         ],
-        "summary": "Retry submitting an approved withdrawal to the payment platform",
+        "summary": "Resend an approved withdrawal to its payment provider",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/withdrawals/{id}/rival-submit": {
+      "post": {
+        "description": "For rows the provider refused, or held nothing for after the adoption window (the desk shows \"needs attention\"). Safe under double-click: the claim admits one in-flight create, and a submission whose outcome is still unknown is left for reconciliation rather than resent — no provider takes an idempotency key on payouts, so a blind resend pays twice.",
+        "operationId": "AdminMoneyController_resendPayout[1]",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "description": "A unique value per intended action (PLATFORM-CONVENTIONS R-5.2).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WithdrawalRowDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Resend an approved withdrawal to its payment provider",
         "tags": [
           "admin"
         ]
@@ -11487,6 +11824,118 @@
           }
         ],
         "summary": "Mark a payment that needed attention as resolved — clears the flag and its tasks",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/transactions/{id}/attention/finish-deposit": {
+      "patch": {
+        "description": "For a deposit paid on a provider’s page and flagged for a person. `credit` credits the amount the provider reported (rounded down to the wallet’s places); `close` credits nothing. Refuses a deposit that is no longer flagged or already finished.",
+        "operationId": "AdminMoneyController_finishFlaggedDeposit",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "description": "A unique value per intended action (PLATFORM-CONVENTIONS R-5.2).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FinishFlaggedDepositDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FlaggedDepositFinishedDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Credit what arrived on a flagged hosted deposit, or close it without credit",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/transactions/{id}/attention/finish-payout": {
+      "patch": {
+        "description": "For an approved payout the provider holds and the engine flagged for a person. `paid` settles it with the reference of the payment that reached the client; `refund` fails it and returns the amount to their wallet. Refuses a payout that is no longer flagged, or one that never reached the provider (resend or cancel that instead).",
+        "operationId": "AdminMoneyController_finishFlaggedPayout",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "description": "A unique value per intended action (PLATFORM-CONVENTIONS R-5.2).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FinishFlaggedPayoutDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FlaggedPayoutFinishedDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Mark a flagged provider payout paid, or refund the client",
         "tags": [
           "admin"
         ]
@@ -12867,6 +13316,8 @@
               "admin.deposit.submitted",
               "admin.deposit.attention",
               "admin.withdrawal.requested",
+              "withdrawal.payout_submit_failed",
+              "withdrawal.payout_attention",
               "withdrawal.rival_submit_failed",
               "withdrawal.rival_attention",
               "admin.kyc.submitted",
@@ -15472,6 +15923,47 @@
           "proofFields"
         ]
       },
+      "DepositStateDto": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "success",
+              "failure",
+              "rejected"
+            ],
+            "example": "success"
+          },
+          "amount": {
+            "type": "string",
+            "example": "25.50000000",
+            "description": "Credited, once it settled; until then, what was asked."
+          },
+          "requestedAmount": {
+            "type": "string",
+            "nullable": true,
+            "example": "30.00000000",
+            "description": "What the link asked for, when the credited amount differs from it."
+          },
+          "currency": {
+            "type": "string",
+            "example": "USD"
+          },
+          "underReview": {
+            "type": "boolean",
+            "description": "Still open because a PERSON is checking it (money arrived the provider did not confirm, a figure it disputes) — not because nothing has arrived."
+          }
+        },
+        "required": [
+          "state",
+          "amount",
+          "requestedAmount",
+          "currency",
+          "underReview"
+        ]
+      },
       "RequestDepositDto": {
         "type": "object",
         "properties": {
@@ -15539,6 +16031,21 @@
             "nullable": true,
             "example": "https://whish.money/pay/8nQS2mL",
             "description": "The provider's hosted payment page, for a GATEWAY method. Send the client there — they pay on the provider’s own domain, and no card or OTP detail touches this system.\n\nNULL for a manual method, where the client is shown `payTo` and instructions instead. A client MUST branch on this: assuming a link strands a bank-transfer client with nowhere to go, and assuming instructions shows a gateway client an account number that is not how that method works."
+          },
+          "paymentExpiresAt": {
+            "type": "string",
+            "nullable": true,
+            "description": "When the hosted page stops accepting money (ISO), when the provider says — the waiting card’s countdown (0173). Null when unknown or for a manual method."
+          },
+          "returnsAfterPayment": {
+            "type": "boolean",
+            "description": "Whether the provider sends the payer back here after paying (0173). False (3pay) means: open `paymentUrl` in a new tab and keep the client on a live waiting card."
+          },
+          "payWith": {
+            "type": "string",
+            "nullable": true,
+            "example": "USDT on Tron (TRC20)",
+            "description": "What to send when it is not the wallet currency — credited at par. Null when the client pays in the wallet currency itself."
           }
         },
         "required": [
@@ -15549,7 +16056,10 @@
           "method",
           "state",
           "createdAt",
-          "paymentUrl"
+          "paymentUrl",
+          "paymentExpiresAt",
+          "returnsAfterPayment",
+          "payWith"
         ]
       },
       "WithdrawalMethodDto": {
@@ -15585,13 +16095,25 @@
             "nullable": true,
             "example": "TRC20",
             "description": "A crypto rail’s network: an address is valid on one only."
+          },
+          "currencies": {
+            "nullable": true,
+            "example": [
+              "USD"
+            ],
+            "description": "The wallet currencies it pays out (0173); null for any. A withdrawal from another currency’s wallet is refused.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         },
         "required": [
           "key",
           "name",
           "destinationKind",
-          "destinationNetwork"
+          "destinationNetwork",
+          "currencies"
         ]
       },
       "RequestWithdrawalDto": {
@@ -15715,6 +16237,11 @@
             "type": "string",
             "description": "The payment platform's OWN id for this movement — what Rival shows as its reference, and the identifier its team can look up directly. Null for anything that never went through a rail (a manual desk credit) and for a row whose create is still in flight.",
             "nullable": true
+          },
+          "providerPaymentId": {
+            "type": "string",
+            "nullable": true,
+            "description": "The payment provider’s own id for this movement (its invoice, its payment id) — what a ticket quotes beside our `providerRef`."
           },
           "destination": {
             "type": "string",
@@ -16074,7 +16601,8 @@
               "offered",
               "disabled",
               "provider_off",
-              "provider_not_configured"
+              "provider_not_configured",
+              "channel_off"
             ],
             "description": "Whether clients are offered it: `offered`; `disabled` (switched off here); `provider_off` or `provider_not_configured` (enabled, but its provider cannot take money, so clients do not see it)."
           }
@@ -16354,6 +16882,17 @@
             ],
             "description": "Who pays a request on it now: the provider (an automated payout it is switched on for), or the desk by hand — always for a desk or cash rail, and for an automated one while its provider is off or not set up."
           },
+          "availability": {
+            "type": "string",
+            "enum": [
+              "offered",
+              "disabled",
+              "provider_off",
+              "provider_not_configured",
+              "channel_off"
+            ],
+            "description": "Whether clients are offered it, and if not, why (0173): its network switched off for payouts, or a provider that waits rather than letting the desk pay it by hand."
+          },
           "createdAt": {
             "format": "date-time",
             "type": "string"
@@ -16375,6 +16914,7 @@
           "providerCode",
           "channelCode",
           "paidBy",
+          "availability",
           "createdAt",
           "updatedAt"
         ]
@@ -16596,6 +17136,35 @@
           "acceptsReceipt": {
             "type": "boolean",
             "description": "Deposits paid outside the platform may ask for a receipt."
+          },
+          "assetLabel": {
+            "type": "string",
+            "nullable": true,
+            "example": "USDT on Tron (TRC20)",
+            "description": "What moves at the provider when it is not the wallet currency — credited and paid at par (0173). Null when the provider moves the wallet currency itself."
+          },
+          "creditPolicy": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "exact",
+              "received"
+            ],
+            "description": "Hosted deposits: `exact` credits the link’s amount (any other figure is a person’s decision); `received` credits what arrived, rounded down. Null on other channels."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "The admin’s switch for this channel in this direction (0173). Off: its methods are hidden and new movements refused; movements already under way still finish."
+          },
+          "offReason": {
+            "type": "string",
+            "nullable": true,
+            "description": "Why it was switched off."
+          },
+          "offSince": {
+            "type": "string",
+            "nullable": true,
+            "description": "When it was switched off (ISO)."
           }
         },
         "required": [
@@ -16608,7 +17177,12 @@
           "destinationKind",
           "destinationNetwork",
           "destinationLabel",
-          "acceptsReceipt"
+          "acceptsReceipt",
+          "assetLabel",
+          "creditPolicy",
+          "enabled",
+          "offReason",
+          "offSince"
         ]
       },
       "ProviderMethodDto": {
@@ -16648,7 +17222,8 @@
               "offered",
               "disabled",
               "provider_off",
-              "provider_not_configured"
+              "provider_not_configured",
+              "channel_off"
             ],
             "description": "Deposit methods: whether clients are offered it, and if not, why. A payout method is offered whenever it is enabled — see `paidBy`."
           },
@@ -16697,6 +17272,69 @@
           "succeeded",
           "failed",
           "pending"
+        ]
+      },
+      "ProviderBooksDto": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "starting",
+              "matches",
+              "differs",
+              "incomplete"
+            ],
+            "description": "`starting`: waiting for a reading taken while nothing is travelling. `matches` / `differs`: the last comparison. `incomplete`: a movement has no figure from the provider, so the last reading was not compared."
+          },
+          "asset": {
+            "type": "string",
+            "nullable": true,
+            "example": "USDT"
+          },
+          "available": {
+            "type": "string",
+            "nullable": true,
+            "example": "80342.55000000",
+            "description": "What the provider held at the last check."
+          },
+          "expected": {
+            "type": "string",
+            "nullable": true,
+            "example": "80342.55000000",
+            "description": "What our books say it should hold."
+          },
+          "difference": {
+            "type": "string",
+            "nullable": true,
+            "example": "0.00000000",
+            "description": "Held minus expected: positive, the provider holds more than our books say."
+          },
+          "checkedAt": {
+            "type": "string",
+            "nullable": true,
+            "description": "The last check (ISO)."
+          },
+          "startedAt": {
+            "type": "string",
+            "nullable": true,
+            "description": "Where the books start (ISO)."
+          },
+          "differsSince": {
+            "type": "string",
+            "nullable": true,
+            "description": "Since when the difference stands (ISO); a person is paged after two hours."
+          }
+        },
+        "required": [
+          "status",
+          "asset",
+          "available",
+          "expected",
+          "difference",
+          "checkedAt",
+          "startedAt",
+          "differsSince"
         ]
       },
       "PaymentProviderDto": {
@@ -16796,6 +17434,29 @@
           "updatedAt": {
             "type": "string",
             "nullable": true
+          },
+          "auditsRecords": {
+            "type": "boolean",
+            "description": "Are this provider’s own records audited for movements no transaction here explains (0174)?"
+          },
+          "unexplainedRecords": {
+            "type": "number",
+            "description": "Movements at the provider no transaction here explains, not yet acknowledged.",
+            "example": 0
+          },
+          "books": {
+            "nullable": true,
+            "description": "Its balance against our books — null for a provider with no balance of ours.",
+            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ProviderBooksDto"
+              }
+            ]
+          },
+          "exchangeLog": {
+            "type": "boolean",
+            "description": "Does it keep an exchange log (every call and delivery, kept 90 days)?"
           }
         },
         "required": [
@@ -16814,7 +17475,11 @@
           "channels",
           "methods",
           "last24h",
-          "updatedAt"
+          "updatedAt",
+          "auditsRecords",
+          "unexplainedRecords",
+          "books",
+          "exchangeLog"
         ]
       },
       "ProviderEventDto": {
@@ -16952,6 +17617,198 @@
           "secret",
           "fingerprint",
           "webhookEndpoint"
+        ]
+      },
+      "SetProviderChannelDto": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string",
+            "maxLength": 500,
+            "description": "Required to switch a channel off — shown on the desk and the methods."
+          }
+        },
+        "required": [
+          "enabled"
+        ]
+      },
+      "UnmatchedProviderRecordDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "subject": {
+            "type": "string",
+            "enum": [
+              "payment",
+              "payout"
+            ]
+          },
+          "providerId": {
+            "type": "string",
+            "description": "The provider’s id for it.",
+            "example": "WD-1788182251668-6a47bbcf"
+          },
+          "rawStatus": {
+            "type": "string",
+            "example": "completed"
+          },
+          "amount": {
+            "type": "string",
+            "nullable": true,
+            "example": "500.00000000"
+          },
+          "asset": {
+            "type": "string",
+            "nullable": true,
+            "example": "USDT-TRC20"
+          },
+          "counterparty": {
+            "type": "string",
+            "nullable": true,
+            "description": "The address paid, or the deposit address, as the provider reported it."
+          },
+          "reference": {
+            "type": "string",
+            "nullable": true,
+            "description": "Our reference, when echoed."
+          },
+          "occurredAt": {
+            "type": "string",
+            "description": "When the provider recorded it (ISO)."
+          },
+          "foundAt": {
+            "type": "string",
+            "description": "When the audit filed it (ISO)."
+          },
+          "matchedTransactionId": {
+            "type": "string",
+            "nullable": true,
+            "description": "A transaction that holds it since."
+          },
+          "acknowledgedAt": {
+            "type": "string",
+            "nullable": true
+          },
+          "acknowledgement": {
+            "type": "string",
+            "nullable": true,
+            "description": "Why it is a company movement."
+          }
+        },
+        "required": [
+          "id",
+          "subject",
+          "providerId",
+          "rawStatus",
+          "amount",
+          "asset",
+          "counterparty",
+          "reference",
+          "occurredAt",
+          "foundAt",
+          "matchedTransactionId",
+          "acknowledgedAt",
+          "acknowledgement"
+        ]
+      },
+      "ProviderExchangeDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "number",
+            "description": "Ever-increasing; pass the last one as `before` for older ones."
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "outbound",
+              "inbound"
+            ],
+            "description": "We called it, or it called us."
+          },
+          "method": {
+            "type": "string",
+            "example": "POST"
+          },
+          "path": {
+            "type": "string",
+            "example": "/withdrawal-request",
+            "description": "With its query, when it had one."
+          },
+          "requestBody": {
+            "type": "string",
+            "nullable": true
+          },
+          "status": {
+            "type": "number",
+            "nullable": true,
+            "description": "The provider’s answer (outbound) or ours (inbound); null when none came."
+          },
+          "responseBody": {
+            "type": "string",
+            "nullable": true
+          },
+          "error": {
+            "type": "string",
+            "nullable": true,
+            "description": "What went wrong, when it did."
+          },
+          "durationMs": {
+            "type": "number",
+            "nullable": true
+          },
+          "reference": {
+            "type": "string",
+            "nullable": true,
+            "description": "Ours or the provider’s id for what it was about: an OX- reference, a withdrawal."
+          },
+          "occurredAt": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "direction",
+          "method",
+          "path",
+          "requestBody",
+          "status",
+          "responseBody",
+          "error",
+          "durationMs",
+          "reference",
+          "occurredAt"
+        ]
+      },
+      "ResetProviderBooksDto": {
+        "type": "object",
+        "properties": {
+          "note": {
+            "type": "string",
+            "description": "Why the books restart — required, kept in the audit log.",
+            "example": "Topped up 5,000 USDT from the treasury wallet."
+          }
+        },
+        "required": [
+          "note"
+        ]
+      },
+      "AcknowledgeProviderRecordDto": {
+        "type": "object",
+        "properties": {
+          "note": {
+            "type": "string",
+            "description": "What this movement was — required, shown on the record and in the audit log.",
+            "example": "Treasury sweep to the cold wallet, approved by finance."
+          }
+        },
+        "required": [
+          "note"
         ]
       },
       "StatementLineDto": {
@@ -22752,6 +23609,47 @@
           "label"
         ]
       },
+      "PayoutPlanDto": {
+        "type": "object",
+        "properties": {
+          "payer": {
+            "type": "string",
+            "enum": [
+              "provider",
+              "desk",
+              "paused"
+            ]
+          },
+          "provider": {
+            "type": "string",
+            "nullable": true,
+            "description": "The provider’s name."
+          },
+          "reason": {
+            "type": "string",
+            "nullable": true,
+            "description": "Why nobody can pay it right now — the sentence approval would refuse with."
+          },
+          "gross": {
+            "type": "string",
+            "nullable": true,
+            "description": "What the provider will be asked to move (a fee it deducts added on top)."
+          },
+          "fee": {
+            "type": "string",
+            "nullable": true,
+            "description": "Its fee, when known."
+          },
+          "net": {
+            "type": "string",
+            "nullable": true,
+            "description": "What arrives."
+          }
+        },
+        "required": [
+          "payer"
+        ]
+      },
       "WithdrawalUserDto": {
         "type": "object",
         "properties": {
@@ -22884,6 +23782,56 @@
             "nullable": true,
             "description": "WHY the row needs attention, in words the operator can act on. Written whenever rivalNeedsAttention flips true; null once a retry lands or the flag was never raised."
           },
+          "providerPayoutId": {
+            "type": "string",
+            "nullable": true,
+            "description": "The provider’s id for the payout, once it holds it. Null before."
+          },
+          "providerSubmittedAt": {
+            "format": "date-time",
+            "type": "string",
+            "nullable": true,
+            "description": "When the payout was sent. Set with no provider id = its outcome is being reconciled."
+          },
+          "providerRequestAmount": {
+            "type": "string",
+            "nullable": true,
+            "description": "What the provider was asked to move (the amount grossed up by its fee)."
+          },
+          "providerFee": {
+            "type": "string",
+            "nullable": true,
+            "description": "The fee the provider reported."
+          },
+          "providerNetAmount": {
+            "type": "string",
+            "nullable": true,
+            "description": "What the provider reported delivering to the destination."
+          },
+          "providerStatus": {
+            "type": "string",
+            "nullable": true,
+            "description": "The provider’s own last word on the payout, raw (\"executing\", \"COMPLETED\")."
+          },
+          "needsAttention": {
+            "type": "boolean",
+            "description": "A person must look at this payout (every provider)."
+          },
+          "attentionReason": {
+            "type": "string",
+            "nullable": true,
+            "description": "WHY it needs attention, in words the operator can act on."
+          },
+          "payoutPlan": {
+            "nullable": true,
+            "description": "Who will pay an open withdrawal and what it costs; null once it is decided.",
+            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/PayoutPlanDto"
+              }
+            ]
+          },
           "providerNote": {
             "type": "string",
             "nullable": true,
@@ -22921,6 +23869,11 @@
             "type": "string",
             "nullable": true
           },
+          "providerPaymentId": {
+            "type": "string",
+            "nullable": true,
+            "description": "The provider’s own id for the movement (0173); `rivalExternalId` is its old name."
+          },
           "createdAt": {
             "format": "date-time",
             "type": "string",
@@ -22945,6 +23898,7 @@
           "methodName",
           "requestedAt",
           "rivalNeedsAttention",
+          "needsAttention",
           "user"
         ]
       },
@@ -23407,6 +24361,112 @@
           "needsAttention"
         ]
       },
+      "FinishFlaggedDepositDto": {
+        "type": "object",
+        "properties": {
+          "decision": {
+            "type": "string",
+            "enum": [
+              "credit",
+              "close"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500,
+            "example": "Confirmed on the provider dashboard: 90 USDT arrived on the 100 link."
+          }
+        },
+        "required": [
+          "decision",
+          "reason"
+        ]
+      },
+      "FlaggedDepositFinishedDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "success",
+              "failure"
+            ]
+          },
+          "amount": {
+            "type": "string",
+            "description": "The credited amount (decimal string) — or the asked one when closed."
+          },
+          "currency": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "state",
+          "amount",
+          "currency"
+        ]
+      },
+      "FinishFlaggedPayoutDto": {
+        "type": "object",
+        "properties": {
+          "decision": {
+            "type": "string",
+            "enum": [
+              "paid",
+              "refund"
+            ]
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500,
+            "example": "The provider force-routed it to our cold wallet; paid the client from it."
+          },
+          "reference": {
+            "type": "string",
+            "maxLength": 128,
+            "description": "Required to mark it paid: the reference of the payment that reached the client.",
+            "example": "4839cb944414ae2559c327…"
+          }
+        },
+        "required": [
+          "decision",
+          "reason"
+        ]
+      },
+      "FlaggedPayoutFinishedDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "success",
+              "failure"
+            ]
+          },
+          "amount": {
+            "type": "string",
+            "example": "100.00000000"
+          },
+          "currency": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "state",
+          "amount",
+          "currency"
+        ]
+      },
       "AdminTransactionSummaryRowDto": {
         "type": "object",
         "properties": {
@@ -23564,6 +24624,11 @@
             "type": "string",
             "description": "The payment platform's OWN id for this movement — what Rival shows as its reference and what its team can look up directly. Null for a manual desk credit, which went through no rail.",
             "nullable": true
+          },
+          "providerPaymentId": {
+            "type": "string",
+            "nullable": true,
+            "description": "The provider’s own id for the movement (0173); `rivalExternalId` is its old name."
           },
           "destination": {
             "type": "string",

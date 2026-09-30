@@ -1,5 +1,13 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsBoolean, IsIn, IsObject, IsOptional } from 'class-validator';
+import {
+  IsBoolean,
+  IsIn,
+  IsNotEmpty,
+  IsObject,
+  IsOptional,
+  IsString,
+  MaxLength,
+} from 'class-validator';
 import { NoClientFields } from '../../../common/security/client-field.decorator';
 import { METHOD_AVAILABILITIES, type MethodAvailability } from '../providers/provider-status';
 
@@ -97,6 +105,55 @@ export class ProviderChannelDto {
 
   @ApiProperty({ description: 'Deposits paid outside the platform may ask for a receipt.' })
   acceptsReceipt: boolean;
+
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    example: 'USDT on Tron (TRC20)',
+    description:
+      'What moves at the provider when it is not the wallet currency — credited and paid at ' +
+      'par (0173). Null when the provider moves the wallet currency itself.',
+  })
+  assetLabel: string | null;
+
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    enum: ['exact', 'received'],
+    description:
+      'Hosted deposits: `exact` credits the link’s amount (any other figure is a person’s ' +
+      'decision); `received` credits what arrived, rounded down. Null on other channels.',
+  })
+  creditPolicy: 'exact' | 'received' | null;
+
+  @ApiProperty({
+    description:
+      'The admin’s switch for this channel in this direction (0173). Off: its methods are ' +
+      'hidden and new movements refused; movements already under way still finish.',
+  })
+  enabled: boolean;
+
+  @ApiProperty({ type: String, nullable: true, description: 'Why it was switched off.' })
+  offReason: string | null;
+
+  @ApiProperty({ type: String, nullable: true, description: 'When it was switched off (ISO).' })
+  offSince: string | null;
+}
+
+/** Switch one channel on or off in one direction (0173). */
+export class SetProviderChannelDto {
+  @ApiProperty()
+  @IsBoolean()
+  enabled: boolean;
+
+  @ApiPropertyOptional({
+    maxLength: 500,
+    description: 'Required to switch a channel off — shown on the desk and the methods.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  reason?: string;
 }
 
 /** A method bound to one of the provider's channels. */
@@ -165,6 +222,62 @@ export class ProviderCheckDto {
 }
 
 /** A payment provider: its state, its settings, its channels and the methods on them. */
+/**
+ * A prefunded provider's balance against our books (0175; 3pay's guide §6.5
+ * step 3). Money figures are decimal strings in the provider's asset.
+ */
+@NoClientFields('operator figures - a provider balance against our books, no client attribute')
+export class ProviderBooksDto {
+  @ApiProperty({
+    enum: ['starting', 'matches', 'differs', 'incomplete'],
+    description:
+      '`starting`: waiting for a reading taken while nothing is travelling. `matches` / ' +
+      '`differs`: the last comparison. `incomplete`: a movement has no figure from the ' +
+      'provider, so the last reading was not compared.',
+  })
+  status: 'starting' | 'matches' | 'differs' | 'incomplete';
+
+  @ApiProperty({ type: String, nullable: true, example: 'USDT' })
+  asset: string | null;
+
+  @ApiProperty({
+    type: 'string',
+    nullable: true,
+    example: '80342.55000000',
+    description: 'What the provider held at the last check.',
+  })
+  available: string | null;
+
+  @ApiProperty({
+    type: 'string',
+    nullable: true,
+    example: '80342.55000000',
+    description: 'What our books say it should hold.',
+  })
+  expected: string | null;
+
+  @ApiProperty({
+    type: 'string',
+    nullable: true,
+    example: '0.00000000',
+    description: 'Held minus expected: positive, the provider holds more than our books say.',
+  })
+  difference: string | null;
+
+  @ApiProperty({ type: String, nullable: true, description: 'The last check (ISO).' })
+  checkedAt: string | null;
+
+  @ApiProperty({ type: String, nullable: true, description: 'Where the books start (ISO).' })
+  startedAt: string | null;
+
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    description: 'Since when the difference stands (ISO); a person is paged after two hours.',
+  })
+  differsSince: string | null;
+}
+
 @NoClientFields('operator configuration - a payment provider, no client attribute')
 export class PaymentProviderDto {
   @ApiProperty({ example: 'rival' })
@@ -228,6 +341,155 @@ export class PaymentProviderDto {
 
   @ApiProperty({ type: String, nullable: true })
   updatedAt: string | null;
+
+  @ApiProperty({
+    description:
+      'Are this provider’s own records audited for movements no transaction here explains (0174)?',
+  })
+  auditsRecords: boolean;
+
+  @ApiProperty({
+    description: 'Movements at the provider no transaction here explains, not yet acknowledged.',
+    example: 0,
+  })
+  unexplainedRecords: number;
+
+  @ApiProperty({
+    type: ProviderBooksDto,
+    nullable: true,
+    description: 'Its balance against our books — null for a provider with no balance of ours.',
+  })
+  books: ProviderBooksDto | null;
+
+  @ApiProperty({
+    description: 'Does it keep an exchange log (every call and delivery, kept 90 days)?',
+  })
+  exchangeLog: boolean;
+}
+
+/**
+ * A movement the provider recorded that no transaction here explains (0174):
+ * a payout made by hand in its dashboard, a deposit on a link this platform
+ * never made. Named by the provider, never tied to a client here.
+ */
+@NoClientFields('operator records - a provider’s own movement, tied to no client here')
+export class UnmatchedProviderRecordDto {
+  @ApiProperty()
+  id: string;
+
+  @ApiProperty({ enum: ['payment', 'payout'] })
+  subject: 'payment' | 'payout';
+
+  @ApiProperty({ description: 'The provider’s id for it.', example: 'WD-1788182251668-6a47bbcf' })
+  providerId: string;
+
+  @ApiProperty({ example: 'completed' })
+  rawStatus: string;
+
+  @ApiProperty({ type: 'string', nullable: true, example: '500.00000000' })
+  amount: string | null;
+
+  @ApiProperty({ type: String, nullable: true, example: 'USDT-TRC20' })
+  asset: string | null;
+
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    description: 'The address paid, or the deposit address, as the provider reported it.',
+  })
+  counterparty: string | null;
+
+  @ApiProperty({ type: String, nullable: true, description: 'Our reference, when echoed.' })
+  reference: string | null;
+
+  @ApiProperty({ description: 'When the provider recorded it (ISO).' })
+  occurredAt: string;
+
+  @ApiProperty({ description: 'When the audit filed it (ISO).' })
+  foundAt: string;
+
+  @ApiProperty({ type: String, nullable: true, description: 'A transaction that holds it since.' })
+  matchedTransactionId: string | null;
+
+  @ApiProperty({ type: String, nullable: true })
+  acknowledgedAt: string | null;
+
+  @ApiProperty({ type: String, nullable: true, description: 'Why it is a company movement.' })
+  acknowledgement: string | null;
+}
+
+export class AcknowledgeProviderRecordDto {
+  @ApiProperty({
+    description: 'What this movement was — required, shown on the record and in the audit log.',
+    example: 'Treasury sweep to the cold wallet, approved by finance.',
+  })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(500)
+  note: string;
+}
+
+export class ResetProviderBooksDto {
+  @ApiProperty({
+    description: 'Why the books restart — required, kept in the audit log.',
+    example: 'Topped up 5,000 USDT from the treasury wallet.',
+  })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(500)
+  note: string;
+}
+
+/**
+ * One call to a provider, or one delivery from it (0175) — kept 90 days, as
+ * sent and received. Never a credential (headers are not kept) and never a
+ * webhook signature.
+ */
+@NoClientFields(
+  'provider API log - kept only for providers sent no client identity (amounts, references, ' +
+    'payout addresses; client.payoutDestination is not maskable), never a credential',
+)
+export class ProviderExchangeDto {
+  @ApiProperty({ description: 'Ever-increasing; pass the last one as `before` for older ones.' })
+  id: number;
+
+  @ApiProperty({ enum: ['outbound', 'inbound'], description: 'We called it, or it called us.' })
+  direction: 'outbound' | 'inbound';
+
+  @ApiProperty({ example: 'POST' })
+  method: string;
+
+  @ApiProperty({ example: '/withdrawal-request', description: 'With its query, when it had one.' })
+  path: string;
+
+  @ApiProperty({ type: String, nullable: true })
+  requestBody: string | null;
+
+  @ApiProperty({
+    type: Number,
+    nullable: true,
+    description: 'The provider’s answer (outbound) or ours (inbound); null when none came.',
+  })
+  status: number | null;
+
+  @ApiProperty({ type: String, nullable: true })
+  responseBody: string | null;
+
+  @ApiProperty({ type: String, nullable: true, description: 'What went wrong, when it did.' })
+  error: string | null;
+
+  @ApiProperty({ type: Number, nullable: true })
+  durationMs: number | null;
+
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    description: 'Ours or the provider’s id for what it was about: an OX- reference, a withdrawal.',
+  })
+  reference: string | null;
+
+  @ApiProperty()
+  occurredAt: string;
 }
 
 /**

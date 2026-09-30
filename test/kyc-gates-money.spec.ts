@@ -83,7 +83,6 @@ beforeAll(async () => {
     notificationsStubAs(),
     transfersStubAs(),
     transferExecutorStubAs(),
-    new AuditLogStore(ctx.db),
   );
 
   /*

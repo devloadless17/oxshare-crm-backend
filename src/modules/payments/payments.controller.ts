@@ -39,11 +39,17 @@ import { JwtAuthGuard } from '../identity/guards/jwt-auth.guard';
 import { EmailVerifiedGuard } from '../identity/guards/email-verified.guard';
 import { KycVerifiedGuard } from '../identity/guards/kyc-verified.guard';
 import { User } from '../../store/users.store';
+import { HostedDepositsService } from './core/hosted-deposits.service';
 import { TransactionsService } from './transactions.service';
 import { transactionView } from './transaction-view';
 import { transferView } from './transfer-view';
 import { RequestWithdrawalDto, TransactionDto, WithdrawalMethodDto } from './dto/withdrawal.dto';
-import { DepositRequestDto, OfflineDepositDto, RequestDepositDto } from './dto/deposit.dto';
+import {
+  DepositRequestDto,
+  DepositStateDto,
+  OfflineDepositDto,
+  RequestDepositDto,
+} from './dto/deposit.dto';
 import {
   ListTransactionsQueryDto,
   TransactionPageDto,
@@ -96,6 +102,8 @@ export class PaymentsController {
     /* The receipt an offline deposit carries. `UploadsModule` is @Global(), so
        this needs no module import. */
     private readonly files: StoredFilesService,
+    /* Every hosted deposit settles through the core's one credit path (0173). */
+    private readonly hostedDeposits: HostedDepositsService,
   ) {}
 
   /**
@@ -170,6 +178,7 @@ export class PaymentsController {
   @UseGuards(KycVerifiedGuard)
   @ApiCookieAuth()
   @ApiOperation({ summary: "The current state of one of the caller's own gateway deposits" })
+  @ApiOkResponse({ type: DepositStateDto })
   depositStatus(
     @Param('reference') reference: string,
     @Query('method') method: string | undefined,
@@ -189,12 +198,13 @@ export class PaymentsController {
       'Safe to call repeatedly: settlement is idempotent, so this and the provider callback ' +
       "converge on the same outcome whichever arrives first. Only the deposit's owner may ask.",
   })
+  @ApiOkResponse({ type: DepositStateDto })
   settleDeposit(
     @Param('reference') reference: string,
     @Query('method') method: string | undefined,
     @Req() req: Request & { user: User },
   ) {
-    return this.transactions.settleGatewayDeposit(method || undefined, reference, {
+    return this.hostedDeposits.settle(method || undefined, reference, {
       ownerId: req.user.id,
     });
   }

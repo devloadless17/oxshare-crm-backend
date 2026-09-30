@@ -3,7 +3,7 @@ import { AdminSettingsController } from './admin-settings.controller';
 import { SettingsService } from './settings.service';
 import { RivalSettingsService } from './rival-settings.service';
 import { AdminAuthModule } from '../admin/admin-auth.module';
-import { RivalModule } from '../payments/rival/rival.module';
+import { RivalModule } from '../payments/providers/rival/rival.module';
 
 /**
  * The Trading, Email and Payments (Rival) tabs of the admin settings screen.

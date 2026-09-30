@@ -109,4 +109,88 @@ describe('the import bans, each attempted', () => {
   it('still lets a CONTROLLER throw HTTP — the transport edge is where it belongs', async () => {
     expect(await firedAt('src/modules/compliance/kyc.controller.ts', HTTP)).toEqual([]);
   });
+
+  /*
+   * THE PAYMENTS CORE AND ITS PROVIDERS (0173): adapters translate, the core
+   * decides. Each boundary attempted from a real provider file and a real core
+   * file, with the imports each must keep.
+   */
+  const ADAPTER = 'src/modules/payments/providers/rival/rival.provider.ts';
+  const importing = (from: string, name = 'X') =>
+    `import { ${name} } from '${from}';\nexport const x = ${name};\n`;
+
+  it('keeps a provider out of ANOTHER provider’s folder', async () => {
+    expect(await firedAt(ADAPTER, importing('../threepay/threepay.client'))).toContain(
+      'no-restricted-imports',
+    );
+  });
+
+  it('keeps a provider out of the core and the payments module’s money services', async () => {
+    expect(await firedAt(ADAPTER, importing('../../core/payout-engine.service'))).toContain(
+      'no-restricted-imports',
+    );
+    expect(await firedAt(ADAPTER, importing('../../transactions.service'))).toContain(
+      'no-restricted-imports',
+    );
+  });
+
+  it('keeps a provider from moving money — no wallet, no database, no money store', async () => {
+    expect(await firedAt(ADAPTER, importing('../../../wallet/wallet.service'))).toContain(
+      'no-restricted-imports',
+    );
+    expect(await firedAt(ADAPTER, importing('drizzle-orm', 'eq'))).toContain(
+      'no-restricted-imports',
+    );
+    expect(await firedAt(ADAPTER, importing('../../../../database/schema'))).toContain(
+      'no-restricted-imports',
+    );
+    expect(await firedAt(ADAPTER, importing('../../../../store/ledger.store'))).toContain(
+      'no-restricted-imports',
+    );
+  });
+
+  it('lets a provider use the contract, the shared layers and its own settings store', async () => {
+    expect(await firedAt(ADAPTER, importing('../payment-provider'))).toEqual([]);
+    expect(await firedAt(ADAPTER, importing('./rival.client'))).toEqual([]);
+    expect(await firedAt(ADAPTER, importing('../../../../common/errors/domain-errors'))).toEqual(
+      [],
+    );
+    expect(await firedAt(ADAPTER, importing('../../../../store/payment-providers.store'))).toEqual(
+      [],
+    );
+  });
+
+  it('keeps the core from naming a provider — only the module wires them', async () => {
+    expect(
+      await firedAt(
+        'src/modules/payments/core/payout-engine.service.ts',
+        importing('../providers/rival/rival.client'),
+      ),
+    ).toContain('no-restricted-imports');
+    expect(
+      await firedAt(
+        'src/modules/payments/transactions.service.ts',
+        importing('./providers/rival/rival.provider'),
+      ),
+    ).toContain('no-restricted-imports');
+    expect(
+      await firedAt(
+        'src/modules/payments/providers/payment-provider-registry.ts',
+        importing('./rival/rival.provider'),
+      ),
+    ).toContain('no-restricted-imports');
+    // …while the contract and the registry stay reachable, and the module wires.
+    expect(
+      await firedAt(
+        'src/modules/payments/core/payout-engine.service.ts',
+        importing('../providers/payment-provider-registry'),
+      ),
+    ).toEqual([]);
+    expect(
+      await firedAt(
+        'src/modules/payments/payments.module.ts',
+        importing('./providers/rival/rival.provider'),
+      ),
+    ).toEqual([]);
+  });
 });

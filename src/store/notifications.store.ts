@@ -147,7 +147,7 @@ const OPEN_RULES: Readonly<
   }),
   'transaction:needs-attention': (id) => ({
     table: transactions,
-    where: and(eq(transactions.id, id), eq(transactions.rivalNeedsAttention, true)),
+    where: and(eq(transactions.id, id), eq(transactions.needsAttention, true)),
   }),
   'kyc:awaiting-review': (id) => ({
     table: kycSubmissions,

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { isPayerReachableUrl } from '../src/modules/payments/rival/payer-reachable-url';
+import { isPayerReachableUrl } from '../src/modules/payments/core/payer-reachable-url';
 
 /**
  * Pins the CRM's mirror of Rival's redirect-URL rule

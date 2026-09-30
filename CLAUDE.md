@@ -1258,9 +1258,10 @@ Three layers, and every money path reads them rather than a name (`modules/payme
   services only.
 - **State, one rule** (`provider-status.ts`): connected / unverified / failing / off / not_configured
   / sandbox_refused. A DEPOSIT method is offered only while its provider is usable (`availability`),
-  and switching one on while it is not is refused with the reason. A PAYOUT method is never hidden
-  for its provider's sake: the desk pays an automated one by hand while the provider is off
-  (`paidBy`).
+  and switching one on while it is not is refused with the reason. A PAYOUT method's availability
+  and payer come from `payoutMethodStatus`: the desk pays an automated one by hand while its
+  provider is off only if the provider declares `whenUnavailable: 'desk'` (Rival); a `wait`
+  provider's methods are hidden. A switched-off channel hides its methods either way (0173).
 - **Settings are the adapter's declared fields**, edited on `admin/payment-providers`
   (`payments.providers.view/.edit`, granted by 0168 to whoever held `settings.rival.*`). Secrets are
   sealed and write-only; a GENERATED one (a webhook key) is only ever rotated and shown once; a URL
@@ -1274,22 +1275,195 @@ Three layers, and every money path reads them rather than a name (`modules/payme
   (applied / ignored / rejected / failed). One row per fact by `UNIQUE(provider_code, event_key)`;
   only a `failed` row is replaced by its retry. It never throws and never runs inside a money
   transaction.
-- **Inbound events**: `POST /v1/payments/providers/:code/webhook` dispatches to the provider's
-  `ProviderWebhookReceiver`; Rival keeps `/v1/payments/rival/webhook` (its dashboard holds it).
+- **Inbound events**: `POST /v1/payments/providers/:code/webhook` → the provider's receiver →
+  the core's `ProviderWebhookIngress`. Rival keeps `/v1/payments/rival/webhook` (its dashboard holds
+  it) through the generic legacy door `POST /v1/payments/:code/webhook`, open only to an adapter
+  whose `webhookPath` is exactly that address.
 
-### Adding a provider (the USDT one is next)
+### The payments CORE: adapters translate, the core decides (0173, 30 Sep 2026)
 
-1. An adapter in `providers/<code>.provider.ts`: its channels, config fields, `isUsable()` (switched
-   on, set up, and refusing a sandbox row on a production deployment), `testConnection`,
-   `settingsChanged`, and `startPayment`/`checkPayment` for any `redirect` deposit channel.
-2. Register it in `PaymentsModule` (`PAYMENT_PROVIDER_ADAPTERS`) and in the `ADAPTERS` list of
-   `test/payment-provider-contract.spec.ts`, which it must pass.
-3. A migration seeding its `payment_providers` row (disabled, empty).
-4. Its inbound events: a `ProviderWebhookReceiver` in `PAYMENT_PROVIDER_WEBHOOKS` — verify the raw
-   bytes, refuse replays, record each report with `PaymentProviderEventsStore.append`.
-5. Payouts it automates: its own submit/reconcile service on a `JobLeaseService` lease, as
-   `RivalWithdrawalsService` does. (The provider-neutral reference/attention columns that replace
-   `rival_*` land with the first second provider.)
+The money flows were Rival's until 0173: a Rival-only payout service on `rival_*` columns, approval
+hardcoded to Rival, deposit settlement reading `rival_external_id`. A second provider would have
+copied the riskiest code. Now the owner's rule (30 Sep 2026: "world class") is structural:
+
+| `modules/payments/core/` — DECIDES, written once                                                                                                     | `modules/payments/providers/<code>/` — TRANSLATES, one provider each                     |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `payout-engine.service.ts`: claim first, hold an unknown outcome, adopt a lost payout, poll, settle/refund, shortfall, disagreements, cancel, resend | the HTTP client, auth, timeouts; every answer mapped to accepted / refused / **unknown** |
+| `hosted-deposits.service.ts`: the ONE path that credits a hosted deposit; the asset check; the credit policy; late credit; the desk's finish actions | signature verification; a delivery turned into NOTICES                                   |
+| `provider-reconcile.scheduler.ts`: `payments.reconcileProviders`, one lease per provider                                                             | the provider's status words → ours                                                       |
+| `provider-webhook-ingress.service.ts`: notices → the engines                                                                                         | channels, config fields, validators, the fee quote                                       |
+| `channel-switches.service.ts`: a network on/off per direction                                                                                        | nothing that touches money or the database                                               |
+
+- **LINT ENFORCES IT** (`eslint.config.mjs`, `PROVIDER_BOUNDARY` / `NO_PROVIDER_FOLDER`; proven in
+  `test/lint-composition.spec.ts`):
+  - a provider folder may import only the contract (`../payment-provider`), `common/`, and its own
+    settings stores — never another provider, the core, a feature module, drizzle or the money
+    stores. **An adapter cannot move money.**
+  - Nothing in the payments module outside `providers/<code>/` imports a provider folder, except
+    `payments.module.ts`, which wires them.
+- **A provider's differences are DECLARED** (`providers/payment-provider.ts`), never an `if` on its
+  code:
+  - `payouts.idempotency`: `key` | `reference` (Rival: `crm:<id>` notes) | `none` (3pay).
+  - `payouts.whenUnavailable`: `desk` (Rival: the desk pays by hand while it is off) | `wait` (3pay:
+    hidden and paused).
+  - `payouts.ratePerMinute`, `cancellable`, `quote` (the fee gross-up), `adoptWindowMs`.
+  - A channel's `creditPolicy` (`exact` | `received`), `asset` (what moves at the provider, at par
+    with the wallet currency), `hostedPageReturns`, `destination.normalize`.
+  - A new KIND of money movement (cards/chargebacks, a static address per client, FX with rates)
+    is a core feature, added once.
+- **The boot refuses** an automated payout channel without payout operations (approval would mark
+  it PAID with nothing sent), or a hosted deposit its adapter cannot open or check
+  (`assertWellDeclared`).
+- **THE DOORBELL RULE.** A verified webhook never moves money by itself. Its receiver returns
+  notices; the core re-reads the movement through the adapter and applies what the provider's API
+  says. Replays, reordering and a vocabulary mismatch cannot change state. The one exception is an
+  `alarm` (a reversal of a settled deposit): it moves no money and only flags a person.
+- **The neutral columns** (0173): `provider_payment_id`, `provider_payout_id`,
+  `provider_submitted_at`, `payout_fingerprint`, `provider_request_amount`, `provider_fee`,
+  `provider_net_amount`, `provider_amount_received`, `requested_amount`, `provider_status`,
+  `provider_checked_at`, `needs_attention`, `attention_reason`, plus
+  `provider_payment_url` / `_expires_at`.
+  - **Read and write these, never `rival_*`.** A BEFORE trigger (`transactions_sync_rival_columns`)
+    mirrors the pairs so the previous build still works after a rollback: attention on every row,
+    ids and claim on Rival's rows. It is NAMED to fire after `transactions_route_default`, because
+    same-kind triggers fire in name order. A later migration drops both.
+  - The 0140 task trigger fires on both flags.
+- **THE FINGERPRINT LOCK** (`transactions_payout_fingerprint_uq`). A provider with no idempotency
+  key and no reference can only be searched by what it was asked. The claim writes a hash of
+  (channel, normalized destination, gross, currency). At most ONE unresolved payout per fingerprint
+  exists, so an identical second payout WAITS (a queue, never a guess) and a lost answer is
+  attributable.
+- **A lost payout is never resent automatically.**
+  - Unknown → held.
+  - Exactly one unrecorded candidate in the provider's complete records → adopted.
+  - Several → a person.
+  - None after the adoption window → the claim is cleared, and a PERSON chooses Resend
+    (`POST admin/withdrawals/:id/provider-submit`; `rival-submit` is an alias for one release) or
+    cancel.
+  - A 429 (`refused` with `retryAfterMs`) is "definitely not created", so it requeues itself.
+- **Deposits.**
+  - `exact` (Rival): any other figure is a person's, and a failed row is never revived.
+  - `received` (3pay): credit what arrived, ROUNDED DOWN to the wallet's places, with `amount`
+    becoming the credited figure and `requested_amount` keeping the ask. Over the method's maximum
+    → credited AND flagged `over_limit`. A late confirmation on an expired link is credited
+    (`failure → success`, audited `deposit.settle_late`).
+  - Either policy: the wrong asset → `wrong_asset`, and money on an unconfirmed link →
+    `unconfirmed_funds`, both a person's.
+  - A flagged deposit leaves the sweep, and is finished with `PATCH
+admin/transactions/:id/attention/finish-deposit` (`credit` | `close`, a reason, audited).
+- **Channel switches** (`payment_provider_channels`, no row = ON, a reason required to switch
+  off; `PUT admin/payment-providers/:code/channels/:direction/:channel`):
+  - Off hides its methods (`channel_off`), refuses new movements, and pauses approval and
+    submission.
+  - Money already moving still finishes.
+- **Withdrawals must match the payout channel's currencies** at the door (not checked before 0173).
+
+### Adding a provider
+
+1. A folder `providers/<code>/`: the adapter (channels, config fields with `validate`, `isUsable()`
+   refusing sandbox on production, `testConnection`, `settingsChanged`), and for:
+   - a `redirect` deposit channel: `startPayment` / `checkPayment` (+ `recoverPayment`, and
+     `refreshPayment` if it can);
+   - an `automated` payout channel: a `PayoutRail` declaring its idempotency, `whenUnavailable`,
+     rate and window.
+2. A `ProviderWebhookReceiver` that verifies the raw bytes and returns NOTICES (it applies
+   nothing).
+3. Register both in `PaymentsModule`, and the adapter in `test/payment-provider-contract.spec.ts`'s
+   `ADAPTERS`.
+4. A migration seeding its `payment_providers` row (disabled, empty).
+5. A simulator spec for its translation. The core's behaviour is already held by
+   `payments-core.spec.ts`.
+6. Optional capabilities the core uses when declared: `balance()` (a prefunded balance, watched
+   against the payouts waiting and compared with our books), `listRecords(since, until)` (the
+   unmatched-records audit), and `keepsExchangeLog` (only if its exchanges carry no client
+   identity; its client then records each call). A rate-limited provider throws the contract's
+   `ProviderBusyError`: sweeps stop their pass, a payout is requeued.
+
+### 3pay, the USDT provider (0174, 30 Sep 2026)
+
+Guide: `docs/integration-guide.pdf` (read it with python `pypdf`). **3pay cannot be asked to change
+anything**, so every gap in its API is closed here. Code `threepay` (a code may not start with a
+digit), folder `providers/threepay/`, and the settings live on the generic `payment_providers` row:
+base URL, `apikey` (public), `x-api-secret` (sealed) and the two payout fees.
+
+- **Channels**: `usdt_trc20` and `usdt_erc20`, each in both directions. A 3pay method is a **USD
+  method**: the wallet moves at par, 1 USDT = 1 USD (the owner). One method per network, on
+  purpose: each network has its own fee, minimum, switch and address rule.
+- **Deposits** credit what 3pay's API says ARRIVED (`actualBalance` on `/transaction/verify`), rounded
+  down to cents, never the link's figure. `clientReference` is our `OX-` reference, and a start whose
+  answer was lost is FOUND by it, never made twice. 3pay takes no return URL
+  (`hostedPageReturns: false`), so the portal keeps the client on a waiting card.
+- **Payouts**: `idempotency: 'none'`. `/withdrawal-request` takes no key, stores no reference of
+  ours, and broadcasts at once. Every answer maps to accepted / refused / unknown in
+  `threepay.client.ts`: a 500, a timeout or an unreadable 2xx is UNKNOWN. The quote grosses up by the
+  configured fee, so the client receives exactly what they withdrew. There is no single-withdrawal
+  GET, so `read`/`find` page through `/withdrawal-requests` from the claim time. **No
+  `Idempotency-Key` header is sent**: 3pay documents none, and a key it quietly cached would replay
+  an old refusal at a person's Resend.
+- **Paid somewhere else**: 3pay's "Static Wallet" force-routes big payouts to a cold wallet
+  "regardless of what your integration sends". So the CORE compares every report's destination
+  and asset with what was asked (`paidElsewhere`). A mismatch is never settled as paid and never
+  refunded: a person pays the client and marks it paid.
+- **Webhook**: `x-3pay-signature` is the hex HMAC-SHA256 of the raw body, keyed by the API
+  secret, and is checked in constant time. There is NO replay nonce: a delivery carries no
+  timestamp, and 3pay retries with the same bytes, so a nonce would refuse its own retries. The
+  doorbell rule makes a replay harmless. `refund` rings both a payout re-read and a deposit ALARM.
+  The answer is 200 for every verified event (as 3pay asks), except 503 when every notice hit
+  "not stored yet" or "not caught up".
+- **Numbers**: 3pay sends amounts as JSON NUMBERS. `threepay-json.ts` parses losslessly (the reviver's
+  `context.source`, Node ≥ 21) and writes exact number literals.
+- **Rate limits** (60 reads, 30 links, 30 payouts a minute) are paced client-side
+  (`threepay-rate-limit.ts`, a little under 3pay's figures). A 429 pauses for `Retry-After`.
+- **Addresses**: TRC20 Base58Check and ERC20 EIP-55 (`@noble/hashes`, pinned 1.8.0: v2 is ESM-only)
+  are checked at the withdrawal door. The zero address and the USDT contract itself are refused.
+- **The unmatched-records audit** (core, `provider-records-audit.service.ts`, 0174's table): every
+  3pay record, two hours behind now, must be held by a transaction. Otherwise it is filed, paged,
+  and listed on the provider page for a person to acknowledge as a company movement
+  (`payments.providers.edit`, audited `payment_provider.record_acknowledge`). The cursor starts at
+  the first run.
+- **The balance watch** (`provider-balance-watch.service.ts`): 3pay's `totalAmt` against the grossed-up
+  payouts waiting to be sent. It pages hourly while the balance falls short.
+- **The exchange log** (0175, guide §10): every call to 3pay and every delivery from it, bodies as
+  sent and received, in `payment_provider_exchanges`. It is kept 90 days (a trigger refuses UPDATE,
+  and refuses DELETE before 90 days, even from a superuser), pruned daily by `payments.pruneExchanges`,
+  and listed at `GET admin/payment-providers/:code/exchanges` (`reference=` narrows it).
+  - It never holds headers, so no credential and no webhook signature is kept.
+  - Only an adapter declaring `keepsExchangeLog` has one, because it is shown UNMASKED: 3pay is
+    sent amounts, our reference and payout addresses (`client.payoutDestination` is not
+    maskable), never a name, email or phone. Rival's bodies are undocumented, so it keeps none.
+  - `record()` never throws and is never awaited by a money path.
+- **The books** (0175, guide §6.5 step 3; `provider-books.service.ts`): 3pay's `totalAmt` against
+  what our books say it should hold. That is a baseline, plus deposits CONFIRMED since
+  (`provider_paid_at`, whatever was then decided about them), minus payouts sent since unless
+  returned (`provider_outcome`), plus money back since on one sent before (`provider_outcome_at`),
+  plus or minus the unexplained records at the provider's own time (`moved_at`, 3pay's
+  `confirmedAt` for a deposit).
+  - ⚠️ **The baseline is taken ONLY at a quiet reading.** The deposit sweep just asked about
+    every open link (`sweep()` returns `complete`), no payout sits between 3pay and its final
+    word, and none of our movements landed within 2 minutes of the read. A reading taken while
+    money travels would be wrong for ever: `totalAmt` drops the moment 3pay accepts a payout and
+    rises again if it fails, and a deposit confirmed just before the read but seen here just
+    after would count twice.
+  - A difference that stands for 150 minutes (past the records audit's 2-hour lag) pages, then
+    repeats hourly while it stands.
+  - `POST admin/payment-providers/:code/books/reset` (a note, `payments.providers.edit`, audited
+    `payment_provider.books_reset`) CLEARS the baseline, and the next quiet reading restarts
+    the books. Use it after a top-up or a move 3pay's records do not show.
+- **Minimum**: 3pay moves at least 1 USDT (`PaymentChannel.minimumAmount`). A method's minimum
+  cannot go below it, the effective deposit minimum is raised to it, and the withdrawal door
+  refuses below it.
+- **Proof**: `providers/threepay/threepay.spec.ts` (pure) and `test/threepay-flow.spec.ts` (the real
+  adapter through the real core against `test/support/threepay-sim.ts`, every documented answer and
+  failure).
+- **Go-live, the owner's steps**:
+  1. Whitelist the production server's public IP in 3pay's dashboard.
+  2. Enter the credentials and fees (2.00 TRC20 / 2.50 ERC20 in the guide).
+  3. Test the connection; it shows the balance.
+  4. Check `depositFeePayer`.
+  5. Create the USD methods, with a minimum of at least 1 (3pay's), higher on ERC20.
+  6. Test with small real money, including an UNDERPAYMENT (send 4 on a 5 link: it proves what
+     `actualBalance` reports) and a small payout.
+  7. Watch the first payout's reconcile, which proves `fromDate` behaves as documented.
 
 ## An offline deposit carries the details that identify the payment (0163, 29 Sep 2026)
 

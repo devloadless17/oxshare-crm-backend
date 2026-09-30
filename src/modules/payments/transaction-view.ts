@@ -7,8 +7,9 @@ type TransactionRow = typeof transactions.$inferSelect;
  * `TransactionDto` declares, and nothing else.
  *
  * NARROWER THAN THE ROW ON PURPOSE. The row also carries the desk's payout
- * state — `rival_withdrawal_id`, `rival_submitted_at`, `rival_needs_attention`,
- * `rival_attention_reason` — plus the rail key and a transfer destination,
+ * state — the provider's payout id, the submission claim, the attention flag
+ * and its reason, fees and fingerprints (0173) — plus the rail key and a
+ * transfer destination,
  * which are the operator's business. The client portal's history and its
  * withdrawal response shipped every one of them to the client until the
  * response projection's census (28 Sep 2026) reported it.
@@ -28,7 +29,7 @@ export type TransactionView = Pick<
   | 'provider'
   | 'methodKey'
   | 'providerRef'
-  | 'rivalExternalId'
+  | 'providerPaymentId'
   | 'destination'
   | 'proofFilename'
   | 'proofDetails'
@@ -37,7 +38,10 @@ export type TransactionView = Pick<
   | 'reviewedAt'
   | 'settledAt'
   | 'createdAt'
->;
+> & {
+  /** `providerPaymentId` under its pre-0173 name — one release, for older portals. */
+  rivalExternalId: string | null;
+};
 
 export function transactionView(row: TransactionRow): TransactionView {
   return {
@@ -51,7 +55,8 @@ export function transactionView(row: TransactionRow): TransactionView {
     provider: row.provider,
     methodKey: row.methodKey,
     providerRef: row.providerRef,
-    rivalExternalId: row.rivalExternalId,
+    providerPaymentId: row.providerPaymentId,
+    rivalExternalId: row.providerPaymentId,
     destination: row.destination,
     proofFilename: row.proofFilename,
     proofDetails: row.proofDetails,

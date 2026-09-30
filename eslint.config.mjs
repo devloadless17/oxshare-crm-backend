@@ -47,6 +47,50 @@ const NO_KYC_LAYER = {
     'The identity core never imports the KYC layer (modules/compliance, the KYC stores): KYC is a replaceable process that writes INTO the core. Ask through a port instead — see common/provisioning/identity-review.port.ts.',
 };
 
+/**
+ * THE PAYMENTS CORE AND ITS PROVIDERS (0173). An adapter TRANSLATES for one
+ * provider; the core DECIDES. So a provider's folder (`payments/providers/<code>/`)
+ * may import only the shared contract (`../payment-provider`) and the shared
+ * layers (common/, a few stores for its own settings) — never another
+ * provider, never the payments module's services or the core, never another
+ * feature module, never the database. An adapter cannot move money.
+ * Regexes over the import string, which is RELATIVE from inside the folder.
+ */
+const PROVIDER_BOUNDARY = [
+  {
+    regex: '^\\.\\./[a-z0-9_-]+/',
+    message:
+      'A payment provider may not import another provider’s folder — each adapter translates for ONE provider (0173).',
+  },
+  {
+    regex: '^\\.\\./\\.\\./(?!\\.\\./)',
+    message:
+      'A payment provider may not reach into the payments module or its core: adapters translate, the core decides (0173). Declare what you need in ../payment-provider.',
+  },
+  {
+    regex: '^\\.\\./\\.\\./\\.\\./(?!\\.\\./)',
+    message:
+      'A payment provider may not import another feature module (wallet, admin, …): an adapter cannot move money (0173).',
+  },
+  {
+    regex:
+      '^drizzle-orm|^\\.\\./\\.\\./\\.\\./\\.\\./database/|^\\.\\./\\.\\./\\.\\./\\.\\./store/(?!(payment-providers|app-settings|payment-provider-events|payment-provider-exchanges)\\.store$)',
+    message:
+      'A payment provider does not touch the database or the money stores (0173) — its settings come through its own store, and the core records everything else.',
+  },
+];
+
+/**
+ * …and the core never names a provider: nothing in the payments module outside
+ * `providers/<code>/` imports a provider's folder, except `payments.module.ts`,
+ * which wires them (0173).
+ */
+const NO_PROVIDER_FOLDER = {
+  regex: '(^|/)providers/[a-z0-9_-]+/',
+  message:
+    'The payments core never names a provider (0173): reach it through PaymentProviderRegistry and the contract in providers/payment-provider.ts. Only payments.module.ts wires provider folders.',
+};
+
 const NO_GETDB = {
   name: '../../database/db',
   importNames: ['getDb'],
@@ -278,6 +322,43 @@ export default tseslint.config(
     ignores: ['**/*.spec.ts'],
     rules: {
       'no-restricted-imports': ['error', { patterns: [NO_FEATURE_MODULES, NO_KYC_LAYER] }],
+    },
+  },
+  {
+    // ── The payments core and its providers (0173) ─────────────────────────
+    // Inside a provider's folder: the contract and the shared layers only.
+    files: ['src/modules/payments/providers/*/**/*.ts'],
+    ignores: ['**/*.spec.ts'],
+    rules: { 'no-restricted-imports': ['error', { patterns: PROVIDER_BOUNDARY }] },
+  },
+  {
+    // The core and the rest of the payments module: no provider folder.
+    files: ['src/modules/payments/**/*.ts'],
+    ignores: [
+      '**/*.spec.ts',
+      'src/modules/payments/providers/**',
+      'src/modules/payments/payments.module.ts',
+    ],
+    rules: { 'no-restricted-imports': ['error', { patterns: [NO_PROVIDER_FOLDER] }] },
+  },
+  {
+    // The providers/ root (the registry, the provider page, the webhook doors)
+    // is core too: it reaches a provider only through the registry.
+    files: ['src/modules/payments/providers/*.ts'],
+    ignores: ['**/*.spec.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            NO_PROVIDER_FOLDER,
+            {
+              regex: '^\\./[a-z0-9_-]+/',
+              message: NO_PROVIDER_FOLDER.message,
+            },
+          ],
+        },
+      ],
     },
   },
   {

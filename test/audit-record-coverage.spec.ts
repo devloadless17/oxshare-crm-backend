@@ -140,7 +140,9 @@ function recordedActions(): Set<string> {
    * counted by depth so a nested `{ … ( … ) … }` details object does not end
    * the call early.
    */
-  const opener = /\brecord(?:Within)?\s*\(/g;
+  // `recordSystemAction(` too: the payments core's own writer for what the
+  // SYSTEM does (a payout sent, a lost answer adopted), 0173.
+  const opener = /\brecord(?:Within|SystemAction)?\s*\(/g;
   for (const { text } of SOURCES) {
     for (const start of text.matchAll(opener)) {
       const from = (start.index ?? 0) + start[0].length;

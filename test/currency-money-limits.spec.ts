@@ -8,7 +8,6 @@ import { PaymentMethodsService } from '../src/modules/payments/payment-methods.s
 import { FieldValidationError } from '../src/common/errors/domain-errors';
 import type { Actor } from '../src/common/security/actor';
 import { auditStubAs } from './audit-stub';
-import { AuditLogStore } from '../src/store/audit-log.store';
 import { emailStubAs } from './email-stub';
 import { notificationsStubAs } from './notifications-stub';
 import { transferExecutorStubAs, transfersStubAs } from './transfer-chain-stub';
@@ -62,7 +61,6 @@ beforeAll(async () => {
     notificationsStubAs(),
     transfersStubAs(),
     transferExecutorStubAs(),
-    new AuditLogStore(ctx.db),
   );
   // Captured BEFORE LBP is created: what 0162 left on the seeded rows.
   seededUsd = await currencies.findOne('USD');

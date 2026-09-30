@@ -45,6 +45,7 @@
     "@nestjs/swagger": "^11.0.0",
     "@nestjs/throttler": "^6.0.0",
     "@nestjs/websockets": "^11.1.29",
+    "@noble/hashes": "1.8.0",
     "argon2": "0.45.1",
     "bcryptjs": "2.4.3",
     "bullmq": "5.81.3",

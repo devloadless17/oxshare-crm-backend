@@ -1742,6 +1742,33 @@ export class WithdrawalUserDto {
   lastName?: string;
 }
 
+/** Who will pay an open withdrawal, and what it costs (0173). */
+@NoClientFields(
+  'the platform’s plan for a payout — who pays and what it costs, no client attribute',
+)
+export class PayoutPlanDto {
+  @ApiProperty({ enum: ['provider', 'desk', 'paused'] })
+  payer: 'provider' | 'desk' | 'paused';
+  @ApiPropertyOptional({ type: String, nullable: true, description: 'The provider’s name.' })
+  provider: string | null;
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    description: 'Why nobody can pay it right now — the sentence approval would refuse with.',
+  })
+  reason: string | null;
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    description: 'What the provider will be asked to move (a fee it deducts added on top).',
+  })
+  gross: string | null;
+  @ApiPropertyOptional({ type: String, nullable: true, description: 'Its fee, when known.' })
+  fee: string | null;
+  @ApiPropertyOptional({ type: String, nullable: true, description: 'What arrives.' })
+  net: string | null;
+}
+
 export class WithdrawalRowDto {
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty()
@@ -1890,6 +1917,75 @@ export class WithdrawalRowDto {
     'not a client-owned attribute \u2014 rivalAttentionReason describes the record rather than the person',
   )
   rivalAttentionReason?: string | null;
+  /*
+   * ── The payout at its provider, provider-neutral (0173) ──────────────────
+   * The four `rival*` fields above are these under their pre-0173 names,
+   * carried one more release for consoles built before them.
+   */
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    description: 'The provider’s id for the payout, once it holds it. Null before.',
+  })
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  providerPayoutId?: string | null;
+  @ApiPropertyOptional({
+    type: Date,
+    nullable: true,
+    description:
+      'When the payout was sent. Set with no provider id = its outcome is being reconciled.',
+  })
+  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
+  providerSubmittedAt?: Date | null;
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    description: 'What the provider was asked to move (the amount grossed up by its fee).',
+  })
+  @NotClientField('a figure the system recorded about the payout, not an attribute of the person')
+  providerRequestAmount?: string | null;
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    description: 'The fee the provider reported.',
+  })
+  @NotClientField('a figure the provider reported about the payout, not an attribute of the person')
+  providerFee?: string | null;
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    description: 'What the provider reported delivering to the destination.',
+  })
+  @NotClientField('a figure the provider reported about the payout, not an attribute of the person')
+  providerNetAmount?: string | null;
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    description: 'The provider’s own last word on the payout, raw ("executing", "COMPLETED").',
+  })
+  @NotClientField('the provider’s status of the record, not an attribute of the person')
+  providerStatus?: string | null;
+  @ApiProperty({ description: 'A person must look at this payout (every provider).' })
+  @NotClientField(
+    'not a client-owned attribute \u2014 it describes the record rather than the person',
+  )
+  needsAttention: boolean;
+  @ApiPropertyOptional({
+    type: 'string',
+    nullable: true,
+    description: 'WHY it needs attention, in words the operator can act on.',
+  })
+  @NotClientField(
+    'not a client-owned attribute \u2014 it describes the record rather than the person',
+  )
+  attentionReason?: string | null;
+  @ApiPropertyOptional({
+    type: () => PayoutPlanDto,
+    nullable: true,
+    description: 'Who will pay an open withdrawal and what it costs; null once it is decided.',
+  })
+  @NotClientField('the platform’s own plan for the payout, not an attribute of the person')
+  payoutPlan?: PayoutPlanDto | null;
   @ApiPropertyOptional({
     type: 'string',
     nullable: true,
@@ -1948,6 +2044,14 @@ export class WithdrawalRowDto {
   @NotClientField('a payment-platform reference describing the record rather than the person')
   @ApiPropertyOptional({ type: String, nullable: true })
   rivalExternalId?: string | null;
+  @NotClientField('a payment-provider reference describing the record rather than the person')
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    description:
+      'The provider’s own id for the movement (0173); `rivalExternalId` is its old name.',
+  })
+  providerPaymentId?: string | null;
   @NotClientField('a timestamp the system recorded, describing the record rather than the client')
   @ApiPropertyOptional({ type: Date, nullable: true })
   createdAt?: Date | null;
@@ -2094,6 +2198,14 @@ export class AdminTransactionRowDto {
    */
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   rivalExternalId?: string | null;
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    description:
+      'The provider’s own id for the movement (0173); `rivalExternalId` is its old name.',
+  })
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  providerPaymentId?: string | null;
   /* Where the client is paid — a bank account, wallet address or payment
      phone. Personal data, hideable since D-82 (it was "not client-owned"). */
   @ClientField('client.payoutDestination')
@@ -3206,6 +3318,42 @@ export class DepositDecisionDto {
   )
   @ApiPropertyOptional({ nullable: true, type: String, format: 'date-time' })
   settledAt: Date | null;
+}
+
+/** A flagged provider payout, finished by a person (0174). */
+@NoClientFields('the outcome of one payout’s finishing: its state and amount, no client attribute')
+export class FlaggedPayoutFinishedDto {
+  @ApiProperty()
+  id: string;
+
+  @ApiProperty({ enum: ['success', 'failure'] })
+  state: string;
+
+  @ApiProperty({ type: 'string', example: '100.00000000' })
+  amount: string;
+
+  @ApiProperty()
+  currency: string;
+}
+
+/** A flagged hosted deposit, finished by a person (0173). */
+@NoClientFields(
+  'the outcome of one deposit’s finishing: its state and credited figure, no client attribute',
+)
+export class FlaggedDepositFinishedDto {
+  @ApiProperty()
+  id: string;
+
+  @ApiProperty({ enum: ['success', 'failure'] })
+  state: string;
+
+  @ApiProperty({
+    description: 'The credited amount (decimal string) — or the asked one when closed.',
+  })
+  amount: string;
+
+  @ApiProperty()
+  currency: string;
 }
 
 /**

@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { openSecret } from '../../../common/security/secret-box';
-import { AppSettingsStore } from '../../../store/app-settings.store';
+import { openSecret } from '../../../../common/security/secret-box';
+import { AppSettingsStore } from '../../../../store/app-settings.store';
 
 /**
  * Resolves the Rival connection actually in force: the admin-managed row if

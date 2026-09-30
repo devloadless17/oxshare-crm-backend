@@ -5,8 +5,9 @@ import request from 'supertest';
 import { eq } from 'drizzle-orm';
 import { startHttpTestApp, stopHttpTestApp, type HttpTestContext } from './http-setup';
 import { sealSecret } from '../src/common/security/secret-box';
-import { signRivalBody } from '../src/modules/payments/rival/rival-signature';
-import { RivalConfigService } from '../src/modules/payments/rival/rival-config.service';
+import { CLIENT_SAFE_PROVIDER_REFUSAL } from '../src/modules/payments/core/payout-engine.service';
+import { signRivalBody } from '../src/modules/payments/providers/rival/rival-signature';
+import { RivalConfigService } from '../src/modules/payments/providers/rival/rival-config.service';
 import {
   currencies,
   ledgerEntries,
@@ -45,6 +46,8 @@ let fakeRival: Server;
 let fakeRivalUrl: string;
 /** What the fake answers for GET /integrations/whish/payments/:id. */
 let fakeStatus: 'PENDING' | 'PAID' | 'FAILED' = 'PAID';
+/** Rival's REST record of each payout, by id — what the doorbell re-reads. */
+const fakeWithdrawals = new Map<string, Record<string, unknown>>();
 
 function signedPost(body: string, at = Math.floor(Date.now() / 1000), key = WEBHOOK_KEY) {
   const { signature } = signRivalBody(body, key, at);
@@ -87,6 +90,35 @@ const RIVAL_ENV_KEYS = ['RIVAL_BASE_URL', 'RIVAL_API_KEY', 'RIVAL_WEBHOOK_KEY'];
 beforeAll(async () => {
   fakeRival = createServer((req, res) => {
     res.setHeader('content-type', 'application/json');
+    // Rival's REST record of a payout — what the doorbell re-reads (0173).
+    if (req.method === 'GET' && req.url?.startsWith('/company/withdrawals/')) {
+      const id = req.url.split('/').pop();
+      const found = fakeWithdrawals.get(id ?? '');
+      if (!found) {
+        res.statusCode = 404;
+        res.end(JSON.stringify({ success: false, statusCode: 404, error: { code: 'NOT_FOUND' } }));
+        return;
+      }
+      res.end(
+        JSON.stringify({
+          success: true,
+          statusCode: 200,
+          data: {
+            id,
+            amount: '25.00',
+            currency: 'USD',
+            netAmount: '25.00',
+            totalAmount: '25.00',
+            externalReference: null,
+            notes: null,
+            processedAt: null,
+            createdAt: new Date().toISOString(),
+            ...found,
+          },
+        }),
+      );
+      return;
+    }
     if (req.url?.startsWith('/integrations/whish/payments/')) {
       res.end(
         JSON.stringify({
@@ -316,17 +348,18 @@ describe('verification through the real chain', () => {
   });
 });
 
-describe("Rival's webhook field spelling: adminNote (singular) carries the reason", () => {
+describe('a rejected payout event: Rival’s REST record decides, and its note stays on the desk', () => {
   /*
    * Found live: Rival's WEBHOOK payload names the operator note `adminNote`
-   * while its REST API returns `adminNotes` for the same field. The CRM read
-   * only the plural, so every platform rejection refunded with the generic
-   * default instead of the operator's words. Both spellings are accepted now;
-   * this pins the one the webhook actually sends.
+   * while its REST API returns `adminNotes` for the same field. Since 0173 the
+   * webhook is a doorbell — the payout is re-read through REST — so the
+   * spelling the webhook uses no longer matters: the words come from Rival's
+   * own record. And since 0172 they never reach the client: the stored
+   * rejection reason is a fixed sentence, the note is the desk's alone.
    */
   const USER_ID = 1000201;
 
-  it('a rejected event with adminNote lands its exact words as the rejection reason', async () => {
+  it('refunds on Rival’s REJECTED record; the client reads a fixed sentence, the desk the note', async () => {
     await configureRival();
     await ctx.db.db.insert(users).values({
       id: USER_ID,
@@ -358,6 +391,10 @@ describe("Rival's webhook field spelling: adminNote (singular) carries the reaso
       })
       .returning();
 
+    fakeWithdrawals.set('rw-adminnote-1', {
+      status: 'REJECTED',
+      adminNotes: 'Recipient account frozen at Whish',
+    });
     const res = await signedPost(
       JSON.stringify({
         event: 'withdrawal.rejected',
@@ -369,7 +406,8 @@ describe("Rival's webhook field spelling: adminNote (singular) carries the reaso
 
     const [after] = await ctx.db.db.select().from(transactions).where(eq(transactions.id, tx.id));
     expect(after.state).toBe('failure');
-    expect(after.rejectionReason).toBe('Recipient account frozen at Whish');
+    expect(after.rejectionReason).toBe(CLIENT_SAFE_PROVIDER_REFUSAL);
+    expect(after.providerNote).toBe('Recipient account frozen at Whish');
   });
 });
 

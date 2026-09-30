@@ -63,7 +63,8 @@ export const SCHEDULED_JOBS = [
     max: 3600,
   },
   {
-    key: 'rival.reconcile',
+    // Every payment provider's poll behind its webhook (0173; `rival.reconcile` before).
+    key: 'payments.reconcileProviders',
     group: 'money',
     runsOn: 'crm',
     defaultSeconds: 300,
@@ -77,6 +78,15 @@ export const SCHEDULED_JOBS = [
     defaultSeconds: 60,
     min: 30,
     max: 3600,
+  },
+  {
+    // What each payment provider was asked and answered, kept 90 days (0175).
+    key: 'payments.pruneExchanges',
+    group: 'money',
+    runsOn: 'crm',
+    defaultSeconds: 86_400,
+    min: 3600,
+    max: 604_800,
   },
   {
     key: 'wallet.reconcile',

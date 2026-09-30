@@ -1,4 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { METHOD_AVAILABILITIES, type MethodAvailability } from '../providers/provider-status';
 import { IsBoolean, IsInt, IsOptional, IsString, Length, Matches, Min } from 'class-validator';
 import { NoClientFields } from '../../../common/security/client-field.decorator';
 import { LOGO_URL_MESSAGE, LOGO_URL_PATTERN } from './payment-method.dto';
@@ -87,6 +88,14 @@ export class AdminWithdrawalMethodDto {
       'while its provider is off or not set up.',
   })
   paidBy: 'provider' | 'desk';
+
+  @ApiProperty({
+    enum: METHOD_AVAILABILITIES,
+    description:
+      'Whether clients are offered it, and if not, why (0173): its network switched off for ' +
+      'payouts, or a provider that waits rather than letting the desk pay it by hand.',
+  })
+  availability: MethodAvailability;
 
   @ApiProperty()
   createdAt: Date;
