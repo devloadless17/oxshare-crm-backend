@@ -3,7 +3,11 @@ import { sql } from 'drizzle-orm';
 import { ConfigService } from '@nestjs/config';
 import { TransactionsService } from '../src/modules/payments/transactions.service';
 import { PaymentMethodsService } from '../src/modules/payments/payment-methods.service';
-import { RivalWithdrawalsService } from '../src/modules/payments/rival/rival-withdrawals.service';
+import {
+  CLIENT_SAFE_PROVIDER_REFUSAL,
+  RivalWithdrawalsService,
+} from '../src/modules/payments/rival/rival-withdrawals.service';
+import type { EmailService } from '../src/modules/email/email.service';
 import type { RivalClient } from '../src/modules/payments/rival/rival.client';
 import type { RivalConfigService } from '../src/modules/payments/rival/rival-config.service';
 import type { ResourceChangedPublisher } from '../src/common/realtime/resource-changed';
@@ -12,7 +16,7 @@ import { CurrenciesService } from '../src/modules/currencies/currencies.service'
 import { AuditLogStore } from '../src/store/audit-log.store';
 import { UsersStore } from '../src/store/users.store';
 import { auditStubAs } from './audit-stub';
-import { emailStubAs } from './email-stub';
+import { emailStub, emailStubAs } from './email-stub';
 import { notificationsStub, notificationsStubAs } from './notifications-stub';
 import { transferExecutorStubAs, transfersStubAs } from './transfer-chain-stub';
 import { gatewayStubAs } from './gateway-stub';
@@ -46,6 +50,7 @@ const rival = {
 const rivalConfig = { isEnabled: vi.fn().mockResolvedValue(true) };
 // Untyped, so mock-call assertions do not trip the unbound-method rule.
 const notifications = notificationsStub();
+const email = emailStub();
 /*
  * The system settle and refund announce a desk refresh instead of a bell row
  * (migration 0140: a completed or auto-refunded payout is not a task).
@@ -76,7 +81,7 @@ beforeAll(async () => {
     transactions,
     new AuditLogStore(ctx.db),
     new UsersStore(ctx.db),
-    emailStubAs(),
+    email as unknown as EmailService,
     notifications,
     resourceChanged as unknown as ResourceChangedPublisher,
   );
@@ -370,7 +375,50 @@ describe('inbound events — settle, refund, and the refusals', () => {
     const { rows } = await ctx.db.execute<{ rejection_reason: string }>(
       sql`SELECT rejection_reason FROM transactions WHERE id = ${txId}`,
     );
-    expect(rows[0].rejection_reason).toContain('not registered');
+    expect(rows[0].rejection_reason).toBe(CLIENT_SAFE_PROVIDER_REFUSAL);
+  });
+
+  it('Rival’s operator notes never reach the client — bell, email or stored reason', async () => {
+    const { txId } = await makeApprovedWithdrawal('100');
+    await submitted(txId, 'rw-13');
+    const secret = 'AML flag, matches watchlist';
+    vi.mocked(notifications.notify).mockClear();
+    email.sendWithdrawalDecisionEmail.mockClear();
+
+    expect(await service.applyEvent('rw-13', 'rejected', { adminNotes: secret })).toBe('applied');
+    await vi.waitFor(() => expect(email.sendWithdrawalDecisionEmail).toHaveBeenCalled());
+
+    const toClient = vi
+      .mocked(notifications.notify)
+      .mock.calls.filter(
+        ([n]) => (n as { recipient: { kind: string } }).recipient.kind === 'client',
+      );
+    expect(toClient).toHaveLength(1);
+    expect(JSON.stringify(toClient.map((call): unknown => call[0]))).not.toContain('AML');
+    expect(JSON.stringify(email.sendWithdrawalDecisionEmail.mock.calls)).not.toContain('AML');
+
+    // The note is kept for the desk: its own admin-only column, and the audit row.
+    const { rows } = await ctx.db.execute<{ details: { providerNote?: string } }>(
+      sql`SELECT details FROM audit_log WHERE subject_id = ${txId}
+          AND action = 'withdrawal.rival.reject'`,
+    );
+    expect(rows[0].details.providerNote).toBe(secret);
+    const stored = await ctx.db.execute<{ provider_note: string; rejection_reason: string }>(
+      sql`SELECT provider_note, rejection_reason FROM transactions WHERE id = ${txId}`,
+    );
+    expect(stored.rows[0]).toEqual({
+      provider_note: secret,
+      rejection_reason: CLIENT_SAFE_PROVIDER_REFUSAL,
+    });
+
+    // The admin desk reads it; the client's own history never carries it.
+    const owner = await ctx.db.execute<{ user_id: number }>(
+      sql`SELECT user_id FROM transactions WHERE id = ${txId}`,
+    );
+    const mine = await transactions.listForUser(owner.rows[0].user_id);
+    expect(JSON.stringify(mine)).not.toContain('AML');
+    const desk = await transactions.listForAdmin({ id: txId });
+    expect(desk.items.find((w) => w.id === txId)?.providerNote).toBe(secret);
   });
 
   it('a rejected event against a row we settled DISAGREES — flag, never guess', async () => {

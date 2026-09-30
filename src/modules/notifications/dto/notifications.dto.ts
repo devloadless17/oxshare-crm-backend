@@ -69,4 +69,16 @@ export class NotificationsReadAllDto {
   @IsOptional()
   @IsISO8601({ strict: true })
   upTo?: string;
+
+  /**
+   * The oldest row shown. The panel loads one page, so an unread row past it
+   * was never on screen and must stay unread.
+   */
+  @ApiPropertyOptional({
+    description: 'The `createdAt` of the oldest notification the reader was shown.',
+    example: '2026-09-20T08:00:00.000Z',
+  })
+  @IsOptional()
+  @IsISO8601({ strict: true })
+  from?: string;
 }

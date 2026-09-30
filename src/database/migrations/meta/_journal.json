@@ -1212,6 +1212,13 @@
       "when": 1789141000750,
       "tag": "0171_identity_record_written_directly",
       "breakpoints": true
+    },
+    {
+      "idx": 174,
+      "version": "7",
+      "when": 1789141100750,
+      "tag": "0172_withdrawal_provider_note",
+      "breakpoints": true
     }
   ]
 }

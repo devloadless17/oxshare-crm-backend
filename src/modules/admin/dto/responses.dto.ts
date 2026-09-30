@@ -1890,6 +1890,17 @@ export class WithdrawalRowDto {
     'not a client-owned attribute \u2014 rivalAttentionReason describes the record rather than the person',
   )
   rivalAttentionReason?: string | null;
+  @ApiPropertyOptional({
+    type: 'string',
+    nullable: true,
+    description:
+      'The payment provider OPERATOR\u2019s own note on a refused payout (Rival adminNotes). ' +
+      'Admin-only: the client is told a fixed sentence in rejectionReason. Null when none.',
+  })
+  @NotClientField(
+    'the provider operator\u2019s note about the record, not an attribute of the person',
+  )
+  providerNote?: string | null;
   @NotClientField(
     'the nested person, whose own shape carries the marks \u2014 masked there, not here',
   )
@@ -2160,6 +2171,17 @@ export class AdminTransactionRowDto {
     description: 'WHY it needs attention, in words the operator can act on. Null when not flagged.',
   })
   attentionReason?: string | null;
+  @NotClientField(
+    'the provider operator\u2019s note about the record, not an attribute of the person',
+  )
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    description:
+      'The payment provider operator\u2019s own note on a refused payout. Admin-only; the ' +
+      'client sees a fixed sentence. Null on every other row.',
+  })
+  providerNote?: string | null;
   @NotClientField(
     'the nested person, whose own shape carries the marks \u2014 masked there, not here',
   )

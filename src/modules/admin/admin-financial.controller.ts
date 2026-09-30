@@ -31,14 +31,14 @@ import {
   RequirePermissions,
   type AuthenticatedAdmin,
 } from './guards/admin.guard';
-import { dateQuery, enumQuery, searchQuery } from '../../common/query-params';
+import { dateQuery, enumQuery, searchQuery, uuidQuery } from '../../common/query-params';
 import { ClientRefPipe } from '../../common/client-ref.pipe';
 import { transactionDirectionEnum, transactionStateEnum } from '../../database/schema';
 import { ScopedToClients } from './guards/client-scope.decorator';
 import { Audited } from './guards/audited.decorator';
 
 /**
- * The 8 filter parameters all three routes accept, declared ONCE.
+ * The 9 filter parameters all three routes accept, declared ONCE.
  *
  * Swagger reads these decorators, and the frontends' `types.gen.ts` is
  * generated from what Swagger says — so three hand-maintained copies of this
@@ -80,6 +80,14 @@ function FinancialFilterQueries() {
       description: 'Only payments flagged for a person to reconcile. Omit for every movement.',
     }),
     ApiQuery({
+      name: 'id',
+      required: false,
+      description:
+        'One movement by its row uuid (a deposit’s transaction, a transfer’s transfer) — where a ' +
+        "notification deep link lands. AND-ed with every other filter and the reader's scope, so " +
+        'a record outside it answers an empty result. No state is implied.',
+    }),
+    ApiQuery({
       name: 'decidedBy',
       required: false,
       enum: ['desk'],
@@ -102,6 +110,7 @@ interface RawFilterParams {
   to?: string;
   attention?: string;
   decidedBy?: string;
+  id?: string;
 }
 
 /**
@@ -169,6 +178,7 @@ export class AdminFinancialController {
       // `true` or absent — anything else is a 400, like every enum filter here.
       attention: enumQuery(raw.attention, ['true'] as const, 'attention') ? true : undefined,
       deskDecided: enumQuery(raw.decidedBy, ['desk'] as const, 'decidedBy') ? true : undefined,
+      id: uuidQuery(raw.id, 'id'),
     };
   }
 
@@ -232,6 +242,7 @@ export class AdminFinancialController {
     @Query('to') to?: string,
     @Query('attention') attention?: string,
     @Query('decidedBy') decidedBy?: string,
+    @Query('id') id?: string,
   ) {
     const chosen = exportFormat(format);
     const query = await this.filters({
@@ -245,6 +256,7 @@ export class AdminFinancialController {
       to,
       attention,
       decidedBy,
+      id,
     });
 
     this.audit.record(req.admin.id, 'export.transactions', 'transaction_list', req.admin.id, {
@@ -304,6 +316,7 @@ export class AdminFinancialController {
     @Query('to') to?: string,
     @Query('attention') attention?: string,
     @Query('decidedBy') decidedBy?: string,
+    @Query('id') id?: string,
   ) {
     return this.money.transactionsSummary(
       await this.filters({
@@ -317,6 +330,7 @@ export class AdminFinancialController {
         to,
         attention,
         decidedBy,
+        id,
       }),
       req.admin,
     );
@@ -365,6 +379,7 @@ export class AdminFinancialController {
     @Query('to') to?: string,
     @Query('attention') attention?: string,
     @Query('decidedBy') decidedBy?: string,
+    @Query('id') id?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('cursor') cursor?: string,
@@ -384,6 +399,7 @@ export class AdminFinancialController {
           to,
           attention,
           decidedBy,
+          id,
         })),
         page,
         limit,
