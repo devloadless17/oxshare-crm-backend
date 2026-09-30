@@ -16,6 +16,7 @@ import {
   ScopedToClients,
 } from '../../modules/admin/guards/client-scope.decorator';
 import { ApiCookieAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { Request, Response } from 'express';
@@ -94,6 +95,18 @@ interface ReadPolicy {
  */
 class SessionEndedException extends UnauthorizedException {}
 
+/*
+ * ITS OWN READ BUDGET — 600 a minute, not the global 120.
+ *
+ * A review page is several document tiles, served `no-store`, so every render
+ * fetches each again; a reviewer moving through the queue, on top of the
+ * console's own requests, crossed 120 within the minute. The images past it
+ * answered 429 and each tile read "Could not load document" (reported from
+ * local testing, 30 Sep 2026). Every read here still needs a session and
+ * passes the owner and scope checks; the limit bounds a leaked session, it is
+ * not the control.
+ */
+@Throttle({ default: { ttl: 60_000, limit: 600 } })
 @Controller('uploads')
 export class UploadsController {
   private readonly logger = new Logger(UploadsController.name);
