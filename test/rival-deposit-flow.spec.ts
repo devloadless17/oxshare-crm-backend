@@ -1,4 +1,5 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import type { ResourceChangedPublisher } from '../src/common/realtime/resource-changed';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { ConfigService } from '@nestjs/config';
 import { TransactionsService } from '../src/modules/payments/transactions.service';
@@ -87,6 +88,7 @@ beforeAll(async () => {
     currencies,
     new AuditLogStore(ctx.db),
     bell,
+    { publish: vi.fn().mockResolvedValue(undefined) } as unknown as ResourceChangedPublisher,
   );
 }, 120_000);
 

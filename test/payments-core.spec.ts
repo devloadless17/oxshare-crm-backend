@@ -152,6 +152,7 @@ beforeAll(async () => {
     currencies,
     new AuditLogStore(ctx.db),
     bell,
+    { publish: vi.fn().mockResolvedValue(undefined) } as unknown as ResourceChangedPublisher,
   );
   payouts = new PayoutEngine(
     ctx.db,

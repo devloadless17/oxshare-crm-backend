@@ -1,3 +1,4 @@
+import { AnnouncesChange } from '../../common/realtime/announces-change.decorator';
 import {
   BadRequestException,
   Body,
@@ -209,6 +210,8 @@ export class PaymentsController {
     });
   }
 
+  // A hosted deposit appears on every open Financial screen at once.
+  @AnnouncesChange('wallets')
   @Post('deposits')
   @UseGuards(KycVerifiedGuard)
   @Idempotent()
