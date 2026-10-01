@@ -1,3 +1,4 @@
+import type { ResourceChangedPublisher } from '../src/common/realtime/resource-changed';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { ConfigService } from '@nestjs/config';
@@ -91,6 +92,7 @@ beforeAll(async () => {
     currencies,
     new AuditLogStore(ctx.db),
     dispatch,
+    { publish: vi.fn().mockResolvedValue(undefined) } as unknown as ResourceChangedPublisher,
   );
   /*
    * The maturation window is switched OFF for this spec, through the real

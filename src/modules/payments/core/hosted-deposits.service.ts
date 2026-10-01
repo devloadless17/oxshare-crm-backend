@@ -1,3 +1,4 @@
+import { ResourceChangedPublisher } from '../../../common/realtime/resource-changed';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import Decimal from 'decimal.js';
 import { and, eq, inArray, isNotNull, lt, sql } from 'drizzle-orm';
@@ -107,6 +108,8 @@ export class HostedDepositsService {
     private readonly currencies: CurrenciesService,
     private readonly auditLog: AuditLogStore,
     @Inject(NOTIFICATION_DISPATCH) private readonly notifications: NotificationDispatchPort,
+    /* Open consoles hear a provider-settled deposit move (appended last). */
+    private readonly resourceChanged: ResourceChangedPublisher,
   ) {
     this.providerEvents = new PaymentProviderEventsStore(db);
   }
@@ -243,8 +246,22 @@ export class HostedDepositsService {
 
   /* ── the one path that credits ──────────────────────────────────────────── */
 
-  /** Ask the provider about one deposit and apply its answer. Safe to call any number of times. */
+  /**
+   * Ask the provider about one deposit and apply its answer. Safe to call any
+   * number of times. A change the PROVIDER caused (a webhook, the sweep) has no
+   * admin request to announce it, so it is announced here: every open Financial
+   * screen and deposit desk refreshes instead of waiting for a reload.
+   */
   async settleRow(tx: TransactionRow, source: ProviderEventSource): Promise<{ state: string }> {
+    const result = await this.settleRowOnce(tx, source);
+    if (result.state !== tx.state) await this.resourceChanged.publish({ resource: 'wallets' });
+    return result;
+  }
+
+  private async settleRowOnce(
+    tx: TransactionRow,
+    source: ProviderEventSource,
+  ): Promise<{ state: string }> {
     const route: PaymentRoute = { providerCode: tx.providerCode, channelCode: tx.channelCode };
     const channel = this.registry.findChannel(route, 'deposit');
     if (!channel || channel.flow !== 'redirect' || tx.direction !== 'deposit') {
@@ -825,6 +842,16 @@ export class HostedDepositsService {
    * bell — keyed per reason, so a replay rings once.
    */
   private async flag(
+    tx: TransactionRow,
+    reason: DepositAttentionReason,
+    sentence: string,
+    context: Record<string, string | undefined> = {},
+  ): Promise<void> {
+    await this.raiseFlag(tx, reason, sentence, context);
+    await this.resourceChanged.publish({ resource: 'wallets' });
+  }
+
+  private async raiseFlag(
     tx: TransactionRow,
     reason: DepositAttentionReason,
     sentence: string,
