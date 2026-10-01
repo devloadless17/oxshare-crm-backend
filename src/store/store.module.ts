@@ -5,6 +5,7 @@ import { ApiKeysStore } from './api-keys.store';
 import { AppSettingsStore } from './app-settings.store';
 import { PaymentProvidersStore } from './payment-providers.store';
 import { PaymentProviderEventsStore } from './payment-provider-events.store';
+import { OfferedCountriesStore } from './offered-countries.store';
 import { PaymentProviderExchangesStore } from './payment-provider-exchanges.store';
 import { ProductsStore } from './products.store';
 import { ClientIdentityStore } from './client-identity.store';
@@ -34,6 +35,7 @@ const STORES = [
   PaymentProvidersStore,
   PaymentProviderEventsStore,
   PaymentProviderExchangesStore,
+  OfferedCountriesStore,
   ProductsStore,
   ClientIdentityStore,
   ClientTagsStore,

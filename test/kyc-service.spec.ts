@@ -1,3 +1,4 @@
+import { OfferedCountriesStore } from '../src/store/offered-countries.store';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { storageStub } from './storage-stub';
 import { KycService } from '../src/modules/compliance/kyc.service';
@@ -172,6 +173,7 @@ function build(options: { stored?: KycSubmission; user?: User } = {}) {
     auditLog as unknown as AuditLogStore,
     // The review's state, through the port the KYC layer provides.
     new KycIdentityReview(kycStore as unknown as KycStore),
+    new OfferedCountriesStore(db as unknown as Db),
   );
 
   /*

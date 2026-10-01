@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { ALL_PERMISSIONS } from './support/all-permissions';
 import {
   actingAs,
@@ -593,5 +593,35 @@ describe('GET /profile/options — the one list, for a screen with no session', 
         'city',
       ],
     });
+  });
+});
+
+describe('the countries the broker offers — one list for everything (0178)', () => {
+  it('follows the admin’s list everywhere, and never takes a saved country away', async () => {
+    const desk = await actingAs(ctx, 'admin', MASTER);
+    // The client holds Lebanon. The broker now offers only the Emirates.
+    await desk.put('/v1/admin/countries', { codes: ['AE'] }).expect(200);
+    try {
+      const options = await anonymous(ctx).get('/v1/profile/options').expect(200);
+      expect(options.body.countries).toEqual(['United Arab Emirates']);
+      expect(options.body.nationalities).toEqual(['Emirati']);
+
+      const client = await actingAs(ctx, 'portal', { email, password: PASSWORD });
+      // Keeps Lebanon: an unrelated edit with the old country sent back is fine.
+      await client
+        .post('/v1/kyc/step', { step: 'personal', data: { ...STORED, city: 'Byblos' } })
+        .expect(201);
+      expect((await profileRow()).country).toBe('Lebanon');
+      // A NEW country off the list is refused, in the field's own words.
+      const refused = await client
+        .post('/v1/kyc/step', { step: 'personal', data: { ...STORED, country: 'France' } })
+        .expect(400);
+      expect(JSON.stringify(refused.body)).toMatch(/not one of the countries we accept/);
+      expect((await profileRow()).country).toBe('Lebanon');
+      // A typo or an unknown code is never saved as the list.
+      await desk.put('/v1/admin/countries', { codes: ['XX'] }).expect(400);
+    } finally {
+      await ctx.db.db.execute(sql`UPDATE offered_countries SET codes = NULL`);
+    }
   });
 });

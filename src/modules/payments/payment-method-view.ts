@@ -42,6 +42,9 @@ export function adminPaymentMethodView(row: AdminPaymentMethod) {
     providerCode: row.providerCode,
     channelCode: row.channelCode,
     availability: row.availability,
+    // Who it is offered to (0178). Never in the client's view.
+    countryRule: row.countryRule ?? null,
+    countryCodes: row.countryCodes,
     // Every question, hidden ones included — the console edits them all.
     proofFields: row.proofFields.map((field) => ({
       id: field.id,

@@ -542,7 +542,7 @@ describe('payouts on a provider with NO idempotency key and NO reference', () =>
     testpay.usable = false;
 
     expect(await payouts.decide(await row(txId))).toMatchObject({ kind: 'paused' });
-    expect((await transactions.listWithdrawalMethods()).map((m) => m.key)).not.toContain(
+    expect((await transactions.listWithdrawalMethods(null)).map((m) => m.key)).not.toContain(
       'usdt_out',
     );
     await expect(
@@ -591,7 +591,7 @@ describe('channel switches — a network off, per direction', () => {
     await transactions.approve(requested.id, ADMIN, { awaitsProviderPayout: true });
 
     await switches.set(route, 'payout', false, 'Tron congested', ADMIN);
-    expect((await transactions.listWithdrawalMethods()).map((m) => m.key)).not.toContain(
+    expect((await transactions.listWithdrawalMethods(null)).map((m) => m.key)).not.toContain(
       'usdt_out',
     );
     await expect(
@@ -654,8 +654,8 @@ describe('channel switches — a network off, per direction', () => {
       auditStubAs(),
       new PaymentProviderRegistry([new ManualPaymentProvider(), testpay]),
     );
-    expect((await methods.listAvailable()).map((m) => m.key)).not.toContain('usdt_in');
-    await expect(methods.assertUsable('usdt_in')).rejects.toThrow(/not currently available/);
+    expect((await methods.listAvailable(null)).map((m) => m.key)).not.toContain('usdt_in');
+    await expect(methods.assertUsable('usdt_in', null)).rejects.toThrow(/not currently available/);
     expect((await methods.listAllForAdmin()).find((m) => m.key === 'usdt_in')?.availability).toBe(
       'channel_off',
     );

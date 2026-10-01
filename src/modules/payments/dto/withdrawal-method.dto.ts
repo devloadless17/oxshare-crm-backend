@@ -1,7 +1,19 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { METHOD_AVAILABILITIES, type MethodAvailability } from '../providers/provider-status';
-import { IsBoolean, IsInt, IsOptional, IsString, Length, Matches, Min } from 'class-validator';
-import { NoClientFields } from '../../../common/security/client-field.decorator';
+import {
+  ArrayMaxSize,
+  IsArray,
+  IsBoolean,
+  IsIn,
+  IsInt,
+  IsOptional,
+  IsString,
+  Length,
+  Matches,
+  Min,
+  ValidateIf,
+} from 'class-validator';
+import { NoClientFields, NotClientField } from '../../../common/security/client-field.decorator';
 import { LOGO_URL_MESSAGE, LOGO_URL_PATTERN } from './payment-method.dto';
 import { METHOD_KEY_MESSAGE, METHOD_KEY_PATTERN } from '../method-keys';
 
@@ -43,6 +55,18 @@ export class AdminWithdrawalMethodDto {
       'made on it untouched — the desk still settles them.',
   })
   enabled: boolean;
+
+  @ApiProperty({
+    enum: ['allow', 'deny'],
+    nullable: true,
+    description: 'Country rule (0178): allow only / deny only `countryCodes`; null = none.',
+  })
+  @NotClientField('which countries a METHOD is offered in — operator configuration, no person')
+  countryRule: 'allow' | 'deny' | null;
+
+  @ApiProperty({ type: [String], example: ['EG'] })
+  @NotClientField('which countries a METHOD is offered in — operator configuration, no person')
+  countryCodes: string[];
 
   @ApiProperty({ example: 0, description: 'The order clients see the methods in.' })
   sortOrder: number;
@@ -165,6 +189,26 @@ export class CreateWithdrawalMethodDto {
   @IsBoolean()
   enabled?: boolean;
 
+  @ApiPropertyOptional({
+    enum: ['allow', 'deny'],
+    nullable: true,
+    description:
+      'Country rule (0178): `allow` = only clients of `countryCodes`; `deny` = everyone but ' +
+      "them; null = no rule. Judged by the client's country of residence.",
+  })
+  @IsOptional()
+  @ValidateIf((_o, value) => value !== null)
+  @IsIn(['allow', 'deny'])
+  countryRule?: 'allow' | 'deny' | null;
+
+  @ApiPropertyOptional({ type: [String], example: ['EG'], description: 'ISO alpha-2 codes.' })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(300)
+  @IsString({ each: true })
+  @Matches(/^[A-Za-z]{2}$/, { each: true, message: 'Each country must be a 2-letter ISO code.' })
+  countryCodes?: string[];
+
   @ApiPropertyOptional({ description: 'Omitted puts it after the last one.' })
   @IsOptional()
   @IsInt()
@@ -206,6 +250,26 @@ export class UpdateWithdrawalMethodDto {
   @IsOptional()
   @IsBoolean()
   enabled?: boolean;
+
+  @ApiPropertyOptional({
+    enum: ['allow', 'deny'],
+    nullable: true,
+    description:
+      'Country rule (0178): `allow` = only clients of `countryCodes`; `deny` = everyone but ' +
+      "them; null = no rule. Judged by the client's country of residence.",
+  })
+  @IsOptional()
+  @ValidateIf((_o, value) => value !== null)
+  @IsIn(['allow', 'deny'])
+  countryRule?: 'allow' | 'deny' | null;
+
+  @ApiPropertyOptional({ type: [String], example: ['EG'], description: 'ISO alpha-2 codes.' })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(300)
+  @IsString({ each: true })
+  @Matches(/^[A-Za-z]{2}$/, { each: true, message: 'Each country must be a 2-letter ISO code.' })
+  countryCodes?: string[];
 
   @ApiPropertyOptional()
   @IsOptional()

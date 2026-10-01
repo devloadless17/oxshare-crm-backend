@@ -529,3 +529,24 @@ export function firstProfileError(errors: ProfileCheck['errors']): string | unde
   }
   return undefined;
 }
+
+/**
+ * A NEW country or nationality must be one the broker OFFERS (0178). Only
+ * values that change are asked — a client keeps whatever they already hold,
+ * however the list changes. Returns the refusals, keyed like `checkProfile`.
+ */
+export function offeredProblems(
+  changes: Partial<Record<ProfileKey, string | null>>,
+  offered: { countries: readonly string[]; nationalities: readonly string[] },
+): Partial<Record<ProfileKey, string>> {
+  const problems: Partial<Record<ProfileKey, string>> = {};
+  const country = changes.country;
+  if (country && !offered.countries.includes(country)) {
+    problems.country = `${country} is not one of the countries we accept. Choose one from the list.`;
+  }
+  const nationality = changes.nationality;
+  if (nationality && !offered.nationalities.includes(nationality)) {
+    problems.nationality = `${nationality} is not one of the nationalities we accept. Choose one from the list.`;
+  }
+  return problems;
+}

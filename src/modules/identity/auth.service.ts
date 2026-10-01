@@ -3,6 +3,7 @@ import { lockoutMessage } from '../../common/security/lockout-message';
 import { REGISTRATION_REQUIRED } from '../../common/kyc/identity-core';
 import {
   checkProfile,
+  offeredProblems,
   firstProfileError,
   type ProfileKey,
 } from '../../common/profile/client-profile';
@@ -11,6 +12,7 @@ import { normaliseReferralCode } from '../../common/referral-code';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { v4 as uuidv4 } from 'uuid';
+import { OfferedCountriesStore } from '../../store/offered-countries.store';
 import { UsersStore, User, parsePortalId } from '../../store/users.store';
 import { IbStore } from '../../store/ib.store';
 import {
@@ -191,6 +193,12 @@ export class AuthService {
      */
     @Optional()
     private readonly resourceChanged?: ResourceChangedPublisher,
+    /*
+     * The countries the broker offers (0178): sign-up accepts only those, the
+     * same list KYC and the desk use. Optional for the positional reason above.
+     */
+    @Optional()
+    private readonly offered?: OfferedCountriesStore,
   ) {}
 
   // ─── Register ────────────────────────────────────────────────────────────────
@@ -248,9 +256,13 @@ export class AuthService {
       },
       { required: REGISTRATION_REQUIRED },
     );
-    const profileError = firstProfileError(profile.errors);
+    const offeredErrors = this.offered
+      ? offeredProblems(profile.values, await this.offered.get())
+      : {};
+    const errors = { ...offeredErrors, ...profile.errors };
+    const profileError = firstProfileError(errors);
     if (profileError) {
-      throw new FieldValidationError(profileError, profile.errors);
+      throw new FieldValidationError(profileError, errors);
     }
     // A blank optional field is simply not stored — there is nothing to clear yet.
     const seeded = Object.fromEntries(

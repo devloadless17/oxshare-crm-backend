@@ -142,7 +142,7 @@ describe('what the platform ships with', () => {
 
   it('offers it to nobody while it is disabled', async () => {
     // Seeded disabled. `enabled` is now the whole test — see `rivalUsable`.
-    expect(await methods.listAvailable()).toEqual([]);
+    expect(await methods.listAvailable(null)).toEqual([]);
   });
 
   /*
@@ -166,7 +166,7 @@ describe('what the platform ships with', () => {
       gateways.rivalUsable.mockResolvedValue(false);
     }
     expect((await methods.findOneForAdmin('whish'))?.availability).toBe('provider_not_configured');
-    expect(await methods.listAvailable()).toEqual([]);
+    expect(await methods.listAvailable(null)).toEqual([]);
   });
 
   /*
@@ -178,10 +178,34 @@ describe('what the platform ships with', () => {
 });
 
 describe('what a client is offered', () => {
+  it('a country rule hides the method where it does not apply, and the door refuses it (0178)', async () => {
+    await methods.create(
+      {
+        key: 'bank_transfer',
+        name: 'Bank transfer',
+        currency: 'USD',
+        countryRule: 'deny',
+        countryCodes: ['eg'],
+      },
+      ADMIN,
+    );
+    expect((await methods.listAvailable('Egypt')).map((m) => m.key)).toEqual([]);
+    expect((await methods.listAvailable('Lebanon')).map((m) => m.key)).toEqual(['bank_transfer']);
+    await expect(methods.assertUsable('bank_transfer', 'Egypt')).rejects.toThrow(
+      /not available in your country/,
+    );
+    await expect(methods.assertUsable('bank_transfer', 'Lebanon')).resolves.toMatchObject({
+      key: 'bank_transfer',
+    });
+    // The rule never reaches a client.
+    const [shown] = await methods.listAvailable('Lebanon');
+    expect(clientPaymentMethodView(shown)).not.toHaveProperty('countryCodes');
+  });
+
   it('shows a manual method once it is enabled', async () => {
     await methods.create({ key: 'bank_transfer', name: 'Bank transfer', currency: 'USD' }, ADMIN);
 
-    const available = await methods.listAvailable();
+    const available = await methods.listAvailable(null);
     expect(available).toHaveLength(1);
     expect(available[0].key).toBe('bank_transfer');
   });
@@ -200,20 +224,20 @@ describe('what a client is offered', () => {
   it('hides an enabled GATEWAY whose provider this deployment cannot reach', async () => {
     await ctx.db.execute(sql`UPDATE payment_methods SET enabled = true WHERE key = 'whish'`);
 
-    expect(await methods.listAvailable()).toEqual([]);
+    expect(await methods.listAvailable(null)).toEqual([]);
   });
 
   it('offers an enabled MANUAL method with no pay-to', async () => {
     await methods.create({ key: 'bank_transfer', name: 'Bank transfer', currency: 'USD' }, ADMIN);
 
-    const available = await methods.listAvailable();
+    const available = await methods.listAvailable(null);
     expect(available.map((m) => m.key)).toEqual(['bank_transfer']);
   });
 
   it('reports the platform deposit bounds on every method', async () => {
     await methods.create({ key: 'bank_transfer', name: 'Bank transfer', currency: 'USD' }, ADMIN);
 
-    const [method] = await methods.listAvailable();
+    const [method] = await methods.listAvailable(null);
     /*
      * Resolved server-side so the portal cannot show a floor the validator does
      * not enforce. Non-null and positive is the guarantee; the exact figures are
@@ -227,7 +251,7 @@ describe('what a client is offered', () => {
     await methods.update(MANUAL, { enabled: false }, ADMIN);
 
     // What an operator does when a provider goes down. No deploy.
-    expect(await methods.listAvailable()).toEqual([]);
+    expect(await methods.listAvailable(null)).toEqual([]);
   });
 
   it('honours the operator’s ordering rather than the alphabet', async () => {
@@ -244,7 +268,10 @@ describe('what a client is offered', () => {
     await methods.create({ key: 'aaa_last', name: 'Last', currency: 'USD', sortOrder: 9 }, ADMIN);
     await methods.create({ key: 'zzz_first', name: 'First', currency: 'USD', sortOrder: 1 }, ADMIN);
 
-    expect((await methods.listAvailable()).map((m) => m.key)).toEqual(['zzz_first', 'aaa_last']);
+    expect((await methods.listAvailable(null)).map((m) => m.key)).toEqual([
+      'zzz_first',
+      'aaa_last',
+    ]);
   });
 });
 
@@ -544,7 +571,7 @@ describe('per-method bounds', () => {
    */
   it('refuses below the resolved minimum, naming the figure', async () => {
     await configureManualMethod();
-    const [method] = await methods.listAvailable();
+    const [method] = await methods.listAvailable(null);
     const belowFloor = toDecimal(method.minAmount).minus('0.01').toFixed(2);
     const userId = await makeClient('below@test.local');
 
@@ -560,7 +587,7 @@ describe('per-method bounds', () => {
 
   it('refuses above the resolved maximum, naming the figure', async () => {
     await configureManualMethod();
-    const [method] = await methods.listAvailable();
+    const [method] = await methods.listAvailable(null);
     const aboveCeiling = toDecimal(method.maxAmount).plus('1').toFixed(2);
     const userId = await makeClient('above@test.local');
 
@@ -670,7 +697,7 @@ describe('managing methods', () => {
 
     await methods.update(MANUAL, { enabled: false }, ADMIN);
 
-    const available = await methods.listAvailable();
+    const available = await methods.listAvailable(null);
     expect(available.map((m) => m.key)).not.toContain(MANUAL);
 
     // The deposit filed against it is untouched and still names the method —
@@ -701,7 +728,7 @@ describe('managing methods', () => {
   it('reports the resolved bounds as 8dp strings — §6.1', async () => {
     await configureManualMethod();
 
-    const [method] = await methods.listAvailable();
+    const [method] = await methods.listAvailable(null);
     expect(typeof method.minAmount).toBe('string');
     expect(typeof method.maxAmount).toBe('string');
     expect(method.minAmount).toMatch(/^\d+\.\d{8}$/);
@@ -751,7 +778,7 @@ describe('the desk’s label, the permanent key, and deleting (0161)', () => {
     // and the label nowhere in the payload.
     const mine = await transactions.listForUser(userId);
     expect(mine.items.map((row) => row.methodName)).toEqual(['Bank transfer']);
-    const offered = (await methods.listAvailable()).map(clientPaymentMethodView);
+    const offered = (await methods.listAvailable(null)).map(clientPaymentMethodView);
     expect(offered.find((m) => m.key === MANUAL)?.name).toBe('Bank transfer');
     expect(JSON.stringify([mine, offered])).not.toContain('BLOM');
   });

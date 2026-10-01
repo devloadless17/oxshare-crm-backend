@@ -1254,6 +1254,13 @@
       "when": 1789141600750,
       "tag": "0177_remove_unused_payment_leftovers",
       "breakpoints": true
+    },
+    {
+      "idx": 180,
+      "version": "7",
+      "when": 1789141700750,
+      "tag": "0178_country_list_and_method_restrictions",
+      "breakpoints": true
     }
   ]
 }

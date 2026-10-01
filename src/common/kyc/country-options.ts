@@ -241,3 +241,265 @@ export const KYC_NATIONALITY_OPTIONS: string[] = [
 ]
   .filter((nationality) => !EXCLUDED_NATIONALITIES.has(nationality))
   .sort((a, b) => a.localeCompare(b));
+
+/*
+ * ── The countries a broker OFFERS (0178, the owner's ruling 1 Oct 2026) ─────
+ *
+ * The admin chooses which countries the platform offers — not every country in
+ * the world. One list drives BOTH the country and the nationality dropdowns,
+ * because they are two words for one thing ("Lebanon" / "Lebanese"): a
+ * nationality is offered when its country is. Stored as ISO codes, so a
+ * rename in `countries-list` never orphans a choice.
+ *
+ * A client's SAVED value is always kept (the profile writers accept an
+ * unchanged value off the list), so shrinking the list never breaks anybody.
+ */
+
+/** One country of the world the platform knows. */
+export interface WorldCountry {
+  code: string;
+  name: string;
+}
+
+/** Every country the platform can offer, by name. */
+export const WORLD_COUNTRIES: readonly WorldCountry[] = Object.entries(countries)
+  .filter(([code]) => !EXCLUDED_COUNTRY_CODES.has(code.toUpperCase()))
+  .map(([code, country]) => ({ code: code.toUpperCase(), name: country.name }))
+  .sort((a, b) => a.name.localeCompare(b.name));
+
+const BY_CODE = new Map(WORLD_COUNTRIES.map((country) => [country.code, country]));
+const fold = (text: string): string =>
+  text.normalize('NFKD').replace(/\p{M}/gu, '').trim().replace(/\s+/g, ' ').toLowerCase();
+const BY_NAME = new Map(WORLD_COUNTRIES.map((country) => [fold(country.name), country]));
+
+/** A country by its ISO code, or undefined. */
+export function countryByCode(code: string): WorldCountry | undefined {
+  return BY_CODE.get(code.trim().toUpperCase());
+}
+
+/** A country by its name, however it was typed or accented; undefined if not a country. */
+export function countryByName(name: string): WorldCountry | undefined {
+  return BY_NAME.get(fold(name));
+}
+
+/**
+ * Which country each nationality belongs to. Two countries share one word
+ * ("Congolese", "Dominican"); a country with no demonym on the list simply
+ * offers no nationality, as before.
+ */
+export const NATIONALITY_COUNTRIES: Readonly<Record<string, readonly string[]>> = {
+  Afghan: ['AF'],
+  Albanian: ['AL'],
+  Algerian: ['DZ'],
+  American: ['US'],
+  Andorran: ['AD'],
+  Angolan: ['AO'],
+  Antiguan: ['AG'],
+  Argentine: ['AR'],
+  Armenian: ['AM'],
+  Australian: ['AU'],
+  Austrian: ['AT'],
+  Azerbaijani: ['AZ'],
+  Bahamian: ['BS'],
+  Bahraini: ['BH'],
+  Bangladeshi: ['BD'],
+  Barbadian: ['BB'],
+  Belarusian: ['BY'],
+  Belgian: ['BE'],
+  Belizean: ['BZ'],
+  Beninese: ['BJ'],
+  Bhutanese: ['BT'],
+  Bolivian: ['BO'],
+  Bosnian: ['BA'],
+  Brazilian: ['BR'],
+  British: ['GB'],
+  Bruneian: ['BN'],
+  Bulgarian: ['BG'],
+  Burkinabe: ['BF'],
+  Burmese: ['MM'],
+  Burundian: ['BI'],
+  Cambodian: ['KH'],
+  Cameroonian: ['CM'],
+  Canadian: ['CA'],
+  'Cape Verdean': ['CV'],
+  'Central African': ['CF'],
+  Chadian: ['TD'],
+  Chilean: ['CL'],
+  Chinese: ['CN'],
+  Colombian: ['CO'],
+  Comoran: ['KM'],
+  Congolese: ['CD', 'CG'],
+  'Costa Rican': ['CR'],
+  Croatian: ['HR'],
+  Cuban: ['CU'],
+  Cypriot: ['CY'],
+  Czech: ['CZ'],
+  Danish: ['DK'],
+  Djiboutian: ['DJ'],
+  Dominican: ['DM', 'DO'],
+  Dutch: ['NL'],
+  'East Timorese': ['TL'],
+  Ecuadorean: ['EC'],
+  Egyptian: ['EG'],
+  Emirati: ['AE'],
+  'Equatorial Guinean': ['GQ'],
+  Eritrean: ['ER'],
+  Estonian: ['EE'],
+  Ethiopian: ['ET'],
+  Fijian: ['FJ'],
+  Filipino: ['PH'],
+  Finnish: ['FI'],
+  French: ['FR'],
+  Gabonese: ['GA'],
+  Gambian: ['GM'],
+  Georgian: ['GE'],
+  German: ['DE'],
+  Ghanaian: ['GH'],
+  Greek: ['GR'],
+  Grenadian: ['GD'],
+  Guatemalan: ['GT'],
+  Guinean: ['GN'],
+  Guyanese: ['GY'],
+  Haitian: ['HT'],
+  Honduran: ['HN'],
+  Hungarian: ['HU'],
+  Icelander: ['IS'],
+  Indian: ['IN'],
+  Indonesian: ['ID'],
+  Iranian: ['IR'],
+  Iraqi: ['IQ'],
+  Irish: ['IE'],
+  Italian: ['IT'],
+  Ivorian: ['CI'],
+  Jamaican: ['JM'],
+  Japanese: ['JP'],
+  Jordanian: ['JO'],
+  Kazakhstani: ['KZ'],
+  Kenyan: ['KE'],
+  Kittitian: ['KN'],
+  Kuwaiti: ['KW'],
+  Kyrgyz: ['KG'],
+  Laotian: ['LA'],
+  Latvian: ['LV'],
+  Lebanese: ['LB'],
+  Liberian: ['LR'],
+  Libyan: ['LY'],
+  Liechtensteiner: ['LI'],
+  Lithuanian: ['LT'],
+  Luxembourger: ['LU'],
+  Macedonian: ['MK'],
+  Malagasy: ['MG'],
+  Malawian: ['MW'],
+  Malaysian: ['MY'],
+  Maldivian: ['MV'],
+  Malian: ['ML'],
+  Maltese: ['MT'],
+  Marshallese: ['MH'],
+  Mauritanian: ['MR'],
+  Mauritian: ['MU'],
+  Mexican: ['MX'],
+  Micronesian: ['FM'],
+  Moldovan: ['MD'],
+  Monacan: ['MC'],
+  Mongolian: ['MN'],
+  Montenegrin: ['ME'],
+  Moroccan: ['MA'],
+  Mozambican: ['MZ'],
+  Namibian: ['NA'],
+  Nauruan: ['NR'],
+  Nepalese: ['NP'],
+  'New Zealander': ['NZ'],
+  Nicaraguan: ['NI'],
+  Nigerian: ['NG'],
+  Nigerien: ['NE'],
+  'North Korean': ['KP'],
+  Norwegian: ['NO'],
+  Omani: ['OM'],
+  Pakistani: ['PK'],
+  Palauans: ['PW'],
+  Palestinian: ['PS'],
+  Panamanian: ['PA'],
+  'Papua New Guinean': ['PG'],
+  Paraguayan: ['PY'],
+  Peruvian: ['PE'],
+  Polish: ['PL'],
+  Portuguese: ['PT'],
+  Qatari: ['QA'],
+  Romanian: ['RO'],
+  Russian: ['RU'],
+  Rwandan: ['RW'],
+  'Saint Lucian': ['LC'],
+  Salvadoran: ['SV'],
+  Samoan: ['WS'],
+  'San Marinese': ['SM'],
+  'Sao Tomean': ['ST'],
+  Saudi: ['SA'],
+  Senegalese: ['SN'],
+  Serbian: ['RS'],
+  Seychellois: ['SC'],
+  'Sierra Leonean': ['SL'],
+  Singaporean: ['SG'],
+  Slovak: ['SK'],
+  Slovenian: ['SI'],
+  'Solomon Islander': ['SB'],
+  Somali: ['SO'],
+  'South African': ['ZA'],
+  'South Korean': ['KR'],
+  'South Sudanese': ['SS'],
+  Spanish: ['ES'],
+  'Sri Lankan': ['LK'],
+  Sudanese: ['SD'],
+  Surinamer: ['SR'],
+  Swazi: ['SZ'],
+  Swedish: ['SE'],
+  Swiss: ['CH'],
+  Syrian: ['SY'],
+  Taiwanese: ['TW'],
+  Tajik: ['TJ'],
+  Tanzanian: ['TZ'],
+  Thai: ['TH'],
+  Togolese: ['TG'],
+  Tongan: ['TO'],
+  Trinidadian: ['TT'],
+  Tunisian: ['TN'],
+  Turkish: ['TR'],
+  Turkmen: ['TM'],
+  Tuvaluan: ['TV'],
+  Ugandan: ['UG'],
+  Ukrainian: ['UA'],
+  Uruguayan: ['UY'],
+  Uzbek: ['UZ'],
+  Vanuatuans: ['VU'],
+  Venezuelan: ['VE'],
+  Vietnamese: ['VN'],
+  Yemeni: ['YE'],
+  Zambian: ['ZM'],
+  Zimbabwean: ['ZW'],
+};
+
+/** What a broker's list offers: country names and the nationalities that go with them. */
+export interface OfferedLists {
+  /** The ISO codes chosen; null = every country (nothing chosen yet). */
+  codes: readonly string[] | null;
+  countries: string[];
+  nationalities: string[];
+}
+
+/** The two dropdowns for a stored list of codes (null = the whole world, as before 0178). */
+export function offeredLists(codes: readonly string[] | null): OfferedLists {
+  if (codes === null) {
+    return {
+      codes: null,
+      countries: [...KYC_COUNTRY_OPTIONS],
+      nationalities: [...KYC_NATIONALITY_OPTIONS],
+    };
+  }
+  const chosen = new Set(codes);
+  return {
+    codes,
+    countries: WORLD_COUNTRIES.filter((c) => chosen.has(c.code)).map((c) => c.name),
+    nationalities: KYC_NATIONALITY_OPTIONS.filter((n) =>
+      (NATIONALITY_COUNTRIES[n] ?? []).some((code) => chosen.has(code)),
+    ),
+  };
+}

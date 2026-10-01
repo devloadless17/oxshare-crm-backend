@@ -242,7 +242,11 @@ describe('every admin-reachable shape says whose data it holds', () => {
     const suspicious: string[] = [];
     for (const [name, type] of reachableShapes()) {
       if (noClientFieldsReason(type) === undefined) continue;
-      const hits = propertiesOf(type).filter((property) => PERSONISH.test(property));
+      // A field with its own @NotClientField statement has said whose it is.
+      const stated = notClientFieldsOf(type);
+      const hits = propertiesOf(type).filter(
+        (property) => PERSONISH.test(property) && !stated.has(property),
+      );
       if (hits.length > 0) suspicious.push(`${name}: ${hits.join(', ')}`);
     }
     expect(

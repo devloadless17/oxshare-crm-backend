@@ -1,3 +1,4 @@
+import { normaliseCountryRule } from '../../common/payments/method-eligibility';
 import { Inject, Injectable } from '@nestjs/common';
 import { PaymentProviderRegistry } from './providers/payment-provider-registry';
 import { and, asc, eq, ne, sql } from 'drizzle-orm';
@@ -150,6 +151,7 @@ export class WithdrawalMethodsService {
         logoUrl: dto.logoUrl ?? null,
         enabled: dto.enabled ?? true,
         sortOrder: dto.sortOrder ?? (await this.nextSortOrder()),
+        ...(normaliseCountryRule(dto.countryRule, dto.countryCodes) ?? {}),
         providerCode: route.providerCode,
         channelCode: route.channelCode,
       })
@@ -175,6 +177,7 @@ export class WithdrawalMethodsService {
     const internalLabel =
       dto.internalLabel !== undefined ? requireInternalLabel(dto.internalLabel) : undefined;
     if (internalLabel !== undefined) await this.assertLabelFree(internalLabel, current.key);
+    const countryRule = normaliseCountryRule(dto.countryRule, dto.countryCodes);
     const [row] = await this.db
       .update(withdrawalPaymentMethods)
       .set({
@@ -183,6 +186,7 @@ export class WithdrawalMethodsService {
         ...(dto.logoUrl !== undefined ? { logoUrl: dto.logoUrl } : {}),
         ...(dto.enabled !== undefined ? { enabled: dto.enabled } : {}),
         ...(dto.sortOrder !== undefined ? { sortOrder: dto.sortOrder } : {}),
+        ...(countryRule ?? {}),
         updatedAt: new Date(),
       })
       .where(eq(withdrawalPaymentMethods.key, current.key))
@@ -199,6 +203,16 @@ export class WithdrawalMethodsService {
       if (current[field] !== row[field]) {
         changed[field] = { before: current[field], after: row[field] };
       }
+    }
+    // Who it is offered to (0178), compared as a whole.
+    if (
+      current.countryRule !== row.countryRule ||
+      current.countryCodes.join() !== row.countryCodes.join()
+    ) {
+      changed['countryRule'] = {
+        before: { rule: current.countryRule, codes: current.countryCodes },
+        after: { rule: row.countryRule, codes: row.countryCodes },
+      };
     }
     this.audit.record(actor.id, 'withdrawal_method.update', 'withdrawal_method', row.key, {
       changed,

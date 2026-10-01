@@ -2457,6 +2457,25 @@ export const paymentProviderUnmatchedRecords = pgTable(
   ],
 );
 
+/*
+ * The countries the broker OFFERS (0178): one row, ISO codes in the admin's
+ * order; null = every country (as before). Country and nationality dropdowns
+ * follow it; a client's saved value is always kept.
+ */
+export const offeredCountries = pgTable(
+  'offered_countries',
+  {
+    id: boolean('id').primaryKey().default(true),
+    codes: text('codes').array(),
+    updatedBy: uuid('updated_by'),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check('offered_countries_singleton', sql`${t.id}`),
+    check('offered_countries_codes_ck', sql`${t.codes} IS NULL OR cardinality(${t.codes}) > 0`),
+  ],
+);
+
 /**
  * A way a client can put money in.
  *
@@ -2581,6 +2600,16 @@ export const paymentMethods = pgTable(
       .references(() => paymentProviders.code, { onDelete: 'restrict' }),
     channelCode: varchar('channel_code', { length: 40 }).notNull(),
     enabled: boolean('enabled').notNull().default(true),
+    /**
+     * Offered only to clients of some countries (`allow`) or to all but some
+     * (`deny`), by their country of residence (0178). Null = everyone.
+     */
+    countryRule: varchar('country_rule', { length: 5 }).$type<'allow' | 'deny'>(),
+    /** ISO 3166 alpha-2 codes the rule names; empty when there is no rule. */
+    countryCodes: text('country_codes')
+      .array()
+      .notNull()
+      .default(sql`'{}'::text[]`),
     sortOrder: integer('sort_order').notNull().default(0),
     updatedBy: uuid('updated_by'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -2641,6 +2670,16 @@ export const withdrawalPaymentMethods = pgTable(
       .references(() => paymentProviders.code, { onDelete: 'restrict' }),
     channelCode: varchar('channel_code', { length: 40 }).notNull(),
     enabled: boolean('enabled').notNull().default(true),
+    /**
+     * Offered only to clients of some countries (`allow`) or to all but some
+     * (`deny`), by their country of residence (0178). Null = everyone.
+     */
+    countryRule: varchar('country_rule', { length: 5 }).$type<'allow' | 'deny'>(),
+    /** ISO 3166 alpha-2 codes the rule names; empty when there is no rule. */
+    countryCodes: text('country_codes')
+      .array()
+      .notNull()
+      .default(sql`'{}'::text[]`),
     sortOrder: integer('sort_order').notNull().default(0),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

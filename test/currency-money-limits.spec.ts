@@ -177,7 +177,7 @@ describe('a withdrawal is held to its CURRENCY', () => {
 describe("a deposit method's range", () => {
   it("is the currency's when the method sets none", async () => {
     await methods.create({ name: 'OMT', currency: 'LBP' }, ADMIN);
-    const [omt] = (await methods.listAvailable()).filter((m) => m.currency === 'LBP');
+    const [omt] = (await methods.listAvailable(null)).filter((m) => m.currency === 'LBP');
     expect(omt.minAmount).toBe('1000000.00000000');
     expect(omt.maxAmount).toBe('5000000000.00000000');
   });
@@ -187,7 +187,7 @@ describe("a deposit method's range", () => {
       { name: 'Wish Money', currency: 'LBP', ownMinAmount: '2000000', ownMaxAmount: '90000000' },
       ADMIN,
     );
-    const usable = await methods.assertUsable(created.key);
+    const usable = await methods.assertUsable(created.key, null);
     expect(usable.minAmount).toBe('2000000.00000000');
     expect(usable.maxAmount).toBe('90000000.00000000');
 
@@ -263,7 +263,7 @@ describe("a deposit method's range", () => {
       ADMIN,
     );
     await currencies.update('LBP', { maxDeposit: '3000000000' }, ADMIN);
-    const usable = await methods.assertUsable(created.key);
+    const usable = await methods.assertUsable(created.key, null);
     expect(usable.maxAmount).toBe('3000000000.00000000');
   });
 });

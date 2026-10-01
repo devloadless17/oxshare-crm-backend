@@ -1,6 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
-import { NoClientFields } from '../../../common/security/client-field.decorator';
+import { NoClientFields, NotClientField } from '../../../common/security/client-field.decorator';
 import {
   ArrayMaxSize,
   IsArray,
@@ -316,6 +316,26 @@ export class CreatePaymentMethodDto {
   @IsBoolean()
   enabled?: boolean;
 
+  @ApiPropertyOptional({
+    enum: ['allow', 'deny'],
+    nullable: true,
+    description:
+      'Country rule (0178): `allow` = only clients of `countryCodes`; `deny` = everyone but ' +
+      "them; null = no rule. Judged by the client's country of residence.",
+  })
+  @IsOptional()
+  @ValidateIf((_o, value) => value !== null)
+  @IsIn(['allow', 'deny'])
+  countryRule?: 'allow' | 'deny' | null;
+
+  @ApiPropertyOptional({ type: [String], example: ['EG'], description: 'ISO alpha-2 codes.' })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(300)
+  @IsString({ each: true })
+  @Matches(/^[A-Za-z]{2}$/, { each: true, message: 'Each country must be a 2-letter ISO code.' })
+  countryCodes?: string[];
+
   @ApiPropertyOptional({ description: 'Omitted puts it after the last one.' })
   @IsOptional()
   @IsInt()
@@ -392,6 +412,26 @@ export class UpdatePaymentMethodDto {
   logoUrl?: string;
 
   @ApiPropertyOptional() @IsOptional() @IsBoolean() enabled?: boolean;
+
+  @ApiPropertyOptional({
+    enum: ['allow', 'deny'],
+    nullable: true,
+    description:
+      'Country rule (0178): `allow` = only clients of `countryCodes`; `deny` = everyone but ' +
+      "them; null = no rule. Judged by the client's country of residence.",
+  })
+  @IsOptional()
+  @ValidateIf((_o, value) => value !== null)
+  @IsIn(['allow', 'deny'])
+  countryRule?: 'allow' | 'deny' | null;
+
+  @ApiPropertyOptional({ type: [String], example: ['EG'], description: 'ISO alpha-2 codes.' })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(300)
+  @IsString({ each: true })
+  @Matches(/^[A-Za-z]{2}$/, { each: true, message: 'Each country must be a 2-letter ISO code.' })
+  countryCodes?: string[];
   @ApiPropertyOptional() @IsOptional() @IsInt() @Min(0) sortOrder?: number;
 
   @ApiPropertyOptional({
@@ -466,6 +506,18 @@ export class AdminPaymentMethodDto extends PaymentMethodDto {
       '`minAmount` is what clients are actually held to.',
   })
   ownMinAmount: string | null;
+
+  @ApiProperty({
+    enum: ['allow', 'deny'],
+    nullable: true,
+    description: 'Country rule (0178): allow only / deny only `countryCodes`; null = none.',
+  })
+  @NotClientField('which countries a METHOD is offered in — operator configuration, no person')
+  countryRule: 'allow' | 'deny' | null;
+
+  @ApiProperty({ type: [String], example: ['EG'] })
+  @NotClientField('which countries a METHOD is offered in — operator configuration, no person')
+  countryCodes: string[];
 
   @ApiProperty({
     type: 'string',

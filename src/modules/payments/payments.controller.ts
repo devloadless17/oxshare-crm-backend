@@ -144,8 +144,11 @@ export class PaymentsController {
       'the operator has not finished setting up is absent rather than shown as unusable.',
   })
   @ApiOkResponse({ type: PaymentMethodDto, isArray: true })
-  async listMethods() {
-    return (await this.paymentMethods.listAvailable()).map(clientPaymentMethodView);
+  async listMethods(@Req() req: Request & { user: User }) {
+    // A method with a country rule (0178) is offered only where it applies.
+    return (await this.paymentMethods.listAvailable(req.user.country ?? null)).map(
+      clientPaymentMethodView,
+    );
   }
 
   /**
@@ -380,8 +383,8 @@ export class PaymentsController {
       'takes as `methodKey`.',
   })
   @ApiOkResponse({ type: [WithdrawalMethodDto] })
-  async listWithdrawalMethods() {
-    return await this.transactions.listWithdrawalMethods();
+  async listWithdrawalMethods(@Req() req: Request & { user: User }) {
+    return await this.transactions.listWithdrawalMethods(req.user.country ?? null);
   }
 
   @Post('withdrawals')

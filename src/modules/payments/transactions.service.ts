@@ -1,3 +1,4 @@
+import { COUNTRY_REFUSAL, countryEligible } from '../../common/payments/method-eligibility';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { readProofDetails, type ProofDetail } from '../../common/payments/proof-fields';
 import Decimal from 'decimal.js';
@@ -828,7 +829,8 @@ export class TransactionsService {
    * same table and refuses anything absent or disabled, so hiding a rail here
    * is never what stops it being used (R-4.3).
    */
-  async listWithdrawalMethods() {
+  /** `clientCountry`: a method's country rule applies (0178). */
+  async listWithdrawalMethods(clientCountry: string | null) {
     const rows = await this.db
       .select({
         key: withdrawalPaymentMethods.key,
@@ -836,12 +838,17 @@ export class TransactionsService {
         logoUrl: withdrawalPaymentMethods.logoUrl,
         providerCode: withdrawalPaymentMethods.providerCode,
         channelCode: withdrawalPaymentMethods.channelCode,
+        countryRule: withdrawalPaymentMethods.countryRule,
+        countryCodes: withdrawalPaymentMethods.countryCodes,
       })
       .from(withdrawalPaymentMethods)
       .where(eq(withdrawalPaymentMethods.enabled, true))
       .orderBy(asc(withdrawalPaymentMethods.sortOrder), asc(withdrawalPaymentMethods.name));
     const offered: typeof rows = [];
-    for (const row of rows) if (await this.payoutMethodOffered(row)) offered.push(row);
+    for (const row of rows) {
+      if (!countryEligible(row, clientCountry)) continue;
+      if (await this.payoutMethodOffered(row)) offered.push(row);
+    }
     // What the client must give, from the method's payout channel (0168) — the
     // portal renders the field by its kind, never by the method's key.
     return offered.map(({ providerCode, channelCode, ...method }) => {
@@ -965,6 +972,14 @@ export class TransactionsService {
       .limit(1);
     if (!method || !method.enabled) {
       throw new ValidationError('That withdrawal method is not available.');
+    }
+    const [withdrawer] = await this.db
+      .select({ country: users.country })
+      .from(users)
+      .where(eq(users.id, params.userId))
+      .limit(1);
+    if (!countryEligible(method, withdrawer?.country ?? null)) {
+      throw new ValidationError(COUNTRY_REFUSAL);
     }
 
     /*
@@ -3131,7 +3146,15 @@ export class TransactionsService {
      * union. Methods are operator data now: adding one is a row, and disabling
      * one when a provider goes down does not need a deploy.
      */
-    const paymentMethod = await this.paymentMethods.assertUsable(params.method);
+    const [depositor] = await this.db
+      .select({ country: users.country })
+      .from(users)
+      .where(eq(users.id, params.userId))
+      .limit(1);
+    const paymentMethod = await this.paymentMethods.assertUsable(
+      params.method,
+      depositor?.country ?? null,
+    );
 
     /*
      * The method's currency wins over whatever the client sent.
