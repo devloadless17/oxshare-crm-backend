@@ -1,7 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { eq, sql } from 'drizzle-orm';
 import { ConfigService } from '@nestjs/config';
-import Decimal from 'decimal.js';
 import { TransactionsService } from '../src/modules/payments/transactions.service';
 import { PaymentMethodsService } from '../src/modules/payments/payment-methods.service';
 import { WalletService } from '../src/modules/wallet/wallet.service';
@@ -17,10 +16,6 @@ import { PayoutEngine } from '../src/modules/payments/core/payout-engine.service
 import { ChannelSwitchesService } from '../src/modules/payments/core/channel-switches.service';
 import { ProviderWebhookIngress } from '../src/modules/payments/core/provider-webhook-ingress.service';
 import { ProviderRecordsAudit } from '../src/modules/payments/core/provider-records-audit.service';
-import {
-  ProviderBooks,
-  providerBooksView,
-} from '../src/modules/payments/core/provider-books.service';
 import { PaymentProviderExchangesStore } from '../src/store/payment-provider-exchanges.store';
 import { PaymentProviderRegistry } from '../src/modules/payments/providers/payment-provider-registry';
 import { ManualPaymentProvider } from '../src/modules/payments/providers/manual/manual.provider';
@@ -56,7 +51,6 @@ let deposits: HostedDepositsService;
 let payouts: PayoutEngine;
 let ingress: ProviderWebhookIngress;
 let records: ProviderRecordsAudit;
-let books: ProviderBooks;
 let exchanges: PaymentProviderExchangesStore;
 let settings: ThreePayConfigService;
 let adapter: ThreePayPaymentProvider;
@@ -120,7 +114,6 @@ beforeAll(async () => {
     exchanges,
   );
   records = new ProviderRecordsAudit(ctx.db, new AuditLogStore(ctx.db));
-  books = new ProviderBooks(ctx.db, new AuditLogStore(ctx.db));
 
   await ctx.db.execute(sql`
     INSERT INTO currencies (code, name, symbol, enabled, is_default)
@@ -592,93 +585,5 @@ describe('the exchange log (guide §10: every request and response, 90 days)', (
       VALUES ('threepay', 'outbound', 'GET', '/old', now() - interval '100 days')`);
     expect(await exchanges.prune()).toBe(1);
     expect((await exchanges.list('threepay', 1))[0].id).toBe(latest.id);
-  });
-});
-
-describe('3pay’s balance against our books (guide §6.5 step 3)', () => {
-  const DESK = { id: ADMIN, email: 'desk@oxshare.test', permissions: ['payments.providers.edit'] };
-
-  /** Everything earlier cases moved happened long ago, and the books have not started. */
-  async function quietHistory() {
-    await ctx.db.execute(sql`
-      UPDATE transactions
-         SET provider_submitted_at = provider_submitted_at - interval '1 day',
-             provider_outcome_at = provider_outcome_at - interval '1 day',
-             provider_paid_at = provider_paid_at - interval '1 day'
-       WHERE provider_code = 'threepay'`);
-  }
-  async function read(at = new Date()) {
-    await books.check(adapter, { balance: await adapter.balance(), readAt: at }, true, at);
-    const [provider] = await ctx.db
-      .select()
-      .from(paymentProviders)
-      .where(eq(paymentProviders.code, 'threepay'));
-    return { provider, view: providerBooksView(provider) };
-  }
-
-  it('start only when nothing is travelling, then follow every deposit and payout exactly', async () => {
-    await ctx.db
-      .update(paymentProviders)
-      .set({ booksBaseline: null, booksBaselineAt: null, booksExpected: null })
-      .where(eq(paymentProviders.code, 'threepay'));
-
-    // A payout 3pay is still sending: the balance already lacks it, so no start.
-    sim.nextWithdrawal.push('executing');
-    const travelling = await approvedWithdrawal('20');
-    await payouts.submitApproved(travelling);
-    await quietHistory();
-    expect((await read()).view.status).toBe('starting');
-
-    // It fails: the money is back. Nothing travels now — the books start.
-    sim.finish(sim.withdrawals.at(-1)!._id, 'failed');
-    await payouts.reconcile('threepay');
-    await quietHistory();
-    const started = await read();
-    expect(started.view.status).toBe('matches');
-    expect(started.provider.booksBaseline).toBe('10000.00000000');
-
-    // +98 (100 arrived, 3pay kept 2), −102 (a 100 payout grossed up), and one
-    // that came back: 10000 + 98 − 102 = 9996, to the cent.
-    const { tx } = await deposit('100');
-    sim.confirm(tx.providerPaymentId!, '100');
-    await deliver({ type: 'deposit', status: 'confirmed', invoiceNo: tx.providerPaymentId });
-    expect((await row(tx.id)).state).toBe('success');
-    await payouts.submitApproved(await approvedWithdrawal('100'));
-    sim.nextWithdrawal.push('executing');
-    await payouts.submitApproved(await approvedWithdrawal('30'));
-    const failed = sim.finish(sim.withdrawals.at(-1)!._id, 'failed');
-    await deliver({ type: 'payout', status: 'failed', transactionId: failed._id });
-
-    const after = await read();
-    expect(sim.balance).toBe('9996.00');
-    expect(after.provider.booksExpected).toBe('9996.00000000');
-    expect(after.view.status).toBe('matches');
-  });
-
-  it('money that moved with no record is a difference, paged only once it stands; a reset restarts', async () => {
-    // 3pay holds what the books expect (the simulator restarted between cases)…
-    const [before] = await ctx.db
-      .select({ expected: paymentProviders.booksExpected })
-      .from(paymentProviders)
-      .where(eq(paymentProviders.code, 'threepay'));
-    sim.balance = new Decimal(before.expected!).toFixed(2);
-    // …then 5 USDT leaves with no record anywhere.
-    sim.adjust('-5');
-    const first = await read();
-    expect(first.view.status).toBe('differs');
-    expect(first.view.difference).toBe('-5.00000000');
-    expect(first.provider.booksAlertedAt).toBeNull(); // a lag, until it stands
-
-    const later = await read(new Date(Date.now() + 151 * 60_000));
-    expect(later.provider.booksAlertedAt).not.toBeNull();
-
-    await books.reset('threepay', DESK, 'Fee taken by 3pay outside a movement, confirmed.');
-    const { rows } = await ctx.db.execute<{ n: number }>(sql`
-      SELECT count(*)::int AS n FROM audit_log WHERE action = 'payment_provider.books_reset'`);
-    expect(rows[0].n).toBe(1);
-    await quietHistory();
-    const restarted = await read();
-    expect(restarted.view.status).toBe('matches');
-    expect(restarted.view.difference).toBe('0.00000000');
   });
 });

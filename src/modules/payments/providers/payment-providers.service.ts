@@ -50,7 +50,6 @@ import {
   type ChannelSwitch,
 } from '../core/channel-switches.service';
 import { ProviderRecordsAudit } from '../core/provider-records-audit.service';
-import { ProviderBooks, providerBooksView } from '../core/provider-books.service';
 import { PaymentProviderExchangesStore } from '../../../store/payment-provider-exchanges.store';
 
 const MAX_SETTING_LENGTH = 2048;
@@ -90,8 +89,7 @@ export class PaymentProvidersService {
     private readonly resourceChanged: ResourceChangedPublisher,
     /* The unmatched-records audit (0174) — appended last, the positional-construction rule. */
     private readonly records: ProviderRecordsAudit,
-    /* The balance against our books and the exchange log (0175) — appended last. */
-    private readonly books: ProviderBooks,
+    /* The exchange log (0175) — appended last. */
     private readonly exchanges: PaymentProviderExchangesStore,
   ) {}
 
@@ -132,19 +130,6 @@ export class PaymentProvidersService {
   ): Promise<UnmatchedProviderRecordDto> {
     this.registry.provider(code);
     return unmatchedView(await this.records.acknowledge(code, id, actor, note));
-  }
-
-  /**
-   * A person restarts a provider's books (after a top-up or a move its records
-   * do not show): the next reading with nothing travelling starts them again.
-   */
-  async resetBooks(code: string, note: string, actor: Actor): Promise<PaymentProviderDto> {
-    const adapter = this.registry.provider(code);
-    if (!adapter.balance) {
-      throw new ValidationError(`${adapter.name} holds no balance of ours, so it keeps no books.`);
-    }
-    await this.books.reset(code, actor, note);
-    return this.get(code);
   }
 
   /** What the provider was asked and answered, newest first (0175). */
@@ -415,8 +400,6 @@ export class PaymentProvidersService {
   ): Omit<PaymentProviderDto, 'auditsRecords' | 'unexplainedRecords'> {
     const saved = row !== null && missingSettings(adapter, row).length === 0;
     return {
-      // Its balance against our books, for a provider that holds one of ours (0175).
-      books: adapter.balance ? providerBooksView(row) : null,
       exchangeLog: adapter.keepsExchangeLog === true,
       code: adapter.code,
       name: adapter.name,

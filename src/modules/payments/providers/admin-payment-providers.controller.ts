@@ -29,7 +29,6 @@ import {
   ProviderEventDto,
   ProviderExchangeDto,
   ProviderTestResultDto,
-  ResetProviderBooksDto,
   RotatedProviderSecretDto,
   SetProviderChannelDto,
   UnmatchedProviderRecordDto,
@@ -227,27 +226,6 @@ export class AdminPaymentProvidersController {
     @Query('reference') reference?: string,
   ) {
     return this.providers.exchangeLog(code, limit, before, reference);
-  }
-
-  @Post(':code/books/reset')
-  @UseGuards(PermissionsGuard)
-  @RequirePermissions('payments.providers.edit')
-  @ApiCookieAuth()
-  @ApiOperation({
-    summary: 'Restart the provider’s books (after a top-up or a move its records do not show)',
-    description:
-      'Clears where the books start; the next reading taken while nothing is travelling starts ' +
-      'them again. A note is required. Moves no money.',
-  })
-  @ApiOkResponse({ type: PaymentProviderDto })
-  @NotClientScoped(NOT_SCOPED)
-  @Audited('payment_provider.books_reset')
-  resetBooks(
-    @Req() req: Request & { admin: AuthenticatedAdmin },
-    @Param('code') code: string,
-    @Body() dto: ResetProviderBooksDto,
-  ) {
-    return this.providers.resetBooks(code, dto.note, req.admin);
   }
 
   @Post(':code/unmatched-records/:id/acknowledge')

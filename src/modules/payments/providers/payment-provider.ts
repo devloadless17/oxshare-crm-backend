@@ -257,16 +257,6 @@ export interface ProviderRecord {
   moved: boolean;
   rawStatus: string;
   amount?: string;
-  /**
-   * A deposit's NET — what reached the provider balance after its fee — when
-   * reported; the provider-balance books add it (0175).
-   */
-  net?: string;
-  /**
-   * When it moved the provider's balance, where that differs from
-   * `occurredAt` (a deposit created at one time and confirmed at another).
-   */
-  movedAt?: Date;
   /** The asset it moved in (`USDT-TRC20`). */
   asset?: string;
   /** The other side — the address paid or paid from — when reported. */

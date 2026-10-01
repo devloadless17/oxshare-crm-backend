@@ -77,7 +77,7 @@ async function flagged(
     .values({
       recipientKind: 'admin',
       recipientId: masterId,
-      kind: direction === 'deposit' ? 'admin.deposit.attention' : 'withdrawal.rival_attention',
+      kind: direction === 'deposit' ? 'admin.deposit.attention' : 'withdrawal.payout_attention',
       params: { transactionId: tx[0].id, reason: 'reversed' },
       subjectKind: 'transaction',
       subjectId: tx[0].id,

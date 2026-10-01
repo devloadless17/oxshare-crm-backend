@@ -204,8 +204,6 @@ const WRITES_DETAILS: readonly string[] = [
   'payment_method.create',
   'payment_method.delete',
   'payment_method.update',
-  // The books restarted (0175): the figures replaced and the admin's note; names no client.
-  'payment_provider.books_reset',
   // A channel switched (0173): provider, channel, direction, the admin's reason.
   'payment_provider.channel_enable',
   'payment_provider.enable',
@@ -228,8 +226,6 @@ const WRITES_DETAILS: readonly string[] = [
   'security.denied',
   'settings.jobs.run',
   'settings.jobs.update',
-  'settings.rival.update',
-  'settings.rival.webhook_key.rotate',
   'settings.smtp.update',
   'settings.trading.update',
   'trading.account_create',

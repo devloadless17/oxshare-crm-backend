@@ -574,15 +574,18 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
    * issues. The webhook-key rotation is the row an auditor wants when the
    * money-event stream went quiet ("did the signing key change that day").
    */
+  // Written until 0177, when the Rival tab's routes went; kept so past rows stay findable.
   {
     action: 'settings.rival.update',
     label: 'Payments-platform (Rival) connection changed',
     group: 'Security',
+    historical: true,
   },
   {
     action: 'settings.rival.webhook_key.rotate',
     label: 'Payments-platform (Rival) webhook key generated',
     group: 'Security',
+    historical: true,
   },
   /*
    * Payment providers (0168) — the Rival rows' stakes, for every provider: a
@@ -671,12 +674,6 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   {
     action: 'payment_provider.record_acknowledge',
     label: 'Provider movement acknowledged as a company movement',
-    group: 'Compliance',
-  },
-  {
-    // 0175: the provider's balance against our books, restarted after a top-up.
-    action: 'payment_provider.books_reset',
-    label: 'Provider balance books restarted',
     group: 'Compliance',
   },
   {

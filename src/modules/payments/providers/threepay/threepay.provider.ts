@@ -468,9 +468,6 @@ function depositRecord(item: Record<string, unknown>): ProviderRecord | null {
   if (!providerId || !occurredAt) return null;
   const rawStatus = textOf(item['status']) ?? 'unknown';
   const amount = amountOf(item['actualBalance']) ?? amountOf(item['amount']);
-  const net = amountOf(item['netAmount']);
-  // The balance moves at the confirmation; the list is filtered by creation.
-  const movedAt = dateOf(item['confirmedAt']);
   const asset = textOf(item['currencyType']);
   const counterparty = textOf(item['walletAddress']);
   const reference = textOf(item['clientReference']);
@@ -481,8 +478,6 @@ function depositRecord(item: Record<string, unknown>): ProviderRecord | null {
     rawStatus,
     occurredAt,
     ...(amount !== undefined ? { amount } : {}),
-    ...(net !== undefined ? { net } : {}),
-    ...(movedAt !== undefined ? { movedAt } : {}),
     ...(asset !== undefined ? { asset } : {}),
     ...(counterparty !== undefined ? { counterparty } : {}),
     ...(reference !== undefined ? { reference } : {}),

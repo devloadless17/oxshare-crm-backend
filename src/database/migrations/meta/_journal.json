@@ -1247,6 +1247,13 @@
       "when": 1789141500750,
       "tag": "0176_drop_rival_columns",
       "breakpoints": true
+    },
+    {
+      "idx": 179,
+      "version": "7",
+      "when": 1789141600750,
+      "tag": "0177_remove_unused_payment_leftovers",
+      "breakpoints": true
     }
   ]
 }

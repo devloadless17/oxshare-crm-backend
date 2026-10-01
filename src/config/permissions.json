@@ -383,7 +383,7 @@
   },
   "paymentproviders": {
     "moduleName": "Payment Providers",
-    "description": "The systems that move the money behind the methods: Rival, the desk itself, and each provider added after them. Their connection settings, secrets, environment (live or sandbox) and on/off switch, and what each last reported. Apart from `payments.*` on purpose: a provider's settings decide where every payment and payout instruction goes, and its secrets can move money, while a payment method only decides what clients are offered. `payments.providers.*` replaced the Rival tab's `settings.rival.*` and was granted to whoever held those (0168).",
+    "description": "The systems that move the money behind the methods: Rival, the desk itself, and each provider added after them. Their connection settings, secrets, environment (live or sandbox) and on/off switch, and what each last reported. Apart from `payments.*` on purpose: a provider's settings decide where every payment and payout instruction goes, and its secrets can move money, while a payment method only decides what clients are offered. `payments.providers.*` replaced the Rival tab's `settings.rival.*` (0168), and 0177 removed those keys.",
     "permissions": [
       {
         "key": "payments.providers.view",
@@ -440,14 +440,6 @@
       {
         "key": "settings.security.edit",
         "label": "Change the Security Controls"
-      },
-      {
-        "key": "settings.rival.view",
-        "label": "View the Payments-Platform (Rival) Tab"
-      },
-      {
-        "key": "settings.rival.edit",
-        "label": "Change the Payments-Platform (Rival) Connection"
       }
     ]
   },
