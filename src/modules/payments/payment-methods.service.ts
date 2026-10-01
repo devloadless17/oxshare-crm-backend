@@ -1,3 +1,8 @@
+import {
+  COUNTRY_REFUSAL,
+  countryEligible,
+  normaliseCountryRule,
+} from '../../common/payments/method-eligibility';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { and, asc, eq, ne, sql } from 'drizzle-orm';
 import Decimal from 'decimal.js';
@@ -175,7 +180,8 @@ export class PaymentMethodsService {
    */
   private readonly warnedUnconfigured = new Set<string>();
 
-  async listAvailable(): Promise<ClientPaymentMethod[]> {
+  /** `clientCountry`: the client's country of residence — a method's country rule applies (0178). */
+  async listAvailable(clientCountry: string | null): Promise<ClientPaymentMethod[]> {
     const rows = await this.db
       .select()
       .from(paymentMethods)
@@ -192,6 +198,7 @@ export class PaymentMethodsService {
     const off = await readOffSwitches(this.db);
     for (const row of rows) {
       if (off.has(channelSwitchKey(row, 'deposit'))) continue;
+      if (!countryEligible(row, clientCountry)) continue;
       if (await this.isConfigured(row)) available.push(row);
       else hidden.push(row.key);
     }
@@ -393,12 +400,14 @@ export class PaymentMethodsService {
    * Returns the ROW, so the caller has the currency and the bounds without a
    * second read.
    */
-  async assertUsable(key: string): Promise<ClientPaymentMethod> {
+  async assertUsable(key: string, clientCountry: string | null): Promise<ClientPaymentMethod> {
     const row = await this.findOne(key);
     if (!row) throw new NotFoundError(`Unknown payment method ${this.normalise(key)}.`);
     if (!row.enabled) {
       throw new ValidationError(`${row.name} is not currently available. Choose another method.`);
     }
+    // The same rule the list applied (0178): a crafted request cannot get round it.
+    if (!countryEligible(row, clientCountry)) throw new ValidationError(COUNTRY_REFUSAL);
     if (
       !(await this.isConfigured(row)) ||
       (await readOffSwitches(this.db)).has(channelSwitchKey(row, 'deposit'))
@@ -497,6 +506,7 @@ export class PaymentMethodsService {
         ownMinAmount,
         ownMaxAmount,
         proofFields: normaliseProofFields(dto.proofFields ?? []),
+        ...(normaliseCountryRule(dto.countryRule, dto.countryCodes) ?? {}),
         providerCode: route.providerCode,
         channelCode: route.channelCode,
         updatedBy: adminId,
@@ -579,6 +589,7 @@ export class PaymentMethodsService {
     }
     const proofFields =
       dto.proofFields !== undefined ? normaliseProofFields(dto.proofFields) : undefined;
+    const countryRule = normaliseCountryRule(dto.countryRule, dto.countryCodes);
     const [row] = await this.db
       .update(paymentMethods)
       .set({
@@ -592,6 +603,7 @@ export class PaymentMethodsService {
         ...(dto.ownMinAmount !== undefined ? { ownMinAmount: dto.ownMinAmount } : {}),
         ...(dto.ownMaxAmount !== undefined ? { ownMaxAmount: dto.ownMaxAmount } : {}),
         ...(proofFields !== undefined ? { proofFields } : {}),
+        ...(countryRule ?? {}),
         updatedBy: adminId,
         updatedAt: new Date(),
       })
@@ -626,6 +638,16 @@ export class PaymentMethodsService {
     // The questions clients are asked: a list, compared as a whole.
     if (JSON.stringify(current.proofFields) !== JSON.stringify(row.proofFields)) {
       changed['proofFields'] = { before: current.proofFields, after: row.proofFields };
+    }
+    // Who it is offered to (0178), compared as a whole.
+    if (
+      current.countryRule !== row.countryRule ||
+      current.countryCodes.join() !== row.countryCodes.join()
+    ) {
+      changed['countryRule'] = {
+        before: { rule: current.countryRule, codes: current.countryCodes },
+        after: { rule: row.countryRule, codes: row.countryCodes },
+      };
     }
     this.audit.record(actor.id, 'payment_method.update', 'payment_method', row.key, { changed });
     const updated = await this.findOneForAdmin(row.key);

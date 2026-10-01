@@ -13,6 +13,7 @@ import {
 import {
   adminEditRule,
   checkProfile,
+  offeredProblems,
   firstProfileError,
   isProfileKey,
   normaliseProfileValue,
@@ -27,6 +28,7 @@ import {
   type IdentityReviewPort,
 } from '../../common/provisioning/identity-review.port';
 import { EmailService } from '../email/email.service';
+import { OfferedCountriesStore } from '../../store/offered-countries.store';
 import { UsersStore, type User } from '../../store/users.store';
 
 /** Who is changing a profile — every change is recorded against somebody. */
@@ -105,6 +107,8 @@ export class ClientProfileService {
      * can be replaced without touching it.
      */
     @Inject(IDENTITY_REVIEW) private readonly review: IdentityReviewPort,
+    // The countries the broker offers (0178): a NEW country or nationality must be one.
+    private readonly offered: OfferedCountriesStore,
     // Last, and optional: two specs construct this by hand, and only a
     // correction sends mail.
     private readonly email?: EmailService,
@@ -183,6 +187,11 @@ export class ClientProfileService {
 
       if (changed.length === 0) return { user: current, before, after, changed, verification };
       options.guard?.(changed, verification);
+      if (changed.includes('country') || changed.includes('nationality')) {
+        const refused = offeredProblems(changes, await this.offered.get(tx));
+        const refusal = firstProfileError(refused);
+        if (refusal) throw new FieldValidationError(refusal, refused);
+      }
 
       await tx.update(users).set(changes).where(eq(users.id, userId));
 

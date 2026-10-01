@@ -1,6 +1,6 @@
 import { Controller, Get } from '@nestjs/common';
 import { ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { KYC_COUNTRY_OPTIONS, KYC_NATIONALITY_OPTIONS } from '../../common/kyc/country-options';
+import { OfferedCountriesStore } from '../../store/offered-countries.store';
 import { REGISTRATION_REQUIRED, VERIFICATION_REQUIRED } from '../../common/kyc/identity-core';
 import { ProfileOptionsDto } from './dto/profile-options.dto';
 
@@ -16,20 +16,24 @@ import { ProfileOptionsDto } from './dto/profile-options.dto';
  * would sooner or later offer a choice the server then refuses — a sign-up that
  * cannot be completed, with nothing on screen saying why. The KYC form receives
  * the same lists inside its configuration; the support desk's edit reads them
- * from here.
+ * from here. Since 0178 they are the broker's OFFERED countries — the one list
+ * sign-up, KYC, the desk and the payment-method rules share.
  */
 @ApiTags('profile')
 @Controller('profile')
 export class ProfileOptionsController {
+  constructor(private readonly offered: OfferedCountriesStore) {}
+
   @Get('options')
   @ApiOperation({
     summary: 'The countries and nationalities a client profile accepts, and what it requires',
   })
   @ApiOkResponse({ type: ProfileOptionsDto })
-  options(): ProfileOptionsDto {
+  async options(): Promise<ProfileOptionsDto> {
+    const lists = await this.offered.get();
     return {
-      countries: [...KYC_COUNTRY_OPTIONS],
-      nationalities: [...KYC_NATIONALITY_OPTIONS],
+      countries: lists.countries,
+      nationalities: lists.nationalities,
       required: {
         registration: [...REGISTRATION_REQUIRED],
         verification: [...VERIFICATION_REQUIRED],

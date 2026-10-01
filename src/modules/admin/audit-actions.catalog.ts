@@ -313,6 +313,8 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   { action: 'rejection_reason.update', label: 'Rejection reason reworded', group: 'Configuration' },
   { action: 'rejection_reason.delete', label: 'Rejection reason removed', group: 'Configuration' },
   { action: 'kyc_config.replace', label: 'KYC form replaced', group: 'Configuration' },
+  // 0178: the countries sign-up, KYC and payment rules offer.
+  { action: 'kyc.countries_update', label: 'Countries offered changed', group: 'Configuration' },
   { action: 'kyc_config.reset', label: 'KYC form reset to defaults', group: 'Configuration' },
   { action: 'kyc_config.step_add', label: 'KYC step added', group: 'Configuration' },
   { action: 'kyc_config.step_update', label: 'KYC step changed', group: 'Configuration' },

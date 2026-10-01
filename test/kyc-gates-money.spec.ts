@@ -1,3 +1,4 @@
+import { OfferedCountriesStore } from '../src/store/offered-countries.store';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { ConfigService } from '@nestjs/config';
@@ -131,6 +132,7 @@ beforeAll(async () => {
       new AuditLogStore(db),
       // The review's state, through the port the KYC layer provides.
       new KycIdentityReview(new KycStore(db)),
+      new OfferedCountriesStore(db),
     ),
   );
   const { rows } = await ctx.db.execute<{ id: string }>(sql`

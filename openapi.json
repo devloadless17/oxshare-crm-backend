@@ -7196,6 +7196,69 @@
         ]
       }
     },
+    "/v1/admin/countries": {
+      "get": {
+        "operationId": "AdminCountriesController_get",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OfferedCountriesDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "The countries offered, and every country that could be",
+        "tags": [
+          "admin"
+        ]
+      },
+      "put": {
+        "description": "Sign-up, KYC, the desk and payment-method rules all follow this list. A client keeps a country they already hold; only new choices are limited to it.",
+        "operationId": "AdminCountriesController_set",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetOfferedCountriesDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OfferedCountriesDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Choose the countries offered",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/auth/login": {
       "post": {
         "operationId": "AdminAuthController_login",
@@ -16347,6 +16410,24 @@
             "nullable": true,
             "description": "The method's own minimum as the operator set it — null means the currency's. `minAmount` is what clients are actually held to."
           },
+          "countryRule": {
+            "type": "string",
+            "enum": [
+              "allow",
+              "deny"
+            ],
+            "nullable": true,
+            "description": "Country rule (0178): allow only / deny only `countryCodes`; null = none."
+          },
+          "countryCodes": {
+            "example": [
+              "EG"
+            ],
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "ownMaxAmount": {
             "type": "string",
             "nullable": true,
@@ -16399,6 +16480,8 @@
           "requiresProof",
           "proofFields",
           "ownMinAmount",
+          "countryRule",
+          "countryCodes",
           "ownMaxAmount",
           "internalLabel",
           "builtIn",
@@ -16503,6 +16586,25 @@
             "type": "boolean",
             "default": true
           },
+          "countryRule": {
+            "type": "string",
+            "enum": [
+              "allow",
+              "deny"
+            ],
+            "nullable": true,
+            "description": "Country rule (0178): `allow` = only clients of `countryCodes`; `deny` = everyone but them; null = no rule. Judged by the client's country of residence."
+          },
+          "countryCodes": {
+            "example": [
+              "EG"
+            ],
+            "description": "ISO alpha-2 codes.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "sortOrder": {
             "type": "number",
             "description": "Omitted puts it after the last one."
@@ -16546,6 +16648,25 @@
           },
           "enabled": {
             "type": "boolean"
+          },
+          "countryRule": {
+            "type": "string",
+            "enum": [
+              "allow",
+              "deny"
+            ],
+            "nullable": true,
+            "description": "Country rule (0178): `allow` = only clients of `countryCodes`; `deny` = everyone but them; null = no rule. Judged by the client's country of residence."
+          },
+          "countryCodes": {
+            "example": [
+              "EG"
+            ],
+            "description": "ISO alpha-2 codes.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           },
           "sortOrder": {
             "type": "number"
@@ -16626,6 +16747,24 @@
             "type": "boolean",
             "description": "Whether clients are offered it on the withdraw form. Disabling leaves requests already made on it untouched — the desk still settles them."
           },
+          "countryRule": {
+            "type": "string",
+            "enum": [
+              "allow",
+              "deny"
+            ],
+            "nullable": true,
+            "description": "Country rule (0178): allow only / deny only `countryCodes`; null = none."
+          },
+          "countryCodes": {
+            "example": [
+              "EG"
+            ],
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "sortOrder": {
             "type": "number",
             "example": 0,
@@ -16687,6 +16826,8 @@
           "name",
           "logoUrl",
           "enabled",
+          "countryRule",
+          "countryCodes",
           "sortOrder",
           "internalLabel",
           "builtIn",
@@ -16737,6 +16878,25 @@
             "type": "boolean",
             "default": true
           },
+          "countryRule": {
+            "type": "string",
+            "enum": [
+              "allow",
+              "deny"
+            ],
+            "nullable": true,
+            "description": "Country rule (0178): `allow` = only clients of `countryCodes`; `deny` = everyone but them; null = no rule. Judged by the client's country of residence."
+          },
+          "countryCodes": {
+            "example": [
+              "EG"
+            ],
+            "description": "ISO alpha-2 codes.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "sortOrder": {
             "type": "number",
             "description": "Omitted puts it after the last one."
@@ -16765,6 +16925,25 @@
           },
           "enabled": {
             "type": "boolean"
+          },
+          "countryRule": {
+            "type": "string",
+            "enum": [
+              "allow",
+              "deny"
+            ],
+            "nullable": true,
+            "description": "Country rule (0178): `allow` = only clients of `countryCodes`; `deny` = everyone but them; null = no rule. Judged by the client's country of residence."
+          },
+          "countryCodes": {
+            "example": [
+              "EG"
+            ],
+            "description": "ISO alpha-2 codes.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           },
           "sortOrder": {
             "type": "number"
@@ -20153,6 +20332,71 @@
         },
         "required": [
           "productIds"
+        ]
+      },
+      "CountryDto": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "example": "LB",
+            "description": "ISO 3166 alpha-2."
+          },
+          "name": {
+            "type": "string",
+            "example": "Lebanon"
+          }
+        },
+        "required": [
+          "code",
+          "name"
+        ]
+      },
+      "OfferedCountriesDto": {
+        "type": "object",
+        "properties": {
+          "offered": {
+            "nullable": true,
+            "example": [
+              "LB",
+              "AE"
+            ],
+            "description": "The codes offered, in order; null = every country (nothing chosen yet).",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "world": {
+            "description": "Every country that can be offered.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CountryDto"
+            }
+          }
+        },
+        "required": [
+          "offered",
+          "world"
+        ]
+      },
+      "SetOfferedCountriesDto": {
+        "type": "object",
+        "properties": {
+          "codes": {
+            "example": [
+              "LB",
+              "AE"
+            ],
+            "description": "ISO alpha-2 codes.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "codes"
         ]
       },
       "AdminLoginDto": {

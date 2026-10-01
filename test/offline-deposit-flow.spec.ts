@@ -429,7 +429,7 @@ describe('the details that identify an offline payment (0163)', () => {
 
   it('asks a client only the shown fields, and none while the method takes no receipt', async () => {
     const asked = async () =>
-      (await methods.listAvailable())
+      (await methods.listAvailable(null))
         .map(clientPaymentMethodView)
         .find((m) => m.key === METHOD)
         ?.proofFields.map((f) => f.id);

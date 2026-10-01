@@ -1,6 +1,6 @@
 import { createHash } from 'crypto';
 import { documentForFieldType } from '../common/kyc/document-catalogue';
-import { KYC_COUNTRY_OPTIONS, KYC_NATIONALITY_OPTIONS } from '../common/kyc/country-options';
+import { offeredLists, type OfferedLists } from '../common/kyc/country-options';
 import {
   CORE_STEPS,
   DEFAULT_IDENTITY_PLACEMENTS,
@@ -15,7 +15,7 @@ import { asc, inArray, sql } from 'drizzle-orm';
 import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db, Executor } from '../database/db';
-import { kycConfigSteps, kycFieldLabels } from '../database/schema';
+import { kycConfigSteps, kycFieldLabels, offeredCountries } from '../database/schema';
 
 /** One upload slot a document type asks for. See `KycDocumentType`. */
 export interface KycDocumentPart {
@@ -168,13 +168,16 @@ type Row = typeof kycConfigSteps.$inferSelect;
  * Since the identity core, those two fields are never stored at all; the strip
  * below still runs, for the rows written before.
  */
-const SYSTEM_OPTIONS: Readonly<Record<string, readonly string[]>> = {
-  nationality: KYC_NATIONALITY_OPTIONS,
-  country: KYC_COUNTRY_OPTIONS,
-};
+type SystemOptions = Readonly<Record<'nationality' | 'country', readonly string[]>>;
 
-const hasSystemOptions = (name: string): boolean =>
-  Object.prototype.hasOwnProperty.call(SYSTEM_OPTIONS, name);
+/** The two system lists: the broker's offered countries and their nationalities (0178). */
+const systemOptions = (lists: OfferedLists): SystemOptions => ({
+  nationality: lists.nationalities,
+  country: lists.countries,
+});
+
+const hasSystemOptions = (name: string): name is keyof SystemOptions =>
+  name === 'nationality' || name === 'country';
 
 /**
  * Resolves each document field's catalogue entry, and each system list, on the
@@ -185,13 +188,16 @@ const hasSystemOptions = (name: string): boolean =>
  * that accepts one follows on the next read. Storing the resolved shape would
  * mean a migration each time a document's slots changed.
  */
-const withResolvedDocuments = (fields: KycFieldConfig[]): KycFieldConfig[] =>
+const withResolvedDocuments = (
+  fields: KycFieldConfig[],
+  options: SystemOptions,
+): KycFieldConfig[] =>
   fields.map((field) => {
     const document = documentForFieldType(field.type);
     // A base type (`text`, `date`, …) resolves to nothing and passes through.
     if (document) return { ...field, document };
     if (field.type === 'select' && hasSystemOptions(field.name)) {
-      return { ...field, options: [...SYSTEM_OPTIONS[field.name]] };
+      return { ...field, options: [...options[field.name]] };
     }
     return field;
   });
@@ -200,7 +206,7 @@ const withResolvedDocuments = (fields: KycFieldConfig[]): KycFieldConfig[] =>
  * A row as every reader sees it: the platform's parts rebuilt from code
  * (`platformStep`), then the catalogue and the system lists resolved.
  */
-const toStep = (r: Row): KycStepConfig => {
+const toStep = (r: Row, options: SystemOptions): KycStepConfig => {
   const step = platformStep<KycStepConfig>({
     id: r.id,
     stepNumber: r.stepNumber,
@@ -212,7 +218,7 @@ const toStep = (r: Row): KycStepConfig => {
     evidenceRequired: r.evidenceRequired,
     fields: (r.fields as unknown as KycFieldConfig[]) ?? [],
   });
-  return { ...step, fields: withResolvedDocuments(step.fields) };
+  return { ...step, fields: withResolvedDocuments(step.fields, options) };
 };
 
 /*
@@ -259,7 +265,20 @@ const toRow = (s: KycStepConfig) => {
  * out of step with what it describes: it IS what it describes.
  */
 export function kycConfigVersion(steps: readonly KycStepConfig[]): string {
-  return createHash('sha256').update(JSON.stringify(steps)).digest('hex');
+  /*
+   * The country and nationality lists are left out: they are the platform's
+   * offered countries (0178), saved on their own screen, and a save there must
+   * not make a colleague's open form look changed under them.
+   */
+  const form = steps.map((step) => ({
+    ...step,
+    fields: step.fields.map((field) =>
+      field.type === 'select' && hasSystemOptions(field.name)
+        ? { ...field, options: undefined }
+        : field,
+    ),
+  }));
+  return createHash('sha256').update(JSON.stringify(form)).digest('hex');
 }
 
 @Injectable()
@@ -272,7 +291,12 @@ export class KycConfigStore {
       .select()
       .from(kycConfigSteps)
       .orderBy(asc(kycConfigSteps.stepNumber));
-    return inFormOrder(rows.map(toStep));
+    const [offered] = await executor
+      .select({ codes: offeredCountries.codes })
+      .from(offeredCountries)
+      .limit(1);
+    const options = systemOptions(offeredLists(offered?.codes ?? null));
+    return inFormOrder(rows.map((row) => toStep(row, options)));
   }
 
   /**

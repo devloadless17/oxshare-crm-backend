@@ -1,3 +1,5 @@
+import { AdminCountriesController } from './admin-countries.controller';
+import { AdminCountriesService } from './admin-countries.service';
 import { Module } from '@nestjs/common';
 import { AdminAuditController } from './admin-audit.controller';
 import { AdminApiKeysController } from './admin-api-keys.controller';
@@ -101,6 +103,7 @@ const ADMIN_SERVICES = [
   // under no parameterised sibling, so it needs no ordering care of the kind
   // `clients/export` before `clients/:id` does.)
   controllers: [
+    AdminCountriesController,
     AdminAuthController,
     AdminClientsController,
     AdminClientIdentityController,
@@ -133,6 +136,7 @@ const ADMIN_SERVICES = [
    * WAF in front of it yet — which is this one.
    */
   providers: [
+    AdminCountriesService,
     ...ADMIN_SERVICES,
     { provide: APP_GUARD, useClass: IpAllowlistGuard },
     /*
