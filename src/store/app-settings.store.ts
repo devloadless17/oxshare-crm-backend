@@ -6,8 +6,8 @@ import type { Db } from '../database/db';
 import { scheduledJobs, smtpSettings, tradingSettings } from '../database/schema';
 
 /**
- * The singleton settings rows — `smtp_settings`, `trading_settings` and
- * `rival_settings`.
+ * The singleton settings rows — `smtp_settings`, `trading_settings` — and
+ * Rival's settings, read from its `payment_providers` row since 0168.
  *
  * ONE store for both, unlike the rest of `store/`, because each table is a
  * single row addressed the same way and neither will ever grow a query beyond
@@ -269,8 +269,7 @@ export class AppSettingsStore {
    * `undefined` leaves it, `null` removes it, a string replaces it. The webhook
    * key and its fingerprint always travel together — a fingerprint describing a
    * key that was just replaced would send an operator chasing a mismatch that
-   * does not exist. Stored in `payment_providers` (0168), mirrored to
-   * `rival_settings` for an older build.
+   * does not exist. Stored in `payment_providers` (0168).
    */
   async setRival(values: RivalSettingsWrite, updatedBy: string): Promise<RivalSettingsRow> {
     const touchesWebhookKey = values.webhookKeyCiphertext !== undefined;

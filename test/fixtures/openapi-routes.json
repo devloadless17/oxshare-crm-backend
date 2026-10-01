@@ -240,7 +240,6 @@
   "POST /v1/admin/wallets/credit",
   "POST /v1/admin/withdrawal-methods",
   "POST /v1/admin/withdrawals/{id}/provider-submit",
-  "POST /v1/admin/withdrawals/{id}/rival-submit",
   "POST /v1/auth/change-password",
   "POST /v1/auth/forgot-password",
   "POST /v1/auth/login",

@@ -9,7 +9,7 @@ import { AppSettingsStore } from '../../../../store/app-settings.store';
  *
  * ── The only opener ────────────────────────────────────────────────────────
  *
- * This is the ONE class that turns `rival_settings`' two ciphertexts back into
+ * This is the ONE class that turns Rival's two ciphertexts (on its `payment_providers` row) back into
  * usable secrets — the API key on the way to an outbound call, the webhook key
  * on the way to verifying an inbound signature. `RivalSettingsService` seals
  * and never opens; keeping the directions in separate classes means "who can

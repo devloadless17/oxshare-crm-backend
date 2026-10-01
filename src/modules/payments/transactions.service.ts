@@ -289,8 +289,6 @@ export interface AdminTransactionExportRow {
   providerRef: string | null;
   /** The payment provider's own id for the movement (0173's neutral column). */
   providerPaymentId: string | null;
-  /** The same id under its pre-0173 name — kept one release for older consoles. */
-  rivalExternalId: string | null;
   destination: string | null;
   /** What the client gave to identify an offline payment (0163). */
   proofDetails: ProofDetail[] | null;
@@ -428,7 +426,6 @@ function toMovementRow(row: AdminCombinedRow) {
     provider: row.provider,
     providerRef: row.provider_ref,
     providerPaymentId: row.provider_payment_id,
-    rivalExternalId: row.provider_payment_id,
     destination: row.destination,
     rejectionReason: row.rejection_reason,
     // The receipt on an offline deposit, so the desk can show the image beside
@@ -1521,11 +1518,6 @@ export class TransactionsService {
       providerFee: r.providerFee,
       needsAttention: r.needsAttention,
       attentionReason: r.attentionReason,
-      /* The same, under the pre-0173 names — one release, for older consoles. */
-      rivalWithdrawalId: r.providerPayoutId,
-      rivalSubmittedAt: r.providerSubmittedAt,
-      rivalNeedsAttention: r.needsAttention,
-      rivalAttentionReason: r.attentionReason,
       providerNote: r.providerNote,
       user: {
         id: r.userId,
@@ -2192,7 +2184,6 @@ export class TransactionsService {
         reviewedAt: instantOrNull(row.reviewed_at),
         settledAt: instantOrNull(row.settled_at),
         providerPaymentId: row.provider_payment_id,
-        rivalExternalId: row.provider_payment_id,
         createdAt: instantOf(row.created_at),
         methodName: row.method_name,
         kind: row.kind,

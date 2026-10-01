@@ -1267,9 +1267,8 @@ Three layers, and every money path reads them rather than a name (`modules/payme
   sealed and write-only; a GENERATED one (a webhook key) is only ever rotated and shown once; a URL
   must be https on the public internet (`outbound-host`); sandbox is refused on a production
   deployment, at save AND at run time. Audited `payment_provider.update|enable|disable|secret_rotate`.
-- **`rival_settings` is mirrored both ways by triggers** until the contract migration, so an older
-  build after a rollback runs on the credentials the console last saved, and the reverse.
-  `/admin/settings/rival` still works (it writes the same row); it goes with the Rival tab.
+- **`rival_settings` is gone (0176).** Rival's settings live only on its `payment_providers` row.
+  `/admin/settings/rival` still works (it reads and writes that row); no console calls it.
 - **The event log** (`payment_provider_events`, `PaymentProviderEventsStore.append`): every webhook
   and poll result in one vocabulary (`payment.succeeded`, `payout.rejected`…) with what was done
   (applied / ignored / rejected / failed). One row per fact by `UNIQUE(provider_code, event_key)`;
@@ -1323,11 +1322,8 @@ copied the riskiest code. Now the owner's rule (30 Sep 2026: "world class") is s
   `provider_net_amount`, `provider_amount_received`, `requested_amount`, `provider_status`,
   `provider_checked_at`, `needs_attention`, `attention_reason`, plus
   `provider_payment_url` / `_expires_at`.
-  - **Read and write these, never `rival_*`.** A BEFORE trigger (`transactions_sync_rival_columns`)
-    mirrors the pairs so the previous build still works after a rollback: attention on every row,
-    ids and claim on Rival's rows. It is NAMED to fire after `transactions_route_default`, because
-    same-kind triggers fire in name order. A later migration drops both.
-  - The 0140 task trigger fires on both flags.
+  - ⚠️ **0176 dropped the `rival_*` columns, their mirror trigger and the `rival-submit` alias**
+    (1 Oct 2026). It is roll-forward only: a build before 0173 cannot run past it.
 - **THE FINGERPRINT LOCK** (`transactions_payout_fingerprint_uq`). A provider with no idempotency
   key and no reference can only be searched by what it was asked. The claim writes a hash of
   (channel, normalized destination, gross, currency). At most ONE unresolved payout per fingerprint
@@ -1338,7 +1334,7 @@ copied the riskiest code. Now the owner's rule (30 Sep 2026: "world class") is s
   - Exactly one unrecorded candidate in the provider's complete records → adopted.
   - Several → a person.
   - None after the adoption window → the claim is cleared, and a PERSON chooses Resend
-    (`POST admin/withdrawals/:id/provider-submit`; `rival-submit` is an alias for one release) or
+    (`POST admin/withdrawals/:id/provider-submit`) or
     cancel.
   - A 429 (`refused` with `retryAfterMs`) is "definitely not created", so it requeues itself.
 - **Deposits.**

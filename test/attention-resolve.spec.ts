@@ -19,7 +19,7 @@ import {
  * "MARK RESOLVED" — the finish line a payment anomaly never had.
  *
  * An amount mismatch, a reversal, money paid against a failed row, the
- * platform and this side disagreeing: each sets `rival_needs_attention`, and
+ * platform and this side disagreeing: each sets `needs_attention`, and
  * for a deposit NO path ever cleared it. The row said "needs attention" for
  * ever, and the admin task announcing it could never finish (migration 0140
  * makes the task's life the flag's life). This route is the person saying "I
@@ -67,7 +67,7 @@ async function flagged(
   const { rows: tx } = await ctx.db.db.execute<{ id: string }>(sql`
     INSERT INTO transactions
       (user_id, wallet_id, direction, amount, currency, state, provider, provider_ref,
-       rival_needs_attention, rival_attention_reason)
+       needs_attention, attention_reason)
     VALUES (${clientId}, ${wallet[0].id}, ${direction}::transaction_direction, '120.00000000', 'USD',
             'success', 'whish', ${`attn-${seq}-${direction}`}, true,
             'The platform REVERSED this deposit after it settled.')
@@ -227,7 +227,7 @@ describe('Mark resolved', () => {
     expect(res.body).toEqual({ id: txId, needsAttention: false });
 
     const [row] = await ctx.db.db
-      .select({ flag: transactions.rivalNeedsAttention, reason: transactions.rivalAttentionReason })
+      .select({ flag: transactions.needsAttention, reason: transactions.attentionReason })
       .from(transactions)
       .where(eq(transactions.id, txId));
     expect(row).toEqual({ flag: false, reason: null });

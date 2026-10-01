@@ -38,10 +38,7 @@ export type TransactionView = Pick<
   | 'reviewedAt'
   | 'settledAt'
   | 'createdAt'
-> & {
-  /** `providerPaymentId` under its pre-0173 name — one release, for older portals. */
-  rivalExternalId: string | null;
-};
+>;
 
 export function transactionView(row: TransactionRow): TransactionView {
   return {
@@ -56,7 +53,6 @@ export function transactionView(row: TransactionRow): TransactionView {
     methodKey: row.methodKey,
     providerRef: row.providerRef,
     providerPaymentId: row.providerPaymentId,
-    rivalExternalId: row.providerPaymentId,
     destination: row.destination,
     proofFilename: row.proofFilename,
     proofDetails: row.proofDetails,

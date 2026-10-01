@@ -270,7 +270,7 @@ describe('deposit settlement', () => {
   async function seedPendingDeposit(userId: number, reference: string): Promise<string> {
     const wallet = await wallets.getOrCreateWallet(userId, 'USD');
     const { rows } = await ctx.db.execute<{ id: string }>(sql`
-      INSERT INTO transactions (user_id, wallet_id, direction, amount, currency, state, provider, provider_ref, rival_external_id)
+      INSERT INTO transactions (user_id, wallet_id, direction, amount, currency, state, provider, provider_ref, provider_payment_id)
       VALUES (${userId}, ${wallet.id}, 'deposit', '250.00000000', 'USD', 'pending', 'whish', ${reference},
               ${'rx-' + reference})
       RETURNING id

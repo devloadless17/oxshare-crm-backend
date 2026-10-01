@@ -11496,53 +11496,7 @@
     "/v1/admin/withdrawals/{id}/provider-submit": {
       "post": {
         "description": "For rows the provider refused, or held nothing for after the adoption window (the desk shows \"needs attention\"). Safe under double-click: the claim admits one in-flight create, and a submission whose outcome is still unknown is left for reconciliation rather than resent — no provider takes an idempotency key on payouts, so a blind resend pays twice.",
-        "operationId": "AdminMoneyController_resendPayout[0]",
-        "parameters": [
-          {
-            "name": "id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "idempotency-key",
-            "in": "header",
-            "description": "A unique value per intended action (PLATFORM-CONVENTIONS R-5.2).",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/WithdrawalRowDto"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "cookie": []
-          }
-        ],
-        "summary": "Resend an approved withdrawal to its payment provider",
-        "tags": [
-          "admin"
-        ]
-      }
-    },
-    "/v1/admin/withdrawals/{id}/rival-submit": {
-      "post": {
-        "description": "For rows the provider refused, or held nothing for after the adoption window (the desk shows \"needs attention\"). Safe under double-click: the claim admits one in-flight create, and a submission whose outcome is still unknown is left for reconciliation rather than resent — no provider takes an idempotency key on payouts, so a blind resend pays twice.",
-        "operationId": "AdminMoneyController_resendPayout[1]",
+        "operationId": "AdminMoneyController_resendPayout",
         "parameters": [
           {
             "name": "id",
@@ -16231,11 +16185,6 @@
           "providerRef": {
             "type": "string",
             "description": "The provider's own reference. Backs UNIQUE(provider, provider_ref), which is what makes settlement idempotent in the database (§6.3).",
-            "nullable": true
-          },
-          "rivalExternalId": {
-            "type": "string",
-            "description": "The payment platform's OWN id for this movement — what Rival shows as its reference, and the identifier its team can look up directly. Null for anything that never went through a rail (a manual desk credit) and for a row whose create is still in flight.",
             "nullable": true
           },
           "providerPaymentId": {
@@ -23762,26 +23711,6 @@
             "type": "string",
             "nullable": true
           },
-          "rivalWithdrawalId": {
-            "type": "string",
-            "nullable": true,
-            "description": "The payment platform’s withdrawal id, once submitted. Null before."
-          },
-          "rivalSubmittedAt": {
-            "format": "date-time",
-            "type": "string",
-            "nullable": true,
-            "description": "When the submission claim was taken. Set with no id = outcome being reconciled."
-          },
-          "rivalNeedsAttention": {
-            "type": "boolean",
-            "description": "A human must reconcile this row against the payment platform."
-          },
-          "rivalAttentionReason": {
-            "type": "string",
-            "nullable": true,
-            "description": "WHY the row needs attention, in words the operator can act on. Written whenever rivalNeedsAttention flips true; null once a retry lands or the flag was never raised."
-          },
           "providerPayoutId": {
             "type": "string",
             "nullable": true,
@@ -23865,14 +23794,10 @@
             "type": "string",
             "nullable": true
           },
-          "rivalExternalId": {
-            "type": "string",
-            "nullable": true
-          },
           "providerPaymentId": {
             "type": "string",
             "nullable": true,
-            "description": "The provider’s own id for the movement (0173); `rivalExternalId` is its old name."
+            "description": "The provider’s own id for the movement: its invoice, its payment id."
           },
           "createdAt": {
             "format": "date-time",
@@ -23897,7 +23822,6 @@
           "providerEnvironment",
           "methodName",
           "requestedAt",
-          "rivalNeedsAttention",
           "needsAttention",
           "user"
         ]
@@ -24620,15 +24544,10 @@
             "type": "string",
             "nullable": true
           },
-          "rivalExternalId": {
-            "type": "string",
-            "description": "The payment platform's OWN id for this movement — what Rival shows as its reference and what its team can look up directly. Null for a manual desk credit, which went through no rail.",
-            "nullable": true
-          },
           "providerPaymentId": {
             "type": "string",
             "nullable": true,
-            "description": "The provider’s own id for the movement (0173); `rivalExternalId` is its old name."
+            "description": "The provider’s own id for the movement: its invoice, its payment id."
           },
           "destination": {
             "type": "string",

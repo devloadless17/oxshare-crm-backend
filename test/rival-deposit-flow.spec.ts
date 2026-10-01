@@ -118,7 +118,7 @@ async function makePendingDeposit(amount = '150'): Promise<{
   const { rows: txRows } = await ctx.db.execute<{ id: string }>(sql`
     INSERT INTO transactions
       (user_id, wallet_id, direction, amount, currency, state, method_key, provider,
-       provider_ref, rival_external_id)
+       provider_ref, provider_payment_id)
     VALUES
       (${userId}, ${walletRows[0].id}, 'deposit', ${amount}, 'USD', 'pending', 'whish',
        'whish', ${reference}, ${externalId})
@@ -132,7 +132,7 @@ async function stateOf(txId: string): Promise<{
   needsAttention: boolean;
   // The REASON as well as the flag: a flag with no words sends the operator to
   // the logs, so the message is part of the contract and worth asserting.
-  rivalAttentionReason: string | null;
+  attentionReason: string | null;
 }> {
   const { rows } = await ctx.db.execute<{
     state: string;
@@ -145,7 +145,7 @@ async function stateOf(txId: string): Promise<{
   return {
     state: rows[0].state,
     needsAttention: rows[0].needs_attention,
-    rivalAttentionReason: rows[0].attention_reason,
+    attentionReason: rows[0].attention_reason,
   };
 }
 
@@ -280,8 +280,8 @@ describe('the mapping table, row by row', () => {
     expect(row.state, 'a disputed deposit must stay settleable by hand').toBe('pending');
     expect(await balanceOf(userId), 'nothing may be credited').toBe('0.00000000');
     expect(row.needsAttention).toBe(true);
-    expect(String(row.rivalAttentionReason)).toMatch(/40/);
-    expect(String(row.rivalAttentionReason)).toMatch(/150/);
+    expect(String(row.attentionReason)).toMatch(/40/);
+    expect(String(row.attentionReason)).toMatch(/150/);
     expect(bell.notifyAdmins).toHaveBeenCalledWith(
       expect.objectContaining({
         kind: 'admin.deposit.attention',

@@ -25,10 +25,9 @@ export interface PaymentProviderWrite {
 
 /**
  * Every payment provider's configuration row (`payment_providers`, 0168).
- *
- * `rival_settings` — where Rival's configuration lived before 0168, and what an
- * older build still reads — is kept in step with the `rival` row by triggers in
- * both directions (0168), so nothing here writes it.
+
+ * (`rival_settings`, where Rival's configuration lived before 0168, was
+ * dropped in 0176.)
  */
 @Injectable()
 export class PaymentProvidersStore {
