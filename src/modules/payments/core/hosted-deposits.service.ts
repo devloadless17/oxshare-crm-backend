@@ -230,10 +230,6 @@ export class HostedDepositsService {
       await log('ignored', `Already ${tx.state}; a terminal deposit never moves back.`);
       return 'stale';
     }
-    await this.db
-      .update(transactions)
-      .set({ providerPaidAt: paidAtOnce(new Date()) })
-      .where(eq(transactions.id, tx.id));
     await this.flag(
       tx,
       'paid_after_failure',
@@ -275,8 +271,6 @@ export class HostedDepositsService {
         providerCheckedAt: now,
         ...(result.fee !== undefined ? { providerFee: result.fee } : {}),
         ...(result.net !== undefined ? { providerNetAmount: result.net } : {}),
-        // The provider's balance moved at its confirmation — whatever is decided next (0175).
-        ...(result.settled && result.paid ? { providerPaidAt: paidAtOnce(now) } : {}),
       })
       .where(eq(transactions.id, tx.id));
 
@@ -664,12 +658,8 @@ export class HostedDepositsService {
    *
    * A per-row failure logs and moves on: one unreachable payment must not
    * shield the others.
-   *
-   * Resolves `complete` when every open deposit it is responsible for (all but
-   * the last two minutes', which the webhook has) was asked this pass — the
-   * provider-balance books start only after such a pass (0175).
    */
-  async sweep(providerCode: string): Promise<{ complete: boolean }> {
+  async sweep(providerCode: string): Promise<void> {
     const open = await this.db
       .select()
       .from(transactions)
@@ -687,14 +677,12 @@ export class HostedDepositsService {
       .limit(BATCH);
 
     let settled = 0;
-    let unasked = 0;
     let busy: ProviderBusyError | null = null;
     for (const tx of open) {
       try {
         if (!this.registry.isRedirect(tx)) continue;
         if (!tx.providerPaymentId) {
           await this.recoverStart(tx.id);
-          unasked += 1; // found, perhaps, but not asked about its money yet
           continue;
         }
         const age = Date.now() - tx.createdAt.getTime();
@@ -724,7 +712,6 @@ export class HostedDepositsService {
           busy = error;
           break;
         }
-        unasked += 1;
         this.logger.error(`Sweep could not resolve deposit ${tx.id}: ${messageOf(error)}`);
       }
     }
@@ -755,7 +742,6 @@ export class HostedDepositsService {
           `checked, ${settled} settled.`,
       );
     }
-    return { complete: busy === null && unasked === 0 && open.length < BATCH };
   }
 
   /** Expired links of a `received` provider, failed in the last 30 days, not asked this hour. */
@@ -896,9 +882,4 @@ export class HostedDepositsService {
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-/** The FIRST time the provider was seen confirming the money — never moved by a later check. */
-function paidAtOnce(now: Date) {
-  return sql`coalesce(${transactions.providerPaidAt}, ${now}::timestamptz)`;
 }

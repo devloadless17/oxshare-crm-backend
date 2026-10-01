@@ -107,27 +107,6 @@ export const ADMIN_NOTIFICATION_KINDS = {
     permissions: ['withdrawals.settle'],
     stillOpen: 'needs-attention',
   },
-  /**
-   * Rival's names for the two above, raised before 0173 — kept so the rows
-   * already in the bell keep their meaning. Nothing raises them any more.
-   */
-  'withdrawal.rival_submit_failed': {
-    category: 'withdrawals',
-    subjectKind: 'transaction',
-    permissions: ['withdrawals.approve'],
-    stillOpen: 'needs-attention',
-  },
-  /**
-   * The rail and the CRM disagree about whether the money moved. Resolving it
-   * is a judgement about whether money moved — `withdrawals.settle`'s, the
-   * same people "Mark resolved" requires.
-   */
-  'withdrawal.rival_attention': {
-    category: 'withdrawals',
-    subjectKind: 'transaction',
-    permissions: ['withdrawals.settle'],
-    stillOpen: 'needs-attention',
-  },
   'admin.kyc.submitted': {
     category: 'kyc',
     subjectKind: 'kyc',

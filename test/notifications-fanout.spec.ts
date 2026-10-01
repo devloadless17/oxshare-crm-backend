@@ -207,7 +207,7 @@ describe('notifyAdmins', () => {
     );
 
     await service.notifyAdmins({
-      kind: 'withdrawal.rival_attention',
+      kind: 'withdrawal.payout_attention',
       params: { transactionId: 't1', ourState: 'success', event: 'rejected' },
       subject: { id: 't1', clientId: CLIENT_ID },
     });

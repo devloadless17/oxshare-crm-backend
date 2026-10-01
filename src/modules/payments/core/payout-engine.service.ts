@@ -486,9 +486,6 @@ export class PayoutEngine {
         .update(transactions)
         .set({
           providerPayoutId: payoutId,
-          // The provider holds it: its money is committed until it says otherwise.
-          providerOutcome: 'pending',
-          providerOutcomeAt: new Date(),
           needsAttention: false,
           attentionReason: null,
         })
@@ -569,22 +566,11 @@ export class PayoutEngine {
     report: PayoutReport,
     source: ProviderEventSource,
   ): Promise<PayoutOutcome> {
-    // In the core's words, for the provider-balance books (0175), with when it last changed.
-    const said =
-      report.status === 'completed'
-        ? 'completed'
-        : report.status === 'pending'
-          ? 'pending'
-          : 'returned';
-    const now = new Date();
     await this.db
       .update(transactions)
       .set({
         providerStatus: report.rawStatus.slice(0, 40),
-        providerOutcome: said,
-        providerOutcomeAt: sql`CASE WHEN ${transactions.providerOutcome} IS DISTINCT FROM ${said}
-          THEN ${now}::timestamptz ELSE ${transactions.providerOutcomeAt} END`,
-        providerCheckedAt: now,
+        providerCheckedAt: new Date(),
         ...(report.fee !== undefined ? { providerFee: report.fee } : {}),
         ...(report.net !== undefined ? { providerNetAmount: report.net } : {}),
       })
@@ -915,8 +901,6 @@ export class PayoutEngine {
           .update(transactions)
           .set({
             providerPayoutId: unclaimed[0],
-            providerOutcome: 'pending',
-            providerOutcomeAt: new Date(),
             needsAttention: false,
             attentionReason: null,
           })

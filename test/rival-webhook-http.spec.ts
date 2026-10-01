@@ -12,7 +12,7 @@ import {
   currencies,
   ledgerEntries,
   paymentMethods,
-  rivalSettings,
+  paymentProviders,
   transactions,
   users,
   wallets,
@@ -158,22 +158,19 @@ afterAll(async () => {
 async function configureRival(overrides: { webhookKey?: string | null } = {}): Promise<void> {
   const webhookKey = overrides.webhookKey === undefined ? WEBHOOK_KEY : overrides.webhookKey;
   await ctx.db.db
-    .insert(rivalSettings)
-    .values({
-      id: true,
-      baseUrl: fakeRivalUrl,
-      apiKeyCiphertext: sealSecret('tsk_http_spec', ENC_KEY),
-      webhookKeyCiphertext: webhookKey === null ? null : sealSecret(webhookKey, ENC_KEY),
-      webhookKeyFingerprint: webhookKey === null ? null : 'abcd1234',
+    .update(paymentProviders)
+    .set({
       enabled: true,
-    })
-    .onConflictDoUpdate({
-      target: rivalSettings.id,
-      set: {
+      config: {
         baseUrl: fakeRivalUrl,
-        webhookKeyCiphertext: webhookKey === null ? null : sealSecret(webhookKey, ENC_KEY),
+        ...(webhookKey === null ? {} : { webhookKeyFingerprint: 'abcd1234' }),
       },
-    });
+      secrets: {
+        apiKey: sealSecret('tsk_http_spec', ENC_KEY),
+        ...(webhookKey === null ? {} : { webhookKey: sealSecret(webhookKey, ENC_KEY) }),
+      },
+    })
+    .where(eq(paymentProviders.code, 'rival'));
   ctx.app.get(RivalConfigService).invalidate();
 }
 
@@ -386,8 +383,8 @@ describe('a rejected payout event: Rival’s REST record decides, and its note s
         provider: 'whish',
         ...legacyRoute('whish', 'withdrawal'),
         destination: '+961 3 123 456',
-        rivalWithdrawalId: 'rw-adminnote-1',
-        rivalSubmittedAt: new Date(),
+        providerPayoutId: 'rw-adminnote-1',
+        providerSubmittedAt: new Date(),
       })
       .returning();
 
@@ -456,7 +453,7 @@ describe('the crown jewel: a signed completed event credits the wallet, exactly 
       provider: 'whish',
       ...legacyRoute('whish', 'deposit'),
       providerRef: 'OX-HTTPSPEC1',
-      rivalExternalId: EXTERNAL_ID,
+      providerPaymentId: EXTERNAL_ID,
     });
   });
 
@@ -483,7 +480,7 @@ describe('the crown jewel: a signed completed event credits the wallet, exactly 
     const [tx] = await ctx.db.db
       .select()
       .from(transactions)
-      .where(eq(transactions.rivalExternalId, EXTERNAL_ID));
+      .where(eq(transactions.providerPaymentId, EXTERNAL_ID));
     expect(tx.state).toBe('success');
   });
 
@@ -495,7 +492,7 @@ describe('the crown jewel: a signed completed event credits the wallet, exactly 
     const [tx] = await ctx.db.db
       .select()
       .from(transactions)
-      .where(eq(transactions.rivalExternalId, EXTERNAL_ID));
+      .where(eq(transactions.providerPaymentId, EXTERNAL_ID));
     expect(tx.state).toBe('success');
   });
 });

@@ -740,12 +740,8 @@ export class AdminMoneyController {
     return this.money.cancelWithdrawal(id, req.admin, dto.reason, dto.reasonId);
   }
 
-  /*
-   * RESEND a payout a person must decide (0173, every provider). The old
-   * `rival-submit` path stays an alias for one release — the console that
-   * predates 0173 still calls it.
-   */
-  @Post(['withdrawals/:id/provider-submit', 'withdrawals/:id/rival-submit'])
+  /** RESEND a payout a person must decide (0173, every provider). */
+  @Post('withdrawals/:id/provider-submit')
   @Idempotent()
   @ApiHeader({
     name: IDEMPOTENCY_HEADER,

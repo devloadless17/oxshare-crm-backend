@@ -497,10 +497,8 @@ describe('by-id routes answer 404 for an out-of-scope client, never 403', () => 
     'POST /admin/notifications/:id/unread':
       'a notification id; scope is the row’s subject client — notifications-admin-tasks.spec.ts',
     'PATCH /admin/withdrawals/:id/cancel': 'a transaction id — withdrawal-desk-scope.spec.ts',
-    'POST /admin/withdrawals/:id/rival-submit': 'a transaction id — withdrawal-desk-scope.spec.ts',
-    // The same handler as `rival-submit` (0173's neutral path; that one is its alias).
     'POST /admin/withdrawals/:id/provider-submit':
-      'a transaction id — withdrawal-desk-scope.spec.ts (the same handler as rival-submit)',
+      'a transaction id — withdrawal-desk-scope.spec.ts',
     'PATCH /admin/transactions/:id/attention/finish-deposit':
       'a transaction id, resolved to its owner — attention-resolve.spec.ts drives it out of scope',
     'PATCH /admin/transactions/:id/attention/finish-payout':

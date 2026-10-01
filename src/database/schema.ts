@@ -1508,53 +1508,6 @@ export const tradingSettings = pgTable(
 );
 
 /*
- * The Rival connection — one row, forever, same singleton trick as above.
- *
- * Rival is Loadless's own payments platform; the CRM is one of its "companies"
- * and holds a `tsk_…` API key. Whish is integrated once inside Rival, so no
- * Whish credential exists anywhere in this schema.
- *
- * Two ciphertexts with one deliberate asymmetry:
- *
- *  - `apiKeyCiphertext` — OUR credential at Rival. Write-only: sealed on save,
- *    opened only by `RivalConfigService` on the way to an outbound call, in no
- *    response DTO ever.
- *  - `webhookKeyCiphertext` — the credential Rival presents TO US on webhook
- *    deliveries. SEALED, NOT HASHED, and that is a decision: it keys the
- *    HMAC-SHA256 on inbound signatures, and verifying an HMAC needs the
- *    plaintext. An argon2 hash — the treatment login secrets get — would make
- *    verification impossible. AES-256-GCM at rest is the strongest storage
- *    that leaves the key usable. It is minted HERE (shown to the operator
- *    exactly once, then pasted into Rival's dashboard), never chosen by hand.
- */
-export const rivalSettings = pgTable(
-  'rival_settings',
-  {
-    id: boolean('id')
-      .primaryKey()
-      .$default(() => true),
-    baseUrl: varchar('base_url', { length: 2048 }),
-    apiKeyCiphertext: text('api_key_ciphertext'),
-    webhookKeyCiphertext: text('webhook_key_ciphertext'),
-    /**
-     * sha256(key)[:8] — enough for a log line to distinguish "wrong key pasted
-     * into Rival" from "corrupt signature", useless for recovering the key.
-     */
-    webhookKeyFingerprint: varchar('webhook_key_fingerprint', { length: 8 }),
-    enabled: boolean('enabled').notNull().default(false),
-    /**
-     * Liveness, not ordering: bumped on every verified inbound event so the
-     * settings screen can answer "is the pipe alive". Event ordering is carried
-     * by the transaction state machine's conditional updates, never by this.
-     */
-    lastEventAt: timestamp('last_event_at', { withTimezone: true }),
-    updatedBy: uuid('updated_by'),
-    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => [check('rival_settings_singleton', sql`${t.id}`)],
-);
-
-/*
  * Failed sign-ins, per ACCOUNT — PLATFORM-CONVENTIONS R-3.5.
  *
  * `@nestjs/throttler` keys on the IP, which bounds one attacker on one address
@@ -2366,20 +2319,6 @@ export const paymentProviders = pgTable(
      * here have been judged. Null until the audit first runs.
      */
     recordsAuditedUntil: timestamp('records_audited_until', { withTimezone: true }),
-    /*
-     * The provider's balance against our books (0175): where the books start,
-     * and the last comparison — what the provider held, what our books said,
-     * since when they disagree, and when a person was last paged about it.
-     */
-    /** The asset its balance is counted in ("USDT"), as it reports it. */
-    booksAsset: varchar('books_asset', { length: 40 }),
-    booksBaseline: numeric('books_baseline', { precision: 28, scale: 8 }),
-    booksBaselineAt: timestamp('books_baseline_at', { withTimezone: true }),
-    booksCheckedAt: timestamp('books_checked_at', { withTimezone: true }),
-    booksAvailable: numeric('books_available', { precision: 28, scale: 8 }),
-    booksExpected: numeric('books_expected', { precision: 28, scale: 8 }),
-    booksDriftSince: timestamp('books_drift_since', { withTimezone: true }),
-    booksAlertedAt: timestamp('books_alerted_at', { withTimezone: true }),
     updatedBy: uuid('updated_by'),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -2486,14 +2425,7 @@ export const paymentProviderUnmatchedRecords = pgTable(
     asset: varchar('asset', { length: 40 }),
     counterparty: varchar('counterparty', { length: 255 }),
     reference: varchar('reference', { length: 255 }),
-    /** A deposit's NET — what reached the provider balance (0175, for the books). */
-    netAmount: numeric('net_amount', { precision: 28, scale: 8 }),
     occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull(),
-    /**
-     * When it moved the provider's balance, where that is not when it was
-     * created (a deposit: its confirmation). The books count it from here (0175).
-     */
-    movedAt: timestamp('moved_at', { withTimezone: true }),
     foundAt: timestamp('found_at', { withTimezone: true }).notNull().defaultNow(),
     matchedTransactionId: uuid('matched_transaction_id').references(() => transactions.id, {
       onDelete: 'restrict',
@@ -3549,41 +3481,6 @@ export const transactions = pgTable(
     reviewedBy: uuid('reviewed_by'),
     reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
     settledAt: timestamp('settled_at', { withTimezone: true }),
-    /*
-     * ── The Rival columns (migration 0050) ─────────────────────────────────
-     *
-     * Deposits and withdrawals route through Rival, Loadless's own payments
-     * platform — the CRM is a Rival "company", not a Whish merchant. These
-     * columns hold Rival's identifiers; `provider_ref` deliberately keeps OUR
-     * OX-reference, because the portal's status endpoint matches on it and it
-     * doubles as the idempotencyKey a retried create converges on.
-     *
-     * `rivalExternalId` is the ONLY reliable join key for inbound deposit
-     * events: the webhook's `reference` is "whish:<externalId>" and its
-     * `transaction.id` is null on pending/failed.
-     *
-     * `rivalSubmittedAt` is the withdrawal double-create CLAIM. Rival's
-     * withdrawal create has no idempotency key, so the claim is taken with a
-     * conditional UPDATE before calling out; the reconciler clears an orphaned
-     * claim or adopts an unrecorded creation by matching our `crm:<txId>` note.
-     *
-     * `rivalNeedsAttention` marks rows only a human may resolve — money PAID
-     * at Rival against a terminally-failed row, a reversal of settled funds,
-     * disagreeing terminal states. No event path ever clears it.
-     */
-    rivalExternalId: varchar('rival_external_id', { length: 40 }),
-    rivalWithdrawalId: varchar('rival_withdrawal_id', { length: 64 }),
-    rivalSubmittedAt: timestamp('rival_submitted_at', { withTimezone: true }),
-    rivalNeedsAttention: boolean('rival_needs_attention').notNull().default(false),
-    /*
-     * WHY the row needs a human, in words — written whenever
-     * `rival_needs_attention` flips true, cleared when a retry succeeds. The
-     * flag alone put an operator in front of a row saying "needs attention"
-     * with the reason living only in a log line they cannot see; on a payout
-     * queue that reads as "the system is broken", not "the platform refused
-     * this submission because X".
-     */
-    rivalAttentionReason: text('rival_attention_reason'),
     /**
      * The payment provider's OPERATOR note on a refused payout (Rival's
      * `adminNotes`) — admin eyes only (0172). The client is told a fixed
@@ -3594,10 +3491,8 @@ export const transactions = pgTable(
      * ── THE PAYMENTS CORE'S STATE, PROVIDER-NEUTRAL (0173) ───────────────────
      *
      * What every provider shares, written by the core engines
-     * (`modules/payments/core/`) and never by an adapter. The `rival_*` columns
-     * above are the previous build's names for the first five of these; a
-     * trigger keeps the pairs in step until a later migration drops them —
-     * READ AND WRITE THESE, never those.
+     * (`modules/payments/core/`) and never by an adapter. (Rival's own
+     * `rival_*` columns held the first five until 0173; 0176 dropped them.)
      */
     /** The provider's id for a hosted deposit — what its reports name. */
     providerPaymentId: varchar('provider_payment_id', { length: 128 }),
@@ -3633,20 +3528,6 @@ export const transactions = pgTable(
     requestedAmount: numeric('requested_amount', { precision: 28, scale: 8 }),
     /** The provider's last word on the movement, raw ("expired", "COMPLETED"). */
     providerStatus: varchar('provider_status', { length: 40 }),
-    /**
-     * A payout's provider's last word in the core's terms (0175): `pending`
-     * (it took the money and is sending it), `completed`, or `returned`
-     * (refused, failed or cancelled — the money came back to its balance).
-     * The provider-balance books read it.
-     */
-    providerOutcome: varchar('provider_outcome', { length: 10 }),
-    /** When `providerOutcome` last CHANGED — money back after the baseline counts once (0175). */
-    providerOutcomeAt: timestamp('provider_outcome_at', { withTimezone: true }),
-    /**
-     * When this side first saw the provider CONFIRM a deposit's money, whatever
-     * was then decided about it (0175). The provider's balance moved then.
-     */
-    providerPaidAt: timestamp('provider_paid_at', { withTimezone: true }),
     /** When the core last asked the provider — the reconciler's order. */
     providerCheckedAt: timestamp('provider_checked_at', { withTimezone: true }),
     /** A person must look — for every provider (the desk, the bell, the Financial filter). */
@@ -3669,10 +3550,6 @@ export const transactions = pgTable(
       .where(
         sql`${t.payoutFingerprint} IS NOT NULL AND ${t.providerPayoutId} IS NULL AND ${t.state} = 'approved'`,
       ),
-    check(
-      'transactions_provider_outcome_ck',
-      sql`${t.providerOutcome} IS NULL OR ${t.providerOutcome} IN ('pending', 'completed', 'returned')`,
-    ),
     // The console filters and counts by route (0168).
     index('transactions_route_idx').on(t.providerCode, t.channelCode, t.createdAt),
     // The console's "in use" flag and a delete's RESTRICT check look up by these (0161).
@@ -3681,22 +3558,6 @@ export const transactions = pgTable(
     // The desk finds a deposit by the OX- reference the client quotes (0163).
     index('transactions_provider_ref_idx').on(t.providerRef),
     uniqueIndex('transactions_provider_ref_uq').on(t.provider, t.providerRef),
-    // §6.3 for inbound Rival events: one CRM row per Rival payment/withdrawal,
-    // so a replayed or misrouted event can never touch a second row. Partial —
-    // manual methods and pre-Rival history carry no Rival identifier.
-    uniqueIndex('transactions_rival_external_id_uq')
-      .on(t.rivalExternalId)
-      .where(sql`${t.rivalExternalId} IS NOT NULL`),
-    uniqueIndex('transactions_rival_withdrawal_id_uq')
-      .on(t.rivalWithdrawalId)
-      .where(sql`${t.rivalWithdrawalId} IS NOT NULL`),
-    // The poller's two scans, partial so they index only in-flight rows.
-    index('transactions_rival_pending_idx')
-      .on(t.state)
-      .where(sql`${t.rivalExternalId} IS NOT NULL AND ${t.state} = 'pending'`),
-    index('transactions_rival_approved_idx')
-      .on(t.state)
-      .where(sql`${t.state} = 'approved' AND ${t.rivalSubmittedAt} IS NOT NULL`),
   ],
 );
 

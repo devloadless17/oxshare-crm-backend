@@ -262,36 +262,11 @@ export class TransactionDto {
    */
   providerRef?: string | null;
 
-  @ApiPropertyOptional({
-    description:
-      "The payment platform's OWN id for this movement — what Rival shows as its reference, " +
-      'and the identifier its team can look up directly. Null for anything that never went ' +
-      'through a rail (a manual desk credit) and for a row whose create is still in flight.',
-    type: String,
-    nullable: true,
-  })
   /*
-   * ── Why this is on the API at all ──────────────────────────────────────────
-   *
-   * It was stored from the first day of the Rival integration and exposed
-   * NOWHERE: the poller read it, the gateway wrote it, and no response carried
-   * it. So the identifier the payment platform can actually key on was
-   * invisible to the people who raise tickets about payments — an operator
-   * chasing "where is this client's deposit" had our reference and Rival had
-   * theirs, and closing that gap meant asking an engineer to run SQL.
-   *
-   * Both directions of the link now exist in the open:
-   *   ours   → `providerRef`        (Rival stores it under a UNIQUE index on
-   *                                  (company_id, idempotency_key))
-   *   theirs → `rivalExternalId`    (this field)
-   *
-   * Quote both in a ticket and neither side has to guess which row is meant.
-   *
-   * Superseded by `providerPaymentId` (0173 — every provider, not Rival
-   * alone); carried one more release for consoles and portals built before it.
+   * The provider's own id for the movement, beside our `providerRef`: quote both
+   * in a ticket and neither side has to guess which row is meant. (Named
+   * `rivalExternalId` until the payments core, 0173; the old name went in 0176.)
    */
-  rivalExternalId?: string | null;
-
   @ApiPropertyOptional({
     type: String,
     nullable: true,

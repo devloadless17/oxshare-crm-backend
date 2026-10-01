@@ -6,8 +6,8 @@ import type { Db } from '../database/db';
 import { scheduledJobs, smtpSettings, tradingSettings } from '../database/schema';
 
 /**
- * The singleton settings rows — `smtp_settings`, `trading_settings` and
- * `rival_settings`.
+ * The singleton settings rows — `smtp_settings`, `trading_settings` — and
+ * Rival's settings, read from its `payment_providers` row since 0168.
  *
  * ONE store for both, unlike the rest of `store/`, because each table is a
  * single row addressed the same way and neither will ever grow a query beyond
@@ -143,19 +143,6 @@ export interface RivalSettingsRow {
   updatedAt: Date;
 }
 
-/**
- * A write to the Rival row. An `undefined` ciphertext leaves the stored one
- * untouched — the same three-state contract `SmtpSettingsWrite` carries, for
- * the same reason: an operator toggling `enabled` must not wipe a credential.
- */
-export interface RivalSettingsWrite {
-  baseUrl: string | null;
-  enabled: boolean;
-  apiKeyCiphertext?: string | null;
-  webhookKeyCiphertext?: string | null;
-  webhookKeyFingerprint?: string | null;
-}
-
 @Injectable()
 export class AppSettingsStore {
   /**
@@ -262,38 +249,6 @@ export class AppSettingsStore {
       updatedBy: row.updatedBy,
       updatedAt: row.updatedAt,
     };
-  }
-
-  /**
-   * Save Rival's row. Each ciphertext keeps the three-state contract:
-   * `undefined` leaves it, `null` removes it, a string replaces it. The webhook
-   * key and its fingerprint always travel together — a fingerprint describing a
-   * key that was just replaced would send an operator chasing a mismatch that
-   * does not exist. Stored in `payment_providers` (0168), mirrored to
-   * `rival_settings` for an older build.
-   */
-  async setRival(values: RivalSettingsWrite, updatedBy: string): Promise<RivalSettingsRow> {
-    const touchesWebhookKey = values.webhookKeyCiphertext !== undefined;
-    await this.providers.update(
-      'rival',
-      {
-        enabled: values.enabled,
-        config: {
-          baseUrl: values.baseUrl,
-          ...(touchesWebhookKey
-            ? { webhookKeyFingerprint: values.webhookKeyFingerprint ?? null }
-            : {}),
-        },
-        secrets: {
-          ...(values.apiKeyCiphertext !== undefined ? { apiKey: values.apiKeyCiphertext } : {}),
-          ...(touchesWebhookKey ? { webhookKey: values.webhookKeyCiphertext ?? null } : {}),
-        },
-      },
-      updatedBy,
-    );
-    const row = await this.getRival();
-    if (!row) throw new Error('Rival settings were saved but cannot be read back.');
-    return row;
   }
 
   /** The liveness stamp on a verified inbound event — see `PaymentProvidersStore`. */

@@ -1879,48 +1879,8 @@ export class WithdrawalRowDto {
   @ApiPropertyOptional({ type: Date, nullable: true })
   settledAt?: Date | null;
   /*
-   * The Rival payout leg, for the desk's badges. `rivalWithdrawalId` set =
-   * submitted and awaiting Rival's decision; `rivalSubmittedAt` without an id
-   * = a submission whose outcome is being reconciled (do not resubmit);
-   * `rivalNeedsAttention` = a human must look — submission refused, or the
-   * two platforms' terminal states disagree.
-   */
-  @ApiPropertyOptional({
-    type: String,
-    nullable: true,
-    description: 'The payment platform’s withdrawal id, once submitted. Null before.',
-  })
-  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
-  rivalWithdrawalId?: string | null;
-  @ApiPropertyOptional({
-    type: Date,
-    nullable: true,
-    description: 'When the submission claim was taken. Set with no id = outcome being reconciled.',
-  })
-  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
-  rivalSubmittedAt?: Date | null;
-  @ApiProperty({
-    description: 'A human must reconcile this row against the payment platform.',
-  })
-  @NotClientField(
-    'not a client-owned attribute \u2014 rivalNeedsAttention describes the record rather than the person',
-  )
-  rivalNeedsAttention: boolean;
-  @ApiPropertyOptional({
-    type: 'string',
-    nullable: true,
-    description:
-      'WHY the row needs attention, in words the operator can act on. Written whenever ' +
-      'rivalNeedsAttention flips true; null once a retry lands or the flag was never raised.',
-  })
-  @NotClientField(
-    'not a client-owned attribute \u2014 rivalAttentionReason describes the record rather than the person',
-  )
-  rivalAttentionReason?: string | null;
-  /*
    * ── The payout at its provider, provider-neutral (0173) ──────────────────
-   * The four `rival*` fields above are these under their pre-0173 names,
-   * carried one more release for consoles built before them.
+   * (Named `rival*` until 0173; the old names went in 0176.)
    */
   @ApiPropertyOptional({
     type: String,
@@ -2041,15 +2001,11 @@ export class WithdrawalRowDto {
   @NotClientField('the ADMIN who decided; an operator identity, never client-owned data')
   @ApiPropertyOptional({ type: String, nullable: true })
   reviewedBy?: string | null;
-  @NotClientField('a payment-platform reference describing the record rather than the person')
-  @ApiPropertyOptional({ type: String, nullable: true })
-  rivalExternalId?: string | null;
   @NotClientField('a payment-provider reference describing the record rather than the person')
   @ApiPropertyOptional({
     type: String,
     nullable: true,
-    description:
-      'The provider’s own id for the movement (0173); `rivalExternalId` is its old name.',
+    description: 'The provider’s own id for the movement: its invoice, its payment id.',
   })
   providerPaymentId?: string | null;
   @NotClientField('a timestamp the system recorded, describing the record rather than the client')
@@ -2183,26 +2139,9 @@ export class AdminTransactionRowDto {
   providerRef?: string | null;
 
   @ApiPropertyOptional({
-    description:
-      "The payment platform's OWN id for this movement — what Rival shows as its reference and " +
-      'what its team can look up directly. Null for a manual desk credit, which went through no rail.',
     type: String,
     nullable: true,
-  })
-  /*
-   * The other half of the reference pair, and the reason it is here: `providerRef`
-   * is OURS (Rival stores it under a unique index on (company_id,
-   * idempotency_key)), and this is THEIRS. Both were recorded from the first day
-   * of the integration; only ours was ever rendered, so an operator raising a
-   * payment ticket had one identifier and needed an engineer to recover the other.
-   */
-  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
-  rivalExternalId?: string | null;
-  @ApiPropertyOptional({
-    type: String,
-    nullable: true,
-    description:
-      'The provider’s own id for the movement (0173); `rivalExternalId` is its old name.',
+    description: 'The provider’s own id for the movement: its invoice, its payment id.',
   })
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   providerPaymentId?: string | null;

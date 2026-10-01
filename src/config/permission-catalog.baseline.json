@@ -105,8 +105,6 @@
     "roles.edit",
     "roles.view",
     "settings.edit",
-    "settings.rival.edit",
-    "settings.rival.view",
     "settings.security.edit",
     "settings.security.view",
     "settings.smtp.edit",

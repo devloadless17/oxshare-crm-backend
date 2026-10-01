@@ -1240,6 +1240,20 @@
       "when": 1789141400750,
       "tag": "0175_provider_exchanges_and_books",
       "breakpoints": true
+    },
+    {
+      "idx": 178,
+      "version": "7",
+      "when": 1789141500750,
+      "tag": "0176_drop_rival_columns",
+      "breakpoints": true
+    },
+    {
+      "idx": 179,
+      "version": "7",
+      "when": 1789141600750,
+      "tag": "0177_remove_unused_payment_leftovers",
+      "breakpoints": true
     }
   ]
 }

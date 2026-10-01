@@ -80,8 +80,8 @@ async function seedSubmitted(state: 'success' | 'failure' | 'pending') {
       destination: '+96170123456',
       // The row IS at Rival — without this `cancelApproved` returns early and
       // the test would pass for the wrong reason.
-      rivalWithdrawalId: `rival-${state}-${Date.now()}`,
-      rivalSubmittedAt: new Date(),
+      providerPayoutId: `rival-${state}-${Date.now()}`,
+      providerSubmittedAt: new Date(),
       ...(state === 'success' ? { settledAt: new Date(), providerRef: `ref-${Date.now()}` } : {}),
     })
     .returning();

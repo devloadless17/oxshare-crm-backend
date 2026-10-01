@@ -222,62 +222,6 @@ export class ProviderCheckDto {
 }
 
 /** A payment provider: its state, its settings, its channels and the methods on them. */
-/**
- * A prefunded provider's balance against our books (0175; 3pay's guide §6.5
- * step 3). Money figures are decimal strings in the provider's asset.
- */
-@NoClientFields('operator figures - a provider balance against our books, no client attribute')
-export class ProviderBooksDto {
-  @ApiProperty({
-    enum: ['starting', 'matches', 'differs', 'incomplete'],
-    description:
-      '`starting`: waiting for a reading taken while nothing is travelling. `matches` / ' +
-      '`differs`: the last comparison. `incomplete`: a movement has no figure from the ' +
-      'provider, so the last reading was not compared.',
-  })
-  status: 'starting' | 'matches' | 'differs' | 'incomplete';
-
-  @ApiProperty({ type: String, nullable: true, example: 'USDT' })
-  asset: string | null;
-
-  @ApiProperty({
-    type: 'string',
-    nullable: true,
-    example: '80342.55000000',
-    description: 'What the provider held at the last check.',
-  })
-  available: string | null;
-
-  @ApiProperty({
-    type: 'string',
-    nullable: true,
-    example: '80342.55000000',
-    description: 'What our books say it should hold.',
-  })
-  expected: string | null;
-
-  @ApiProperty({
-    type: 'string',
-    nullable: true,
-    example: '0.00000000',
-    description: 'Held minus expected: positive, the provider holds more than our books say.',
-  })
-  difference: string | null;
-
-  @ApiProperty({ type: String, nullable: true, description: 'The last check (ISO).' })
-  checkedAt: string | null;
-
-  @ApiProperty({ type: String, nullable: true, description: 'Where the books start (ISO).' })
-  startedAt: string | null;
-
-  @ApiProperty({
-    type: String,
-    nullable: true,
-    description: 'Since when the difference stands (ISO); a person is paged after two hours.',
-  })
-  differsSince: string | null;
-}
-
 @NoClientFields('operator configuration - a payment provider, no client attribute')
 export class PaymentProviderDto {
   @ApiProperty({ example: 'rival' })
@@ -355,13 +299,6 @@ export class PaymentProviderDto {
   unexplainedRecords: number;
 
   @ApiProperty({
-    type: ProviderBooksDto,
-    nullable: true,
-    description: 'Its balance against our books — null for a provider with no balance of ours.',
-  })
-  books: ProviderBooksDto | null;
-
-  @ApiProperty({
     description: 'Does it keep an exchange log (every call and delivery, kept 90 days)?',
   })
   exchangeLog: boolean;
@@ -422,17 +359,6 @@ export class AcknowledgeProviderRecordDto {
   @ApiProperty({
     description: 'What this movement was — required, shown on the record and in the audit log.',
     example: 'Treasury sweep to the cold wallet, approved by finance.',
-  })
-  @IsString()
-  @IsNotEmpty()
-  @MaxLength(500)
-  note: string;
-}
-
-export class ResetProviderBooksDto {
-  @ApiProperty({
-    description: 'Why the books restart — required, kept in the audit log.',
-    example: 'Topped up 5,000 USDT from the treasury wallet.',
   })
   @IsString()
   @IsNotEmpty()

@@ -14,7 +14,6 @@ import type { RivalClient } from '../src/modules/payments/providers/rival/rival.
 import { ChannelSwitchesService } from '../src/modules/payments/core/channel-switches.service';
 import { AuditLogStore } from '../src/store/audit-log.store';
 import { ProviderRecordsAudit } from '../src/modules/payments/core/provider-records-audit.service';
-import { ProviderBooks } from '../src/modules/payments/core/provider-books.service';
 import { PaymentProviderExchangesStore } from '../src/store/payment-provider-exchanges.store';
 import type { ResourceChangedPublisher } from '../src/common/realtime/resource-changed';
 import { ManualPaymentProvider } from '../src/modules/payments/providers/manual/manual.provider';
@@ -72,7 +71,6 @@ function build(env: Record<string, string> = {}) {
     new ChannelSwitchesService(ctx.db, registry),
     { publish: vi.fn().mockResolvedValue(undefined) } as unknown as ResourceChangedPublisher,
     new ProviderRecordsAudit(ctx.db, new AuditLogStore(ctx.db)),
-    new ProviderBooks(ctx.db, new AuditLogStore(ctx.db)),
     new PaymentProviderExchangesStore(ctx.db),
   );
   return { service, registry, rivalConfig };
@@ -122,25 +120,11 @@ describe('a provider secret', () => {
       value: null,
     });
 
-    // Rollback safety: `rival_settings` carries the same sealed key (0168 mirror).
-    const { rows } = await ctx.db.execute<{ api_key_ciphertext: string; base_url: string }>(
-      sql`SELECT api_key_ciphertext, base_url FROM rival_settings`,
-    );
-    expect(rows[0]).toEqual({
-      api_key_ciphertext: sealed,
-      base_url: 'https://rival.example.test/v1',
-    });
-
-    // Removing it clears both tables; the URL beside it stays.
+    // Removing it clears it; the URL beside it stays.
     await service.update('rival', { secrets: { apiKey: null } }, ACTOR);
-    expect((await store.get('rival'))?.secrets).toEqual({});
-    const after = await ctx.db.execute<{ api_key_ciphertext: string | null; base_url: string }>(
-      sql`SELECT api_key_ciphertext, base_url FROM rival_settings`,
-    );
-    expect(after.rows[0]).toEqual({
-      api_key_ciphertext: null,
-      base_url: 'https://rival.example.test/v1',
-    });
+    const after = await store.get('rival');
+    expect(after?.secrets).toEqual({});
+    expect(after?.config['baseUrl']).toBe('https://rival.example.test/v1');
   });
 
   it('a generated one is shown once; afterwards only its fingerprint', async () => {
@@ -226,17 +210,6 @@ describe('a sandbox configuration on a production deployment', () => {
     expect(await rivalConfig.resolve()).toBeNull();
     const states = await registry.states(await store.list());
     expect(states.get('rival')).toMatchObject({ status: 'sandbox_refused', usable: false });
-  });
-});
-
-describe('an older build writing rival_settings', () => {
-  it('reaches the provider row the new build reads', async () => {
-    await ctx.db.execute(sql`
-      INSERT INTO rival_settings (id, base_url, enabled) VALUES (true, 'https://older.example.test', true)
-      ON CONFLICT (id) DO UPDATE SET base_url = EXCLUDED.base_url, enabled = EXCLUDED.enabled`);
-    const row = await store.get('rival');
-    expect(row?.config['baseUrl']).toBe('https://older.example.test');
-    expect(row?.enabled).toBe(true);
   });
 });
 

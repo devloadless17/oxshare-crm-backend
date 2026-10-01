@@ -615,7 +615,7 @@ describe('the remaining person-carrying responses declare the keys they return',
     await ctx.db.db.update(transactions).set({ state: 'approved' }).where(eq(transactions.id, id));
 
     const res = await session
-      .post(`/v1/admin/withdrawals/${id}/rival-submit`, undefined, {
+      .post(`/v1/admin/withdrawals/${id}/provider-submit`, undefined, {
         headers: { 'idempotency-key': `completeness-rival-${id}` },
       })
       .expect(201);

@@ -623,42 +623,4 @@ describe('what the core changed (0173)', () => {
     expect((await rowOf(txId)).provider_payout_id).toBe('rw-page2');
     expect(rival.listPendingWithdrawals).toHaveBeenCalledWith(2);
   });
-
-  it('keeps the rival_* columns in step with the neutral ones — the previous build can still read them', async () => {
-    const { txId } = await makeApprovedWithdrawal();
-    rival.createWithdrawal.mockResolvedValue(rivalRow('rw-mirror', { netAmount: '97.00' }));
-    await service.submitApproved(txId);
-
-    const { rows } = await ctx.db.execute<{
-      rival_withdrawal_id: string | null;
-      provider_payout_id: string | null;
-      rival_submitted_at: Date | null;
-      provider_submitted_at: Date | null;
-      rival_needs_attention: boolean;
-      needs_attention: boolean;
-      rival_attention_reason: string | null;
-      attention_reason: string | null;
-    }>(sql`SELECT rival_withdrawal_id, provider_payout_id, rival_submitted_at,
-                  provider_submitted_at, rival_needs_attention, needs_attention,
-                  rival_attention_reason, attention_reason
-             FROM transactions WHERE id = ${txId}`);
-    const row = rows[0];
-    expect(row.rival_withdrawal_id).toBe('rw-mirror');
-    expect(row.rival_withdrawal_id).toBe(row.provider_payout_id);
-    expect(row.rival_submitted_at).not.toBeNull();
-    expect(String(row.rival_submitted_at)).toBe(String(row.provider_submitted_at));
-    // The short payout flagged the row — on both sides.
-    expect(row.needs_attention).toBe(true);
-    expect(row.rival_needs_attention).toBe(true);
-    expect(row.rival_attention_reason).toBe(row.attention_reason);
-
-    // And a write the PREVIOUS build makes (rival_*) reaches the neutral side.
-    await ctx.db.execute(
-      sql`UPDATE transactions SET rival_needs_attention = false, rival_attention_reason = NULL
-          WHERE id = ${txId}`,
-    );
-    const after = await rowOf(txId);
-    expect(after.needs_attention).toBe(false);
-    expect(after.attention_reason).toBeNull();
-  });
 });

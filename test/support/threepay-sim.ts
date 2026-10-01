@@ -161,11 +161,6 @@ export class ThreePaySim {
     return this.finish(withdrawal._id, 'completed');
   }
 
-  /** Money moved at 3pay with no record anywhere (an adjustment, a fee taken aside). */
-  adjust(delta: string): void {
-    this.balance = new Decimal(this.balance).plus(delta).toFixed(2);
-  }
-
   /** A webhook exactly as 3pay would POST it: the raw body and its signature. */
   webhook(
     payload: Record<string, unknown>,

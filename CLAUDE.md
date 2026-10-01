@@ -1267,9 +1267,9 @@ Three layers, and every money path reads them rather than a name (`modules/payme
   sealed and write-only; a GENERATED one (a webhook key) is only ever rotated and shown once; a URL
   must be https on the public internet (`outbound-host`); sandbox is refused on a production
   deployment, at save AND at run time. Audited `payment_provider.update|enable|disable|secret_rotate`.
-- **`rival_settings` is mirrored both ways by triggers** until the contract migration, so an older
-  build after a rollback runs on the credentials the console last saved, and the reverse.
-  `/admin/settings/rival` still works (it writes the same row); it goes with the Rival tab.
+- **`rival_settings` is gone (0176)**, with the Rival tab's routes (`/admin/settings/rival`); its
+  `settings.rival.*` keys went in 0177. Rival is configured only on its `payment_providers` row (System →
+  Payment providers); the `RIVAL_*` environment variables still apply while that row was never saved.
 - **The event log** (`payment_provider_events`, `PaymentProviderEventsStore.append`): every webhook
   and poll result in one vocabulary (`payment.succeeded`, `payout.rejected`…) with what was done
   (applied / ignored / rejected / failed). One row per fact by `UNIQUE(provider_code, event_key)`;
@@ -1323,11 +1323,9 @@ copied the riskiest code. Now the owner's rule (30 Sep 2026: "world class") is s
   `provider_net_amount`, `provider_amount_received`, `requested_amount`, `provider_status`,
   `provider_checked_at`, `needs_attention`, `attention_reason`, plus
   `provider_payment_url` / `_expires_at`.
-  - **Read and write these, never `rival_*`.** A BEFORE trigger (`transactions_sync_rival_columns`)
-    mirrors the pairs so the previous build still works after a rollback: attention on every row,
-    ids and claim on Rival's rows. It is NAMED to fire after `transactions_route_default`, because
-    same-kind triggers fire in name order. A later migration drops both.
-  - The 0140 task trigger fires on both flags.
+  - ⚠️ **0176 dropped the `rival_*` columns, their mirror trigger and the `rival-submit` alias**
+    (1 Oct 2026); 0177 renamed Rival's old bell kinds to `withdrawal.payout_*`, removed the Rival
+    tab's keys and 0175's provider-balance books (the owner: not worth the reads). Roll-forward only.
 - **THE FINGERPRINT LOCK** (`transactions_payout_fingerprint_uq`). A provider with no idempotency
   key and no reference can only be searched by what it was asked. The claim writes a hash of
   (channel, normalized destination, gross, currency). At most ONE unresolved payout per fingerprint
@@ -1338,7 +1336,7 @@ copied the riskiest code. Now the owner's rule (30 Sep 2026: "world class") is s
   - Exactly one unrecorded candidate in the provider's complete records → adopted.
   - Several → a person.
   - None after the adoption window → the claim is cleared, and a PERSON chooses Resend
-    (`POST admin/withdrawals/:id/provider-submit`; `rival-submit` is an alias for one release) or
+    (`POST admin/withdrawals/:id/provider-submit`) or
     cancel.
   - A 429 (`refused` with `retryAfterMs`) is "definitely not created", so it requeues itself.
 - **Deposits.**
@@ -1374,7 +1372,7 @@ admin/transactions/:id/attention/finish-deposit` (`credit` | `close`, a reason, 
 5. A simulator spec for its translation. The core's behaviour is already held by
    `payments-core.spec.ts`.
 6. Optional capabilities the core uses when declared: `balance()` (a prefunded balance, watched
-   against the payouts waiting and compared with our books), `listRecords(since, until)` (the
+   against the payouts waiting), `listRecords(since, until)` (the
    unmatched-records audit), and `keepsExchangeLog` (only if its exchanges carry no client
    identity; its client then records each call). A rate-limited provider throws the contract's
    `ProviderBusyError`: sweeps stop their pass, a payout is requeued.
@@ -1432,23 +1430,6 @@ base URL, `apikey` (public), `x-api-secret` (sealed) and the two payout fees.
     sent amounts, our reference and payout addresses (`client.payoutDestination` is not
     maskable), never a name, email or phone. Rival's bodies are undocumented, so it keeps none.
   - `record()` never throws and is never awaited by a money path.
-- **The books** (0175, guide §6.5 step 3; `provider-books.service.ts`): 3pay's `totalAmt` against
-  what our books say it should hold. That is a baseline, plus deposits CONFIRMED since
-  (`provider_paid_at`, whatever was then decided about them), minus payouts sent since unless
-  returned (`provider_outcome`), plus money back since on one sent before (`provider_outcome_at`),
-  plus or minus the unexplained records at the provider's own time (`moved_at`, 3pay's
-  `confirmedAt` for a deposit).
-  - ⚠️ **The baseline is taken ONLY at a quiet reading.** The deposit sweep just asked about
-    every open link (`sweep()` returns `complete`), no payout sits between 3pay and its final
-    word, and none of our movements landed within 2 minutes of the read. A reading taken while
-    money travels would be wrong for ever: `totalAmt` drops the moment 3pay accepts a payout and
-    rises again if it fails, and a deposit confirmed just before the read but seen here just
-    after would count twice.
-  - A difference that stands for 150 minutes (past the records audit's 2-hour lag) pages, then
-    repeats hourly while it stands.
-  - `POST admin/payment-providers/:code/books/reset` (a note, `payments.providers.edit`, audited
-    `payment_provider.books_reset`) CLEARS the baseline, and the next quiet reading restarts
-    the books. Use it after a top-up or a move 3pay's records do not show.
 - **Minimum**: 3pay moves at least 1 USDT (`PaymentChannel.minimumAmount`). A method's minimum
   cannot go below it, the effective deposit minimum is raised to it, and the withdrawal door
   refuses below it.

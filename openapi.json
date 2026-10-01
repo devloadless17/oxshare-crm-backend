@@ -4906,53 +4906,6 @@
         ]
       }
     },
-    "/v1/admin/payment-providers/{code}/books/reset": {
-      "post": {
-        "description": "Clears where the books start; the next reading taken while nothing is travelling starts them again. A note is required. Moves no money.",
-        "operationId": "AdminPaymentProvidersController_resetBooks",
-        "parameters": [
-          {
-            "name": "code",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ResetProviderBooksDto"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PaymentProviderDto"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "cookie": []
-          }
-        ],
-        "summary": "Restart the provider’s books (after a top-up or a move its records do not show)",
-        "tags": [
-          "admin"
-        ]
-      }
-    },
     "/v1/admin/payment-providers/{code}/unmatched-records/{id}/acknowledge": {
       "post": {
         "description": "A note is required. It moves no money and changes no transaction.",
@@ -6786,126 +6739,6 @@
           }
         ],
         "summary": "Send a test email to yourself using the saved settings (master admin only)",
-        "tags": [
-          "admin"
-        ]
-      }
-    },
-    "/v1/admin/settings/rival": {
-      "get": {
-        "description": "Neither stored secret is ever returned — `apiKeySet` and `webhookKeyFingerprint` report existence and identity only. `source` is \"environment\" until the first save.",
-        "operationId": "AdminSettingsController_getRival",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RivalSettingsDto"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "cookie": []
-          }
-        ],
-        "summary": "The Rival payments-platform connection",
-        "tags": [
-          "admin"
-        ]
-      },
-      "put": {
-        "description": "Omit `apiKey` or send null to keep the stored one, a string to replace it, or an empty string to remove it. Encrypted at rest and never read back.",
-        "operationId": "AdminSettingsController_setRival",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/UpdateRivalSettingsDto"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RivalSettingsDto"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "cookie": []
-          }
-        ],
-        "summary": "Update the Rival connection",
-        "tags": [
-          "admin"
-        ]
-      }
-    },
-    "/v1/admin/settings/rival/webhook-key": {
-      "post": {
-        "description": "Replaces any previous key immediately. Copy it now — it is not retrievable; only its fingerprint is shown afterwards.",
-        "operationId": "AdminSettingsController_mintRivalWebhookKey",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RivalWebhookKeyDto"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "cookie": []
-          }
-        ],
-        "summary": "Generate a new webhook signing key (shown exactly once)",
-        "tags": [
-          "admin"
-        ]
-      }
-    },
-    "/v1/admin/settings/rival/test": {
-      "post": {
-        "description": "Calls Rival with the stored key and returns what Rival believes our webhook configuration is, beside the URL it should be — a mismatch between the two sides is visible in one answer. A rejected key comes back as an error naming this screen.",
-        "operationId": "AdminSettingsController_testRival",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RivalTestResultDto"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "cookie": []
-          }
-        ],
-        "summary": "Validate the stored Rival credentials",
         "tags": [
           "admin"
         ]
@@ -11496,53 +11329,7 @@
     "/v1/admin/withdrawals/{id}/provider-submit": {
       "post": {
         "description": "For rows the provider refused, or held nothing for after the adoption window (the desk shows \"needs attention\"). Safe under double-click: the claim admits one in-flight create, and a submission whose outcome is still unknown is left for reconciliation rather than resent — no provider takes an idempotency key on payouts, so a blind resend pays twice.",
-        "operationId": "AdminMoneyController_resendPayout[0]",
-        "parameters": [
-          {
-            "name": "id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "idempotency-key",
-            "in": "header",
-            "description": "A unique value per intended action (PLATFORM-CONVENTIONS R-5.2).",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/WithdrawalRowDto"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "cookie": []
-          }
-        ],
-        "summary": "Resend an approved withdrawal to its payment provider",
-        "tags": [
-          "admin"
-        ]
-      }
-    },
-    "/v1/admin/withdrawals/{id}/rival-submit": {
-      "post": {
-        "description": "For rows the provider refused, or held nothing for after the adoption window (the desk shows \"needs attention\"). Safe under double-click: the claim admits one in-flight create, and a submission whose outcome is still unknown is left for reconciliation rather than resent — no provider takes an idempotency key on payouts, so a blind resend pays twice.",
-        "operationId": "AdminMoneyController_resendPayout[1]",
+        "operationId": "AdminMoneyController_resendPayout",
         "parameters": [
           {
             "name": "id",
@@ -13318,8 +13105,6 @@
               "admin.withdrawal.requested",
               "withdrawal.payout_submit_failed",
               "withdrawal.payout_attention",
-              "withdrawal.rival_submit_failed",
-              "withdrawal.rival_attention",
               "admin.kyc.submitted",
               "admin.kyc.resubmitted",
               "admin.partner.applied",
@@ -16233,11 +16018,6 @@
             "description": "The provider's own reference. Backs UNIQUE(provider, provider_ref), which is what makes settlement idempotent in the database (§6.3).",
             "nullable": true
           },
-          "rivalExternalId": {
-            "type": "string",
-            "description": "The payment platform's OWN id for this movement — what Rival shows as its reference, and the identifier its team can look up directly. Null for anything that never went through a rail (a manual desk credit) and for a row whose create is still in flight.",
-            "nullable": true
-          },
           "providerPaymentId": {
             "type": "string",
             "nullable": true,
@@ -17274,69 +17054,6 @@
           "pending"
         ]
       },
-      "ProviderBooksDto": {
-        "type": "object",
-        "properties": {
-          "status": {
-            "type": "string",
-            "enum": [
-              "starting",
-              "matches",
-              "differs",
-              "incomplete"
-            ],
-            "description": "`starting`: waiting for a reading taken while nothing is travelling. `matches` / `differs`: the last comparison. `incomplete`: a movement has no figure from the provider, so the last reading was not compared."
-          },
-          "asset": {
-            "type": "string",
-            "nullable": true,
-            "example": "USDT"
-          },
-          "available": {
-            "type": "string",
-            "nullable": true,
-            "example": "80342.55000000",
-            "description": "What the provider held at the last check."
-          },
-          "expected": {
-            "type": "string",
-            "nullable": true,
-            "example": "80342.55000000",
-            "description": "What our books say it should hold."
-          },
-          "difference": {
-            "type": "string",
-            "nullable": true,
-            "example": "0.00000000",
-            "description": "Held minus expected: positive, the provider holds more than our books say."
-          },
-          "checkedAt": {
-            "type": "string",
-            "nullable": true,
-            "description": "The last check (ISO)."
-          },
-          "startedAt": {
-            "type": "string",
-            "nullable": true,
-            "description": "Where the books start (ISO)."
-          },
-          "differsSince": {
-            "type": "string",
-            "nullable": true,
-            "description": "Since when the difference stands (ISO); a person is paged after two hours."
-          }
-        },
-        "required": [
-          "status",
-          "asset",
-          "available",
-          "expected",
-          "difference",
-          "checkedAt",
-          "startedAt",
-          "differsSince"
-        ]
-      },
       "PaymentProviderDto": {
         "type": "object",
         "properties": {
@@ -17444,16 +17161,6 @@
             "description": "Movements at the provider no transaction here explains, not yet acknowledged.",
             "example": 0
           },
-          "books": {
-            "nullable": true,
-            "description": "Its balance against our books — null for a provider with no balance of ours.",
-            "type": "object",
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/ProviderBooksDto"
-              }
-            ]
-          },
           "exchangeLog": {
             "type": "boolean",
             "description": "Does it keep an exchange log (every call and delivery, kept 90 days)?"
@@ -17478,7 +17185,6 @@
           "updatedAt",
           "auditsRecords",
           "unexplainedRecords",
-          "books",
           "exchangeLog"
         ]
       },
@@ -17783,19 +17489,6 @@
           "durationMs",
           "reference",
           "occurredAt"
-        ]
-      },
-      "ResetProviderBooksDto": {
-        "type": "object",
-        "properties": {
-          "note": {
-            "type": "string",
-            "description": "Why the books restart — required, kept in the audit log.",
-            "example": "Topped up 5,000 USDT from the treasury wallet."
-          }
-        },
-        "required": [
-          "note"
         ]
       },
       "AcknowledgeProviderRecordDto": {
@@ -20196,147 +19889,6 @@
         "required": [
           "sentTo",
           "source"
-        ]
-      },
-      "RivalSettingsDto": {
-        "type": "object",
-        "properties": {
-          "baseUrl": {
-            "type": "string",
-            "nullable": true,
-            "example": "https://portal.rivalpayments.com/v1",
-            "description": "Rival API base, including the /v1 prefix. Null when unconfigured."
-          },
-          "apiKeySet": {
-            "type": "boolean",
-            "description": "Whether an API key is stored. The key itself is never returned."
-          },
-          "webhookKeyFingerprint": {
-            "type": "string",
-            "nullable": true,
-            "example": "3fa1b2c4",
-            "description": "sha256[:8] of the webhook key — identifies WHICH key without carrying it. Null until one is generated."
-          },
-          "enabled": {
-            "type": "boolean",
-            "description": "Whether deposits and payouts route through Rival."
-          },
-          "lastEventAt": {
-            "type": "string",
-            "nullable": true,
-            "format": "date-time",
-            "description": "When the last VERIFIED webhook arrived — the pipe-liveness signal. Null when none ever has."
-          },
-          "source": {
-            "type": "string",
-            "enum": [
-              "database",
-              "environment",
-              "unconfigured"
-            ],
-            "description": "\"environment\" until the first save; the values shown are then the boot configuration rather than a blank form."
-          },
-          "webhookEndpoint": {
-            "type": "string",
-            "nullable": true,
-            "example": "https://api.oxshare.com/v1/payments/rival/webhook",
-            "description": "The URL to paste into Rival (dashboard → CRM config). Built from API_PUBLIC_URL; null when that is unset."
-          },
-          "updatedAt": {
-            "type": "string",
-            "nullable": true,
-            "format": "date-time"
-          }
-        },
-        "required": [
-          "apiKeySet",
-          "enabled",
-          "source"
-        ]
-      },
-      "UpdateRivalSettingsDto": {
-        "type": "object",
-        "properties": {
-          "baseUrl": {
-            "type": "string",
-            "nullable": true,
-            "example": "https://portal.rivalpayments.com/v1",
-            "description": "https:// required (http://localhost allowed for development). Null clears it."
-          },
-          "apiKey": {
-            "type": "string",
-            "nullable": true,
-            "description": "Omit or null to keep the stored key, a string to replace it, an empty string to remove it. Encrypted at rest and never read back."
-          },
-          "enabled": {
-            "type": "boolean",
-            "description": "Whether deposits and payouts route through Rival."
-          }
-        },
-        "required": [
-          "enabled"
-        ]
-      },
-      "RivalWebhookKeyDto": {
-        "type": "object",
-        "properties": {
-          "webhookKey": {
-            "type": "string",
-            "description": "The freshly minted key, in plaintext, exactly once. Paste it into Rival (dashboard → CRM config) together with the endpoint below."
-          },
-          "fingerprint": {
-            "type": "string",
-            "example": "3fa1b2c4",
-            "description": "sha256[:8], for later identification."
-          },
-          "endpoint": {
-            "type": "string",
-            "nullable": true,
-            "example": "https://api.oxshare.com/v1/payments/rival/webhook"
-          }
-        },
-        "required": [
-          "webhookKey",
-          "fingerprint"
-        ]
-      },
-      "RivalCrmConfigView": {
-        "type": "object",
-        "properties": {
-          "apiUrl": {
-            "type": "string",
-            "nullable": true
-          },
-          "hasApiKey": {
-            "type": "boolean"
-          },
-          "enabled": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "hasApiKey",
-          "enabled"
-        ]
-      },
-      "RivalTestResultDto": {
-        "type": "object",
-        "properties": {
-          "ok": {
-            "type": "boolean"
-          },
-          "rivalCrmConfig": {
-            "$ref": "#/components/schemas/RivalCrmConfigView"
-          },
-          "expectedApiUrl": {
-            "type": "string",
-            "nullable": true,
-            "description": "The webhook URL Rival SHOULD be configured with (from API_PUBLIC_URL)."
-          }
-        },
-        "required": [
-          "ok",
-          "rivalCrmConfig"
         ]
       },
       "ProductGroupDto": {
@@ -23762,26 +23314,6 @@
             "type": "string",
             "nullable": true
           },
-          "rivalWithdrawalId": {
-            "type": "string",
-            "nullable": true,
-            "description": "The payment platform’s withdrawal id, once submitted. Null before."
-          },
-          "rivalSubmittedAt": {
-            "format": "date-time",
-            "type": "string",
-            "nullable": true,
-            "description": "When the submission claim was taken. Set with no id = outcome being reconciled."
-          },
-          "rivalNeedsAttention": {
-            "type": "boolean",
-            "description": "A human must reconcile this row against the payment platform."
-          },
-          "rivalAttentionReason": {
-            "type": "string",
-            "nullable": true,
-            "description": "WHY the row needs attention, in words the operator can act on. Written whenever rivalNeedsAttention flips true; null once a retry lands or the flag was never raised."
-          },
           "providerPayoutId": {
             "type": "string",
             "nullable": true,
@@ -23865,14 +23397,10 @@
             "type": "string",
             "nullable": true
           },
-          "rivalExternalId": {
-            "type": "string",
-            "nullable": true
-          },
           "providerPaymentId": {
             "type": "string",
             "nullable": true,
-            "description": "The provider’s own id for the movement (0173); `rivalExternalId` is its old name."
+            "description": "The provider’s own id for the movement: its invoice, its payment id."
           },
           "createdAt": {
             "format": "date-time",
@@ -23897,7 +23425,6 @@
           "providerEnvironment",
           "methodName",
           "requestedAt",
-          "rivalNeedsAttention",
           "needsAttention",
           "user"
         ]
@@ -24620,15 +24147,10 @@
             "type": "string",
             "nullable": true
           },
-          "rivalExternalId": {
-            "type": "string",
-            "description": "The payment platform's OWN id for this movement — what Rival shows as its reference and what its team can look up directly. Null for a manual desk credit, which went through no rail.",
-            "nullable": true
-          },
           "providerPaymentId": {
             "type": "string",
             "nullable": true,
-            "description": "The provider’s own id for the movement (0173); `rivalExternalId` is its old name."
+            "description": "The provider’s own id for the movement: its invoice, its payment id."
           },
           "destination": {
             "type": "string",
