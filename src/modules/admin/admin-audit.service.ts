@@ -45,10 +45,10 @@ export class AdminAuditService {
    * actions could not be told from a deleted admin's. The key is named exactly
    * as the guard named it for the request.
    */
-  private async actorEmailOf(actorId: string): Promise<string> {
-    const admin = await this.admins.findById(actorId);
+  private async actorEmailOf(actorId: string, executor?: Executor): Promise<string> {
+    const admin = await this.admins.findById(actorId, executor);
     if (admin) return admin.email;
-    const key = await this.apiKeys.findById(actorId);
+    const key = await this.apiKeys.findById(actorId, executor);
     return key ? apiKeyActorLabel(key) : 'unknown';
   }
 
@@ -83,7 +83,13 @@ export class AdminAuditService {
     await this.auditLog.record(
       {
         actorId,
-        actorEmail: await this.actorEmailOf(actorId),
+        /*
+         * On the caller's connection. A second pool connection here, taken while
+         * the transaction holds a wallet lock, starves the pool under load: every
+         * connection waits on that lock while the lock holder waits for a
+         * connection. Found live, 3 Oct 2026: 20 concurrent credits → 9 × 500.
+         */
+        actorEmail: await this.actorEmailOf(actorId, executor),
         action,
         subjectType,
         subjectId,

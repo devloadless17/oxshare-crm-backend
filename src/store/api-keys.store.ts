@@ -1,7 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { and, desc, eq, isNull, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../database/database.module';
-import type { Db } from '../database/db';
+import type { Db, Executor } from '../database/db';
 import { admins, apiKeys } from '../database/schema';
 import { scopeOf, type ClientScope } from '../common/security/client-scope';
 import { normalizePermissionKey } from '../common/security/actor';
@@ -193,8 +193,8 @@ export class ApiKeysStore {
     return rows;
   }
 
-  async findById(id: string): Promise<ApiKeyRow | null> {
-    const [row] = await this.db.select().from(apiKeys).where(eq(apiKeys.id, id)).limit(1);
+  async findById(id: string, executor: Executor = this.db): Promise<ApiKeyRow | null> {
+    const [row] = await executor.select().from(apiKeys).where(eq(apiKeys.id, id)).limit(1);
     return row ?? null;
   }
 

@@ -236,8 +236,8 @@ export class AdminsStore {
     return new Map(rows.map((r) => [r.id, r.name]));
   }
 
-  async findById(id: string): Promise<Admin | undefined> {
-    const [row] = await this.db.select().from(admins).where(eq(admins.id, id)).limit(1);
+  async findById(id: string, executor: Executor = this.db): Promise<Admin | undefined> {
+    const [row] = await executor.select().from(admins).where(eq(admins.id, id)).limit(1);
     return row ? toAdmin(row) : undefined;
   }
 
