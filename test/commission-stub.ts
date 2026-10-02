@@ -23,7 +23,6 @@ import type { CommissionAccrualPort } from '../src/common/provisioning/commissio
  */
 export function commissionStub() {
   return {
-    accrueForSettledDeposit: vi.fn().mockResolvedValue(0),
     accrueForClosedPosition: vi.fn().mockResolvedValue(0),
     accrueForDeal: vi.fn().mockResolvedValue(0),
   };

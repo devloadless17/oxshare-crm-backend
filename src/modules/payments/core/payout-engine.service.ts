@@ -24,7 +24,7 @@ import {
   type ProviderEventType,
 } from '../../../store/payment-provider-events.store';
 import { EmailService } from '../../email/email.service';
-import { TransactionsService } from '../transactions.service';
+import { TRANSACTION_LEDGER, type TransactionLedgerPort } from './payments-ledger.port';
 import {
   PaymentProviderRegistry,
   providerWebhookUrl,
@@ -156,7 +156,7 @@ export class PayoutEngine {
     @Inject(DRIZZLE_DB) private readonly db: Db,
     private readonly registry: PaymentProviderRegistry,
     private readonly switches: ChannelSwitchesService,
-    private readonly transactions: TransactionsService,
+    @Inject(TRANSACTION_LEDGER) private readonly transactions: TransactionLedgerPort,
     private readonly auditLog: AuditLogStore,
     private readonly users: UsersStore,
     private readonly email: EmailService,
@@ -298,7 +298,18 @@ export class PayoutEngine {
     if (!byPerson && current.needsAttention) return; // a person's to send
     if (await this.overRate(adapter.code, rail)) return; // the next sweep sends it
 
-    const quote = await rail.quote(channel, current.amount, current.currency);
+    // A quote failure on the sweep is transient: nothing was claimed, so the next sweep retries.
+    let quote: Awaited<ReturnType<PayoutRail['quote']>>;
+    try {
+      quote = await rail.quote(channel, current.amount, current.currency);
+    } catch (error) {
+      // A person's Resend must hear it failed: submitSafely flags it, as before.
+      if (byPerson) throw error;
+      this.logger.warn(
+        `Quote for withdrawal ${txId} failed; retrying next sweep: ${messageOf(error)}`,
+      );
+      return;
+    }
     const destination = normalizedDestination(channel, current.destination ?? '');
     const fingerprint =
       rail.idempotency === 'none'
@@ -367,16 +378,24 @@ export class PayoutEngine {
       submission = { outcome: 'unknown', reason: messageOf(error) };
     }
 
-    await this.providerEvents.append({
-      providerCode: adapter.code,
-      eventType: 'payout.submitted',
-      subjectId: submission.outcome === 'accepted' ? submission.payoutId : `tx:${tx.id}`,
-      providerType: submission.outcome,
-      source: 'desk',
-      transactionId: tx.id,
-      outcome: submission.outcome === 'accepted' ? 'applied' : 'failed',
-      reason: submission.outcome === 'accepted' ? null : submission.reason,
-    });
+    // The event log must never stand between an accepted payout and the
+    // record of its id: losing the id would strand money at the provider.
+    try {
+      await this.providerEvents.append({
+        providerCode: adapter.code,
+        eventType: 'payout.submitted',
+        subjectId: submission.outcome === 'accepted' ? submission.payoutId : `tx:${tx.id}`,
+        providerType: submission.outcome,
+        source: 'desk',
+        transactionId: tx.id,
+        outcome: submission.outcome === 'accepted' ? 'applied' : 'failed',
+        reason: submission.outcome === 'accepted' ? null : submission.reason,
+      });
+    } catch (error) {
+      this.logger.error(
+        `Could not log the ${adapter.name} submission of ${tx.id}: ${messageOf(error)}`,
+      );
+    }
 
     switch (submission.outcome) {
       case 'accepted': {

@@ -4,6 +4,7 @@ import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db, Executor } from '../../database/db';
 import { users } from '../../database/schema';
 import {
+  ConflictError,
   FieldValidationError,
   KycCorrectionRefusedError,
   NotFoundError,
@@ -89,7 +90,7 @@ export function profileOf(user: User): ClientProfile {
  *
  * Whether a field may change depends on the verification: nothing a reviewer is
  * checking may move under them. Submission judges the profile and moves the
- * status under that same row lock (`KycService.submit`), so holding it here
+ * status under that same row lock (`KycClientService.submit`), so holding it here
  * means a profile write and a submission can never interleave — one finishes
  * before the other reads. And it is the order approval takes the two rows in
  * (the submission, then the client's level), so no pair of writers can
@@ -249,7 +250,7 @@ export class ClientProfileService {
    * "Use Correct details on the client's KYC review", and the review's
    * correction carried its own copy of the rules. The owner's report
    * (28 Sep 2026): being sent to another screen to edit a client is a bad
-   * experience. The KYC review now calls this too (`KycService.correctIdentity`).
+   * experience. The KYC review now calls this too (`KycReviewService.correctIdentity`).
    */
   async editAsAdmin(
     userId: number,
@@ -319,6 +320,17 @@ export class ClientProfileService {
         (key): key is ProfileKey => isProfileKey(key) && verifiedRequired.includes(key),
       ),
       guard: (changed, verification) => {
+        /*
+         * `required` and the underage check above were chosen from the standing
+         * read BEFORE the locks. If the verification moved since (an approval
+         * racing this edit), they no longer fit it: refuse rather than clear a
+         * detail the new verification required.
+         */
+        if ((verification === 'approved') !== (status === 'approved')) {
+          throw new ConflictError(
+            "The client's verification changed while you were editing. Reload and try again.",
+          );
+        }
         const held: Record<string, string> = {};
         for (const key of changed) {
           const rule = adminEditRule(key, verification, options.mayCorrect);

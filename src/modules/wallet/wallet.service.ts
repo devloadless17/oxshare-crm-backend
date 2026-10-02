@@ -646,7 +646,7 @@ export class WalletService {
     const where = conditions.length > 0 ? and(...conditions) : undefined;
     const usingCursor = Boolean(filter.cursor) || page <= 1;
 
-    const rows = await db
+    const rowsQuery = db
       .select({
         /*
          * The raw sort value for the cursor, as TEXT — see `buildCursorPage`.
@@ -714,12 +714,14 @@ export class WalletService {
      * the bad version is a count over a DIFFERENT row set than the page, which
      * reports a total nobody can page to.
      */
-    const [{ value: total }] = await db
+    const countQuery = db
       .select({ value: sql<number>`count(*)::int` })
       .from(ledgerEntries)
       .innerJoin(wallets, eq(ledgerEntries.walletId, wallets.id))
       .leftJoin(users, eq(users.id, wallets.userId))
       .where(where);
+    // Independent reads: run them together rather than one after the other.
+    const [rows, [{ value: total }]] = await Promise.all([rowsQuery, countQuery]);
 
     return { ...buildCursorPage(rows, limit, total), page, limit };
   }

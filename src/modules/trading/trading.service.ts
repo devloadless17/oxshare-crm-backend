@@ -3,7 +3,7 @@ import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, or, sql }
 import Decimal from 'decimal.js';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
-import { mt5Deals, positions, tradingAccounts, tradingProductGroups } from '../../database/schema';
+import { mt5Deals, tradingAccounts, tradingProductGroups } from '../../database/schema';
 /*
  * The product resolution lives in `common/` because the back office asks the
  * same question through `AdminHoldingsService`, and two implementations of
@@ -16,13 +16,9 @@ import {
   PRODUCT_GROUP_JOIN_ON,
   PRODUCT_NAME,
 } from '../../common/account-product';
-import {
-  ExternalServiceError,
-  NotFoundError,
-  ValidationError,
-} from '../../common/errors/domain-errors';
+import { ExternalServiceError, NotFoundError } from '../../common/errors/domain-errors';
 import { DEFAULT_PAGE_SIZE } from '../../common/pagination';
-import { Mt5BridgeClient } from './mt5/mt5-bridge.client';
+import { Mt5BridgeClient, assertBridgeConfigured } from './mt5/mt5-bridge.client';
 import { Mt5AccountSyncService } from './mt5/mt5-account-sync.service';
 import {
   CLOSING_ENTRIES,
@@ -34,16 +30,22 @@ import {
 } from './mt5/deal-codes';
 import { positionSideLabel } from './mt5/position-side';
 import type { TradingAccountDto } from './dto/trading-account.dto';
-import type { PositionDto } from './dto/position.dto';
 import type {
   AccountDealDto,
   AccountHistoryDto,
   AccountHistoryQueryDto,
   AccountPositionDto,
   AccountSnapshotDto,
-  AccountStatsDto,
   AccountWatchDto,
 } from './dto/account-detail.dto';
+import {
+  resolveWindow,
+  resolveMovementWindow,
+  statsFromTotals,
+  emptyStats,
+  MOVEMENT_LIMIT,
+  type BalanceMovementRow,
+} from './trading-history-window';
 
 /**
  * The signed-in client's own trading accounts.
@@ -218,86 +220,6 @@ export class TradingService {
   async listTransferable(userId: number): Promise<TradingAccountDto[]> {
     const rows = await this.listMine(userId);
     return rows.filter((row) => row.environment === 'live' && row.status === 'active');
-  }
-
-  /**
-   * This client's positions — open by default, or the closed history.
-   *
-   * ## Returns an empty list today, and that is a real answer
-   *
-   * Nothing writes to `positions`: there is no MT5 bridge, so no ingestion path
-   * exists. This is a genuine query against a genuine table, so "no open
-   * positions" is something the database said rather than something the portal
-   * assumed. See the table comment in schema.ts for why that distinction is
-   * worth a migration.
-   *
-   * Joined to `trading_accounts` for the login, because a trade is meaningless
-   * without knowing which account it sits on — and a client with a live and a
-   * demo account has two very different reads of the same symbol.
-   *
-   * `limit` is capped rather than trusted: the closed history grows without
-   * bound, and an uncapped caller would eventually ask for all of it.
-   */
-  async listPositions(
-    userId: number,
-    options: { status?: 'open' | 'closed'; limit?: number } = {},
-  ): Promise<PositionDto[]> {
-    const status = options.status ?? 'open';
-    const limit = Math.min(Math.max(options.limit ?? 50, 1), 200);
-
-    const rows = await this.db
-      .select({
-        id: positions.id,
-        tradingAccountId: positions.tradingAccountId,
-        login: tradingAccounts.login,
-        ticket: positions.ticket,
-        symbol: positions.symbol,
-        side: positions.side,
-        volume: positions.volume,
-        openPrice: positions.openPrice,
-        closePrice: positions.closePrice,
-        stopLoss: positions.stopLoss,
-        takeProfit: positions.takeProfit,
-        profit: positions.profit,
-        swap: positions.swap,
-        commission: positions.commission,
-        currency: positions.currency,
-        status: positions.status,
-        openedAt: positions.openedAt,
-        closedAt: positions.closedAt,
-      })
-      .from(positions)
-      .innerJoin(tradingAccounts, eq(tradingAccounts.id, positions.tradingAccountId))
-      .where(and(eq(positions.userId, userId), eq(positions.status, status)))
-      /*
-       * Open positions read newest-first by OPEN time; closed ones by CLOSE
-       * time. Ordering the closed set by `openedAt` would bury a trade opened
-       * last month and closed this morning beneath older, already-settled ones.
-       */
-      /*
-       * The `id` TIEBREAK, and it is not cosmetic.
-       *
-       * `opened_at` and `closed_at` are not unique — two positions opened in the
-       * same instant are ordinary — and Postgres gives no guarantee about the
-       * relative order of tied rows between queries. With a LIMIT on the end,
-       * that decides WHICH of the tied rows is included: the same client
-       * refreshing sees the list reorder, and one trade appear or vanish at the
-       * boundary, with nothing having changed.
-       *
-       * `sorting.ts` states the rule for the paged lists; a capped list has the
-       * same problem in a smaller window. Migration 0129 indexes both pairs, so
-       * the tiebreak is free.
-       */
-      .orderBy(
-        status === 'open' ? desc(positions.openedAt) : desc(positions.closedAt),
-        desc(positions.id),
-      )
-      .limit(limit);
-
-    // Returned as-is: every numeric column arrives as the STRING Postgres sends
-    // for NUMERIC, and stays one (§6.1). No mapping step, so nobody is tempted
-    // to add a `Number()` to a price or a P/L.
-    return rows;
   }
 
   /**
@@ -615,9 +537,7 @@ export class TradingService {
   }
 
   private assertBridge(): void {
-    if (!this.bridge.isConfigured) {
-      throw new ExternalServiceError('The trading server could not be reached.');
-    }
+    assertBridgeConfigured(this.bridge, 'The trading server could not be reached.');
   }
 
   /**
@@ -670,8 +590,8 @@ export class TradingService {
    *
    * ## Why this does not touch the `positions` table
    *
-   * That table exists, and nothing writes to it. It must stay that way: a
-   * position's profit moves on every tick, so a stored row is stale the moment
+   * There is no stored positions table (0182 dropped the never-written one),
+   * and there must not be: a position's profit moves on every tick, so a stored row is stale the moment
    * it is written and would reach a client wearing the same label as a live
    * figure. This reads through the bridge on demand and keeps nothing.
    *
@@ -827,15 +747,23 @@ export class TradingService {
        * Newest first, and the index gives that ordering for free: this filter
        * and this sort are exactly `mt5_deals_login_dealt_idx`.
        *
-       * The TIE-BREAK is deliberately not in the ORDER BY. Two deals can share a
-       * timestamp at MT5's one-second resolution, and without a total order the
-       * list reshuffles between two renders of identical data — but the ticket
-       * is a VARCHAR, so breaking the tie in SQL means either a lexical order
-       * that ranks '9' above '100' or a `::numeric` cast. The cast forces a sort
-       * node over the whole window AND turns one unparseable ticket into a 500
-       * on every client's account page. It is settled in Node instead, below.
+       * The TIE-BREAK IS in the ORDER BY, because this pages with OFFSET. Two
+       * deals can share a timestamp at MT5's one-second resolution (a stop-out
+       * closes many at once), and a non-total order lets Postgres return them
+       * in a different order per query, so a deal at a page boundary showed on
+       * both pages or neither. It used to be settled in Node, which only
+       * reorders rows inside a page that is already sliced.
+       *
+       * Numeric WITHOUT a cast: the ticket is a VARCHAR, and (length, text)
+       * orders digit strings numerically ('9' below '100'), cannot fail on an
+       * odd ticket, and is total because the ticket is unique. An incremental
+       * sort over the index's (login, dealt_at) order settles only the ties.
        */
-      .orderBy(desc(mt5Deals.dealtAt))
+      .orderBy(
+        desc(mt5Deals.dealtAt),
+        desc(sql`length(${mt5Deals.mt5DealId})`),
+        desc(mt5Deals.mt5DealId),
+      )
       /*
        * ONE PAGE, not the window. The `MOVEMENT_LIMIT + 1` that stood here was a
        * truncation the screen had to INFER from the array's length; an OFFSET
@@ -844,34 +772,23 @@ export class TradingService {
       .limit(limit)
       .offset((page - 1) * limit);
 
-    const items: AccountDealDto[] = rows
-      .map((row) => ({
-        ticket: row.ticket,
-        symbol: row.symbol,
-        action: row.action,
-        actionLabel: dealActionLabel(row.action),
-        entry: row.entry,
-        closing: isRealisedTrade(row),
-        // NUMERIC columns arrive as decimal strings and leave as decimal strings
-        // (§6.1). Nothing on this path parses one into a float.
-        volume: row.volume,
-        price: row.price,
-        profit: row.profit,
-        commission: row.commission,
-        swap: row.swap,
-        comment: row.comment || null,
-        dealtAt: row.dealtAt,
-      }))
-      /*
-       * The tie-break the ORDER BY left to us, and it is NUMERIC: ticket '9'
-       * must not outrank '100'. Applied to the already-ordered array, so this is
-       * a near-sorted pass rather than a real sort, and a ticket MT5 has never
-       * issued in a non-numeric form degrades to "leave the SQL order alone"
-       * instead of failing the request.
-       */
-      .sort(
-        (a, b) => b.dealtAt.getTime() - a.dealtAt.getTime() || Number(b.ticket) - Number(a.ticket),
-      );
+    const items: AccountDealDto[] = rows.map((row) => ({
+      ticket: row.ticket,
+      symbol: row.symbol,
+      action: row.action,
+      actionLabel: dealActionLabel(row.action),
+      entry: row.entry,
+      closing: isRealisedTrade(row),
+      // NUMERIC columns arrive as decimal strings and leave as decimal strings
+      // (§6.1). Nothing on this path parses one into a float.
+      volume: row.volume,
+      price: row.price,
+      profit: row.profit,
+      commission: row.commission,
+      swap: row.swap,
+      comment: row.comment || null,
+      dealtAt: row.dealtAt,
+    }));
 
     /*
      * The TOTALS, over the whole window rather than over this page.
@@ -1099,228 +1016,4 @@ export class TradingService {
       })),
     };
   }
-}
-
-/** One money movement on an MT5 account with no position behind it. */
-export interface BalanceMovementRow {
-  ticket: string;
-  accountId: string;
-  login: string;
-  action: number;
-  actionLabel: string;
-  amount: string;
-  comment: string | null;
-  dealtAt: Date;
-}
-
-/** MT5's numeric position side, named. An unknown code is reported raw. */
-/**
- * The window to read, with defaults and the ceiling applied.
- *
- * ## Thirty days by default, thirty-one at most
- *
- * The ceiling OUTLIVED its original reason and is kept on a new one, which is
- * worth stating rather than leaving as folklore.
- *
- * It was here because MT5 silently TRUNCATES a request for a larger range rather
- * than refusing it, so a client asking for a year would be shown a partial
- * history that looked complete. Reading from `mt5_deals` retires that: Postgres
- * returns every row in the range or none.
- *
- * What is left is the size of the ANSWER. Every deal in the window is
- * serialised to the client and summed in Node, and an active account can trade
- * hundreds a day — so the bound is now on the response and on the statistics
- * loop, not on a quirk of the trading server. Thirty-one days is what the portal
- * offers and comfortably more than it asks for.
- *
- * Raising it is now a real option in a way it never was before, and the shape it
- * needs is a PAGED deal list with the statistics aggregated in SQL. It is not a
- * matter of moving this constant: the whole window currently lands in one array
- * because that is what makes the totals and the list provably describe the same
- * rows.
- *
- * ## Inclusive at both ends, by DATE PART
- *
- * `to` becomes the END of its day. Parsing it as midnight excludes almost the
- * whole final day — the "my newest row vanished when I set an end date" bug that
- * `date-range.ts` and `TransactionsService` both carry a note about.
- */
-function resolveWindow(query: AccountHistoryQueryDto): { from: Date; to: Date } {
-  const to = query.to ? endOfDay(query.to) : endOfDay(todayIso());
-  const from = query.from ? startOfDay(query.from) : new Date(to.getTime() - THIRTY_DAYS_MS);
-
-  if (from.getTime() > to.getTime()) {
-    throw new ValidationError('The start of the range must not be after its end.');
-  }
-
-  if (to.getTime() - from.getTime() > MAX_WINDOW_MS) {
-    throw new ValidationError(
-      'A history window may cover at most 31 days. Ask for a shorter range — a wider one is ' +
-        'returned whole or not at all, and a whole one is more than a single response can carry ' +
-        'for an actively traded account.',
-    );
-  }
-
-  return { from, to };
-}
-
-const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
-/** 31 whole days, plus the part-day the inclusive end adds. */
-const MAX_WINDOW_MS = 32 * 24 * 60 * 60 * 1000;
-
-/** The most balance movements one response carries. See `balanceMovementsMine`. */
-const MOVEMENT_LIMIT = 500;
-
-/**
- * The window for BALANCE MOVEMENTS — the same shape as `resolveWindow`, and
- * deliberately WITHOUT its 31-day cap.
- *
- * Sharing the semantics is the point: `startOfDay` / `endOfDay`, closed at both
- * ends, so a client asking for "the 10th" gets their own 10th on this list
- * exactly as they do on the account history. Two money lists in one product
- * that mean different things by "from" is a divergence noticed at the worst
- * possible moment.
- *
- * ⚠️ But the CAP does not transfer, and copying it because it sits next to the
- * semantics would have been the mistake. Its own message argues from trade
- * volume — *"a whole one is more than a single response can carry for an
- * actively traded account"* — and this list EXCLUDES trades. Dealer
- * adjustments are rare by nature: a client asking for a year of them might get
- * three rows, and a 31-day cap would make them ask twelve times to find that
- * out.
- *
- * What genuinely cannot be returned whole is a large number of ROWS, so that is
- * what `MOVEMENT_LIMIT` bounds — the thing that is actually unbounded rather
- * than a proxy for it. Raised by `crm-92` reviewing the design.
- */
-function resolveMovementWindow(query: AccountHistoryQueryDto): { from: Date; to: Date } {
-  const to = query.to ? endOfDay(query.to) : endOfDay(todayIso());
-  const from = query.from ? startOfDay(query.from) : new Date(to.getTime() - THIRTY_DAYS_MS);
-
-  if (from.getTime() > to.getTime()) {
-    throw new ValidationError('The start of the range must not be after its end.');
-  }
-
-  return { from, to };
-}
-
-/**
- * `YYYY-MM-DD` to a LOCAL day boundary.
- *
- * Local constructor rather than `new Date('2026-08-01')`, which parses as UTC
- * and so starts the window in the wrong place for every zone but one — the trap
- * the portal's `todayIso()` documents from the other direction.
- */
-function startOfDay(iso: string): Date {
-  const [year, month, day] = iso.split('-').map(Number);
-  return new Date(year, month - 1, day, 0, 0, 0, 0);
-}
-
-function endOfDay(iso: string): Date {
-  const [year, month, day] = iso.split('-').map(Number);
-  return new Date(year, month - 1, day, 23, 59, 59, 999);
-}
-
-function todayIso(): string {
-  const now = new Date();
-  const month = String(now.getMonth() + 1).padStart(2, '0');
-  const day = String(now.getDate()).padStart(2, '0');
-  return `${now.getFullYear()}-${month}-${day}`;
-}
-
-/**
- * The statistics DTO, assembled from what Postgres already computed.
- *
- * ## Why this is not `computeStats` any more
- *
- * That function summed a decimal.js accumulator across the deals array, which
- * was correct precisely while the array WAS the window. Paging broke that: the
- * array is now one page, and totals derived from it would describe whichever
- * rows the client happened to be looking at.
- *
- * So the arithmetic moved into the query and this became a mapper. It does no
- * maths — every figure arrives from Postgres as a NUMERIC decimal string and is
- * passed through untouched (§6.1), which is the same guarantee the decimal.js
- * version gave and the reason neither ever used a float.
- *
- * `null` totals are impossible for the sums (`coalesce` floors them at 0) and
- * expected for `bestTrade`/`worstTrade`, where `MAX`/`MIN` over no rows is NULL
- * — which is the answer the DTO wants there.
- */
-/** A nullable aggregate timestamp, as the `Date` the DTO promises. */
-function toDate(value: string | null | undefined): Date | null {
-  return value ? new Date(value) : null;
-}
-
-function statsFromTotals(
-  totals:
-    | {
-        trades: string;
-        wins: string;
-        losses: string;
-        volume: string;
-        netProfit: string;
-        grossProfit: string;
-        grossLoss: string;
-        commission: string;
-        swap: string;
-        bestTrade: string | null;
-        worstTrade: string | null;
-      }
-    | undefined,
-  activity: { firstDealAt: string | null; lastDealAt: string | null } | undefined,
-): AccountStatsDto {
-  /*
-   * An aggregate over an empty table still returns ONE row, so `undefined` here
-   * means the query itself returned nothing — which it cannot. Guarded anyway
-   * rather than asserted, because the alternative on a money screen is a crash
-   * where an empty panel would do.
-   */
-  if (!totals) return emptyStats();
-
-  return {
-    /* COUNTS are the one place a number is right: `count(*)` is a bigint, it
-       arrives as a string, and it is a row count rather than an amount. */
-    trades: Number(totals.trades),
-    wins: Number(totals.wins),
-    losses: Number(totals.losses),
-    volume: totals.volume,
-    netProfit: totals.netProfit,
-    grossProfit: totals.grossProfit,
-    grossLoss: totals.grossLoss,
-    commission: totals.commission,
-    swap: totals.swap,
-    bestTrade: totals.bestTrade,
-    worstTrade: totals.worstTrade,
-    /* Back to a `Date`, which is what the DTO declares and what every other
-       timestamp leaving this service is. See the aggregate's own note on why
-       these arrive as strings in the first place. */
-    firstDealAt: toDate(activity?.firstDealAt),
-    lastDealAt: toDate(activity?.lastDealAt),
-  };
-}
-
-/**
- * What an account with no MT5 login did: nothing, and every figure says so.
- *
- * A function rather than a shared constant, because a caller that mutated one
- * field of a shared object would change every future empty response — and that
- * bug reads as a data problem rather than an aliasing one.
- */
-function emptyStats(): AccountStatsDto {
-  return {
-    trades: 0,
-    wins: 0,
-    losses: 0,
-    volume: '0',
-    netProfit: '0',
-    grossProfit: '0',
-    grossLoss: '0',
-    commission: '0',
-    swap: '0',
-    bestTrade: null,
-    worstTrade: null,
-    firstDealAt: null,
-    lastDealAt: null,
-  };
 }

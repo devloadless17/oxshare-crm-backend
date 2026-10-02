@@ -269,7 +269,7 @@ describe('the measured expression is the SHIPPED expression', () => {
     'src/modules/admin/admin-holdings.service.ts',
     'src/store/kyc.store.ts',
     'src/store/ib.store.ts',
-    'src/modules/payments/transactions.service.ts',
+    'src/modules/payments/queries/transaction-queries.ts',
   ];
 
   it.each(senders)('%s searches clients through the one shared definition', (file) => {

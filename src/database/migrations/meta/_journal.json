@@ -1261,6 +1261,41 @@
       "when": 1789141700750,
       "tag": "0178_country_list_and_method_restrictions",
       "breakpoints": true
+    },
+    {
+      "idx": 181,
+      "version": "7",
+      "when": 1789141800750,
+      "tag": "0179_money_lookup_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 182,
+      "version": "7",
+      "when": 1789141900750,
+      "tag": "0180_ib_confirm_queue_and_client_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 183,
+      "version": "7",
+      "when": 1789142000750,
+      "tag": "0181_client_verification_documents_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 184,
+      "version": "7",
+      "when": 1789142100750,
+      "tag": "0182_transfer_request_ref_and_accrual_lanes",
+      "breakpoints": true
+    },
+    {
+      "idx": 185,
+      "version": "7",
+      "when": 1789142200750,
+      "tag": "0183_foreign_key_indexes",
+      "breakpoints": true
     }
   ]
 }

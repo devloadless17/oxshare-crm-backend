@@ -129,7 +129,6 @@ function build(
       Promise.resolve({ id: 'invite-1', ...data } as AdminInvite),
     ),
     findByToken: vi.fn().mockResolvedValue(options.stored),
-    markAccepted: vi.fn().mockResolvedValue(undefined),
     // The conditional single-use claim: wins exactly when the stored invite is
     // live and unaccepted, mirroring `WHERE accepted = false`.
     claim: vi.fn(() =>

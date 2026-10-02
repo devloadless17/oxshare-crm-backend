@@ -68,7 +68,8 @@ export const LEDGER_REFERENCE = {
    * ## Why this exists beside `position` rather than replacing it
    *
    * `position` is the right key for a trade the CRM itself owns end to end, and
-   * `PositionsService.close` still uses it. But MT5 does not deliver positions;
+   * `CommissionService.accrueForClosedPosition` keys on it (it has no production
+   * caller since 0182). But MT5 does not deliver positions;
    * it delivers DEALS, and rebuilding one from the other is a trap the ingest
    * path must not walk into:
    *

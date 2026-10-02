@@ -28,7 +28,7 @@ import {
 } from '@nestjs/swagger';
 import { memoryStorage } from 'multer';
 import { Request } from 'express';
-import { KycService } from './kyc.service';
+import { KycClientService } from './kyc-client.service';
 import { JwtAuthGuard } from '../identity/guards/jwt-auth.guard';
 import { EmailVerifiedGuard } from '../identity/guards/email-verified.guard';
 import { User } from '../../store/users.store';
@@ -79,7 +79,7 @@ import { KycStatusDto, KycStepConfigDto } from './dto/kyc-response.dto';
 @Controller('kyc')
 export class KycController {
   constructor(
-    private readonly kyc: KycService,
+    private readonly kyc: KycClientService,
     private readonly kycConfig: KycConfigStore,
     private readonly files: StoredFilesService,
   ) {}

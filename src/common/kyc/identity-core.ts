@@ -557,14 +557,47 @@ export function inFormOrder<S extends FormStep>(steps: readonly S[]): S[] {
 
 // ─── What a broker's own field and step may be called ────────────────────────
 
+/**
+ * THE ONE DEFINITION of the built-in evidence steps' upload slots, page by page
+ * (index 0 = the first page, 1 = the second). Every reader — the step judge,
+ * the review layout, the document rules, the upload path, the identity record
+ * and the console's record view — derives its slots and page indexes from
+ * this, never from a copy.
+ */
+export const EVIDENCE_PAGE_SLOTS = {
+  document: ['doc_front', 'doc_back'],
+  address: ['address_proof', 'address_proof_2'],
+  selfie: ['selfie'],
+} as const;
+
+/** A built-in evidence step's slug: `document`, `address` or `selfie`. */
+export type EvidenceStep = keyof typeof EVIDENCE_PAGE_SLOTS;
+
+/** The two-page catalogue-document steps, and their slots. */
+export const DOCUMENT_PAGE_SLOTS = {
+  document: EVIDENCE_PAGE_SLOTS.document,
+  address: EVIDENCE_PAGE_SLOTS.address,
+} as const;
+
+/** The built-in step a canonical slot belongs to, or `undefined` for any other id. */
+export function evidenceStepOfSlot(id: string): EvidenceStep | undefined {
+  for (const step of Object.keys(EVIDENCE_PAGE_SLOTS) as EvidenceStep[]) {
+    if ((EVIDENCE_PAGE_SLOTS[step] as readonly string[]).includes(id)) return step;
+  }
+  return undefined;
+}
+
+/**
+ * Which page of its document a canonical slot holds: 1 for `doc_back` and
+ * `address_proof_2`, 0 for every other id (a first page, the selfie, a field).
+ */
+export function pageIndexOfSlot(id: string): number {
+  const step = evidenceStepOfSlot(id);
+  return step ? (EVIDENCE_PAGE_SLOTS[step] as readonly string[]).indexOf(id) : 0;
+}
+
 /** Upload slots the rest of the system reads by name. */
-const CANONICAL_SLOTS: readonly string[] = [
-  'doc_front',
-  'doc_back',
-  'selfie',
-  'address_proof',
-  'address_proof_2',
-];
+const CANONICAL_SLOTS: readonly string[] = Object.values(EVIDENCE_PAGE_SLOTS).flat();
 
 /** Keys every JavaScript object already answers to — never an answer's key. */
 const PROTOTYPE_KEYS: readonly string[] = [

@@ -506,8 +506,8 @@ export class PaymentsController {
    * transfers for one intended movement (R-5.2).
    *
    * The response is `pending` in both directions, and that is not a
-   * placeholder. MT5 owns the account side and there is no bridge yet, so the
-   * CRM records what it knows and settles when it is told —
+   * placeholder. MT5 owns the account side and the executor settles only once
+   * the bridge confirms the movement —
    * `transfers.service.ts` explains why the two directions treat the wallet
    * asymmetrically.
    */

@@ -4,6 +4,7 @@ import { DRIZZLE_DB } from '../database/database.module';
 import type { Db } from '../database/db';
 import { admins, apiKeys } from '../database/schema';
 import { scopeOf, type ClientScope } from '../common/security/client-scope';
+import { normalizePermissionKey } from '../common/security/actor';
 
 /**
  * The `api_keys` table — machine credentials for the admin API.
@@ -61,13 +62,19 @@ export class ApiKeysStore {
   constructor(@Inject(DRIZZLE_DB) private readonly db: Db) {}
 
   /**
-   * Narrow every live key an administrator created to what they may see NOW.
+   * Narrow every live key an administrator created to what they may see and do NOW.
    *
-   * A key is a snapshot of its creator's sight, taken when it was minted. When
-   * the creator is later narrowed — fewer tags, no longer every client, a
-   * stricter mask — each key is clamped to the intersection of what it had and
-   * the creator's new ceiling. Never widened: an administrator gaining sight
-   * does not quietly hand it to keys minted before.
+   * A key is a snapshot of its creator's sight AND permissions, taken when it
+   * was minted. When the creator is later narrowed — fewer tags, no longer every
+   * client, a stricter mask, fewer permissions — each key is clamped to the
+   * intersection of what it had and the creator's new ceiling. Never widened: an
+   * administrator gaining access does not quietly hand it to keys minted before.
+   *
+   * PERMISSIONS were missing until 2 Oct 2026: a key carried every permission
+   * its creator held at minting for as long as it lived, so demoting somebody
+   * (a new role, a role edited down) left their keys able to do what they no
+   * longer could — the "never more powerful than its creator" rule
+   * `api-keys.service.ts` enforces at minting, undone by time.
    *
    * @returns how many keys were rewritten.
    */
@@ -75,7 +82,9 @@ export class ApiKeysStore {
     adminId: string,
     ceiling: ClientScope,
     mask: readonly string[],
+    permissions: readonly string[],
   ): Promise<number> {
+    const held = new Set(permissions.map(normalizePermissionKey));
     const keys = await this.db
       .select()
       .from(apiKeys)
@@ -96,6 +105,7 @@ export class ApiKeysStore {
           scopedTagIds: tags,
           seesUntriaged: intake,
           maskedFields: [...new Set([...(key.maskedFields ?? []), ...mask])],
+          permissions: key.permissions.filter((p) => held.has(normalizePermissionKey(p))),
         })
         .where(eq(apiKeys.id, key.id));
     }

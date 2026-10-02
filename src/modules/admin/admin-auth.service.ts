@@ -825,7 +825,6 @@ export class AdminAuthService {
     // D-44 accepts master-can-reset-master ONLY because this exists.
     this.audit.record(actor.id, 'admin.password_reset_initiate', 'admin', target.id, {
       targetEmail: target.email,
-      targetRole: target.role,
     });
 
     this.logger.log(`Password reset initiated by ${actor.email} for ${target.email}`);

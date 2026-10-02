@@ -138,9 +138,9 @@ const LABEL: Readonly<Record<ProfileKey, string>> = {
  * `kyc.identity.correct` corrects any field, with a REASON, re-checked by the
  * profile's rules, recorded on the verification, and the client told. A
  * material change — a new passport, a move abroad — is a re-verification
- * instead (`KycService.requestReverification`), which the reviewer chooses.
+ * instead (`KycReviewService.requestReverification`), which the reviewer chooses.
  *
- * `KycService.resetKyc` names this remedy to the client, in words that must
+ * `KycClientService.resetKyc` names this remedy to the client, in words that must
  * stay true to this list.
  */
 export const KYC_CORRECTABLE_KEYS: readonly ProfileKey[] = PROFILE_FIELD_KEYS.filter(

@@ -27,8 +27,13 @@ import {
 import { WalletService } from '../../wallet/wallet.service';
 import { money, toDecimal } from '../../wallet/money';
 import { CurrenciesService } from '../../currencies/currencies.service';
-import { TransactionsService, depositStateOf } from '../transactions.service';
-import { PaymentMethodsService } from '../payment-methods.service';
+import { depositStateOf } from './deposit-state';
+import {
+  DEPOSIT_LIMITS,
+  TRANSACTION_LEDGER,
+  type DepositLimitsPort,
+  type TransactionLedgerPort,
+} from './payments-ledger.port';
 import { PaymentProviderRegistry } from '../providers/payment-provider-registry';
 import {
   ProviderBusyError,
@@ -103,8 +108,8 @@ export class HostedDepositsService {
     @Inject(DRIZZLE_DB) private readonly db: Db,
     private readonly registry: PaymentProviderRegistry,
     private readonly wallets: WalletService,
-    private readonly transactions: TransactionsService,
-    private readonly paymentMethods: PaymentMethodsService,
+    @Inject(TRANSACTION_LEDGER) private readonly transactions: TransactionLedgerPort,
+    @Inject(DEPOSIT_LIMITS) private readonly paymentMethods: DepositLimitsPort,
     private readonly currencies: CurrenciesService,
     private readonly auditLog: AuditLogStore,
     @Inject(NOTIFICATION_DISPATCH) private readonly notifications: NotificationDispatchPort,

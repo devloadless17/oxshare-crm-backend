@@ -43,6 +43,12 @@
  * name — a custom step's upload, or a whole document when the dialog could not
  * see which pages were sent. Both are live, so both are understood here.
  */
+import {
+  DOCUMENT_PAGE_SLOTS,
+  evidenceStepOfSlot,
+  pageIndexOfSlot,
+  type EvidenceStep,
+} from '../../common/kyc/identity-core';
 import { catalogueDocument } from '../../common/kyc/document-catalogue';
 import { isFileField } from './step-slugs';
 
@@ -61,20 +67,8 @@ export interface RuleField {
   document?: { value: string };
 }
 
-/** A canonical upload slot, and the step whose files it holds. */
-export const CANONICAL_FILE_STEP: Readonly<Record<string, 'document' | 'selfie' | 'address'>> = {
-  doc_front: 'document',
-  doc_back: 'document',
-  selfie: 'selfie',
-  address_proof: 'address',
-  address_proof_2: 'address',
-};
-
-function canonicalStepOf(id: string): 'document' | 'selfie' | 'address' | undefined {
-  return Object.prototype.hasOwnProperty.call(CANONICAL_FILE_STEP, id)
-    ? CANONICAL_FILE_STEP[id]
-    : undefined;
-}
+/** A canonical upload slot's step — the one definition in identity-core. */
+const canonicalStepOf = evidenceStepOfSlot;
 
 /**
  * The flags an upload into `field` settles.
@@ -147,8 +141,7 @@ export function isPageOfStored(id: string, stored: StoredDocumentTypes): boolean
   const type = slug === 'document' ? stored.document?.docType : stored.addressProof?.docType;
   const entry = type ? catalogueDocument(type) : undefined;
   if (!entry) return true;
-  const index = id === 'doc_back' || id === 'address_proof_2' ? 1 : 0;
-  return index < entry.parts.length;
+  return pageIndexOfSlot(id) < entry.parts.length;
 }
 
 /**
@@ -166,11 +159,9 @@ export function asPageFlags(flags: readonly string[], steps: readonly RuleStep[]
   const pages = flags.flatMap((id) => {
     for (const step of steps) {
       const slots =
-        step.slug === 'document'
-          ? DOCUMENT_SLOTS
-          : step.slug === 'address'
-            ? ADDRESS_SLOTS
-            : undefined;
+        step.slug === 'document' || step.slug === 'address'
+          ? DOCUMENT_PAGE_SLOTS[step.slug]
+          : undefined;
       const field = slots && step.fields.find((f) => f.name === id && f.type.startsWith('doc:'));
       if (!slots || !field) continue;
       const entry = catalogueDocument(field.type.slice('doc:'.length));
@@ -181,12 +172,9 @@ export function asPageFlags(flags: readonly string[], steps: readonly RuleStep[]
   return [...new Set(pages)];
 }
 
-const DOCUMENT_SLOTS = ['doc_front', 'doc_back'] as const;
-const ADDRESS_SLOTS = ['address_proof', 'address_proof_2'] as const;
-
 /** Every page slot of a document step's document; none for the selfie. */
-function pageSlotsOf(slug: 'document' | 'selfie' | 'address'): readonly string[] {
-  return slug === 'document' ? DOCUMENT_SLOTS : slug === 'address' ? ADDRESS_SLOTS : [];
+function pageSlotsOf(slug: EvidenceStep): readonly string[] {
+  return slug === 'selfie' ? [] : DOCUMENT_PAGE_SLOTS[slug];
 }
 
 /** The half of a submission `documentFlagLabel` reads. */
@@ -224,7 +212,7 @@ export function documentFlagLabel(
       configured?.label ??
       entry?.label ??
       (slug === 'document' ? 'Identity document' : 'Proof of address');
-    const page = id === 'doc_back' || id === 'address_proof_2' ? 1 : 0;
+    const page = pageIndexOfSlot(id);
     const part = entry && entry.parts.length > 1 ? entry.parts[page] : undefined;
     return part ? `${name} (${part.label})` : name;
   }

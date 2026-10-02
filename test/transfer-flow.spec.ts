@@ -807,10 +807,10 @@ describe('an unanswered MT5 call: who keeps the hold', () => {
   });
 
   it('still FAILS on a genuine bridge 400', async () => {
-    // The regex path that was always right, kept as the fallback and pinned so
-    // narrowing the classifier to types alone cannot silently drop it.
+    // Classified on the STATUS the bridge answered (`upstreamStatus`), never on
+    // the message text.
     const { state, wallet } = await attempt(
-      new ExternalServiceError('MT5 bridge returned 400 for POST /balance'),
+      new ExternalServiceError('MT5 bridge returned 400 for POST /balance', undefined, 400),
       'four-hundred@test.local',
     );
     expect(state).toBe('failed');

@@ -13,16 +13,13 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
-import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
+import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Request } from 'express';
 import { JwtAuthGuard } from '../identity/guards/jwt-auth.guard';
 import { EmailVerifiedGuard } from '../identity/guards/email-verified.guard';
 import { User } from '../../store/users.store';
-import { enumQuery } from '../../common/query-params';
-import { positionStatusEnum } from '../../database/schema';
 import { TradingService } from './trading.service';
 import { TradingAccountDto } from './dto/trading-account.dto';
-import { PositionDto } from './dto/position.dto';
 import {
   AccountHistoryDto,
   AccountHistoryQueryDto,
@@ -35,6 +32,7 @@ import { OpenOwnAccountDto } from './dto/open-account.dto';
 import { RenameOwnAccountDto } from './dto/rename-account.dto';
 import { FundDemoAccountDto } from './dto/fund-demo-account.dto';
 import { Mt5AccountsService } from './mt5/mt5-accounts.service';
+import { Mt5OwnAccountsService } from './mt5/mt5-own-accounts.service';
 import { SelfServiceGroups } from './mt5/self-service-groups';
 import { UsersStore } from '../../store/users.store';
 import { KycNotVerifiedError } from '../../common/errors/domain-errors';
@@ -72,6 +70,7 @@ export class TradingController {
   constructor(
     private readonly trading: TradingService,
     private readonly mt5Accounts: Mt5AccountsService,
+    private readonly ownAccounts: Mt5OwnAccountsService,
     private readonly selfServiceGroups: SelfServiceGroups,
     private readonly users: UsersStore,
   ) {}
@@ -135,7 +134,7 @@ export class TradingController {
     );
     const leverage = await this.selfServiceGroups.resolveLeverage(dto.leverage);
 
-    return await this.mt5Accounts.createOwnAccount({
+    return await this.ownAccounts.createOwnAccount({
       userId: req.user.id,
       environment: dto.environment,
       group,
@@ -181,7 +180,7 @@ export class TradingController {
     @Param('id', ParseUUIDPipe) id: string,
     @Req() req: Request & { user: User },
   ) {
-    return await this.mt5Accounts.resetOwnAccountPassword({
+    return await this.ownAccounts.resetOwnAccountPassword({
       userId: req.user.id,
       accountId: id,
     });
@@ -212,7 +211,7 @@ export class TradingController {
     @Body() dto: RenameOwnAccountDto,
     @Req() req: Request & { user: User },
   ) {
-    return await this.mt5Accounts.renameOwnAccount({
+    return await this.ownAccounts.renameOwnAccount({
       userId: req.user.id,
       accountId: id,
       name: dto.name,
@@ -256,7 +255,7 @@ export class TradingController {
     @Body() dto: FundDemoAccountDto,
     @Req() req: Request & { user: User },
   ) {
-    return await this.mt5Accounts.fundOwnDemoAccount({
+    return await this.ownAccounts.fundOwnDemoAccount({
       userId: req.user.id,
       accountId: id,
       amount: dto.amount,
@@ -355,9 +354,9 @@ export class TradingController {
     summary: "The signed-in client's trading accounts, live first then demo",
     description:
       'The whole list, unpaginated — a client holds a handful of accounts rather than a growing ' +
-      'log. Balances are decimal STRINGS (§6.1) and are the CRM-held figure, not MT5 equity: ' +
-      'there is no bridge, so equity, margin and open positions are deliberately absent rather ' +
-      'than fabricated.',
+      'log. Balances are decimal STRINGS (§6.1) and are the CRM mirror of MT5, kept by the ' +
+      "bridge's push and sweep. Equity, margin and open positions are LIVE figures and are read " +
+      'from the bridge per account (`accounts/:id/live`, `accounts/:id/positions`), never stored.',
   })
   @ApiOkResponse({ type: [TradingAccountDto] })
   myAccounts(@Req() req: Request & { user: User }) {
@@ -376,38 +375,6 @@ export class TradingController {
   @ApiOkResponse({ type: [TradingAccountDto] })
   myTransferableAccounts(@Req() req: Request & { user: User }) {
     return this.trading.listTransferable(req.user.id);
-  }
-
-  @Get('positions')
-  @ApiCookieAuth()
-  @ApiOperation({
-    summary: "The signed-in client's positions — open by default",
-    description:
-      'IMPORTANT: this returns an EMPTY LIST for everyone today, and that is a real answer rather ' +
-      'than a stub. Nothing writes to `positions` because there is no MT5 bridge, so the table ' +
-      'exists and the query is genuine — "no open positions" is something the database said.\n\n' +
-      'The table is created ahead of the feed deliberately: a screen rendering a hardcoded empty ' +
-      'state is indistinguishable from one whose query found nothing, and that confusion has ' +
-      'already told a client holding three live accounts that they had none.\n\n' +
-      'Prices and volumes are decimal STRINGS (§6.1). `profit` is the REALISED result and is null ' +
-      'while a position is open — floating P/L is deliberately absent, because it changes on ' +
-      'every tick and a stored copy is stale the moment it is written.',
-  })
-  @ApiQuery({ name: 'status', required: false, enum: positionStatusEnum.enumValues })
-  @ApiQuery({ name: 'limit', required: false, type: Number })
-  @ApiOkResponse({ type: [PositionDto] })
-  myPositions(
-    @Req() req: Request & { user: User },
-    @Query('status') status?: string,
-    @Query('limit') limit?: string,
-  ) {
-    return this.trading.listPositions(req.user.id, {
-      // Checked against the schema's own enum, never cast: `?status=nonsense`
-      // compared against a Postgres enum surfaces as a 500 carrying a database
-      // error, where R-2.5 wants a 400 naming what IS allowed.
-      status: enumQuery(status, positionStatusEnum.enumValues, 'status'),
-      limit: limit ? Number.parseInt(limit, 10) : undefined,
-    });
   }
 
   /*

@@ -22,7 +22,7 @@ import { AUDIT_SORT_COLUMNS } from '../../store/audit-log.store';
 import { searchQuery, uuidQuery } from '../../common/query-params';
 import { NotClientScoped, ScopedToClients } from './guards/client-scope.decorator';
 import { Audited } from './guards/audited.decorator';
-import { AdminExportService } from './admin-export.service';
+import { AdminExportService, type ExportSeek } from './admin-export.service';
 import { exportFormat, streamCsv, EXPORT_RATE_LIMIT } from '../../common/export/export-response';
 
 /** Append-only admin action log (master admin only). */
@@ -167,8 +167,9 @@ export class AdminAuditController {
       filters: query,
     });
 
+    const seek: ExportSeek = {};
     await streamCsv(res, 'audit-log', chosen, this.exports.auditColumns, (offset, limit) =>
-      this.exports.auditBatch(query, req.admin, offset, limit),
+      this.exports.auditBatch(query, req.admin, offset, limit, seek),
     );
   }
 

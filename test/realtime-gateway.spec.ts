@@ -39,11 +39,10 @@ function buildResolver(options: {
     ),
   } as unknown as AdminAuthenticator;
 
-  const clientStrategy = {
-    validate: vi.fn(() =>
-      options.client ? Promise.resolve(options.client) : Promise.reject(new Error('refused')),
-    ),
-  } as unknown as JwtStrategy;
+  const accept = vi.fn(() =>
+    options.client ? Promise.resolve(options.client) : Promise.reject(new Error('refused')),
+  );
+  const clientStrategy = { validate: accept, authenticateToken: accept } as unknown as JwtStrategy;
 
   const jwt = {
     verify: vi.fn(() => ({ sub: options.client?.id ?? 'x', exp: options.exp })),

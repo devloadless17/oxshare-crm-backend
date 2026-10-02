@@ -88,3 +88,13 @@ export function readApiKeyHeader(req: {
   }
   return null;
 }
+
+/**
+ * How a key is NAMED wherever an administrator's email would stand: the
+ * identity the guard builds for a key-authenticated request, and the
+ * `actor_email` its audit rows carry. One spelling, so a key's actions in the
+ * audit log read the same as the identity that performed them.
+ */
+export function apiKeyActorLabel(key: { name: string; prefix: string }): string {
+  return `${key.name} (api key ${key.prefix}…)`;
+}

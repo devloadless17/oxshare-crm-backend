@@ -1,3 +1,4 @@
+import { DepositReceiptAccess } from './deposit-receipt-access.service';
 import { Module } from '@nestjs/common';
 import { PaymentsController } from './payments.controller';
 import { PaymentsReturnController } from './payments-return.controller';
@@ -11,6 +12,7 @@ import { TransferExecutor } from './transfer-executor.service';
 import { TransferResumeScheduler } from './transfer-resume.scheduler';
 import { MovementTotalsScheduler } from './movement-totals.scheduler';
 import { PaymentMethodsService } from './payment-methods.service';
+import { DEPOSIT_LIMITS, TRANSACTION_LEDGER } from './core/payments-ledger.port';
 import { WalletModule } from '../wallet/wallet.module';
 import { TradingModule } from '../trading/trading.module';
 import { IdentityModule } from '../identity/identity.module';
@@ -98,8 +100,13 @@ import { ThreePayWebhookReceiver } from './providers/threepay/threepay-webhook.r
    * withdrawal OTP; the OTP is gone and so is the switch — see D-67.)
    */
   providers: [
+    // Who may read a deposit receipt — called by the `/uploads` file route.
+    DepositReceiptAccess,
     TransactionsService,
     PaymentMethodsService,
+    // The core's ports, bound to the outer services (core/ never imports them).
+    { provide: TRANSACTION_LEDGER, useExisting: TransactionsService },
+    { provide: DEPOSIT_LIMITS, useExisting: PaymentMethodsService },
     WithdrawalMethodsService,
     TransfersService,
     /*
@@ -169,6 +176,7 @@ import { ThreePayWebhookReceiver } from './providers/threepay/threepay-webhook.r
    * this module, so the arrow runs one way and there is no cycle.
    */
   exports: [
+    DepositReceiptAccess,
     PaymentProviderRegistry,
     TransactionsService,
     TransfersService,

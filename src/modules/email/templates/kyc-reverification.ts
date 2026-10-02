@@ -2,7 +2,7 @@ import { button, esc, layout, p, panel, type RenderedEmail } from './layout';
 
 /**
  * "Please update your verification" — sent when a reviewer returns an APPROVED
- * verification to the client (`KycService.requestReverification`).
+ * verification to the client (`KycReviewService.requestReverification`).
  *
  * Deliberately NOT the rejection email. The client did nothing wrong: a detail
  * changed — a new passport, a move abroad — and the broker needs it verified

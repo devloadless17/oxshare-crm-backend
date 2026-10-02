@@ -12,7 +12,7 @@ import { ConfigService } from '@nestjs/config';
 import { Reflector } from '@nestjs/core';
 import { Admin, AdminsStore } from '../../../store/admins.store';
 import { ApiKeysStore } from '../../../store/api-keys.store';
-import { hashApiKey, readApiKeyHeader } from '../../../common/security/api-key';
+import { apiKeyActorLabel, hashApiKey, readApiKeyHeader } from '../../../common/security/api-key';
 import { AdminAuditService } from '../admin-audit.service';
 import { RolesStore } from '../../../store/roles.store';
 import { Request } from 'express';
@@ -25,6 +25,7 @@ import {
   TOKEN_ISSUER,
   TOKEN_KIND,
 } from '../../../common/security/token-audience';
+import { SessionEndedException } from '../../../common/security/session-ended';
 import { normalizePermissionKey } from '../../../common/security/actor';
 import { AdminClientScopesStore } from '../../../store/admin-client-scopes.store';
 import { RefreshTokensService } from '../../../common/security/refresh-tokens.service';
@@ -102,7 +103,24 @@ export class AdminAuthenticator {
   ) {}
 
   async authenticate(req: AdminRequest): Promise<AuthenticatedAdmin> {
-    const admin = await this.authenticateRequest(req);
+    return this.withFieldMask(await this.authenticateRequest(req));
+  }
+
+  /**
+   * The SESSION door alone — the admin access cookie, never an API key.
+   *
+   * For the `/uploads` file routes, which serve two audiences and resolve the
+   * principal by hand: they never accepted a key, and a key-bearing integration
+   * has no business reading identity documents. Every check after the key
+   * branch is this class's, so the routes and the guards cannot drift. A
+   * session that was ENDED throws `SessionEndedException`; anything else that
+   * is not a live admin session throws a plain `UnauthorizedException`.
+   */
+  async authenticateSession(req: AdminRequest): Promise<AuthenticatedAdmin> {
+    return this.withFieldMask(await this.authenticateCookie(req));
+  }
+
+  private withFieldMask(admin: AuthenticatedAdmin): AuthenticatedAdmin {
     /*
      * The mask travels with the request (`currentFieldMask`), so the one
      * client search and `sortKey` obey it wherever they run (D-82). Set HERE,
@@ -135,7 +153,10 @@ export class AdminAuthenticator {
      */
     const presentedKey = readApiKeyHeader(req);
     if (presentedKey) return this.authenticateApiKey(presentedKey);
+    return this.authenticateCookie(req);
+  }
 
+  private async authenticateCookie(req: AdminRequest): Promise<AuthenticatedAdmin> {
     const token = readSessionCookie(
       req.cookies as Record<string, string | undefined> | undefined,
       COOKIE_BASES.adminAccess,
@@ -223,7 +244,7 @@ export class AdminAuthenticator {
       issuedAt &&
       (issuedAt + 1) * 1000 <= admin.passwordChangedAt.getTime()
     ) {
-      throw new UnauthorizedException({
+      throw new SessionEndedException({
         message: 'Your password was changed. Please sign in again.',
         code: 'SESSION_REVOKED',
       });
@@ -241,7 +262,7 @@ export class AdminAuthenticator {
      * exactly this for portal users since it was written.
      */
     if (admin.status === 'suspended') {
-      throw new UnauthorizedException({
+      throw new SessionEndedException({
         message: 'This administrator account has been suspended.',
         code: 'SESSION_REVOKED',
       });
@@ -265,13 +286,13 @@ export class AdminAuthenticator {
      * not exist for exactly the sessions issued before it shipped.
      */
     if (!familyId) {
-      throw new UnauthorizedException({
+      throw new SessionEndedException({
         message: 'Session has been revoked. Please log in again.',
         code: 'SESSION_REVOKED',
       });
     }
     if (await this.refreshTokens.familyIsRevoked('admin', familyId)) {
-      throw new UnauthorizedException({
+      throw new SessionEndedException({
         message: 'Session has been revoked. Please log in again.',
         code: 'SESSION_REVOKED',
       });
@@ -390,7 +411,7 @@ export class AdminAuthenticator {
     const permissions = row.permissions;
     const identity: Admin = {
       id: row.id,
-      email: `${row.name} (api key ${row.prefix}…)`,
+      email: apiKeyActorLabel(row),
       passwordHash: '',
       name: row.name,
       role: 'sub_admin',

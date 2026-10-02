@@ -102,9 +102,8 @@ describe('invite → accept → sign in with the granted role', () => {
     // The point of the whole flow: they can sign in on their own afterwards.
     const invitee = await actingAs(ctx, 'admin', { email, password: NEW_ADMIN_PASSWORD });
     const me = await invitee.get('/v1/admin/auth/me').expect(200);
-    const profile = me.body as { role: string; permissions: string[]; status: string };
+    const profile = me.body as { permissions: string[]; status: string };
 
-    expect(profile.role).toBe('sub_admin');
     expect(profile.status).toBe('active');
     // BOTH sides sorted. Sorting only the received array made this depend on
     // the order the API happens to return, which is not what the test is about

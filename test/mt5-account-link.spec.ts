@@ -7,7 +7,6 @@ import type {
   Mt5AccountSnapshot,
   Mt5BridgeClient,
 } from '../src/modules/trading/mt5/mt5-bridge.client';
-import type { Mt5AccountSyncService } from '../src/modules/trading/mt5/mt5-account-sync.service';
 import type { EmailService } from '../src/modules/email/email.service';
 import type { AuthenticatedAdmin } from '../src/modules/admin/guards/admin.guard';
 import { ProductsStore } from '../src/store/products.store';
@@ -152,7 +151,6 @@ beforeAll(async () => {
     {} as EmailService,
     new AppSettingsStore(ctx.db),
     new ProductsStore(ctx.db),
-    {} as Mt5AccountSyncService,
   );
   directory = new Mt5AccountDirectoryService(ctx.db, bridge, new ProductsStore(ctx.db));
   holdings = new AdminHoldingsService(ctx.db, new ClientVisibilityService(new UsersStore(ctx.db)));

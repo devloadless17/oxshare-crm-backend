@@ -232,13 +232,22 @@ export class AdminMoneyService {
     const user = await this.users.findById(params.userId);
     if (!user) throw new NotFoundError('Client not found.');
 
-    const result = await this.transactions.creditDeposit({
-      userId: params.userId,
-      amount: params.amount,
-      currency: params.currency,
-      provider: MANUAL_ADMIN_PROVIDER,
-      providerRef: reference,
-    });
+    const result = await this.transactions.creditDeposit(
+      {
+        userId: params.userId,
+        amount: params.amount,
+        currency: params.currency,
+        provider: MANUAL_ADMIN_PROVIDER,
+        providerRef: reference,
+      },
+      (tx, row) =>
+        this.audit.recordWithin(tx, actor.id, 'wallet.credit', 'transaction', row.id, {
+          userId: params.userId,
+          amount: row.amount,
+          currency: row.currency,
+          reason: reasonText,
+        }),
+    );
 
     /*
      * A REPLAY writes no audit row and sends no second email. The credit did not
@@ -247,29 +256,6 @@ export class AdminMoneyService {
      * twice.
      */
     if (result.replayed) return { transaction: result.transaction, replayed: true as const };
-
-    /*
-     * Audited AFTER the credit rather than inside it — a departure from the
-     * withdrawal transitions below, stated so it is not read as an oversight.
-     *
-     * R-6.5 wants the audit row committed with the movement, and `reject()`
-     * manages that by taking a `WithinTransaction` callback. `creditDeposit`
-     * offers no such seam: it is deliberately two idempotent steps (the
-     * transaction row on `UNIQUE(provider, provider_ref)`, the ledger entry on
-     * `(wallet, reference)`) so a retry converges instead of rolling back.
-     *
-     * The trade is that a crash between the credit and this line loses the
-     * ATTRIBUTION, not the money — and that is recoverable, because the
-     * transaction row still carries the reference, the amount and the timestamp.
-     * Wrapping a deliberately-retryable credit in a transaction to satisfy the
-     * audit would trade a recoverable gap for an unrecoverable one.
-     */
-    this.audit.record(actor.id, 'wallet.credit', 'transaction', result.transaction.id, {
-      userId: params.userId,
-      amount: result.transaction.amount,
-      currency: result.transaction.currency,
-      reason: reasonText,
-    });
 
     /*
      * Fire-and-forget, AFTER the money has landed — the rule every other
@@ -509,7 +495,7 @@ export class AdminMoneyService {
      */
     if (!isDeposit) {
       return await this.debitTradingAccount(
-        { account, amount: params.amount, reason: reasonText },
+        { account, amount: params.amount, reason: reasonText, reference },
         actor,
       );
     }
@@ -570,6 +556,14 @@ export class AdminMoneyService {
         direction: 'wallet_to_account',
         amount: params.amount,
         currency: account.currency,
+        /*
+         * DERIVED FROM THE KEY, so a replay converges on ONE transfer. The
+         * credit above was already idempotent on `reference`, but this leg was
+         * requested afresh on every attempt: a replay whose first attempt died
+         * after the credit (no stored response) found the credit and then sent
+         * the client's wallet money to MT5 a SECOND time.
+         */
+        requestRef: reference ? `admin-fund:${reference}` : undefined,
       });
 
       /*
@@ -666,20 +660,18 @@ export class AdminMoneyService {
    * `withdrawal` row would claim money left the platform, which would overstate
    * the withdrawal totals in every report that sums by direction.
    *
-   * ## NOT idempotent on the caller's key, and this is stated rather than fixed
+   * ## Idempotent on the caller's key, through the transfer itself
    *
-   * The deposit direction converges on `UNIQUE(provider, provider_ref)` through
-   * the transaction row it writes. There is no such row here, so the protection
-   * against a double-click is the executor's idempotency on the transfer id
-   * plus the console disabling its button in flight — the same protection the
-   * client's own transfer endpoint relies on. Two deliberate debits of the same
-   * size are two legitimate operations and must not be collapsed.
+   * The transfer carries `request_ref` derived from the key (UNIQUE, 0182), so
+   * a replay of one request finds the transfer it already made. Two deliberate
+   * debits of the same size carry two keys and stay two operations.
    */
   private async debitTradingAccount(
     params: {
       account: { id: string; userId: number; currency: string; login: string | null };
       amount: string;
       reason: string;
+      reference: string;
     },
     actor: AuthenticatedAdmin,
   ) {
@@ -702,6 +694,7 @@ export class AdminMoneyService {
       direction: 'account_to_wallet',
       amount: params.amount,
       currency: account.currency,
+      requestRef: params.reference ? `admin-debit:${params.reference}` : undefined,
     });
 
     /*

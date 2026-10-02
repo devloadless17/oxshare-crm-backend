@@ -43,9 +43,6 @@ export class AdminProfileDto {
   @NotClientField('an ADMINISTRATOR attribute \u2014 this describes the operator, never a client')
   @ApiProperty()
   name: string;
-  @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
-  @ApiProperty({ enum: ['master_admin', 'sub_admin'] })
-  role: 'master_admin' | 'sub_admin';
   @NotClientField('an ADMINISTRATOR attribute \u2014 this describes the operator, never a client')
   @ApiProperty({ type: [String] })
   permissions: string[];
@@ -2542,8 +2539,8 @@ export class TradingAccountRowDto {
     type: 'string',
     example: '1000.00000000',
     description:
-      'Monetary value — ALWAYS a string. CRM-owned until the MT5 bridge lands, at which ' +
-      'point it becomes a mirror of MT5 or is removed (see the schema comment).',
+      'Monetary value — ALWAYS a string. The CRM mirror of the MT5 balance, kept by the ' +
+      "bridge's push and sweep (see the schema comment).",
   })
   @NotClientField(
     'a money, paging or configuration value on the RECORD, carrying no client attribute',

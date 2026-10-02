@@ -14,7 +14,7 @@ import { Body, Controller, Get, Param, Patch, Query, Req, Res, UseGuards } from 
 import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { Request, Response } from 'express';
 import { AdminClientsService } from './admin-clients.service';
-import { AdminExportService } from './admin-export.service';
+import { AdminExportService, type ExportSeek } from './admin-export.service';
 import { AdminAuditService } from './admin-audit.service';
 import { exportFormat, streamCsv, EXPORT_RATE_LIMIT } from '../../common/export/export-response';
 import {
@@ -320,8 +320,9 @@ export class AdminClientsController {
       filters: query,
     });
 
+    const seek: ExportSeek = {};
     await streamCsv(res, 'clients', chosen, this.exports.clientColumns, (offset, limit) =>
-      this.exports.clientBatch(query, req.admin, offset, limit),
+      this.exports.clientBatch(query, req.admin, offset, limit, seek),
     );
   }
 

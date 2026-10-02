@@ -5162,7 +5162,7 @@
         ]
       },
       "get": {
-        "description": "The whole list, unpaginated — a client holds a handful of accounts rather than a growing log. Balances are decimal STRINGS (§6.1) and are the CRM-held figure, not MT5 equity: there is no bridge, so equity, margin and open positions are deliberately absent rather than fabricated.",
+        "description": "The whole list, unpaginated — a client holds a handful of accounts rather than a growing log. Balances are decimal STRINGS (§6.1) and are the CRM mirror of MT5, kept by the bridge's push and sweep. Equity, margin and open positions are LIVE figures and are read from the bridge per account (`accounts/:id/live`, `accounts/:id/positions`), never stored.",
         "operationId": "TradingController_myAccounts",
         "parameters": [],
         "responses": {
@@ -5383,58 +5383,6 @@
           }
         ],
         "summary": "The accounts a transfer from the wallet may credit — live and active only",
-        "tags": [
-          "trading"
-        ]
-      }
-    },
-    "/v1/trading/positions": {
-      "get": {
-        "description": "IMPORTANT: this returns an EMPTY LIST for everyone today, and that is a real answer rather than a stub. Nothing writes to `positions` because there is no MT5 bridge, so the table exists and the query is genuine — \"no open positions\" is something the database said.\n\nThe table is created ahead of the feed deliberately: a screen rendering a hardcoded empty state is indistinguishable from one whose query found nothing, and that confusion has already told a client holding three live accounts that they had none.\n\nPrices and volumes are decimal STRINGS (§6.1). `profit` is the REALISED result and is null while a position is open — floating P/L is deliberately absent, because it changes on every tick and a stored copy is stale the moment it is written.",
-        "operationId": "TradingController_myPositions",
-        "parameters": [
-          {
-            "name": "status",
-            "required": false,
-            "in": "query",
-            "schema": {
-              "enum": [
-                "open",
-                "closed"
-              ],
-              "type": "string"
-            }
-          },
-          {
-            "name": "limit",
-            "required": false,
-            "in": "query",
-            "schema": {
-              "type": "number"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/PositionDto"
-                  }
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "cookie": []
-          }
-        ],
-        "summary": "The signed-in client's positions — open by default",
         "tags": [
           "trading"
         ]
@@ -5702,7 +5650,7 @@
     },
     "/v1/dashboard": {
       "get": {
-        "description": "Wallets, recent transactions, trading accounts, open positions and five counts.\n\nONE request rather than six because these are read in a single glance: a balance from one instant beside a transaction list from another is a screen that contradicts itself, and six requests give the portal six ways to half-fail.\n\nEvery figure is counted from a table. The screen this replaces carried hardcoded zeros for \"trading accounts\" and \"pending transactions\" with no endpoint behind either, so a client holding three accounts read 0.\n\n`openPositions` is empty for everyone until an MT5 bridge writes to `positions` — but the query is real, so that emptiness is a database answer rather than a frontend assumption.",
+        "description": "Wallets, recent transactions, trading accounts and four counts. Open positions are live MT5 figures, read per account from `GET /trading/accounts/:id/positions`.\n\nONE request rather than six because these are read in a single glance: a balance from one instant beside a transaction list from another is a screen that contradicts itself, and six requests give the portal six ways to half-fail.\n\nEvery figure is counted from a table. The screen this replaces carried hardcoded zeros for \"trading accounts\" and \"pending transactions\" with no endpoint behind either, so a client holding three accounts read 0.",
         "operationId": "DashboardController_myDashboard",
         "parameters": [],
         "responses": {
@@ -5786,7 +5734,7 @@
         ]
       },
       "get": {
-        "description": "`balance` is CRM-owned until the MT5 bridge lands and crosses this boundary as a STRING. `login` is NULL until MT5 issues one, and is a string rather than a number because leading zeros are significant to the bridge.",
+        "description": "`balance` is the CRM mirror of MT5 (kept by the bridge) and crosses this boundary as a STRING. `login` is NULL until MT5 issues one, and is a string rather than a number because leading zeros are significant to the bridge.",
         "operationId": "AdminHoldingsController_listTradingAccounts",
         "parameters": [
           {
@@ -6361,7 +6309,7 @@
         ],
         "summary": "Serve a client's own profile photo",
         "tags": [
-          "Uploads"
+          "compliance"
         ]
       }
     },
@@ -6390,7 +6338,7 @@
         ],
         "summary": "Serve an administrator's own profile photo",
         "tags": [
-          "Uploads"
+          "compliance"
         ]
       }
     },
@@ -6414,7 +6362,7 @@
         },
         "summary": "Serve a payment-method logo (public)",
         "tags": [
-          "Uploads"
+          "compliance"
         ]
       }
     },
@@ -6443,7 +6391,7 @@
         ],
         "summary": "Serve a deposit receipt to its owner or a deposits reviewer",
         "tags": [
-          "Uploads"
+          "compliance"
         ]
       }
     },
@@ -6472,7 +6420,7 @@
         ],
         "summary": "Serve a KYC document to its owner or a kyc.review admin",
         "tags": [
-          "Uploads"
+          "compliance"
         ]
       }
     },
@@ -18064,7 +18012,7 @@
           "balance": {
             "type": "string",
             "example": "1250.00000000",
-            "description": "Decimal string (§6.1). The CRM-held balance — see the DTO note: this is what a transfer credits, and it becomes an MT5 mirror when the bridge lands. Not equity."
+            "description": "Decimal string (§6.1). The CRM mirror of the MT5 balance, kept by the bridge — see the DTO note. Not equity."
           },
           "leverage": {
             "type": "number",
@@ -18096,113 +18044,6 @@
           "leverage",
           "status",
           "createdAt"
-        ]
-      },
-      "PositionDto": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "tradingAccountId": {
-            "type": "string",
-            "description": "The trading account this was traded on."
-          },
-          "login": {
-            "type": "string",
-            "nullable": true,
-            "description": "The account's MT5 login, for display beside the trade. Null until assigned."
-          },
-          "ticket": {
-            "type": "string",
-            "description": "The broker's own identifier for this trade."
-          },
-          "symbol": {
-            "type": "string",
-            "example": "EURUSD"
-          },
-          "side": {
-            "type": "string",
-            "enum": [
-              "buy",
-              "sell"
-            ]
-          },
-          "volume": {
-            "type": "string",
-            "example": "0.1000",
-            "description": "Lots, as a decimal string. Never a float — 0.01 is a valid size."
-          },
-          "openPrice": {
-            "type": "string",
-            "example": "1.0854300000"
-          },
-          "closePrice": {
-            "type": "string",
-            "nullable": true,
-            "description": "Null while the position is open — it does not exist yet."
-          },
-          "stopLoss": {
-            "type": "string",
-            "nullable": true
-          },
-          "takeProfit": {
-            "type": "string",
-            "nullable": true
-          },
-          "profit": {
-            "type": "string",
-            "nullable": true,
-            "example": "125.40000000",
-            "description": "REALISED result, signed, written only at close (§6.1 decimal string). Null while open — this is deliberately NOT floating P/L."
-          },
-          "swap": {
-            "type": "string",
-            "nullable": true
-          },
-          "commission": {
-            "type": "string",
-            "nullable": true
-          },
-          "currency": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string",
-            "enum": [
-              "open",
-              "closed"
-            ]
-          },
-          "openedAt": {
-            "format": "date-time",
-            "type": "string"
-          },
-          "closedAt": {
-            "type": "string",
-            "format": "date-time",
-            "nullable": true
-          }
-        },
-        "required": [
-          "id",
-          "tradingAccountId",
-          "login",
-          "ticket",
-          "symbol",
-          "side",
-          "volume",
-          "openPrice",
-          "closePrice",
-          "stopLoss",
-          "takeProfit",
-          "profit",
-          "swap",
-          "commission",
-          "currency",
-          "status",
-          "openedAt",
-          "closedAt"
         ]
       },
       "AccountSnapshotDto": {
@@ -18692,10 +18533,6 @@
             "type": "number",
             "description": "Live accounts only — the ones trading real money."
           },
-          "openPositions": {
-            "type": "number",
-            "description": "Open positions. Zero for everyone today: nothing writes to `positions` until an MT5 bridge exists. See `openPositions` on the parent DTO."
-          },
           "pendingTransactions": {
             "type": "number",
             "description": "Transactions awaiting review — the client is waiting on us."
@@ -18708,7 +18545,6 @@
         "required": [
           "totalAccounts",
           "liveAccounts",
-          "openPositions",
           "pendingTransactions",
           "referredClients"
         ]
@@ -18737,13 +18573,6 @@
               "$ref": "#/components/schemas/TradingAccountDto"
             }
           },
-          "openPositions": {
-            "description": "OPEN positions, newest first. Empty for everyone until an MT5 bridge writes to the table — a real query returning zero rows, not a placeholder.",
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/PositionDto"
-            }
-          },
           "stats": {
             "$ref": "#/components/schemas/DashboardStatsDto"
           }
@@ -18752,7 +18581,6 @@
           "wallets",
           "recentTransactions",
           "tradingAccounts",
-          "openPositions",
           "stats"
         ]
       },
@@ -20448,13 +20276,6 @@
           "name": {
             "type": "string"
           },
-          "role": {
-            "type": "string",
-            "enum": [
-              "master_admin",
-              "sub_admin"
-            ]
-          },
           "permissions": {
             "type": "array",
             "items": {
@@ -20518,7 +20339,6 @@
           "id",
           "email",
           "name",
-          "role",
           "permissions",
           "status",
           "maskedFields",
@@ -25057,7 +24877,7 @@
           "balance": {
             "type": "string",
             "example": "1000.00000000",
-            "description": "Monetary value — ALWAYS a string. CRM-owned until the MT5 bridge lands, at which point it becomes a mirror of MT5 or is removed (see the schema comment)."
+            "description": "Monetary value — ALWAYS a string. The CRM mirror of the MT5 balance, kept by the bridge's push and sweep (see the schema comment)."
           },
           "product": {
             "type": "string",

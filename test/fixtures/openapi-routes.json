@@ -145,7 +145,6 @@
   "GET /v1/trading/accounts/{id}/live",
   "GET /v1/trading/accounts/{id}/positions",
   "GET /v1/trading/balance-movements",
-  "GET /v1/trading/positions",
   "GET /v1/uploads/admin-avatars/{file}",
   "GET /v1/uploads/avatars/{file}",
   "GET /v1/uploads/deposit-proofs/{file}",

@@ -393,176 +393,194 @@ export const roles = pgTable('roles', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
-export const admins = pgTable('admins', {
-  id: uuid('id').defaultRandom().primaryKey(),
-  email: varchar('email', { length: 255 }).notNull().unique(),
-  passwordHash: varchar('password_hash', { length: 255 }).notNull(),
-  name: varchar('name', { length: 100 }).notNull(),
-  role: adminRoleEnum('role').notNull().default('sub_admin'),
-  permissions: jsonb('permissions').$type<string[]>().notNull().default([]),
-  roleId: uuid('role_id').references(() => roles.id, { onDelete: 'restrict' }),
-  /*
-   * An admin can be SUSPENDED — R-3.3's revocation story, which stopped at the
-   * portal.
-   *
-   * `users` has had this from the start and `jwt.strategy.ts` enforces it on
-   * every request. Admins had nothing: `AdminAuthenticator` checked only that
-   * the row existed, so the sole way to cut off a compromised or departing
-   * administrator — an account that can approve AND settle payouts — was to
-   * DELETE it. That destroys the subject every audit row points at, and it is
-   * not reversible, so "suspend pending investigation" had no expression at all.
-   *
-   * Same enum as users deliberately: two spellings of "suspended" across two
-   * tables is the kind of divergence that ends with one of them not being
-   * checked.
-   */
-  status: userStatusEnum('status').notNull().default('active'),
-  /*
-   * A per-person OVERRIDE of the role's mask. NULL means "inherit the role".
-   *
-   * Deliberately NOT the `role_id` XOR `permissions` shape used directly above,
-   * and the difference is the point. That exclusivity is right for permissions,
-   * but applying it to masking would mean un-masking a single field for a
-   * single person requires detaching them from their role entirely — after
-   * which they silently stop receiving role permission updates, which is a
-   * security regression performed in the name of a UI convenience.
-   *
-   * With null-inherit, "Sarah is a support agent but handles escalations, so
-   * she may see phone numbers" is one field on one row and nothing else moves.
-   *
-   * NULL and `[]` are different on purpose: null is "no opinion, follow the
-   * role", `[]` is "explicitly mask nothing for this person". A column that
-   * defaulted to `[]` could not express the first, which is the common case.
-   */
-  maskedFields: jsonb('masked_fields').$type<string[]>(),
-  /**
-   * D-60 — sees the intake pool: clients with NO tag assignments yet.
-   *
-   * "Untriaged" is a DERIVED state (has no tags), never a tag — materialising
-   * it was tried and reverted (migrations 0055–0057): stored derived state
-   * needed three guards to stay true, and still allowed an orphan class
-   * (remove a client's last tag and nobody scoped could see them). Under the
-   * derived model every client is ALWAYS either in a territory or in intake.
-   *
-   * Only meaningful for a SCOPED admin — an unrestricted admin sees everything
-   * regardless. Honoured as an OR-branch in `clientScopePredicate`.
-   */
-  seesUntriaged: boolean('sees_untriaged').notNull().default(true),
-  /**
-   * Sees EVERY client — the explicit grant (0154). Territory tags restrict and
-   * only this grants: with no tags and this false, an admin sees new clients
-   * (if `seesUntriaged`) or none. An empty territory used to mean everyone,
-   * which made the widest sight the result of an absence.
-   */
-  seesAllClients: boolean('sees_all_clients').notNull().default(true),
-  /*
-   * Password recovery, INITIATED BY ANOTHER MASTER ADMIN — never self-service.
-   * See DECISIONS D-44.
-   *
-   * There was no recovery at all: an admin who forgot their password was locked
-   * out until somebody edited this table by hand, which is untraceable and needs
-   * production database access.
-   *
-   * Self-service by email was rejected deliberately. It would make an admin's
-   * mailbox the root of trust for an account that approves payouts, so a
-   * compromised inbox becomes a compromised payout queue. Requiring a second
-   * human who already holds the highest privilege keeps email out of the trust
-   * path entirely.
-   *
-   * The token is stored as a SHA-256 HASH and never verbatim — the same
-   * treatment `users.password_reset_token_hash` and `admin_invites.token_hash`
-   * already get, so a database dump yields no working links. 64 chars is a hex
-   * digest exactly.
-   */
-  passwordResetTokenHash: varchar('password_reset_token_hash', { length: 64 }),
-  passwordResetExpiry: timestamp('password_reset_expiry', { withTimezone: true }),
+export const admins = pgTable(
+  'admins',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    email: varchar('email', { length: 255 }).notNull().unique(),
+    passwordHash: varchar('password_hash', { length: 255 }).notNull(),
+    name: varchar('name', { length: 100 }).notNull(),
+    role: adminRoleEnum('role').notNull().default('sub_admin'),
+    permissions: jsonb('permissions').$type<string[]>().notNull().default([]),
+    roleId: uuid('role_id').references(() => roles.id, { onDelete: 'restrict' }),
+    /*
+     * An admin can be SUSPENDED — R-3.3's revocation story, which stopped at the
+     * portal.
+     *
+     * `users` has had this from the start and `jwt.strategy.ts` enforces it on
+     * every request. Admins had nothing: `AdminAuthenticator` checked only that
+     * the row existed, so the sole way to cut off a compromised or departing
+     * administrator — an account that can approve AND settle payouts — was to
+     * DELETE it. That destroys the subject every audit row points at, and it is
+     * not reversible, so "suspend pending investigation" had no expression at all.
+     *
+     * Same enum as users deliberately: two spellings of "suspended" across two
+     * tables is the kind of divergence that ends with one of them not being
+     * checked.
+     */
+    status: userStatusEnum('status').notNull().default('active'),
+    /*
+     * A per-person OVERRIDE of the role's mask. NULL means "inherit the role".
+     *
+     * Deliberately NOT the `role_id` XOR `permissions` shape used directly above,
+     * and the difference is the point. That exclusivity is right for permissions,
+     * but applying it to masking would mean un-masking a single field for a
+     * single person requires detaching them from their role entirely — after
+     * which they silently stop receiving role permission updates, which is a
+     * security regression performed in the name of a UI convenience.
+     *
+     * With null-inherit, "Sarah is a support agent but handles escalations, so
+     * she may see phone numbers" is one field on one row and nothing else moves.
+     *
+     * NULL and `[]` are different on purpose: null is "no opinion, follow the
+     * role", `[]` is "explicitly mask nothing for this person". A column that
+     * defaulted to `[]` could not express the first, which is the common case.
+     */
+    maskedFields: jsonb('masked_fields').$type<string[]>(),
+    /**
+     * D-60 — sees the intake pool: clients with NO tag assignments yet.
+     *
+     * "Untriaged" is a DERIVED state (has no tags), never a tag — materialising
+     * it was tried and reverted (migrations 0055–0057): stored derived state
+     * needed three guards to stay true, and still allowed an orphan class
+     * (remove a client's last tag and nobody scoped could see them). Under the
+     * derived model every client is ALWAYS either in a territory or in intake.
+     *
+     * Only meaningful for a SCOPED admin — an unrestricted admin sees everything
+     * regardless. Honoured as an OR-branch in `clientScopePredicate`.
+     */
+    seesUntriaged: boolean('sees_untriaged').notNull().default(true),
+    /**
+     * Sees EVERY client — the explicit grant (0154). Territory tags restrict and
+     * only this grants: with no tags and this false, an admin sees new clients
+     * (if `seesUntriaged`) or none. An empty territory used to mean everyone,
+     * which made the widest sight the result of an absence.
+     */
+    seesAllClients: boolean('sees_all_clients').notNull().default(true),
+    /*
+     * Password recovery, INITIATED BY ANOTHER MASTER ADMIN — never self-service.
+     * See DECISIONS D-44.
+     *
+     * There was no recovery at all: an admin who forgot their password was locked
+     * out until somebody edited this table by hand, which is untraceable and needs
+     * production database access.
+     *
+     * Self-service by email was rejected deliberately. It would make an admin's
+     * mailbox the root of trust for an account that approves payouts, so a
+     * compromised inbox becomes a compromised payout queue. Requiring a second
+     * human who already holds the highest privilege keeps email out of the trust
+     * path entirely.
+     *
+     * The token is stored as a SHA-256 HASH and never verbatim — the same
+     * treatment `users.password_reset_token_hash` and `admin_invites.token_hash`
+     * already get, so a database dump yields no working links. 64 chars is a hex
+     * digest exactly.
+     */
+    passwordResetTokenHash: varchar('password_reset_token_hash', { length: 64 }),
+    passwordResetExpiry: timestamp('password_reset_expiry', { withTimezone: true }),
 
-  /*
-   * The instant that invalidates every access token issued before it.
-   *
-   * Mirrors `users.password_changed_at`, and the admin surface needed it more.
-   * Revoking refresh families on a password change only stops those sessions
-   * RENEWING — each keeps working on its already-issued access token for up to
-   * fifteen more minutes. On the console that approves withdrawals, fifteen
-   * minutes of continued access is exactly what somebody changing their
-   * password under duress is trying to prevent.
-   *
-   * NULL means no cutoff, which is what every account predating this column
-   * has. Adding it must not sign anybody out.
-   */
-  passwordChangedAt: timestamp('password_changed_at', { withTimezone: true }),
+    /*
+     * The instant that invalidates every access token issued before it.
+     *
+     * Mirrors `users.password_changed_at`, and the admin surface needed it more.
+     * Revoking refresh families on a password change only stops those sessions
+     * RENEWING — each keeps working on its already-issued access token for up to
+     * fifteen more minutes. On the console that approves withdrawals, fifteen
+     * minutes of continued access is exactly what somebody changing their
+     * password under duress is trying to prevent.
+     *
+     * NULL means no cutoff, which is what every account predating this column
+     * has. Adding it must not sign anybody out.
+     */
+    passwordChangedAt: timestamp('password_changed_at', { withTimezone: true }),
 
-  /*
-   * The administrator's profile photo — the STORED FILENAME, not a URL.
-   *
-   * Same shape and same reasoning as `users.avatar_filename`: `<uuid>.<ext>`
-   * under ./uploads/avatars, written by StoredFilesService, with the extension
-   * taken from the file's own magic bytes rather than from the multipart
-   * Content-Type. That header is a claim by the uploader, and an HTML document
-   * declared `image/png` is how a stored file becomes stored XSS.
-   *
-   * A filename rather than a URL because the URL is a function of how the API is
-   * deployed — the §8.5 move to private S3 changes how bytes are served and must
-   * not require rewriting a column.
-   *
-   * Shared bucket with client avatars deliberately. The files are the same kind
-   * of thing with the same validation, and a second bucket would be a second
-   * place to get the magic-byte check wrong.
-   */
-  avatarFilename: varchar('avatar_filename', { length: 128 }),
-  // `refresh_token` removed here for the same reason as on `users` — superseded
-  // by the refresh_tokens family table, written by nothing, read by nothing.
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-});
+    /*
+     * The administrator's profile photo — the STORED FILENAME, not a URL.
+     *
+     * Same shape and same reasoning as `users.avatar_filename`: `<uuid>.<ext>`
+     * under ./uploads/avatars, written by StoredFilesService, with the extension
+     * taken from the file's own magic bytes rather than from the multipart
+     * Content-Type. That header is a claim by the uploader, and an HTML document
+     * declared `image/png` is how a stored file becomes stored XSS.
+     *
+     * A filename rather than a URL because the URL is a function of how the API is
+     * deployed — the §8.5 move to private S3 changes how bytes are served and must
+     * not require rewriting a column.
+     *
+     * Shared bucket with client avatars deliberately. The files are the same kind
+     * of thing with the same validation, and a second bucket would be a second
+     * place to get the magic-byte check wrong.
+     */
+    avatarFilename: varchar('avatar_filename', { length: 128 }),
+    // `refresh_token` removed here for the same reason as on `users` — superseded
+    // by the refresh_tokens family table, written by nothing, read by nothing.
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // 0183 — an index under each foreign key, for the parent's delete check.
+    index('admins_role_id_fk_idx')
+      .on(t.roleId)
+      .where(sql`${t.roleId} IS NOT NULL`),
+  ],
+);
 
-export const adminInvites = pgTable('admin_invites', {
-  id: uuid('id').defaultRandom().primaryKey(),
-  email: varchar('email', { length: 255 }).notNull(),
-  name: varchar('name', { length: 100 }).notNull(),
-  /*
-   * A SHA-256 HASH of the invite token, never the token — matching how password
-   * reset has always stored its own (see `users.password_reset_token_hash`).
-   *
-   * This column held the token verbatim, which made a database dump, a leaked
-   * backup or a read-only SQL injection into a set of working links that CREATE
-   * ADMIN ACCOUNTS on a system that approves payouts. Reset tokens were hashed
-   * precisely because they can take over one account; an invite is strictly
-   * worse and was the one credential still stored in the clear.
-   *
-   * 64 chars because that is a hex SHA-256, and narrowing the column is what
-   * makes storing a raw uuid here fail loudly rather than silently fit.
-   */
-  tokenHash: varchar('token_hash', { length: 64 }).unique(),
-  role: adminRoleEnum('role').notNull().default('sub_admin'),
-  roleId: uuid('role_id').references(() => roles.id, { onDelete: 'set null' }),
-  permissions: jsonb('permissions').$type<string[]>(),
-  /** Carried to `admins.masked_fields` on acceptance. NULL = inherit the role. */
-  maskedFields: jsonb('masked_fields').$type<string[]>(),
-  /*
-   * The client-tag territory this administrator will hold, chosen at INVITE
-   * time and copied to `admin_client_tag_scopes` when they accept.
-   *
-   * It has to be settable here, and that is a security requirement rather than
-   * a convenience. An EMPTY scope means unrestricted (see
-   * `adminClientTagScopes`), so if territory could only be assigned after
-   * acceptance, every newly-accepted sub-admin would see EVERY CLIENT IN THE
-   * SYSTEM for the window between them clicking the emailed link and a master
-   * admin remembering to configure them. Nobody would ever observe that window
-   * — it opens and closes silently, in a mailbox we do not watch.
-   *
-   * NULL means the inviter made no restriction, which the invite screen states
-   * in words rather than leaving to inference.
-   */
-  scopedTagIds: jsonb('scoped_tag_ids').$type<string[]>(),
-  /** D-60 — intake grant chosen at invite time, for the same window reason. */
-  seesUntriaged: boolean('sees_untriaged').notNull().default(true),
-  /** Sees every client, chosen at invite time (0154). See `admins.sees_all_clients`. */
-  seesAllClients: boolean('sees_all_clients').notNull().default(true),
-  invitedBy: uuid('invited_by').notNull(),
-  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
-  accepted: boolean('accepted').notNull().default(false),
-  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-});
+export const adminInvites = pgTable(
+  'admin_invites',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    email: varchar('email', { length: 255 }).notNull(),
+    name: varchar('name', { length: 100 }).notNull(),
+    /*
+     * A SHA-256 HASH of the invite token, never the token — matching how password
+     * reset has always stored its own (see `users.password_reset_token_hash`).
+     *
+     * This column held the token verbatim, which made a database dump, a leaked
+     * backup or a read-only SQL injection into a set of working links that CREATE
+     * ADMIN ACCOUNTS on a system that approves payouts. Reset tokens were hashed
+     * precisely because they can take over one account; an invite is strictly
+     * worse and was the one credential still stored in the clear.
+     *
+     * 64 chars because that is a hex SHA-256, and narrowing the column is what
+     * makes storing a raw uuid here fail loudly rather than silently fit.
+     */
+    tokenHash: varchar('token_hash', { length: 64 }).unique(),
+    role: adminRoleEnum('role').notNull().default('sub_admin'),
+    roleId: uuid('role_id').references(() => roles.id, { onDelete: 'set null' }),
+    permissions: jsonb('permissions').$type<string[]>(),
+    /** Carried to `admins.masked_fields` on acceptance. NULL = inherit the role. */
+    maskedFields: jsonb('masked_fields').$type<string[]>(),
+    /*
+     * The client-tag territory this administrator will hold, chosen at INVITE
+     * time and copied to `admin_client_tag_scopes` when they accept.
+     *
+     * It has to be settable here, and that is a security requirement rather than
+     * a convenience. An EMPTY scope means unrestricted (see
+     * `adminClientTagScopes`), so if territory could only be assigned after
+     * acceptance, every newly-accepted sub-admin would see EVERY CLIENT IN THE
+     * SYSTEM for the window between them clicking the emailed link and a master
+     * admin remembering to configure them. Nobody would ever observe that window
+     * — it opens and closes silently, in a mailbox we do not watch.
+     *
+     * NULL means the inviter made no restriction, which the invite screen states
+     * in words rather than leaving to inference.
+     */
+    scopedTagIds: jsonb('scoped_tag_ids').$type<string[]>(),
+    /** D-60 — intake grant chosen at invite time, for the same window reason. */
+    seesUntriaged: boolean('sees_untriaged').notNull().default(true),
+    /** Sees every client, chosen at invite time (0154). See `admins.sees_all_clients`. */
+    seesAllClients: boolean('sees_all_clients').notNull().default(true),
+    invitedBy: uuid('invited_by').notNull(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    accepted: boolean('accepted').notNull().default(false),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // 0183 — an index under each foreign key, for the parent's delete check.
+    index('admin_invites_role_id_fk_idx')
+      .on(t.roleId)
+      .where(sql`${t.roleId} IS NOT NULL`),
+  ],
+);
 
 /**
  * Machine credentials for the admin API — a key belongs to the PLATFORM, not
@@ -675,6 +693,10 @@ export const apiKeys = pgTable(
       .on(table.secretHash)
       .where(sql`${table.revokedAt} IS NULL`),
     index('api_keys_created_at_idx').on(table.createdAt),
+    // 0183 — an index under each foreign key, for the parent's delete check.
+    index('api_keys_created_by_fk_idx')
+      .on(table.createdBy)
+      .where(sql`${table.createdBy} IS NOT NULL`),
   ],
 );
 
@@ -785,7 +807,11 @@ export const adminClientTagScopes = pgTable(
     createdBy: uuid('created_by').notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [primaryKey({ columns: [t.adminId, t.tagId] })],
+  (t) => [
+    primaryKey({ columns: [t.adminId, t.tagId] }),
+    // 0183 — an index under each foreign key, for the parent's delete check.
+    index('admin_client_tag_scopes_tag_id_fk_idx').on(t.tagId),
+  ],
 );
 
 // ── Compliance / KYC ─────────────────────────────────────────────────────────
@@ -916,6 +942,19 @@ export const kycSubmissions = pgTable(
      * than at the top of the newest-first queue.
      */
     index('kyc_submissions_submitted_at_idx').on(t.submittedAt.desc().nullsLast()),
+    // 0183 — an index under each foreign key, for the parent's delete check.
+    index('kyc_submissions_address_document_id_fk_idx')
+      .on(t.addressDocumentId)
+      .where(sql`${t.addressDocumentId} IS NOT NULL`),
+    index('kyc_submissions_identity_document_id_fk_idx')
+      .on(t.identityDocumentId)
+      .where(sql`${t.identityDocumentId} IS NOT NULL`),
+    index('kyc_submissions_reviewed_by_fk_idx')
+      .on(t.reviewedBy)
+      .where(sql`${t.reviewedBy} IS NOT NULL`),
+    index('kyc_submissions_selfie_document_id_fk_idx')
+      .on(t.selfieDocumentId)
+      .where(sql`${t.selfieDocumentId} IS NOT NULL`),
   ],
 );
 
@@ -1011,6 +1050,25 @@ export const kycSubmissionAttempts = pgTable(
     // Read as "this client's history, oldest first" — the only query shape.
     index('kyc_attempts_user_idx').on(t.userId, t.attemptNo),
     uniqueIndex('kyc_attempts_user_attempt_uq').on(t.userId, t.attemptNo),
+    // 0183 — an index under each foreign key, for the parent's delete check.
+    index('kyc_submission_attempts_address_document_id_fk_idx')
+      .on(t.addressDocumentId)
+      .where(sql`${t.addressDocumentId} IS NOT NULL`),
+    index('kyc_submission_attempts_identity_document_id_fk_idx')
+      .on(t.identityDocumentId)
+      .where(sql`${t.identityDocumentId} IS NOT NULL`),
+    index('kyc_submission_attempts_reason_id_fk_idx')
+      .on(t.reasonId)
+      .where(sql`${t.reasonId} IS NOT NULL`),
+    index('kyc_submission_attempts_reviewed_by_fk_idx')
+      .on(t.reviewedBy)
+      .where(sql`${t.reviewedBy} IS NOT NULL`),
+    index('kyc_submission_attempts_selfie_document_id_fk_idx')
+      .on(t.selfieDocumentId)
+      .where(sql`${t.selfieDocumentId} IS NOT NULL`),
+    index('kyc_submission_attempts_verification_id_fk_idx')
+      .on(t.verificationId)
+      .where(sql`${t.verificationId} IS NOT NULL`),
   ],
 );
 
@@ -1063,6 +1121,10 @@ export const clientDocumentPages = pgTable(
   (t) => [
     primaryKey({ columns: [t.documentId, t.part] }),
     index('client_document_pages_storage_key_idx').on(t.storageKey),
+    // 0183 — an index under each foreign key, for the parent's delete check.
+    index('client_document_pages_stored_object_id_fk_idx')
+      .on(t.storedObjectId)
+      .where(sql`${t.storedObjectId} IS NOT NULL`),
   ],
 );
 
@@ -1102,7 +1164,11 @@ export const clientVerificationDocuments = pgTable(
       .notNull()
       .references(() => clientDocuments.id, { onDelete: 'restrict' }),
   },
-  (t) => [primaryKey({ columns: [t.verificationId, t.documentId] })],
+  (t) => [
+    primaryKey({ columns: [t.verificationId, t.documentId] }),
+    // 0181: recordOf() finds each document's latest decision by document_id.
+    index('client_verification_documents_document_idx').on(t.documentId, t.verificationId),
+  ],
 );
 
 export const kycConfigSteps = pgTable('kyc_config_steps', {
@@ -1919,13 +1985,12 @@ export const transactionStateEnum = pgEnum('transaction_state', [
  * ── transfers · wallet <-> trading account ───────────────────────────────────
  *
  * The deleted version of this table was shaped by refusing to paper over the
- * fact that MT5 owns trading-account balances and the CRM does not. There is
- * still no bridge, so for now the CRM owns BOTH sides — see the note on
- * `trading_accounts.balance`, which records that this reverses a deliberate
- * decision and must be reversed back when the bridge lands.
+ * fact that MT5 owns trading-account balances and the CRM does not. The MT5
+ * bridge now moves the account side (the executor calls it, then settles), and
+ * `trading_accounts.balance` is a MIRROR of MT5 kept by the bridge's push and
+ * sweep — see the note on that column.
  *
- * The two-leg asymmetry is kept even so, because it is what makes the table
- * correct the day the bridge arrives:
+ * The two-leg asymmetry is what makes this correct against the bridge:
  *
  *   wallet_to_account  the wallet leg is real and immediate — funds are HELD on
  *                      request and debited on settlement.
@@ -2454,6 +2519,10 @@ export const paymentProviderUnmatchedRecords = pgTable(
     index('payment_provider_unmatched_records_open_idx')
       .on(t.providerCode, t.occurredAt.desc())
       .where(sql`${t.acknowledgedAt} IS NULL AND ${t.matchedTransactionId} IS NULL`),
+    // 0183 — an index under each foreign key, for the parent's delete check.
+    index('payment_provider_unmatched_records_matched_transaction_id_fk_idx')
+      .on(t.matchedTransactionId)
+      .where(sql`${t.matchedTransactionId} IS NOT NULL`),
   ],
 );
 
@@ -2927,8 +2996,8 @@ export const tradingAccounts = pgTable(
     /**
      * The MT5 login, once there is an MT5 to issue one.
      *
-     * NULLABLE and renamed from `mt5_login`: there is no bridge, so a CRM-side
-     * account has no login until one is assigned. Unique WHERE NOT NULL, so two
+     * NULLABLE and renamed from `mt5_login`: a CRM-side account has no login
+     * until the bridge opens one or an operator links an existing one. Unique WHERE NOT NULL, so two
      * unassigned accounts do not collide on it.
      *
      * A string, not a number — leading zeros are significant to the bridge.
@@ -3259,6 +3328,14 @@ export const mt5Deals = pgTable(
      */
     commissionRetryAfter: timestamp('commission_retry_after', { withTimezone: true }),
     /**
+     * Set when the accrual queue can never return this deal as things stand: a
+     * trade on a login no client owns, or an open leg. Parked rows leave
+     * `mt5_deals_ready_idx`, so they are not re-scanned on every run (0182).
+     * The `mt5_deals_unpark_on_owner` trigger clears it when a client comes to
+     * own the login. Not a "done" flag: `commission_processed_at` stays NULL.
+     */
+    commissionParkedAt: timestamp('commission_parked_at', { withTimezone: true }),
+    /**
      * Why it last failed, so a stuck row can be diagnosed from the row.
      *
      * The log line that named the reason has usually rotated away by the time
@@ -3291,6 +3368,24 @@ export const mt5Deals = pgTable(
     index('mt5_deals_unaccrued_idx')
       .on(t.dealtAt)
       .where(sql`${t.commissionProcessedAt} IS NULL`),
+    /*
+     * The accrual queue's two LANES (0182). `unaccrued` above walked orphans,
+     * open legs and backed-off deals on every run, because they were excluded
+     * by row filters only. Ready: due now and payable-shaped, oldest first,
+     * stops at `limit`. Retry: the backoff set, small, keyed by when it is due.
+     * Parked-by-login: what the unpark trigger touches.
+     */
+    index('mt5_deals_ready_idx')
+      .on(t.dealtAt, t.id)
+      .where(
+        sql`${t.commissionProcessedAt} IS NULL AND ${t.commissionRetryAfter} IS NULL AND ${t.commissionParkedAt} IS NULL`,
+      ),
+    index('mt5_deals_retry_idx')
+      .on(t.commissionRetryAfter)
+      .where(sql`${t.commissionProcessedAt} IS NULL AND ${t.commissionRetryAfter} IS NOT NULL`),
+    index('mt5_deals_parked_login_idx')
+      .on(t.login)
+      .where(sql`${t.commissionParkedAt} IS NOT NULL AND ${t.commissionProcessedAt} IS NULL`),
     /*
      * The POSITION lookup, which runs on every closing deal the engine accrues.
      *
@@ -3597,6 +3692,16 @@ export const transactions = pgTable(
     // The desk finds a deposit by the OX- reference the client quotes (0163).
     index('transactions_provider_ref_idx').on(t.providerRef),
     uniqueIndex('transactions_provider_ref_uq').on(t.provider, t.providerRef),
+    // FK lookups and the wallet's RESTRICT check by wallet (0179).
+    index('transactions_wallet_idx').on(t.walletId),
+    // The payout engine's per-provider rate window (0179).
+    index('transactions_provider_submitted_idx')
+      .on(t.providerCode, t.providerSubmittedAt)
+      .where(sql`${t.providerSubmittedAt} IS NOT NULL`),
+    // 0183 — an index under each foreign key, for the parent's delete check.
+    index('transactions_destination_trading_account_id_fk_idx')
+      .on(t.destinationTradingAccountId)
+      .where(sql`${t.destinationTradingAccountId} IS NOT NULL`),
   ],
 );
 
@@ -3684,13 +3789,25 @@ export const transfers = pgTable(
     resumeAttempts: integer('resume_attempts').notNull().default(0),
     resumeAfter: timestamp('resume_after', { withTimezone: true }),
     resumeLastError: text('resume_last_error'),
+    /**
+     * The caller's idempotency reference, when the transfer is one leg of a
+     * keyed operation (an admin's deposit-to-account: credit, then this). NULL
+     * for a client's own transfer. UNIQUE, so a replay of the same key finds
+     * the transfer it already made instead of moving the money a second time
+     * (0182) — each transfer has its own uuid, so the bridge's key cannot.
+     */
+    requestRef: text('request_ref'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
+    uniqueIndex('transfers_request_ref_uq')
+      .on(t.requestRef)
+      .where(sql`${t.requestRef} IS NOT NULL`),
     index('transfers_user_idx').on(t.userId),
     index('transfers_state_idx').on(t.state),
     index('transfers_created_at_idx').on(t.createdAt),
     index('transfers_trading_account_idx').on(t.tradingAccountId),
+    index('transfers_wallet_idx').on(t.walletId), // FK lookups by wallet (0179)
   ],
 );
 
@@ -3760,6 +3877,9 @@ export const ibWalletTransfers = pgTable(
        ledger's idempotency index absorbs as a replay, leaving a transfer row
        claiming a movement that only happened once, as a debit. */
     check('ib_wallet_transfers_distinct_wallets', sql`${t.fromWalletId} <> ${t.toWalletId}`),
+    // 0183 — an index under each foreign key, for the parent's delete check.
+    index('ib_wallet_transfers_from_wallet_id_fk_idx').on(t.fromWalletId),
+    index('ib_wallet_transfers_to_wallet_id_fk_idx').on(t.toWalletId),
   ],
 );
 
@@ -4467,6 +4587,10 @@ export const ibApplications = pgTable(
       .on(t.userId)
       .where(sql`${t.status} = 'pending'`),
     index('ib_applications_status_submitted_idx').on(t.status, t.submittedAt),
+    // 0183 — an index under each foreign key, for the parent's delete check.
+    index('ib_applications_agency_id_fk_idx')
+      .on(t.agencyId)
+      .where(sql`${t.agencyId} IS NOT NULL`),
   ],
 );
 
@@ -4590,6 +4714,10 @@ export const ibAccounts = pgTable(
     /* "Which partners are on this agency?" — asked before an operator is
        allowed to delete or disable one. */
     index('ib_accounts_agency_idx').on(t.agencyId),
+    // 0183 — an index under each foreign key, for the parent's delete check.
+    index('ib_accounts_application_id_fk_idx')
+      .on(t.applicationId)
+      .where(sql`${t.applicationId} IS NOT NULL`),
   ],
 );
 
@@ -4784,6 +4912,12 @@ export const ibAccruals = pgTable(
      * settled ledger rows are never rewritten to make a report tidier.
      */
     batchId: uuid('batch_id').references(() => ibAccrualBatches.id, { onDelete: 'restrict' }),
+    /*
+     * Failed credit attempts (0180). A failing row sorts behind every
+     * never-failed one in the confirm queue, so it cannot starve newer rows.
+     */
+    confirmAttempts: integer('confirm_attempts').notNull().default(0),
+    lastConfirmFailedAt: timestamp('last_confirm_failed_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -4812,6 +4946,12 @@ export const ibAccruals = pgTable(
     index('ib_accruals_ib_user_idx').on(t.ibUserId, t.createdAt),
     /* The confirm job: everything still pending, oldest first. */
     index('ib_accruals_status_idx').on(t.status, t.createdAt),
+    /* The confirm queue's order since 0180: never-failed first, then oldest. */
+    index('ib_accruals_pending_queue_idx')
+      .on(t.lastConfirmFailedAt.asc().nullsFirst(), t.createdAt)
+      .where(sql`${t.status} = 'pending'`),
+    /* The admin accruals filter by client, and the rebate scope predicate. */
+    index('ib_accruals_client_user_idx').on(t.clientUserId, t.createdAt),
     /* The drill-down from one wallet line to the trades behind it — the
        whole reason the per-trade rows are kept (0116). */
     index('ib_accruals_batch_idx').on(t.batchId),
@@ -4834,140 +4974,25 @@ export const ibAccruals = pgTable(
      * actually travel is the tier count on the earner's programme.
      */
     check('ib_accruals_depth_range', sql`${t.depth} >= 1 AND ${t.depth} <= 10`),
+    // 0183 — an index under each foreign key, for the parent's delete check.
+    index('ib_accruals_ledger_entry_id_fk_idx')
+      .on(t.ledgerEntryId)
+      .where(sql`${t.ledgerEntryId} IS NOT NULL`),
+    index('ib_accruals_level_id_fk_idx')
+      .on(t.levelId)
+      .where(sql`${t.levelId} IS NOT NULL`),
+    index('ib_accruals_program_id_fk_idx')
+      .on(t.programId)
+      .where(sql`${t.programId} IS NOT NULL`),
   ],
 );
 
-/**
- * A trade on a trading account — open, or closed with a result.
- *
- * ## ⚠️ THIS TABLE IS DELIBERATELY EMPTY, and will stay empty until a bridge fills it
- *
- * Nothing writes to it. There is no MT5 bridge (ARCHITECTURE open decision #1),
- * so no ingestion path exists and no row can appear by any route the application
- * offers. It is created NOW so the shape is agreed and the portal can render
- * against a real query returning zero rows, rather than against a placeholder
- * that would have to be rewritten the day the feed lands.
- *
- * That distinction matters more than it looks, and this codebase has paid for it
- * twice: a screen that renders a HARDCODED empty state is indistinguishable from
- * one whose query genuinely found nothing, and the accounts page once told a
- * client with three live accounts they had none. A real table means "no open
- * positions" is an answer the database gave, not one the frontend assumed.
- *
- * WHEN THE BRIDGE LANDS it owns the INSERT and the UPDATE, and it owes this
- * table the same idempotency `transactions` has — `UNIQUE(trading_account_id,
- * ticket)` below is what makes a redelivered tick or a replayed sync a no-op
- * rather than a duplicated trade.
- *
- * ## Why the money columns are nullable
- *
- * `closePrice`, `closedAt` and `profit` are NULL while a position is open,
- * because they do not exist yet — a floating P/L is a computation against a live
- * price, not a stored fact. Defaulting them to zero would make an open trade
- * look like a closed one that broke even, which is the most expensive possible
- * misreading on a trading screen.
- *
- * `profit` is the REALISED result and is only written at close. Unrealised P/L
- * is deliberately absent from this table: it changes on every tick and belongs
- * to whatever is streaming prices, never to a row somebody might read an hour
- * later and believe.
+/*
+ * The `positions` table (and its `position_side` / `position_status` enums)
+ * was created in 0041 for a feed that never came: nothing ever wrote to it,
+ * and live positions are read from the MT5 bridge per account on demand, never
+ * stored (a floating P/L is stale the moment it is written). 0182 dropped it.
  */
-export const positionSideEnum = pgEnum('position_side', ['buy', 'sell']);
-export const positionStatusEnum = pgEnum('position_status', ['open', 'closed']);
-
-export const positions = pgTable(
-  'positions',
-  {
-    id: uuid('id').defaultRandom().primaryKey(),
-    /*
-     * Denormalised alongside `tradingAccountId`, on purpose. Every read of this
-     * table is "this client's positions", and routing it through a join to
-     * `trading_accounts` on the hot path buys nothing — while the account
-     * reference keeps the row attributable to the specific login it was traded
-     * on.
-     */
-    userId: integer('user_id')
-      .notNull()
-      .references(() => users.id, { onDelete: 'restrict' }),
-    tradingAccountId: uuid('trading_account_id')
-      .notNull()
-      .references(() => tradingAccounts.id, { onDelete: 'restrict' }),
-    /**
-     * The broker's own identifier for this trade.
-     *
-     * A STRING, like `trading_accounts.login`, because leading zeros are
-     * significant to the bridge and a numeric type would eat them.
-     */
-    ticket: varchar('ticket', { length: 50 }).notNull(),
-    /** e.g. 'EURUSD', 'XAUUSD'. Whatever the terminal calls the instrument. */
-    symbol: varchar('symbol', { length: 40 }).notNull(),
-    side: positionSideEnum('side').notNull(),
-    /**
-     * Lots. NUMERIC rather than a float — 0.01 is a valid size and the smallest
-     * increment most brokers allow, so binary floating point is wrong here for
-     * exactly the reason it is wrong for money.
-     */
-    volume: numeric('volume', { precision: 18, scale: 4 }).notNull(),
-    /*
-     * Prices carry more decimals than money: a JPY pair quotes to 3 places and
-     * most others to 5, so 28,10 leaves room without forcing a rounding
-     * decision the bridge has not made.
-     */
-    openPrice: numeric('open_price', { precision: 28, scale: 10 }).notNull(),
-    /** NULL while open — see the table note on why this is not defaulted. */
-    closePrice: numeric('close_price', { precision: 28, scale: 10 }),
-    stopLoss: numeric('stop_loss', { precision: 28, scale: 10 }),
-    takeProfit: numeric('take_profit', { precision: 28, scale: 10 }),
-    /**
-     * The REALISED result, written only at close. Signed: a loss is negative.
-     *
-     * §6.1 scale, because this figure settles against the account balance and
-     * must round-trip identically to every other monetary value in the system.
-     */
-    profit: numeric('profit', { precision: 28, scale: 8 }),
-    /** Broker charges, kept separate so `profit` stays comparable across accounts. */
-    swap: numeric('swap', { precision: 28, scale: 8 }),
-    commission: numeric('commission', { precision: 28, scale: 8 }),
-    currency: varchar('currency', { length: 10 })
-      .notNull()
-      .references(() => currencies.code, { onDelete: 'restrict' }),
-    status: positionStatusEnum('status').notNull().default('open'),
-    openedAt: timestamp('opened_at', { withTimezone: true }).notNull(),
-    closedAt: timestamp('closed_at', { withTimezone: true }),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-  },
-  (t) => [
-    /*
-     * ⚠️ The idempotency guarantee this table will need on its first day.
-     *
-     * A sync that redelivers a trade, or a bridge restarted mid-batch, must
-     * update the existing row rather than insert a second copy of the same
-     * trade. Scoped to the ACCOUNT rather than global, because a ticket number
-     * is only unique within the server that issued it.
-     */
-    uniqueIndex('positions_account_ticket_uq').on(t.tradingAccountId, t.ticket),
-    /* "This client's open positions, newest first" — the dashboard's own query.
-       Partial, because the open set is small and hot while the closed history
-       grows without bound. */
-    index('positions_user_open_idx')
-      .on(t.userId, t.openedAt)
-      .where(sql`${t.status} = 'open'`),
-    /* The closed history, for the same client. */
-    index('positions_user_closed_idx').on(t.userId, t.closedAt),
-    index('positions_account_idx').on(t.tradingAccountId),
-    /*
-     * A closed position has BOTH a close price and a close time, or it is not
-     * closed. Enforced here because the two are written by the same event and a
-     * row carrying one without the other is a trade nobody can reconcile.
-     */
-    check(
-      'positions_closed_has_close_data',
-      sql`(${t.status} = 'open' AND ${t.closedAt} IS NULL) OR (${t.status} = 'closed' AND ${t.closedAt} IS NOT NULL AND ${t.closePrice} IS NOT NULL)`,
-    ),
-    check('positions_volume_positive', sql`${t.volume} > 0`),
-  ],
-);
 
 /* ────────────────────────────── Notifications ──────────────────────────────
  *

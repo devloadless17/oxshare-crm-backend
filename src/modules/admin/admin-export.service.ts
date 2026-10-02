@@ -1,4 +1,6 @@
 import { Injectable } from '@nestjs/common';
+import { decodeCursor, type CursorPosition } from '../../common/pagination';
+import { DEFAULT_AUDIT_SORT } from '../../store/audit-log.store';
 import { formatProofDetails } from '../../common/payments/proof-fields';
 import { maskAuditRow } from '../../common/security/audit-detail-fields';
 import { UsersStore, clientSortKey, clientSortOrder } from '../../store/users.store';
@@ -28,6 +30,8 @@ import { AdminHoldingsService } from './admin-holdings.service';
 import type { AuthenticatedAdmin } from './guards/admin.guard';
 import type { CsvColumn } from '../../common/export/csv';
 import {
+  assertClientTagExists,
+  clientLevelFilter,
   emailVerifiedFilter,
   kycStatusFilter,
   referredFilter,
@@ -70,6 +74,19 @@ import {
  * and nothing else in the system would notice. Keeping them adjacent makes that
  * a visible edit rather than a silent one.
  */
+/**
+ * Where an export stopped, carried between its batches — KEYSET, not offset.
+ *
+ * Exports used to fetch batch N as `OFFSET N*1000` over a newest-first order.
+ * A row inserted while the file streamed (the export writes an audit row
+ * itself) shifted every later batch by one, so a row was written twice; and
+ * each batch re-walked every row before it. One object per request, created by
+ * the controller: the batch methods read `cursor` and leave the next one.
+ */
+export interface ExportSeek {
+  cursor?: CursorPosition;
+}
+
 @Injectable()
 export class AdminExportService {
   constructor(
@@ -158,26 +175,12 @@ export class AdminExportService {
     actor: AuthenticatedAdmin,
     offset: number,
     limit: number,
+    seek?: ExportSeek,
   ): Promise<ClientExportRow[]> {
     assertActorCan(actor, 'clients.view', 'export clients');
 
-    let level: number | undefined;
-    if (query.level !== undefined && query.level !== '') {
-      const parsed = Number(query.level);
-      if (!Number.isInteger(parsed) || parsed < 0 || parsed > 1) {
-        throw new ValidationError('level must be 0 or 1.');
-      }
-      level = parsed;
-    }
-
-    if (query.tag) {
-      const tag = await this.tags.findBySlug(query.tag);
-      if (!tag) {
-        throw new ValidationError(
-          `There is no client tag "${query.tag}". Check the tag list for the current names.`,
-        );
-      }
-    }
+    const level = clientLevelFilter(query.level);
+    await assertClientTagExists(this.tags, query.tag);
 
     /*
      * REFUSED when malformed, never ignored — the list's rule, for its reason:
@@ -199,7 +202,8 @@ export class AdminExportService {
        * export's batch size is constant, which makes this exact rather than an
        * approximation.
        */
-      page: Math.floor(offset / limit) + 1,
+      page: seek ? 1 : Math.floor(offset / limit) + 1,
+      cursor: seek?.cursor,
       limit,
       withTotal: false,
       q: query.q?.trim() || undefined,
@@ -232,6 +236,10 @@ export class AdminExportService {
      * keeping the extra row would emit one duplicate at every batch boundary.
      */
     const page = rows.slice(0, limit);
+    if (seek) {
+      const last = page[page.length - 1];
+      seek.cursor = last ? { sort, value: last.cursorValue, id: String(last.id) } : undefined;
+    }
 
     const [tagsByClient, referred] = await Promise.all([
       this.tags.tagsForClients(page.map((r) => r.id)),
@@ -582,7 +590,7 @@ export class AdminExportService {
   /**
    * KYC submissions, scoped.
    *
-   * The store is called directly rather than through `KycService.listAll`,
+   * The store is called directly rather than through `KycReviewService.listAll`,
    * which clamps its limit to 100 — a ceiling that is right for the queue
    * screen and wrong for a file that promises every matching row. The scope
    * argument is the same one `listAll` passes, on the same column.
@@ -661,6 +669,7 @@ export class AdminExportService {
     actor: AuthenticatedAdmin,
     offset: number,
     limit: number,
+    seek?: ExportSeek,
   ): Promise<AuditExportRow[]> {
     /*
      * R-4.3: re-asserted here rather than trusted from the route, because this
@@ -672,8 +681,11 @@ export class AdminExportService {
       throw new AuthorizationError('Reading the admin action log requires audit.view.');
     }
 
-    const { items } = await this.auditLog.findAll({
-      page: Math.floor(offset / limit) + 1,
+    const { items, nextCursor } = await this.auditLog.findAll({
+      page: seek ? 1 : Math.floor(offset / limit) + 1,
+      cursor: seek?.cursor,
+      // An export never shows a total; counting per batch was a full scan each.
+      withTotal: seek ? false : undefined,
       limit,
       /*
        * Take the batch size literally. Without this the store clamps to
@@ -699,6 +711,9 @@ export class AdminExportService {
       // a lesser act, and it would otherwise be the way around the filter.
       scope: actor.clientScope,
     });
+    if (seek) {
+      seek.cursor = nextCursor ? decodeCursor(nextCursor, DEFAULT_AUDIT_SORT) : undefined;
+    }
     // `findAll` fetches limit + 1 for its cursor; drop the lookahead row.
     /*
      * The CSV half of the audit mask. A file leaves the building carrying every

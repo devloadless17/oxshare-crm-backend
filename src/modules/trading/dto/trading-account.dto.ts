@@ -19,15 +19,12 @@ export type TradingAccountStatus = (typeof TRADING_ACCOUNT_STATUSES)[number];
  * columns would be the client's own identity echoed back on every row — more
  * surface for no information.
  *
- * ## `balance` is the CRM's number, and the column comment says why that is
- * temporary
+ * ## `balance` is a MIRROR of MT5
  *
- * `trading_accounts.balance` reverses an earlier decision to hold no balance at
- * all, and its schema comment is explicit that it exists only because there is
- * no MT5 bridge to hold it instead (ARCHITECTURE open decision #1). It is
- * therefore the honest figure TODAY — it is what a wallet→account transfer
- * actually credits — and it must become a mirror of MT5's balance, or
- * disappear, when the bridge lands.
+ * MT5 owns the balance. `trading_accounts.balance` is the CRM's copy, kept by
+ * the bridge's deal push, its periodic sweep and each transfer's read-back,
+ * every write guarded by `balanceSyncedAt` so an older read never wins. Live
+ * equity, margin and positions are read from the bridge on demand.
  *
  * ## `tier` is GONE, and it was never a field
  *
@@ -48,9 +45,9 @@ export type TradingAccountStatus = (typeof TRADING_ACCOUNT_STATUSES)[number];
  * ever ran. Dropping the column is a migration with no benefit and the one
  * direction that cannot be undone; it is labelled inert in `schema.ts` instead.
  *
- * What is NOT here, and must not be added before that bridge exists: equity,
- * margin, free margin, open positions, floating P/L. Those are computed from
- * live prices against open trades, nothing in this database has them, and a
+ * What is NOT here, and must never be stored: equity, margin, free margin,
+ * open positions, floating P/L. Those are computed from live prices against
+ * open trades and are read from the bridge on demand (`accounts/:id/live`); a
  * fabricated equity figure beside a real login is the most expensive kind of
  * wrong number on a trading product.
  *
@@ -114,8 +111,8 @@ export class TradingAccountDto {
     type: 'string',
     example: '1250.00000000',
     description:
-      'Decimal string (§6.1). The CRM-held balance — see the DTO note: this is what a transfer ' +
-      'credits, and it becomes an MT5 mirror when the bridge lands. Not equity.',
+      'Decimal string (§6.1). The CRM mirror of the MT5 balance, kept by the bridge — see the ' +
+      'DTO note. Not equity.',
   })
   balance: string;
 
