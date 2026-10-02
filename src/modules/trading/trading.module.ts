@@ -10,6 +10,7 @@ import { Mt5WebhooksController } from './mt5/mt5-webhooks.controller';
 import { Mt5AccountsController } from './mt5/mt5-accounts.controller';
 import { Mt5AccountsService } from './mt5/mt5-accounts.service';
 import { Mt5OwnAccountsService } from './mt5/mt5-own-accounts.service';
+import { PositionsService } from './positions.service';
 import { SelfServiceGroups } from './mt5/self-service-groups';
 import { Mt5DealsService } from './mt5/mt5-deals.service';
 import { Mt5AccountSyncService } from './mt5/mt5-account-sync.service';
@@ -109,6 +110,7 @@ import { Mt5LivePublisher } from './mt5/live-snapshot';
     /* Every MT5 account in the CRM, the unowned ones with no client (0166). */
     Mt5AccountDirectoryService,
     Mt5AccountDirectoryScheduler,
+    PositionsService,
     Mt5BridgeClient,
     Mt5AccountsService,
     Mt5OwnAccountsService,
@@ -130,6 +132,7 @@ import { Mt5LivePublisher } from './mt5/live-snapshot';
     Mt5BridgeClient,
     Mt5AccountsService,
     Mt5GroupSyncService,
+    PositionsService,
     /*
      * Exported for `TransfersService`, which records the balance MT5 returned
      * from a movement it just made. That write goes through the same staleness

@@ -4987,12 +4987,137 @@ export const ibAccruals = pgTable(
   ],
 );
 
-/*
- * The `positions` table (and its `position_side` / `position_status` enums)
- * was created in 0041 for a feed that never came: nothing ever wrote to it,
- * and live positions are read from the MT5 bridge per account on demand, never
- * stored (a floating P/L is stale the moment it is written). 0182 dropped it.
+/**
+ * A trade on a trading account — open, or closed with a result.
+ *
+ * ## ⚠️ THIS TABLE IS DELIBERATELY EMPTY, and will stay empty until a bridge fills it
+ *
+ * Nothing writes to it. There is no MT5 bridge (ARCHITECTURE open decision #1),
+ * so no ingestion path exists and no row can appear by any route the application
+ * offers. It is created NOW so the shape is agreed and the portal can render
+ * against a real query returning zero rows, rather than against a placeholder
+ * that would have to be rewritten the day the feed lands.
+ *
+ * That distinction matters more than it looks, and this codebase has paid for it
+ * twice: a screen that renders a HARDCODED empty state is indistinguishable from
+ * one whose query genuinely found nothing, and the accounts page once told a
+ * client with three live accounts they had none. A real table means "no open
+ * positions" is an answer the database gave, not one the frontend assumed.
+ *
+ * WHEN THE BRIDGE LANDS it owns the INSERT and the UPDATE, and it owes this
+ * table the same idempotency `transactions` has — `UNIQUE(trading_account_id,
+ * ticket)` below is what makes a redelivered tick or a replayed sync a no-op
+ * rather than a duplicated trade.
+ *
+ * ## Why the money columns are nullable
+ *
+ * `closePrice`, `closedAt` and `profit` are NULL while a position is open,
+ * because they do not exist yet — a floating P/L is a computation against a live
+ * price, not a stored fact. Defaulting them to zero would make an open trade
+ * look like a closed one that broke even, which is the most expensive possible
+ * misreading on a trading screen.
+ *
+ * `profit` is the REALISED result and is only written at close. Unrealised P/L
+ * is deliberately absent from this table: it changes on every tick and belongs
+ * to whatever is streaming prices, never to a row somebody might read an hour
+ * later and believe.
  */
+export const positionSideEnum = pgEnum('position_side', ['buy', 'sell']);
+export const positionStatusEnum = pgEnum('position_status', ['open', 'closed']);
+
+export const positions = pgTable(
+  'positions',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    /*
+     * Denormalised alongside `tradingAccountId`, on purpose. Every read of this
+     * table is "this client's positions", and routing it through a join to
+     * `trading_accounts` on the hot path buys nothing — while the account
+     * reference keeps the row attributable to the specific login it was traded
+     * on.
+     */
+    userId: integer('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    tradingAccountId: uuid('trading_account_id')
+      .notNull()
+      .references(() => tradingAccounts.id, { onDelete: 'restrict' }),
+    /**
+     * The broker's own identifier for this trade.
+     *
+     * A STRING, like `trading_accounts.login`, because leading zeros are
+     * significant to the bridge and a numeric type would eat them.
+     */
+    ticket: varchar('ticket', { length: 50 }).notNull(),
+    /** e.g. 'EURUSD', 'XAUUSD'. Whatever the terminal calls the instrument. */
+    symbol: varchar('symbol', { length: 40 }).notNull(),
+    side: positionSideEnum('side').notNull(),
+    /**
+     * Lots. NUMERIC rather than a float — 0.01 is a valid size and the smallest
+     * increment most brokers allow, so binary floating point is wrong here for
+     * exactly the reason it is wrong for money.
+     */
+    volume: numeric('volume', { precision: 18, scale: 4 }).notNull(),
+    /*
+     * Prices carry more decimals than money: a JPY pair quotes to 3 places and
+     * most others to 5, so 28,10 leaves room without forcing a rounding
+     * decision the bridge has not made.
+     */
+    openPrice: numeric('open_price', { precision: 28, scale: 10 }).notNull(),
+    /** NULL while open — see the table note on why this is not defaulted. */
+    closePrice: numeric('close_price', { precision: 28, scale: 10 }),
+    stopLoss: numeric('stop_loss', { precision: 28, scale: 10 }),
+    takeProfit: numeric('take_profit', { precision: 28, scale: 10 }),
+    /**
+     * The REALISED result, written only at close. Signed: a loss is negative.
+     *
+     * §6.1 scale, because this figure settles against the account balance and
+     * must round-trip identically to every other monetary value in the system.
+     */
+    profit: numeric('profit', { precision: 28, scale: 8 }),
+    /** Broker charges, kept separate so `profit` stays comparable across accounts. */
+    swap: numeric('swap', { precision: 28, scale: 8 }),
+    commission: numeric('commission', { precision: 28, scale: 8 }),
+    currency: varchar('currency', { length: 10 })
+      .notNull()
+      .references(() => currencies.code, { onDelete: 'restrict' }),
+    status: positionStatusEnum('status').notNull().default('open'),
+    openedAt: timestamp('opened_at', { withTimezone: true }).notNull(),
+    closedAt: timestamp('closed_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    /*
+     * ⚠️ The idempotency guarantee this table will need on its first day.
+     *
+     * A sync that redelivers a trade, or a bridge restarted mid-batch, must
+     * update the existing row rather than insert a second copy of the same
+     * trade. Scoped to the ACCOUNT rather than global, because a ticket number
+     * is only unique within the server that issued it.
+     */
+    uniqueIndex('positions_account_ticket_uq').on(t.tradingAccountId, t.ticket),
+    /* "This client's open positions, newest first" — the dashboard's own query.
+       Partial, because the open set is small and hot while the closed history
+       grows without bound. */
+    index('positions_user_open_idx')
+      .on(t.userId, t.openedAt)
+      .where(sql`${t.status} = 'open'`),
+    /* The closed history, for the same client. */
+    index('positions_user_closed_idx').on(t.userId, t.closedAt),
+    index('positions_account_idx').on(t.tradingAccountId),
+    /*
+     * A closed position has BOTH a close price and a close time, or it is not
+     * closed. Enforced here because the two are written by the same event and a
+     * row carrying one without the other is a trade nobody can reconcile.
+     */
+    check(
+      'positions_closed_has_close_data',
+      sql`(${t.status} = 'open' AND ${t.closedAt} IS NULL) OR (${t.status} = 'closed' AND ${t.closedAt} IS NOT NULL AND ${t.closePrice} IS NOT NULL)`,
+    ),
+    check('positions_volume_positive', sql`${t.volume} > 0`),
+  ],
+);
 
 /* ────────────────────────────── Notifications ──────────────────────────────
  *

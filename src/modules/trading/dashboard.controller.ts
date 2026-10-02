@@ -31,14 +31,15 @@ export class DashboardController {
   @ApiOperation({
     summary: "Everything the client's landing page renders, in one request",
     description:
-      'Wallets, recent transactions, trading accounts and four counts. Open positions are live ' +
-      'MT5 figures, read per account from `GET /trading/accounts/:id/positions`.\n\n' +
+      'Wallets, recent transactions, trading accounts, open positions and five counts.\n\n' +
       'ONE request rather than six because these are read in a single glance: a balance from one ' +
       'instant beside a transaction list from another is a screen that contradicts itself, and ' +
       'six requests give the portal six ways to half-fail.\n\n' +
       'Every figure is counted from a table. The screen this replaces carried hardcoded zeros for ' +
       '"trading accounts" and "pending transactions" with no endpoint behind either, so a client ' +
-      'holding three accounts read 0.',
+      'holding three accounts read 0.\n\n' +
+      '`openPositions` is empty for everyone until an MT5 bridge writes to `positions` — but the ' +
+      'query is real, so that emptiness is a database answer rather than a frontend assumption.',
   })
   @ApiOkResponse({ type: DashboardDto })
   myDashboard(@Req() req: Request & { user: User }) {

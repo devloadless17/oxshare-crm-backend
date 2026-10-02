@@ -85,6 +85,12 @@ import {
  */
 export interface ExportSeek {
   cursor?: CursorPosition;
+  /**
+   * Set once a batch reports there is nothing after it. Without it, a last batch
+   * of EXACTLY the batch size leaves no cursor, `streamCsv` asks once more, and a
+   * cursor-less request is page 1 — the file would start over from the top.
+   */
+  done?: boolean;
 }
 
 @Injectable()
@@ -178,6 +184,7 @@ export class AdminExportService {
     seek?: ExportSeek,
   ): Promise<ClientExportRow[]> {
     assertActorCan(actor, 'clients.view', 'export clients');
+    if (seek?.done) return [];
 
     const level = clientLevelFilter(query.level);
     await assertClientTagExists(this.tags, query.tag);
@@ -239,6 +246,7 @@ export class AdminExportService {
     if (seek) {
       const last = page[page.length - 1];
       seek.cursor = last ? { sort, value: last.cursorValue, id: String(last.id) } : undefined;
+      seek.done = rows.length <= limit;
     }
 
     const [tagsByClient, referred] = await Promise.all([
@@ -680,6 +688,7 @@ export class AdminExportService {
     if (!actorHasPermission(actor, 'audit.view')) {
       throw new AuthorizationError('Reading the admin action log requires audit.view.');
     }
+    if (seek?.done) return [];
 
     const { items, nextCursor } = await this.auditLog.findAll({
       page: seek ? 1 : Math.floor(offset / limit) + 1,
@@ -713,6 +722,7 @@ export class AdminExportService {
     });
     if (seek) {
       seek.cursor = nextCursor ? decodeCursor(nextCursor, DEFAULT_AUDIT_SORT) : undefined;
+      seek.done = !nextCursor;
     }
     // `findAll` fetches limit + 1 for its cursor; drop the lookahead row.
     /*

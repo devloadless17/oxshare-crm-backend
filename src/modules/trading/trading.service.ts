@@ -3,7 +3,8 @@ import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, lte, or, sql }
 import Decimal from 'decimal.js';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
-import { mt5Deals, tradingAccounts, tradingProductGroups } from '../../database/schema';
+import { mt5Deals, positions, tradingAccounts, tradingProductGroups } from '../../database/schema';
+import type { PositionDto } from './dto/position.dto';
 /*
  * The product resolution lives in `common/` because the back office asks the
  * same question through `AdminHoldingsService`, and two implementations of
@@ -135,6 +136,86 @@ export class TradingService {
      */
     private readonly accountSync: Mt5AccountSyncService,
   ) {}
+
+  /**
+   * This client's positions — open by default, or the closed history.
+   *
+   * ## Returns an empty list today, and that is a real answer
+   *
+   * Nothing writes to `positions`: there is no MT5 bridge, so no ingestion path
+   * exists. This is a genuine query against a genuine table, so "no open
+   * positions" is something the database said rather than something the portal
+   * assumed. See the table comment in schema.ts for why that distinction is
+   * worth a migration.
+   *
+   * Joined to `trading_accounts` for the login, because a trade is meaningless
+   * without knowing which account it sits on — and a client with a live and a
+   * demo account has two very different reads of the same symbol.
+   *
+   * `limit` is capped rather than trusted: the closed history grows without
+   * bound, and an uncapped caller would eventually ask for all of it.
+   */
+  async listPositions(
+    userId: number,
+    options: { status?: 'open' | 'closed'; limit?: number } = {},
+  ): Promise<PositionDto[]> {
+    const status = options.status ?? 'open';
+    const limit = Math.min(Math.max(options.limit ?? 50, 1), 200);
+
+    const rows = await this.db
+      .select({
+        id: positions.id,
+        tradingAccountId: positions.tradingAccountId,
+        login: tradingAccounts.login,
+        ticket: positions.ticket,
+        symbol: positions.symbol,
+        side: positions.side,
+        volume: positions.volume,
+        openPrice: positions.openPrice,
+        closePrice: positions.closePrice,
+        stopLoss: positions.stopLoss,
+        takeProfit: positions.takeProfit,
+        profit: positions.profit,
+        swap: positions.swap,
+        commission: positions.commission,
+        currency: positions.currency,
+        status: positions.status,
+        openedAt: positions.openedAt,
+        closedAt: positions.closedAt,
+      })
+      .from(positions)
+      .innerJoin(tradingAccounts, eq(tradingAccounts.id, positions.tradingAccountId))
+      .where(and(eq(positions.userId, userId), eq(positions.status, status)))
+      /*
+       * Open positions read newest-first by OPEN time; closed ones by CLOSE
+       * time. Ordering the closed set by `openedAt` would bury a trade opened
+       * last month and closed this morning beneath older, already-settled ones.
+       */
+      /*
+       * The `id` TIEBREAK, and it is not cosmetic.
+       *
+       * `opened_at` and `closed_at` are not unique — two positions opened in the
+       * same instant are ordinary — and Postgres gives no guarantee about the
+       * relative order of tied rows between queries. With a LIMIT on the end,
+       * that decides WHICH of the tied rows is included: the same client
+       * refreshing sees the list reorder, and one trade appear or vanish at the
+       * boundary, with nothing having changed.
+       *
+       * `sorting.ts` states the rule for the paged lists; a capped list has the
+       * same problem in a smaller window. Migration 0129 indexes both pairs, so
+       * the tiebreak is free.
+       */
+      .orderBy(
+        status === 'open' ? desc(positions.openedAt) : desc(positions.closedAt),
+        desc(positions.id),
+      )
+      .limit(limit);
+
+    // Returned as-is: every numeric column arrives as the STRING Postgres sends
+    // for NUMERIC, and stays one (§6.1). No mapping step, so nobody is tempted
+    // to add a `Number()` to a price or a P/L.
+    return rows;
+  }
 
   /**
    * Every account this client holds, live and demo together.

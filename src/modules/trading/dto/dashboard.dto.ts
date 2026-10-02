@@ -4,6 +4,7 @@ import { WalletDto } from '../../wallet/dto/wallet-response.dto';
 // row in `transactions`, deposits included, and has never had a file of its own.
 import { TransactionDto } from '../../payments/dto/withdrawal.dto';
 import { TradingAccountDto } from './trading-account.dto';
+import { PositionDto } from './position.dto';
 
 /**
  * Counts a client's landing page states from, in one place.
@@ -22,6 +23,13 @@ export class DashboardStatsDto {
 
   @ApiProperty({ description: 'Live accounts only — the ones trading real money.' })
   liveAccounts: number;
+
+  @ApiProperty({
+    description:
+      'Open positions. Zero for everyone today: nothing writes to `positions` until an MT5 ' +
+      'bridge exists. See `openPositions` on the parent DTO.',
+  })
+  openPositions: number;
 
   @ApiProperty({ description: 'Transactions awaiting review — the client is waiting on us.' })
   pendingTransactions: number;
@@ -45,11 +53,12 @@ export class DashboardStatsDto {
  *
  * The screen this serves was three-quarters empty because the honest answer at
  * the time was "we do not have this". Each field below is now backed by a table:
- * wallets, transactions, trading accounts and IB attribution.
+ * wallets, transactions, trading accounts, positions and IB attribution.
  *
- * Open positions are NOT here. They are live MT5 figures, read from the bridge
- * per account (`GET /trading/accounts/:id/positions`); the never-written
- * `positions` table this once counted always answered zero, and 0182 dropped it.
+ * `positions` is the one that returns empty for everyone, and it is included
+ * anyway BECAUSE the query is real — the portal renders "no open positions" from
+ * a database answer rather than from an assumption, which is the distinction
+ * this codebase has twice paid for getting wrong.
  */
 export class DashboardDto {
   @ApiProperty({
@@ -69,6 +78,14 @@ export class DashboardDto {
     description: 'Trading accounts, live before demo.',
   })
   tradingAccounts: TradingAccountDto[];
+
+  @ApiProperty({
+    type: [PositionDto],
+    description:
+      'OPEN positions, newest first. Empty for everyone until an MT5 bridge writes to the table — ' +
+      'a real query returning zero rows, not a placeholder.',
+  })
+  openPositions: PositionDto[];
 
   @ApiProperty({ type: DashboardStatsDto })
   stats: DashboardStatsDto;

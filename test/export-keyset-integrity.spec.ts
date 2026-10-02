@@ -65,4 +65,31 @@ describe('audit-log export — keyset batches', () => {
     expect(new Set(ids).size).toBe(ids.length);
     expect(ids).toHaveLength(EXPORT_BATCH_SIZE + 500);
   });
+
+  it('ends after a last batch of EXACTLY the batch size, rather than starting over', async () => {
+    await ctx.db.execute(sql`
+      INSERT INTO audit_log (actor_id, actor_email, action, subject_type, subject_id, created_at)
+      SELECT ${actor.id}, 'a@x.test', 'exact.row', 'role', g::text,
+             now() - (g || ' milliseconds')::interval
+      FROM generate_series(1, ${EXPORT_BATCH_SIZE}) g
+    `);
+    const seek: ExportSeek = {};
+    const first = await exports.auditBatch(
+      { action: 'exact.row' },
+      actor,
+      0,
+      EXPORT_BATCH_SIZE,
+      seek,
+    );
+    expect(first).toHaveLength(EXPORT_BATCH_SIZE);
+    // `streamCsv` asks again after a full batch; a cursor-less ask was page 1.
+    const second = await exports.auditBatch(
+      { action: 'exact.row' },
+      actor,
+      EXPORT_BATCH_SIZE,
+      EXPORT_BATCH_SIZE,
+      seek,
+    );
+    expect(second).toHaveLength(0);
+  });
 });

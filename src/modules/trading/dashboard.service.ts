@@ -2,7 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { and, count, eq, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
-import { tradingAccounts, transactions, users } from '../../database/schema';
+import { positions, tradingAccounts, transactions, users } from '../../database/schema';
 import { WalletService } from '../wallet/wallet.service';
 import { TradingService } from './trading.service';
 import type { DashboardDto } from './dto/dashboard.dto';
@@ -27,6 +27,9 @@ interface RecentRow {
 /** How many recent transactions the landing page shows. */
 const RECENT_TRANSACTION_LIMIT = 8;
 
+/** How many open positions the landing page shows before "view all". */
+const OPEN_POSITION_LIMIT = 10;
+
 /**
  * The client's landing page, assembled in one read.
  *
@@ -46,9 +49,11 @@ const RECENT_TRANSACTION_LIMIT = 8;
  * showing `$0.00` to somebody holding $700, and it is why the rule here is: if a
  * figure cannot be counted from a table, it does not go on this screen.
  *
- * Open positions are deliberately absent: they are live MT5 figures, read from
- * the bridge per account, and the stored table that always answered zero is
- * gone (0182).
+ * `openPositions` is the interesting case. It returns empty for everyone,
+ * because nothing writes to `positions` until an MT5 bridge exists — but the
+ * QUERY IS REAL, so "no open positions" is an answer the database gave rather
+ * than one the portal assumed. That distinction is exactly what the two bugs
+ * above were.
  */
 @Injectable()
 export class DashboardService {
@@ -84,17 +89,20 @@ export class DashboardService {
    * annotates its handlers either.
    */
   async forUser(userId: number) {
-    const [wallets, recentTransactions, tradingAccountRows, stats] = await Promise.all([
-      this.wallets.listWallets(userId),
-      this.recentTransactions(userId),
-      this.trading.listMine(userId),
-      this.statsFor(userId),
-    ]);
+    const [wallets, recentTransactions, tradingAccountRows, openPositions, stats] =
+      await Promise.all([
+        this.wallets.listWallets(userId),
+        this.recentTransactions(userId),
+        this.trading.listMine(userId),
+        this.trading.listPositions(userId, { status: 'open', limit: OPEN_POSITION_LIMIT }),
+        this.statsFor(userId),
+      ]);
 
     return {
       wallets,
       recentTransactions,
       tradingAccounts: tradingAccountRows,
+      openPositions,
       stats,
     };
   }
@@ -181,11 +189,11 @@ export class DashboardService {
    * The five counts, each from its own table.
    *
    * `count()` in the DATABASE rather than fetching rows and reading `.length`:
-   * the transaction histories grow without bound, and counting them
+   * the transaction and position histories grow without bound, and counting them
    * client-side would move every row across the wire to produce one integer.
    */
   private async statsFor(userId: number): Promise<DashboardDto['stats']> {
-    const [accountRows, liveRows, pendingRows, referredRows] = await Promise.all([
+    const [accountRows, liveRows, openPositionRows, pendingRows, referredRows] = await Promise.all([
       this.db
         .select({ value: count() })
         .from(tradingAccounts)
@@ -194,6 +202,10 @@ export class DashboardService {
         .select({ value: count() })
         .from(tradingAccounts)
         .where(and(eq(tradingAccounts.userId, userId), eq(tradingAccounts.environment, 'live'))),
+      this.db
+        .select({ value: count() })
+        .from(positions)
+        .where(and(eq(positions.userId, userId), eq(positions.status, 'open'))),
       /*
        * `pending` only — not `approved`. The distinction is who is being waited
        * on: a pending transaction is one WE have not acted on, which is the
@@ -214,6 +226,7 @@ export class DashboardService {
     return {
       totalAccounts: accountRows[0]?.value ?? 0,
       liveAccounts: liveRows[0]?.value ?? 0,
+      openPositions: openPositionRows[0]?.value ?? 0,
       pendingTransactions: pendingRows[0]?.value ?? 0,
       referredClients: referredRows[0]?.value ?? 0,
     };
