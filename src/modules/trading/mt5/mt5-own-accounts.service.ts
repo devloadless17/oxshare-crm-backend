@@ -9,11 +9,13 @@ import { Mt5BridgeClient, assertBridgeConfigured } from './mt5-bridge.client';
 import { EmailService } from '../../email/email.service';
 import {
   AccountNameTakenError,
+  ConflictError,
   NotFoundError,
   ValidationError,
 } from '../../../common/errors/domain-errors';
 import { Mt5AccountSyncService } from './mt5-account-sync.service';
 import { Mt5AccountsService } from './mt5-accounts.service';
+import { violatesConstraint } from '../../../common/errors/pg-violation';
 
 /**
  * Clamp demo funding to the configured ceiling.
@@ -234,57 +236,80 @@ export class Mt5OwnAccountsService {
       input.environment,
       created.login,
     );
-    const { result: row, name: storedName } = await this.accounts.insertNamed(
-      client,
-      accountName,
-      String(created.login),
-      (name) =>
-        this.db
-          .insert(tradingAccounts)
-          .values({
-            userId: client.id,
-            login: String(created.login),
-            // Stored so the PORTAL can label this account without asking the
-            // bridge — the same string MT5 holds as the holder name.
-            name,
-            /*
-             * THE GROUP — see the note on the admin path above, which this omitted
-             * for the same reason and with the same consequence.
-             *
-             * It matters more here: this path exists because the client chose a
-             * PRODUCT and a currency, and the group is the only record of which
-             * product that was. Dropping it threw away the one fact the form was
-             * collecting, so an account opened as "Standard" was indistinguishable
-             * afterwards from one opened as anything else.
-             */
-            mt5Group: created.group,
-            /*
-             * THE PRODUCT the client actually chose (0080).
-             *
-             * This is the path the column exists for. The open-account form asks for
-             * a currency and a PRODUCT, `SelfServiceGroups` turns that choice into a
-             * group, and until now the group was the only surviving record of it —
-             * so the choice was readable only for as long as the catalogue kept
-             * pointing that group at the same product. Here it becomes a fact about
-             * the account instead of a fact about the catalogue.
-             *
-             * Resolved from `created.group` rather than carried down from the form,
-             * so both open paths record the product the same way: from the group the
-             * account is actually in. Nothing is offered to a client that is not in
-             * the catalogue, so this is NULL here only if the group was detached
-             * between the picker rendering and the account opening.
-             */
-            productId: ownProductId,
-            /* From the group MT5 confirmed, not from the request — see the helper. */
-            environment: ownEnvironment,
-            currency: created.currency,
-            leverage: created.leverage,
-            balance: snapshot?.balance ?? '0',
-            status: 'active',
-          })
-          .returning()
-          .then((rows) => rows[0]),
-    );
+    let inserted: { result: typeof tradingAccounts.$inferSelect; name: string };
+    try {
+      inserted = await this.accounts.insertNamed(
+        client,
+        accountName,
+        String(created.login),
+        (name) =>
+          this.db
+            .insert(tradingAccounts)
+            .values({
+              userId: client.id,
+              login: String(created.login),
+              // Stored so the PORTAL can label this account without asking the
+              // bridge — the same string MT5 holds as the holder name.
+              name,
+              /*
+               * THE GROUP — see the note on the admin path above, which this omitted
+               * for the same reason and with the same consequence.
+               *
+               * It matters more here: this path exists because the client chose a
+               * PRODUCT and a currency, and the group is the only record of which
+               * product that was. Dropping it threw away the one fact the form was
+               * collecting, so an account opened as "Standard" was indistinguishable
+               * afterwards from one opened as anything else.
+               */
+              mt5Group: created.group,
+              /*
+               * THE PRODUCT the client actually chose (0080).
+               *
+               * This is the path the column exists for. The open-account form asks for
+               * a currency and a PRODUCT, `SelfServiceGroups` turns that choice into a
+               * group, and until now the group was the only surviving record of it —
+               * so the choice was readable only for as long as the catalogue kept
+               * pointing that group at the same product. Here it becomes a fact about
+               * the account instead of a fact about the catalogue.
+               *
+               * Resolved from `created.group` rather than carried down from the form,
+               * so both open paths record the product the same way: from the group the
+               * account is actually in. Nothing is offered to a client that is not in
+               * the catalogue, so this is NULL here only if the group was detached
+               * between the picker rendering and the account opening.
+               */
+              productId: ownProductId,
+              /* From the group MT5 confirmed, not from the request — see the helper. */
+              environment: ownEnvironment,
+              currency: created.currency,
+              leverage: created.leverage,
+              balance: snapshot?.balance ?? '0',
+              status: 'active',
+            })
+            .returning()
+            .then((rows) => rows[0]),
+      );
+    } catch (error) {
+      /*
+       * MT5 issued a login the CRM already holds. The account now exists on MT5
+       * with no CRM row, so the desk must reconcile it by hand: say so LOUDLY, with
+       * the login and the client, and tell the client something true rather than
+       * a bare "That record already exists" (found live, 3 Oct 2026, when a
+       * restarted simulator reissued a login). Real MT5 never reuses a login.
+       */
+      if (violatesConstraint(error, 'trading_accounts_login_uq')) {
+        this.logger.error(
+          `MT5 issued login ${created.login} for client ${client.id}, but the CRM already ` +
+            'holds that login. The new MT5 account has NO CRM record — reconcile it by hand.',
+        );
+        throw new ConflictError(
+          'Your account could not be registered. Our team has been alerted and will ' +
+            'finish setting it up; you do not need to try again.',
+        );
+      }
+      throw error;
+    }
+    const { result: row, name: storedName } = inserted;
 
     this.logger.log(
       `Client ${client.id} opened their own MT5 account ${created.login} (${created.group})`,
