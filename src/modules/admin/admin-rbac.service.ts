@@ -1098,6 +1098,7 @@ export class AdminRbacService {
       id: admin.id,
       email: admin.email,
       name: admin.name,
+      role: admin.role,
       roleId: admin.roleId,
       roleName: role?.name,
       status: admin.status,

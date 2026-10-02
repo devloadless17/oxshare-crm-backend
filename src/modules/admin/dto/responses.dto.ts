@@ -43,6 +43,9 @@ export class AdminProfileDto {
   @NotClientField('an ADMINISTRATOR attribute \u2014 this describes the operator, never a client')
   @ApiProperty()
   name: string;
+  @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
+  @ApiProperty({ enum: ['master_admin', 'sub_admin'] })
+  role: 'master_admin' | 'sub_admin';
   @NotClientField('an ADMINISTRATOR attribute \u2014 this describes the operator, never a client')
   @ApiProperty({ type: [String] })
   permissions: string[];

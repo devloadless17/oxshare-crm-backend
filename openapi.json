@@ -20448,6 +20448,13 @@
           "name": {
             "type": "string"
           },
+          "role": {
+            "type": "string",
+            "enum": [
+              "master_admin",
+              "sub_admin"
+            ]
+          },
           "permissions": {
             "type": "array",
             "items": {
@@ -20511,6 +20518,7 @@
           "id",
           "email",
           "name",
+          "role",
           "permissions",
           "status",
           "maskedFields",
