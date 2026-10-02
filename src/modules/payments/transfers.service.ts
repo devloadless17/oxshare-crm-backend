@@ -1,3 +1,4 @@
+import Decimal from 'decimal.js';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { and, desc, eq, isNull, lt, or, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
@@ -137,7 +138,21 @@ export class TransfersService {
     // Refuses an unknown or DISABLED currency. This is the runtime half of what
     // the old `'USD' | 'USDT'` union checked at compile time — see
     // `wallet.service.ts` on why that moved.
-    const currency = await this.currencies.assertUsable(params.currency);
+    const { code: currency, decimals } = await this.currencies.assertUsableDetail(params.currency);
+
+    /*
+     * No more precision than the currency carries — the rule deposits and
+     * withdrawals already apply. A trading account holds the currency's scale
+     * (USD: 2), so a wallet debit of 30.123 against an MT5 credit of 30.12
+     * dropped the difference between the two books (found live, 3 Oct 2026).
+     * The message names the largest amount that would be accepted, rounded DOWN.
+     */
+    if (amount.decimalPlaces() > decimals) {
+      throw new ValidationError(
+        `Transfers in ${currency} go to ${decimals} decimal places. ` +
+          `Use ${amount.toDecimalPlaces(decimals, Decimal.ROUND_DOWN).toFixed(decimals)} instead.`,
+      );
+    }
 
     const [user] = await this.db.select().from(users).where(eq(users.id, params.userId)).limit(1);
     if (!user) throw new NotFoundError('User not found.');
