@@ -2557,7 +2557,7 @@ export const paymentProviderUnmatchedRecords = pgTable(
       .on(t.providerCode, t.occurredAt.desc())
       .where(sql`${t.acknowledgedAt} IS NULL AND ${t.matchedTransactionId} IS NULL`),
     // 0185 — an index under each foreign key, for the parent's delete check.
-    index('payment_provider_unmatched_records_matched_transaction_id_fk_idx')
+    index('payment_unmatched_records_matched_tx_fk_idx')
       .on(t.matchedTransactionId)
       .where(sql`${t.matchedTransactionId} IS NOT NULL`),
   ],

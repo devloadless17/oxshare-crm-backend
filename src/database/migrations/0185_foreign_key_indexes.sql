@@ -34,4 +34,4 @@ CREATE INDEX IF NOT EXISTS "ib_accruals_program_id_fk_idx" ON "ib_accruals" ("pr
 CREATE INDEX IF NOT EXISTS "ib_wallet_transfers_from_wallet_id_fk_idx" ON "ib_wallet_transfers" ("from_wallet_id");
 CREATE INDEX IF NOT EXISTS "ib_wallet_transfers_to_wallet_id_fk_idx" ON "ib_wallet_transfers" ("to_wallet_id");
 CREATE INDEX IF NOT EXISTS "client_document_pages_stored_object_id_fk_idx" ON "client_document_pages" ("stored_object_id") WHERE "stored_object_id" IS NOT NULL;
-CREATE INDEX IF NOT EXISTS "payment_provider_unmatched_records_matched_transaction_id_fk_idx" ON "payment_provider_unmatched_records" ("matched_transaction_id") WHERE "matched_transaction_id" IS NOT NULL;
+CREATE INDEX IF NOT EXISTS "payment_unmatched_records_matched_tx_fk_idx" ON "payment_provider_unmatched_records" ("matched_transaction_id") WHERE "matched_transaction_id" IS NOT NULL;
