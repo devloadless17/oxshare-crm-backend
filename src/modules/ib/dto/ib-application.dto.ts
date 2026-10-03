@@ -1,4 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { OptionalArabicText } from '../../../common/dto/arabic-text';
 import {
   ClientField,
   NoClientFields,
@@ -30,6 +31,12 @@ export type IbApplicationStatusDto = (typeof IB_APPLICATION_STATUSES)[number];
 export class InheritedAgencyDto {
   @ApiProperty() id: string;
   @ApiProperty() name: string;
+  @ApiProperty({
+    type: 'string',
+    nullable: true,
+    description: 'The agency name in Arabic (0179); null = not translated, show `name`.',
+  })
+  nameAr: string | null;
 }
 
 /**
@@ -129,6 +136,19 @@ export class IbApplicationDto {
   })
   rejectionReason: string | null;
   /**
+   * Arabic for `rejectionReason` (0179): written with the decision (the
+   * reviewer's own Arabic, or the configured reason's as it read then); on an
+   * older refusal, the configured reason's Arabic found on read.
+   */
+  @NotClientField('the desk’s decision about the record, not an attribute of the person')
+  @ApiPropertyOptional({
+    type: 'string',
+    description:
+      'Arabic for `rejectionReason` — written with the decision, else the configured partner ' +
+      'reason’s. Absent when there is none (show the English).',
+  })
+  rejectionReasonAr?: string;
+  /**
    * The agency (وكالة) applied for, by NAME.
    *
    * Null on an application submitted before agencies existed, or against a
@@ -139,6 +159,10 @@ export class IbApplicationDto {
   @NotClientField('a catalogue name on the record, not an attribute of the person')
   @ApiPropertyOptional({ type: 'string', nullable: true })
   agencyName: string | null;
+  /** The same agency's name in Arabic (0179); null = not translated, show `agencyName`. */
+  @NotClientField('a catalogue name on the record, not an attribute of the person')
+  @ApiPropertyOptional({ type: 'string', nullable: true })
+  agencyNameAr?: string | null;
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty({ type: 'string', nullable: true })
   reviewedBy: string | null;
@@ -183,11 +207,25 @@ export class IbAccountDto {
    * says so instead of printing nothing.
    */
   @ApiPropertyOptional({ type: 'string', nullable: true }) agencyName: string | null;
+  @ApiPropertyOptional({
+    type: 'string',
+    nullable: true,
+    description: 'The agency name in Arabic (0179); null = not translated, show `agencyName`.',
+  })
+  agencyNameAr?: string | null;
   @ApiProperty({
     type: [String],
     description: 'Product names this partner may introduce clients to. Empty means unrestricted.',
   })
   products: string[];
+  @ApiPropertyOptional({
+    type: 'array',
+    items: { type: 'string', nullable: true },
+    description:
+      'The same products in Arabic (0179), index for index with `products`; a null item is ' +
+      'untranslated — show that index of `products`.',
+  })
+  productsAr?: (string | null)[];
 
   @ApiProperty() approvedAt: Date;
 }
@@ -351,6 +389,17 @@ export class RejectIbApplicationDto {
   @IsString()
   @Length(1, 1000)
   note?: string;
+
+  /**
+   * The label in Arabic (0179). Optional: a configured `partner` reason brings
+   * its own Arabic; this is for a label typed freehand.
+   */
+  @OptionalArabicText(500, 'الطلب غير مكتمل')
+  reasonAr?: string | null;
+
+  /** `note` in Arabic, for a client reading the portal in Arabic (0179). Optional. */
+  @OptionalArabicText(1000, 'يُرجى إضافة رابط موقعك الإلكتروني.')
+  noteAr?: string | null;
 }
 
 /*

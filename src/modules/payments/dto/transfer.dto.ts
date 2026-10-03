@@ -58,6 +58,17 @@ export class TransferDto {
   // emits a typeless schema, which openapi-typescript renders as
   // `Record<string, never> | null` in both frontends.
   @ApiPropertyOptional({ type: 'string', nullable: true }) failureReason: string | null;
+  /**
+   * `failureReason` in Arabic (0179): the desk's own Arabic when it released a
+   * stuck transfer, else the Arabic of the sentence the system wrote. Null =
+   * show `failureReason`.
+   */
+  @ApiPropertyOptional({
+    type: 'string',
+    nullable: true,
+    description: 'Arabic for `failureReason`; null when there is none (show the English).',
+  })
+  failureReasonAr: string | null;
   @ApiPropertyOptional({ type: 'string', format: 'date-time', nullable: true })
   settledAt: Date | null;
   @ApiProperty() createdAt: Date;

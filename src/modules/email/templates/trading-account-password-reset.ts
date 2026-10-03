@@ -1,4 +1,22 @@
-import { button, card, esc, p, pRich, panel, type RenderedEmail } from './layout';
+import type { Locale } from '../../../common/i18n/locale';
+import {
+  button,
+  buttonAr,
+  card,
+  cardAr,
+  esc,
+  greetingAr,
+  headingAr,
+  ltr,
+  p,
+  pAr,
+  pRich,
+  pRichAr,
+  panel,
+  panelAr,
+  type RenderedEmail,
+} from './layout';
+import { passwordsPanelAr } from './trading-account-opened';
 
 /**
  * NEW credentials for a trading account whose owner asked for a reset.
@@ -35,7 +53,19 @@ export function tradingAccountPasswordReset(
   portalUrl: string,
   /** The support address, so "this was not me" has somewhere to go. */
   supportEmail?: string,
+  locale: Locale = 'en',
 ): RenderedEmail {
+  if (locale === 'ar') {
+    return tradingAccountPasswordResetAr(
+      firstName,
+      login,
+      environment,
+      masterPassword,
+      investorPassword,
+      portalUrl,
+      supportEmail,
+    );
+  }
   const kind = environment === 'live' ? 'live' : 'demo';
 
   return {
@@ -77,5 +107,50 @@ ${pRich(
     (supportEmail ? ` and contact us at ${esc(supportEmail)}.` : ' and contact support.'),
 )}
 ${button(portalUrl, 'Go to Portal')}`),
+  };
+}
+
+function tradingAccountPasswordResetAr(
+  firstName: string,
+  login: string,
+  environment: 'live' | 'demo',
+  masterPassword: string,
+  investorPassword: string,
+  portalUrl: string,
+  supportEmail?: string,
+): RenderedEmail {
+  const kind = environment === 'live' ? 'حقيقي' : 'تجريبي';
+  const theKind = environment === 'live' ? 'الحقيقي' : 'التجريبي';
+
+  return {
+    subject: `كلمات مرور جديدة لحساب التداول ${esc(login)} — OXShare`,
+    html: cardAr(`${headingAr('تمت إعادة تعيين كلمات مرور حساب التداول الخاص بك', '#047857')}
+${greetingAr(firstName)}
+${pAr(
+  `أُعيد تعيين كلمات المرور لحساب التداول ${theKind} الخاص بك بناءً على طلبك. ` +
+    'لم تعد كلمات المرور السابقة صالحة.',
+)}
+${panelAr(`<strong>رقم الدخول:</strong> ${ltr(login)}<br><strong>النوع:</strong> ${esc(kind)}`)}
+${pRichAr('<strong>كلمات المرور الجديدة</strong>')}
+${passwordsPanelAr(masterPassword, investorPassword)}
+${pRichAr(
+  'تغيّرت كلمتا المرور <strong>كلتاهما</strong>، وليس فقط تلك التي فقدتها. إذا كنت قد شاركت ' +
+    'كلمة مرور المستثمر مع أي شخص — كمزوّد إشارات أو محلل — فقد توقفت عن العمل، وسيحتاج إلى ' +
+    'كلمة المرور الجديدة.',
+)}
+${pAr(
+  'أي منصة تداول لا تزال مسجّلة الدخول بكلمة المرور القديمة سيُقطع اتصالها في المرة التالية ' +
+    'التي تعيد فيها الاتصال. لم تتأثر صفقاتك المفتوحة ولا رصيدك.',
+)}
+${pRichAr(
+  'يُرجى حفظها في مكان آمن ثم حذف هذه الرسالة. <strong>نحن لا نحتفظ بنسخة منها</strong> — ' +
+    'وإذا فقدتها، يمكنك إعادة تعيينها مرة أخرى من البوابة.',
+)}
+${pRichAr(
+  '<strong>إذا لم تطلب ذلك</strong>، فقد يكون حسابك في البوابة معرّضاً للاختراق. ' +
+    'غيّر كلمة مرور البوابة فوراً' +
+    (supportEmail ? ` وتواصل معنا على ${ltr(supportEmail)}.` : ' وتواصل مع فريق الدعم.'),
+)}
+${buttonAr(portalUrl, 'الانتقال إلى البوابة')}`),
   };
 }

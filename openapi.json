@@ -23,6 +23,43 @@
         ]
       }
     },
+    "/v1/profile/locale": {
+      "put": {
+        "description": "Stores `en` or `ar` on the account. Emails sent outside the client’s own requests (review decisions, payouts, credits) are written in it.",
+        "operationId": "ProfileLocaleController_setLocale",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateProfileLocaleDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Stored."
+          },
+          "400": {
+            "description": "The locale is not one of `en`, `ar`."
+          },
+          "401": {
+            "description": "No client session."
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Set the client's portal language",
+        "tags": [
+          "profile"
+        ]
+      }
+    },
     "/v1/notifications": {
       "get": {
         "operationId": "NotificationsController_list",
@@ -5343,7 +5380,14 @@
         "parameters": [],
         "responses": {
           "200": {
-            "description": ""
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SelfServiceOfferDto"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -9384,6 +9428,16 @@
             }
           }
         ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateRejectionReasonDto"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "",
@@ -12974,6 +13028,26 @@
               "type": "string"
             }
           },
+          "countryLabelsAr": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Arabic name per country, keyed by the English value in `countries` (0179). The value sent and stored is always the English one.",
+            "example": {
+              "Lebanon": "لبنان"
+            }
+          },
+          "nationalityLabelsAr": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Arabic per nationality, keyed by the English value in `nationalities` (0179). The value sent and stored is always the English one.",
+            "example": {
+              "Lebanese": "لبناني"
+            }
+          },
           "required": {
             "description": "Which fields are required, and when. Served so no form keeps its own copy of the rule (the owner’s ruling, 26 Sep 2026).",
             "allOf": [
@@ -12986,7 +13060,26 @@
         "required": [
           "countries",
           "nationalities",
+          "countryLabelsAr",
+          "nationalityLabelsAr",
           "required"
+        ]
+      },
+      "UpdateProfileLocaleDto": {
+        "type": "object",
+        "properties": {
+          "locale": {
+            "type": "string",
+            "enum": [
+              "en",
+              "ar"
+            ],
+            "example": "ar",
+            "description": "The language the client reads the portal in. Stored on the account so mail sent outside the client's own requests (review decisions, payouts, credits) is written in it."
+          }
+        },
+        "required": [
+          "locale"
         ]
       },
       "NotificationDto": {
@@ -13608,6 +13701,15 @@
             "format": "date-time",
             "type": "string"
           },
+          "locale": {
+            "type": "string",
+            "enum": [
+              "en",
+              "ar"
+            ],
+            "example": "en",
+            "description": "The portal language the client last chose (PUT /profile/locale, or the language they registered in). Emails sent outside their own requests are written in it."
+          },
           "avatarUrl": {
             "type": "string",
             "nullable": true,
@@ -13625,7 +13727,8 @@
           "status",
           "verificationLevel",
           "emailVerified",
-          "createdAt"
+          "createdAt",
+          "locale"
         ]
       },
       "AuthTokensResponseDto": {
@@ -13948,6 +14051,12 @@
             "type": "string",
             "example": "US Dollar"
           },
+          "nameAr": {
+            "type": "string",
+            "nullable": true,
+            "example": "دولار أمريكي",
+            "description": "The name in Arabic (0179); null = not translated, show `name`."
+          },
           "symbol": {
             "type": "string",
             "example": "$"
@@ -14000,6 +14109,7 @@
         "required": [
           "code",
           "name",
+          "nameAr",
           "symbol",
           "decimals",
           "enabled",
@@ -14023,6 +14133,13 @@
           "name": {
             "type": "string",
             "example": "Euro"
+          },
+          "nameAr": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 80,
+            "example": "يورو",
+            "description": "Arabic for the portal’s Arabic readers. Optional; blank or null = not translated (the portal shows the English)."
           },
           "symbol": {
             "type": "string",
@@ -14083,6 +14200,13 @@
           "name": {
             "type": "string",
             "example": "Euro"
+          },
+          "nameAr": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 80,
+            "example": "يورو",
+            "description": "Arabic for the portal’s Arabic readers. Optional; blank or null = not translated (the portal shows the English)."
           },
           "symbol": {
             "type": "string",
@@ -14217,10 +14341,23 @@
             "maxLength": 80,
             "example": "Economic calendar"
           },
+          "titleAr": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 80,
+            "example": "المفكرة الاقتصادية",
+            "description": "The title in Arabic (0179); null = not translated, show `title`."
+          },
           "description": {
             "type": "string",
             "nullable": true,
             "maxLength": 300
+          },
+          "descriptionAr": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 300,
+            "description": "The description in Arabic (0179); null = not translated, show `description`."
           },
           "url": {
             "type": "string",
@@ -14235,7 +14372,9 @@
         "required": [
           "id",
           "title",
+          "titleAr",
           "description",
+          "descriptionAr",
           "url",
           "sortOrder"
         ]
@@ -14252,11 +14391,24 @@
             "maxLength": 80,
             "example": "Economic calendar"
           },
+          "titleAr": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 80,
+            "example": "المفكرة الاقتصادية",
+            "description": "The title in Arabic (0179); null = not translated, show `title`."
+          },
           "description": {
             "type": "string",
             "nullable": true,
             "maxLength": 300,
             "description": "One line of context under the title. Null is a real answer, not an omission."
+          },
+          "descriptionAr": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 300,
+            "description": "The description in Arabic (0179); null = not translated, show `description`."
           },
           "url": {
             "type": "string",
@@ -14283,7 +14435,9 @@
         "required": [
           "id",
           "title",
+          "titleAr",
           "description",
+          "descriptionAr",
           "url",
           "enabled",
           "sortOrder",
@@ -14299,9 +14453,22 @@
             "maxLength": 80,
             "example": "Economic calendar"
           },
+          "titleAr": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 80,
+            "example": "المفكرة الاقتصادية",
+            "description": "Arabic for the portal’s Arabic readers. Optional; blank or null = not translated (the portal shows the English)."
+          },
           "description": {
             "type": "string",
             "maxLength": 300
+          },
+          "descriptionAr": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 300,
+            "description": "Arabic for the portal’s Arabic readers. Optional; blank or null = not translated (the portal shows the English)."
           },
           "url": {
             "type": "string",
@@ -14329,9 +14496,22 @@
             "type": "string",
             "maxLength": 80
           },
+          "titleAr": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 80,
+            "example": "المفكرة الاقتصادية",
+            "description": "Arabic for the portal’s Arabic readers. Optional; blank or null = not translated (the portal shows the English)."
+          },
           "description": {
             "type": "string",
             "maxLength": 300
+          },
+          "descriptionAr": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 300,
+            "description": "Arabic for the portal’s Arabic readers. Optional; blank or null = not translated (the portal shows the English)."
           },
           "url": {
             "type": "string",
@@ -14374,12 +14554,25 @@
             "type": "string",
             "nullable": true
           },
+          "agencyNameAr": {
+            "type": "string",
+            "nullable": true,
+            "description": "The agency name in Arabic (0179); null = not translated, show `agencyName`."
+          },
           "products": {
             "description": "Product names this partner may introduce clients to. Empty means unrestricted.",
             "type": "array",
             "items": {
               "type": "string"
             }
+          },
+          "productsAr": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "nullable": true
+            },
+            "description": "The same products in Arabic (0179), index for index with `products`; a null item is untranslated — show that index of `products`."
           },
           "approvedAt": {
             "format": "date-time",
@@ -14426,7 +14619,15 @@
             "nullable": true,
             "description": "Already composed — this is the sentence the client is shown."
           },
+          "rejectionReasonAr": {
+            "type": "string",
+            "description": "Arabic for `rejectionReason` — written with the decision, else the configured partner reason’s. Absent when there is none (show the English)."
+          },
           "agencyName": {
+            "type": "string",
+            "nullable": true
+          },
+          "agencyNameAr": {
             "type": "string",
             "nullable": true
           },
@@ -14464,11 +14665,17 @@
           },
           "name": {
             "type": "string"
+          },
+          "nameAr": {
+            "type": "string",
+            "nullable": true,
+            "description": "The agency name in Arabic (0179); null = not translated, show `name`."
           }
         },
         "required": [
           "id",
-          "name"
+          "name",
+          "nameAr"
         ]
       },
       "IbStatusDto": {
@@ -14801,9 +15008,20 @@
             "type": "string",
             "example": "Gold Agency"
           },
+          "nameAr": {
+            "type": "string",
+            "nullable": true,
+            "example": "الوكالة الذهبية",
+            "description": "The name in Arabic (0179); null = not translated, show `name`."
+          },
           "description": {
             "type": "string",
             "nullable": true
+          },
+          "descriptionAr": {
+            "type": "string",
+            "nullable": true,
+            "description": "The description in Arabic (0179); null = not translated, show `description`."
           },
           "products": {
             "example": [
@@ -14815,12 +15033,27 @@
             "items": {
               "type": "string"
             }
+          },
+          "productsAr": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "nullable": true
+            },
+            "example": [
+              "قياسي",
+              null
+            ],
+            "description": "The same products in Arabic (0179), index for index with `products`; a null item is untranslated — show that index of `products`."
           }
         },
         "required": [
           "id",
           "name",
-          "products"
+          "nameAr",
+          "descriptionAr",
+          "products",
+          "productsAr"
         ]
       },
       "OpenOwnWalletDto": {
@@ -14948,6 +15181,20 @@
           "note": {
             "type": "string",
             "description": "The reviewer's own words, appended to the label."
+          },
+          "reasonAr": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 500,
+            "example": "الطلب غير مكتمل",
+            "description": "Arabic for the portal’s Arabic readers. Optional; blank or null = not translated (the portal shows the English)."
+          },
+          "noteAr": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 1000,
+            "example": "يُرجى إضافة رابط موقعك الإلكتروني.",
+            "description": "Arabic for the portal’s Arabic readers. Optional; blank or null = not translated (the portal shows the English)."
           }
         }
       },
@@ -15685,6 +15932,12 @@
             "type": "string",
             "example": "Phone number you sent from"
           },
+          "labelAr": {
+            "type": "string",
+            "nullable": true,
+            "example": "رقم الهاتف الذي أرسلت منه",
+            "description": "The label in Arabic (0179); null = not translated, show `label`."
+          },
           "type": {
             "type": "string",
             "enum": [
@@ -15700,14 +15953,21 @@
             "type": "string",
             "nullable": true,
             "example": "The number on your OMT slip."
+          },
+          "hintAr": {
+            "type": "string",
+            "nullable": true,
+            "description": "The hint in Arabic (0179); null = not translated, show `hint`."
           }
         },
         "required": [
           "id",
           "label",
+          "labelAr",
           "type",
           "required",
-          "hint"
+          "hint",
+          "hintAr"
         ]
       },
       "PaymentMethodDto": {
@@ -15721,6 +15981,12 @@
           "name": {
             "type": "string",
             "example": "Whish Money"
+          },
+          "nameAr": {
+            "type": "string",
+            "nullable": true,
+            "example": "ويش ماني",
+            "description": "The name in Arabic (0179); null = not translated, show `name`."
           },
           "currency": {
             "type": "string",
@@ -15761,6 +16027,7 @@
         "required": [
           "key",
           "name",
+          "nameAr",
           "currency",
           "logoUrl",
           "minAmount",
@@ -15923,6 +16190,12 @@
             "example": "Whish Money",
             "description": "The operator's own name for the rail."
           },
+          "nameAr": {
+            "type": "string",
+            "nullable": true,
+            "example": "ويش ماني",
+            "description": "The name in Arabic (0179); null = not translated, show `name`."
+          },
           "logoUrl": {
             "type": "string",
             "nullable": true
@@ -15959,6 +16232,7 @@
         "required": [
           "key",
           "name",
+          "nameAr",
           "destinationKind",
           "destinationNetwork",
           "currencies"
@@ -16003,6 +16277,12 @@
             "type": "string",
             "example": "Phone number you sent from",
             "description": "The question as asked."
+          },
+          "labelAr": {
+            "type": "string",
+            "nullable": true,
+            "example": "رقم الهاتف الذي أرسلت منه",
+            "description": "The question in Arabic as asked (0179), when the field had one at filing. Absent on answers filed before it, or to an untranslated field — show `label`."
           },
           "type": {
             "type": "string",
@@ -16076,6 +16356,11 @@
             "type": "string",
             "nullable": true
           },
+          "methodNameAr": {
+            "type": "string",
+            "nullable": true,
+            "example": "ويش ماني"
+          },
           "providerRef": {
             "type": "string",
             "description": "The provider's own reference. Backs UNIQUE(provider, provider_ref), which is what makes settlement idempotent in the database (§6.3).",
@@ -16104,6 +16389,10 @@
           "rejectionReason": {
             "type": "string",
             "nullable": true
+          },
+          "rejectionReasonAr": {
+            "type": "string",
+            "description": "Arabic for `rejectionReason`: written with the decision, else the configured reason’s, else the system sentence’s. Absent when there is none (show the English)."
           },
           "reviewedBy": {
             "type": "string",
@@ -16294,6 +16583,11 @@
             "type": "string",
             "nullable": true
           },
+          "failureReasonAr": {
+            "type": "string",
+            "nullable": true,
+            "description": "Arabic for `failureReason`; null when there is none (show the English)."
+          },
           "settledAt": {
             "type": "string",
             "format": "date-time",
@@ -16328,6 +16622,12 @@
             "type": "string",
             "example": "Phone number you sent from"
           },
+          "labelAr": {
+            "type": "string",
+            "nullable": true,
+            "example": "رقم الهاتف الذي أرسلت منه",
+            "description": "The label in Arabic (0179); null = not translated, show `label`."
+          },
           "type": {
             "type": "string",
             "enum": [
@@ -16344,6 +16644,11 @@
             "nullable": true,
             "example": "The number on your OMT slip."
           },
+          "hintAr": {
+            "type": "string",
+            "nullable": true,
+            "description": "The hint in Arabic (0179); null = not translated, show `hint`."
+          },
           "enabled": {
             "type": "boolean",
             "description": "Shown to clients. A hidden field is kept but never asked."
@@ -16352,9 +16657,11 @@
         "required": [
           "id",
           "label",
+          "labelAr",
           "type",
           "required",
           "hint",
+          "hintAr",
           "enabled"
         ]
       },
@@ -16369,6 +16676,12 @@
           "name": {
             "type": "string",
             "example": "Whish Money"
+          },
+          "nameAr": {
+            "type": "string",
+            "nullable": true,
+            "example": "ويش ماني",
+            "description": "The name in Arabic (0179); null = not translated, show `name`."
           },
           "currency": {
             "type": "string",
@@ -16471,6 +16784,7 @@
         "required": [
           "key",
           "name",
+          "nameAr",
           "currency",
           "logoUrl",
           "minAmount",
@@ -16522,6 +16836,19 @@
             "type": "string",
             "nullable": true,
             "maxLength": 160
+          },
+          "labelAr": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 60,
+            "example": "رقم الهاتف الذي أرسلت منه",
+            "description": "Arabic for the portal’s Arabic readers. Optional; blank or null = not translated (the portal shows the English)."
+          },
+          "hintAr": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 160,
+            "description": "Arabic for the portal’s Arabic readers. Optional; blank or null = not translated (the portal shows the English)."
           }
         },
         "required": [
@@ -16554,6 +16881,13 @@
           "name": {
             "type": "string",
             "example": "Whish Money"
+          },
+          "nameAr": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 80,
+            "example": "ويش ماني",
+            "description": "Arabic for the portal’s Arabic readers. Optional; blank or null = not translated (the portal shows the English)."
           },
           "internalLabel": {
             "type": "string",
@@ -16631,6 +16965,13 @@
         "properties": {
           "name": {
             "type": "string"
+          },
+          "nameAr": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 80,
+            "example": "ويش ماني",
+            "description": "Arabic for the portal’s Arabic readers. Optional; blank or null = not translated (the portal shows the English)."
           },
           "internalLabel": {
             "type": "string",
@@ -16739,6 +17080,12 @@
             "example": "Whish Money",
             "description": "What the client picks from."
           },
+          "nameAr": {
+            "type": "string",
+            "nullable": true,
+            "example": "ويش ماني",
+            "description": "The name in Arabic (0179); null = not translated, show `name`."
+          },
           "logoUrl": {
             "type": "string",
             "nullable": true
@@ -16824,6 +17171,7 @@
         "required": [
           "key",
           "name",
+          "nameAr",
           "logoUrl",
           "enabled",
           "countryRule",
@@ -16862,6 +17210,13 @@
           "name": {
             "type": "string",
             "example": "Bank transfer"
+          },
+          "nameAr": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 80,
+            "example": "تحويل مصرفي",
+            "description": "Arabic for the portal’s Arabic readers. Optional; blank or null = not translated (the portal shows the English)."
           },
           "internalLabel": {
             "type": "string",
@@ -16917,6 +17272,13 @@
           },
           "name": {
             "type": "string"
+          },
+          "nameAr": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 80,
+            "example": "تحويل مصرفي",
+            "description": "Arabic for the portal’s Arabic readers. Optional; blank or null = not translated (the portal shows the English)."
           },
           "logoUrl": {
             "type": "string",
@@ -17725,6 +18087,11 @@
             "nullable": true,
             "description": "Payment rail name, if any."
           },
+          "methodNameAr": {
+            "type": "string",
+            "nullable": true,
+            "description": "The rail name in Arabic (0179); null = not translated, show `methodName`."
+          },
           "provider": {
             "type": "string",
             "nullable": true,
@@ -17758,6 +18125,7 @@
           "amount",
           "balanceAfter",
           "methodName",
+          "methodNameAr",
           "provider",
           "tradingAccountLogin",
           "tradingAccountName",
@@ -18023,6 +18391,107 @@
           "amount"
         ]
       },
+      "SelfServiceAccountTypeDto": {
+        "type": "object",
+        "properties": {
+          "group": {
+            "type": "string",
+            "example": "real\\standard-usd",
+            "description": "The MT5 group the account opens in."
+          },
+          "currency": {
+            "type": "string",
+            "example": "USD",
+            "description": "The group’s currency, read live from MT5 — the cached catalogue copy when MT5 cannot say."
+          },
+          "product": {
+            "type": "string",
+            "example": "Standard",
+            "description": "The product’s name, as the client is offered it."
+          },
+          "productAr": {
+            "type": "string",
+            "nullable": true,
+            "example": "قياسي",
+            "description": "The product’s name in Arabic (0179); null = not translated, show `product`."
+          },
+          "productId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "Sent back on create (0142): a group may back several products, so the product is what identifies which offer the client picked."
+          }
+        },
+        "required": [
+          "group",
+          "currency",
+          "product",
+          "productAr",
+          "productId"
+        ]
+      },
+      "SelfServiceOfferDto": {
+        "type": "object",
+        "properties": {
+          "live": {
+            "type": "boolean",
+            "description": "This client has at least one live account type to open."
+          },
+          "demo": {
+            "type": "boolean",
+            "description": "This client has at least one demo account type to open."
+          },
+          "liveTypes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SelfServiceAccountTypeDto"
+            }
+          },
+          "demoTypes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SelfServiceAccountTypeDto"
+            }
+          },
+          "leverages": {
+            "example": [
+              50,
+              100,
+              200,
+              500
+            ],
+            "description": "The enabled leverage ladder — 500 means 1:500.",
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          },
+          "maxLiveAccounts": {
+            "type": "number",
+            "example": 3,
+            "description": "The most live accounts a client may hold."
+          },
+          "maxDemoAccounts": {
+            "type": "number",
+            "example": 3,
+            "description": "The most demo accounts a client may hold."
+          },
+          "maxDemoDeposit": {
+            "type": "string",
+            "example": "100000.00000000",
+            "description": "The most a demo account may be funded with, as a decimal string (§6.1)."
+          }
+        },
+        "required": [
+          "live",
+          "demo",
+          "liveTypes",
+          "demoTypes",
+          "leverages",
+          "maxLiveAccounts",
+          "maxDemoAccounts",
+          "maxDemoDeposit"
+        ]
+      },
       "TradingAccountDto": {
         "type": "object",
         "properties": {
@@ -18049,6 +18518,12 @@
             "nullable": true,
             "example": "Standard",
             "description": "The product this account was opened under. Read from its own `productId` column, which is SNAPSHOTTED at creation (migration 0080) so that re-pointing a group in the catalogue afterwards cannot retroactively change what an existing account was sold as; accounts opened before 0080 fall back to matching `mt5Group` against `trading_product_groups`. Null when neither answers — an operator may open an account directly into any MT5 group, including one the catalogue does not sell. THE PORTAL RENDERS THIS, not the group: a backslash-separated MT5 group path is unreadable to a client, which is why the open-account form asks for a currency and a product."
+          },
+          "productAr": {
+            "type": "string",
+            "nullable": true,
+            "example": "قياسي",
+            "description": "The same product's name in Arabic (0179), from the same catalogue row as `product`. Null when untranslated or when there is no product — show `product`."
           },
           "environment": {
             "type": "string",
@@ -18090,6 +18565,7 @@
           "name",
           "mt5Group",
           "product",
+          "productAr",
           "environment",
           "currency",
           "balance",
@@ -19368,17 +19844,27 @@
             "description": "What the client is asked to upload.",
             "example": "Back Side"
           },
+          "labelAr": {
+            "type": "string",
+            "description": "The label in Arabic — the platform’s, fixed.",
+            "example": "الوجه الخلفي"
+          },
           "required": {
             "type": "boolean"
           },
           "hint": {
             "type": "string",
             "example": "Both sides must be readable."
+          },
+          "hintAr": {
+            "type": "string",
+            "description": "The hint in Arabic, when there is a hint."
           }
         },
         "required": [
           "key",
           "label",
+          "labelAr",
           "required"
         ]
       },
@@ -19393,6 +19879,11 @@
           "label": {
             "type": "string",
             "example": "Passport"
+          },
+          "labelAr": {
+            "type": "string",
+            "description": "The name in Arabic — the platform’s, fixed.",
+            "example": "جواز السفر"
           },
           "category": {
             "type": "string",
@@ -19411,6 +19902,7 @@
         "required": [
           "value",
           "label",
+          "labelAr",
           "category",
           "parts"
         ]
@@ -19464,6 +19956,25 @@
             "type": "string",
             "example": "As on your ID"
           },
+          "labelAr": {
+            "type": "string",
+            "description": "The label in Arabic, when translated.",
+            "example": "الاسم الأول"
+          },
+          "hintAr": {
+            "type": "string",
+            "description": "The hint in Arabic, when translated."
+          },
+          "optionsAr": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Arabic label per choice, keyed by the ENGLISH option value — the value submitted and stored is always the English one. A choice without an entry shows its English.",
+            "example": {
+              "Lebanese": "لبناني"
+            }
+          },
           "document": {
             "description": "Resolved from the field type. Read-only — writes are ignored.",
             "allOf": [
@@ -19507,6 +20018,15 @@
           },
           "description": {
             "type": "string"
+          },
+          "titleAr": {
+            "type": "string",
+            "description": "The title in Arabic, when translated; absent = show the English.",
+            "example": "المعلومات الشخصية"
+          },
+          "descriptionAr": {
+            "type": "string",
+            "description": "The description in Arabic, when translated."
           },
           "icon": {
             "type": "string",
@@ -19694,6 +20214,10 @@
           "rejectionReason": {
             "type": "string",
             "description": "Set when status is rejected."
+          },
+          "rejectionReasonAr": {
+            "type": "string",
+            "description": "Arabic for `rejectionReason` when it is a configured reason with Arabic; absent for a reviewer’s own wording."
           },
           "rejectedFields": {
             "description": "Field names the client must re-submit.",
@@ -20113,9 +20637,20 @@
             "type": "string",
             "example": "Standard"
           },
+          "nameAr": {
+            "type": "string",
+            "nullable": true,
+            "example": "قياسي",
+            "description": "The name in Arabic (0179); null = not translated, show `name`."
+          },
           "description": {
             "type": "string",
             "nullable": true
+          },
+          "descriptionAr": {
+            "type": "string",
+            "nullable": true,
+            "description": "The description in Arabic (0179); null = not translated, show `description`."
           },
           "enabled": {
             "type": "boolean",
@@ -20149,6 +20684,8 @@
         "required": [
           "id",
           "name",
+          "nameAr",
+          "descriptionAr",
           "enabled",
           "type",
           "commissionTypeId",
@@ -20194,10 +20731,24 @@
             "example": "Standard",
             "maxLength": 80
           },
+          "nameAr": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 80,
+            "example": "قياسي",
+            "description": "Arabic for the portal’s Arabic readers. Optional; blank or null = not translated (the portal shows the English)."
+          },
           "description": {
             "type": "string",
             "nullable": true,
             "maxLength": 2000
+          },
+          "descriptionAr": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 2000,
+            "example": "حسابات بفروق أسعار منخفضة وعمولة ثابتة.",
+            "description": "Arabic for the portal’s Arabic readers. Optional; blank or null = not translated (the portal shows the English)."
           },
           "enabled": {
             "type": "boolean",
@@ -20260,10 +20811,21 @@
             "example": "Gold Agency",
             "description": "وكالة — the package a partner sells under."
           },
+          "nameAr": {
+            "type": "string",
+            "nullable": true,
+            "example": "الوكالة الذهبية",
+            "description": "The name in Arabic (0179); null = not translated, show `name`."
+          },
           "description": {
             "type": "string",
             "nullable": true,
             "description": "Read by an applicant deciding which agency to request. Worth writing well."
+          },
+          "descriptionAr": {
+            "type": "string",
+            "nullable": true,
+            "description": "The description in Arabic (0179); null = not translated, show `description`."
           },
           "enabled": {
             "type": "boolean",
@@ -20285,6 +20847,8 @@
         "required": [
           "id",
           "name",
+          "nameAr",
+          "descriptionAr",
           "enabled",
           "sortOrder",
           "productIds"
@@ -20298,10 +20862,23 @@
             "example": "Gold Agency",
             "maxLength": 80
           },
+          "nameAr": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 80,
+            "example": "الوكالة الذهبية",
+            "description": "Arabic for the portal’s Arabic readers. Optional; blank or null = not translated (the portal shows the English)."
+          },
           "description": {
             "type": "string",
             "nullable": true,
             "maxLength": 2000
+          },
+          "descriptionAr": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 2000,
+            "description": "Arabic for the portal’s Arabic readers. Optional; blank or null = not translated (the portal shows the English)."
           },
           "enabled": {
             "type": "boolean",
@@ -21690,6 +22267,11 @@
             "type": "string",
             "nullable": true
           },
+          "reasonAr": {
+            "type": "string",
+            "nullable": true,
+            "description": "The reason in Arabic as the client was shown it (0179). Null when none."
+          },
           "returnedItems": {
             "example": [
               "doc_front"
@@ -22356,6 +22938,10 @@
           "rejectionReason": {
             "type": "string"
           },
+          "rejectionReasonAr": {
+            "type": "string",
+            "description": "The reason in Arabic as the client was shown it (0179). Absent when none."
+          },
           "rejectedFields": {
             "type": "array",
             "items": {
@@ -22494,6 +23080,10 @@
           "rejectionReason": {
             "type": "string"
           },
+          "rejectionReasonAr": {
+            "type": "string",
+            "description": "The reason in Arabic as the client was shown it (0179). Absent when none."
+          },
           "rejectedFields": {
             "type": "array",
             "items": {
@@ -22612,6 +23202,13 @@
             "type": "string",
             "description": "Id of a configured KYC rejection reason."
           },
+          "reasonAr": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 500,
+            "example": "جواز السفر منتهي الصلاحية",
+            "description": "Arabic for the portal’s Arabic readers. Optional; blank or null = not translated (the portal shows the English)."
+          },
           "rejectedFields": {
             "description": "What the client must update: identity details by key, pages on file by slot (e.g. \"doc_front\"), the selfie, or a question on their form. Anything else is refused.",
             "type": "array",
@@ -22629,6 +23226,13 @@
             "example": "Your passport on file has expired. Please upload your new one.",
             "minLength": 1,
             "maxLength": 500
+          },
+          "reasonAr": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 500,
+            "example": "انتهت صلاحية جواز سفرك المسجَّل. يُرجى رفع الجواز الجديد.",
+            "description": "Arabic for the portal’s Arabic readers. Optional; blank or null = not translated (the portal shows the English)."
           },
           "items": {
             "example": [
@@ -22665,6 +23269,11 @@
           "label": {
             "type": "string"
           },
+          "labelAr": {
+            "type": "string",
+            "nullable": true,
+            "description": "Arabic shown to clients reading the portal in Arabic (0179); null = not translated."
+          },
           "createdAt": {
             "format": "date-time",
             "type": "string"
@@ -22674,6 +23283,7 @@
           "id",
           "context",
           "label",
+          "labelAr",
           "createdAt"
         ]
       },
@@ -22685,16 +23295,44 @@
             "enum": [
               "kyc",
               "withdrawal",
-              "deposit"
+              "deposit",
+              "partner"
             ]
           },
           "label": {
             "type": "string",
             "example": "Document expired"
+          },
+          "labelAr": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 500,
+            "example": "الوثيقة منتهية الصلاحية",
+            "description": "Arabic for the portal’s Arabic readers. Optional; blank or null = not translated (the portal shows the English)."
           }
         },
         "required": [
           "context",
+          "label"
+        ]
+      },
+      "UpdateRejectionReasonDto": {
+        "type": "object",
+        "properties": {
+          "label": {
+            "type": "string",
+            "example": "Document expired",
+            "maxLength": 500
+          },
+          "labelAr": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 500,
+            "example": "الوثيقة منتهية الصلاحية",
+            "description": "Arabic for the portal’s Arabic readers. Optional; blank or null = not translated (the portal shows the English)."
+          }
+        },
+        "required": [
           "label"
         ]
       },
@@ -22746,6 +23384,31 @@
             "type": "string",
             "example": "As shown on your ID"
           },
+          "labelAr": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 200,
+            "example": "الاسم الأول",
+            "description": "Arabic for the portal’s Arabic readers. Optional; blank or null = not translated (the portal shows the English)."
+          },
+          "hintAr": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 500,
+            "example": "كما يظهر في وثيقة هويتك",
+            "description": "Arabic for the portal’s Arabic readers. Optional; blank or null = not translated (the portal shows the English)."
+          },
+          "optionsAr": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "nullable": true,
+            "description": "Arabic label per choice, keyed by the ENGLISH option value. Trimmed; blank entries and keys that are not among `options` are dropped on save.",
+            "example": {
+              "Employed": "موظف"
+            }
+          },
           "document": {
             "type": "object",
             "description": "Hydrated from `type` on read. Accepted on write and ignored."
@@ -22784,6 +23447,19 @@
           },
           "description": {
             "type": "string"
+          },
+          "titleAr": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 200,
+            "example": "المعلومات الشخصية",
+            "description": "Arabic for the portal’s Arabic readers. Optional; blank or null = not translated (the portal shows the English)."
+          },
+          "descriptionAr": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 2000,
+            "description": "Arabic for the portal’s Arabic readers. Optional; blank or null = not translated (the portal shows the English)."
           },
           "icon": {
             "type": "string",
@@ -23540,6 +24216,11 @@
             "type": "string",
             "nullable": true
           },
+          "rejectionReasonAr": {
+            "type": "string",
+            "nullable": true,
+            "description": "The reason in Arabic as the client was shown it (0179). Null when none."
+          },
           "requestedAt": {
             "format": "date-time",
             "type": "string"
@@ -23737,6 +24418,13 @@
             "type": "string",
             "example": "Goodwill adjustment for the failed 4 August transfer.",
             "maxLength": 500
+          },
+          "reasonAr": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 500,
+            "example": "تسوية تعويضية عن تحويل 4 أغسطس الذي لم يكتمل.",
+            "description": "Arabic for the portal’s Arabic readers. Optional; blank or null = not translated (the portal shows the English)."
           }
         },
         "required": [
@@ -23773,6 +24461,13 @@
             "type": "string",
             "example": "Funding the 4 August wire that arrived off-rail.",
             "maxLength": 500
+          },
+          "reasonAr": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 500,
+            "example": "تمويل الحوالة الواردة في 4 أغسطس.",
+            "description": "Arabic for the portal’s Arabic readers. Optional; blank or null = not translated (the portal shows the English)."
           },
           "direction": {
             "type": "string",
@@ -23859,6 +24554,13 @@
           "reasonId": {
             "type": "string",
             "description": "Id of a configured rejection reason."
+          },
+          "reasonAr": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 500,
+            "example": "بيانات المستفيد غير صحيحة",
+            "description": "Arabic for the portal’s Arabic readers. Optional; blank or null = not translated (the portal shows the English)."
           }
         }
       },
@@ -23910,6 +24612,11 @@
             "type": "object",
             "nullable": true
           },
+          "rejectionReasonAr": {
+            "type": "string",
+            "nullable": true,
+            "description": "The reason in Arabic as the client was shown it (0179). Null when none."
+          },
           "reviewedAt": {
             "type": "string",
             "nullable": true,
@@ -23940,6 +24647,13 @@
           "reasonId": {
             "type": "string",
             "description": "A configured rejection reason from the `deposit` context."
+          },
+          "reasonAr": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 500,
+            "example": "لم يصل المبلغ بعد إلى حسابنا",
+            "description": "Arabic for the portal’s Arabic readers. Optional; blank or null = not translated (the portal shows the English)."
           }
         }
       },
@@ -24095,6 +24809,13 @@
             "maxLength": 500,
             "example": "Checked MT5 deal history for 6480824 — the 1,000 never reached the account.",
             "description": "What the broker’s record showed. Reaches the client on the failed transfer, and is the audit trail for a decision nothing in this system could make on its own."
+          },
+          "reasonAr": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 500,
+            "example": "راجعنا سجل الصفقات في MT5 — لم يصل المبلغ إلى الحساب.",
+            "description": "Arabic for the portal’s Arabic readers. Optional; blank or null = not translated (the portal shows the English)."
           }
         },
         "required": [
@@ -24403,6 +25124,11 @@
           "rejectionReason": {
             "type": "string",
             "nullable": true
+          },
+          "rejectionReasonAr": {
+            "type": "string",
+            "nullable": true,
+            "description": "The reason in Arabic as the client was shown it (0179). Null when none."
           },
           "tradingAccountId": {
             "type": "string",
@@ -25605,6 +26331,11 @@
               "amount": "must not be less than 10"
             },
             "description": "Present only on validation failures: field path → what is wrong with it. Dotted for nested DTOs, so a form can attach each message to the input that caused it."
+          },
+          "detail": {
+            "type": "string",
+            "example": "The payment provider is not responding.",
+            "description": "Present only on an ARABIC request (`X-OxShare-Locale: ar`) whose message — or a `fields` entry — had no Arabic: typically text from an external system (a payment provider, the MT5 bridge, the mail server). `message` then carries a generic Arabic sentence for the status (a field, a generic field sentence) and this carries the original English, one line each (`<field>: <text>` for a field), so nothing is lost. Show it as secondary detail if at all; never parse it."
           },
           "requestId": {
             "type": "string",

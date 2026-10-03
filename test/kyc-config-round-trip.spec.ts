@@ -6,6 +6,7 @@ import { actingAs, startHttpTestApp, stopHttpTestApp, type HttpTestContext } fro
 import { PasswordService } from '../src/common/security/password.service';
 import { admins, kycConfigSteps, roles } from '../src/database/schema';
 import { DEFAULT_KYC_STEPS } from '../src/store/kyc-config.store';
+import { RejectionReasonsStore } from '../src/store/rejection-reasons.store';
 
 /**
  * WHAT `GET /admin/kyc-config` RETURNS, `PUT` MUST ACCEPT.
@@ -794,5 +795,188 @@ describe('the version a save names (If-Match)', () => {
 
     // Named no version: last write wins — how an operator's restore works.
     expect((await save(original)).status).toBe(200);
+  });
+});
+
+/*
+ * ── THE ARABIC TWINS (0179) ──────────────────────────────────────────────────
+ * Written through the builder's own save, read back through its own GET, and
+ * checked in the table: what is the broker's is stored, normalised; what is the
+ * platform's is served on every read and never stored.
+ */
+describe('the KYC form in Arabic (0179)', () => {
+  type Field = {
+    name: string;
+    type: string;
+    label: string;
+    labelAr?: string;
+    hintAr?: string;
+    options?: string[];
+    optionsAr?: Record<string, string>;
+    document?: { labelAr: string; parts: { labelAr: string; hintAr?: string }[] };
+  };
+  type Step = { id: string; slug: string; title: string; titleAr?: string; fields: Field[] };
+
+  // From the default form: earlier cases leave theirs behind.
+  beforeAll(async () => {
+    const reset = await session.post('/v1/admin/kyc-config/reset', {});
+    expect(reset.status, JSON.stringify(reset.body).slice(0, 200)).toBeLessThan(300);
+  });
+
+  const readSteps = async () => {
+    const res = await session.get('/v1/admin/kyc-config');
+    expect(res.status).toBe(200);
+    return res.body as Step[];
+  };
+
+  it('serves the platform’s Arabic: built-in titles, identity fields, documents, both lists', async () => {
+    const steps = await readSteps();
+    const personal = steps.find((step) => step.slug === 'personal')!;
+    expect(personal.titleAr).toBe('المعلومات الشخصية');
+    const field = (name: string) => personal.fields.find((f) => f.name === name)!;
+    expect(field('firstName')).toMatchObject({
+      labelAr: 'الاسم الأول',
+      hintAr: 'كما يظهر في وثيقة هويتك',
+    });
+    expect(field('nationality').optionsAr?.['Lebanese']).toBe('لبناني');
+    expect(field('country').optionsAr?.['Lebanon']).toBe('لبنان');
+    expect(Object.keys(field('country').optionsAr ?? {}).length).toBe(
+      field('country').options?.length,
+    );
+
+    const passport = steps
+      .find((step) => step.slug === 'document')!
+      .fields.find((f) => f.type === 'doc:passport')!;
+    expect(passport.labelAr).toBe('جواز السفر');
+    expect(passport.document?.labelAr).toBe('جواز السفر');
+    expect(passport.document?.parts[0]).toMatchObject({ labelAr: 'صفحة الصورة' });
+  });
+
+  it('stores the broker’s Arabic trimmed, prunes choices it no longer offers, and never stores the platform’s', async () => {
+    const steps = await readSteps();
+    const personal = steps.find((step) => step.slug === 'personal')!;
+    // An attempt to rename the platform's own field in Arabic — ignored.
+    personal.fields = personal.fields.map((f) =>
+      f.name === 'firstName' ? { ...f, labelAr: 'اسم مزيّف' } : f,
+    );
+    const funds = {
+      title: 'Source of Funds AR',
+      titleAr: '  مصدر الأموال  ',
+      description: 'Where the money comes from',
+      descriptionAr: 'من أين تأتي الأموال',
+      icon: 'FileText',
+      enabled: true,
+      fields: [
+        {
+          id: 'f-funds',
+          name: 'fundsSource',
+          label: 'Source',
+          labelAr: ' المصدر ',
+          hint: 'Pick one',
+          hintAr: '   ',
+          type: 'select',
+          required: true,
+          options: ['Salary', 'Savings'],
+          optionsAr: { Salary: ' راتب ', Savings: '', Gone: 'محذوف' },
+        },
+      ],
+    };
+    const write = await session.put('/v1/admin/kyc-config', {
+      format: 2,
+      steps: [...steps, funds],
+    });
+    expect(write.status, JSON.stringify(write.body).slice(0, 300)).toBe(200);
+
+    const served = (await readSteps()).find((step) => step.title === 'Source of Funds AR')!;
+    expect(served.titleAr).toBe('مصدر الأموال');
+    expect(served.fields[0]).toMatchObject({ labelAr: 'المصدر', optionsAr: { Salary: 'راتب' } });
+    expect(served.fields[0]).not.toHaveProperty('hintAr');
+    expect(
+      (await readSteps())
+        .find((step) => step.slug === 'personal')!
+        .fields.find((f) => f.name === 'firstName')!.labelAr,
+    ).toBe('الاسم الأول');
+
+    const rows = await ctx.db.db.select().from(kycConfigSteps);
+    const row = rows.find((r) => r.id === served.id)!;
+    expect(row.titleAr).toBe('مصدر الأموال');
+    expect(row.descriptionAr).toBe('من أين تأتي الأموال');
+    expect((row.fields as unknown as Field[])[0].optionsAr).toEqual({ Salary: 'راتب' });
+    // Nothing of the platform's Arabic, and neither system list, reaches the table.
+    const stored = JSON.stringify(rows.map((r) => r.fields));
+    expect(stored).not.toContain('الاسم الأول');
+    expect(stored).not.toContain('لبناني');
+    expect(stored).not.toContain('جواز السفر');
+
+    // Cleared again: a null Arabic title is stored as NULL.
+    const again = (await readSteps()).map((step) =>
+      step.id === served.id ? { ...step, titleAr: null } : step,
+    );
+    const clear = await session.put('/v1/admin/kyc-config', { format: 2, steps: again });
+    expect(clear.status).toBe(200);
+    const [cleared] = await ctx.db.db
+      .select()
+      .from(kycConfigSteps)
+      .where(eq(kycConfigSteps.id, served.id));
+    expect(cleared.titleAr).toBeNull();
+  });
+
+  it('serves GET /profile/options with Arabic for every country and nationality offered', async () => {
+    const res = await session.get('/v1/profile/options');
+    expect(res.status).toBe(200);
+    const body = res.body as {
+      countries: string[];
+      nationalities: string[];
+      countryLabelsAr: Record<string, string>;
+      nationalityLabelsAr: Record<string, string>;
+    };
+    expect(Object.keys(body.countryLabelsAr)).toHaveLength(body.countries.length);
+    expect(Object.keys(body.nationalityLabelsAr)).toHaveLength(body.nationalities.length);
+    expect(body.nationalityLabelsAr['Emirati']).toBe('إماراتي');
+  });
+});
+
+describe('a rejection reason’s Arabic, resolved on read (0179)', () => {
+  it('is accepted and returned by the admin routes, and resolved only for the exact catalogue wording', async () => {
+    const created = await session.post('/v1/admin/rejection-reasons', {
+      context: 'kyc',
+      label: 'Arabic RT: photo too dark',
+      labelAr: ' الصورة داكنة جدًا ',
+    });
+    expect(created.status, JSON.stringify(created.body)).toBeLessThan(300);
+    expect(created.body).toMatchObject({ labelAr: 'الصورة داكنة جدًا' });
+
+    const store = new RejectionReasonsStore(ctx.db.db);
+    const arabicOf = await store.arabicFor(['kyc', 'withdrawal']);
+    expect(arabicOf('kyc', 'Arabic RT: photo too dark')).toBe('الصورة داكنة جدًا');
+    // "label — reviewer's note": the label in Arabic, the note as typed (3 Oct 2026).
+    expect(arabicOf('kyc', 'Arabic RT: photo too dark — and blurry')).toBe(
+      'الصورة داكنة جدًا — and blurry',
+    );
+    expect(arabicOf('kyc', 'Arabic RT: something else')).toBeUndefined();
+    expect(arabicOf('withdrawal', 'Arabic RT: photo too dark')).toBeUndefined();
+    expect(arabicOf('kyc', null)).toBeUndefined();
+
+    expect(
+      await store.withReasonArabic('kyc', { rejectionReason: 'Arabic RT: photo too dark' }),
+    ).toEqual({
+      rejectionReason: 'Arabic RT: photo too dark',
+      rejectionReasonAr: 'الصورة داكنة جدًا',
+    });
+    expect(await store.withReasonArabic('kyc', { rejectionReason: 'typed by hand' })).toEqual({
+      rejectionReason: 'typed by hand',
+    });
+
+    // Renaming without `labelAr` keeps it; null clears it.
+    const id = (created.body as { id: string }).id;
+    const kept = await session.put(`/v1/admin/rejection-reasons/${id}`, {
+      label: 'Arabic RT: too dark',
+    });
+    expect(kept.body).toMatchObject({ label: 'Arabic RT: too dark', labelAr: 'الصورة داكنة جدًا' });
+    const cleared = await session.put(`/v1/admin/rejection-reasons/${id}`, {
+      label: 'Arabic RT: too dark',
+      labelAr: null,
+    });
+    expect(cleared.body).toMatchObject({ labelAr: null });
   });
 });

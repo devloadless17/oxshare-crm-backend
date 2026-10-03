@@ -125,6 +125,14 @@ export class ClientVerificationDto {
   @NotClientField(RECORD)
   reason: string | null;
 
+  @ApiPropertyOptional({
+    nullable: true,
+    type: String,
+    description: 'The reason in Arabic as the client was shown it (0179). Null when none.',
+  })
+  @NotClientField(RECORD)
+  reasonAr: string | null;
+
   @ApiProperty({ type: [String], example: ['doc_front'] })
   @NotClientField(RECORD)
   returnedItems: string[];

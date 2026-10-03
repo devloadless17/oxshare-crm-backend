@@ -1,6 +1,7 @@
 import { Controller, Get } from '@nestjs/common';
 import { ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { OfferedCountriesStore } from '../../store/offered-countries.store';
+import { countryLabelsAr, nationalityLabelsAr } from '../../common/kyc/country-options';
 import { REGISTRATION_REQUIRED, VERIFICATION_REQUIRED } from '../../common/kyc/identity-core';
 import { ProfileOptionsDto } from './dto/profile-options.dto';
 
@@ -34,6 +35,9 @@ export class ProfileOptionsController {
     return {
       countries: lists.countries,
       nationalities: lists.nationalities,
+      // The same Arabic the KYC form's `optionsAr` carries (0179) — one source.
+      countryLabelsAr: countryLabelsAr(lists.countries),
+      nationalityLabelsAr: nationalityLabelsAr(lists.nationalities),
       required: {
         registration: [...REGISTRATION_REQUIRED],
         verification: [...VERIFICATION_REQUIRED],

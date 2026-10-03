@@ -10,6 +10,8 @@ import { money, toDecimal } from '../wallet/money';
 import { LIVE_REVENUE_FEED, isLiveRevenueFeed } from './revenue-feed';
 import { AppSettingsStore } from '../../store/app-settings.store';
 import { EmailService } from '../email/email.service';
+import { commissionSummaryReason } from '../email/templates';
+import { parseLocale } from '../../common/i18n/locale';
 import { tradingTermsFrom } from '../../common/trading-terms';
 import { ALERT_KINDS, raiseAlert } from '../../common/logging/alerts';
 import { WalletService } from '../wallet/wallet.service';
@@ -1083,20 +1085,25 @@ export class CommissionService implements CommissionAccrualPort {
        */
       try {
         const [recipient] = await this.db
-          .select({ email: users.email, firstName: users.firstName })
+          .select({ email: users.email, firstName: users.firstName, locale: users.locale })
           .from(users)
           .where(eq(users.id, payout.recipientId))
           .limit(1);
 
         if (recipient) {
+          // A job: the recipient's stored language, for the mail and its reason line.
+          const locale = parseLocale(recipient.locale);
           await this.emails.sendWalletCreditEmail(
             recipient.email,
             recipient.firstName,
             amount,
             payout.currency,
-            payout.kind === 'rebate'
-              ? `Trading rebate on ${payout.count} closed trade(s)`
-              : `Partner commission on ${payout.count} closed trade(s)`,
+            commissionSummaryReason(
+              payout.kind === 'rebate' ? 'rebate' : 'commission',
+              payout.count,
+              locale,
+            ),
+            locale,
           );
         }
       } catch (error) {

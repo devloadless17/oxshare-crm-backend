@@ -9,6 +9,7 @@ import {
 } from '../../common/profile/client-profile';
 import { ALERT_KINDS, raiseAlert } from '../../common/logging/alerts';
 import { normaliseReferralCode } from '../../common/referral-code';
+import { requestLocale } from '../../common/i18n/locale';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { v4 as uuidv4 } from 'uuid';
@@ -55,6 +56,7 @@ import {
 import { PasswordService } from '../../common/security/password.service';
 import { AVATAR_BUCKET, StoredFilesService } from '../../common/uploads/stored-files.service';
 import { LoginAttemptsService } from '../../common/security/login-attempts.service';
+import { localizeMessage } from '../../common/i18n/localize-message';
 import {
   isTokenKind,
   TOKEN_ALGORITHM,
@@ -292,6 +294,9 @@ export class AuthService {
         emailVerificationTokenHash: hashEmailedToken(verificationToken),
         emailVerificationExpiry: verificationExpiry,
         referredByIbUserId,
+        // The language the portal was in when they signed up (X-OxShare-Locale):
+        // what every mail sent outside their own requests will be written in.
+        locale: requestLocale(),
       })
       .catch((error: unknown) => {
         // Two sign-ups for one NEW address at the same moment: the unique index
@@ -343,10 +348,15 @@ export class AuthService {
 
     // The link and the code are bearer credentials. They are emailed and never
     // written to stdout — the link used to be console.logged in every environment.
-    await this.email.sendVerificationEmail(user.email, verificationToken, code);
+    await this.email.sendVerificationEmail(user.email, verificationToken, code, requestLocale());
     this.logger.log(`Verification email dispatched to ${user.email}`);
 
-    return { message: 'We have sent a 6-digit code to your email to confirm it.' };
+    return {
+      message: localizeMessage(
+        'We have sent a 6-digit code to your email to confirm it.',
+        requestLocale(),
+      ),
+    };
   }
 
   /**
@@ -518,7 +528,10 @@ export class AuthService {
     if (user.emailVerificationConsumedAt && user.emailVerified) {
       return {
         status: 'already_verified',
-        message: 'This link has already been used. Your email is verified — you can sign in.',
+        message: localizeMessage(
+          'This link has already been used. Your email is verified — you can sign in.',
+          requestLocale(),
+        ),
       };
     }
 
@@ -566,13 +579,16 @@ export class AuthService {
     if (!redeemed) {
       return {
         status: 'already_verified',
-        message: 'This link has already been used. Your email is verified — you can sign in.',
+        message: localizeMessage(
+          'This link has already been used. Your email is verified — you can sign in.',
+          requestLocale(),
+        ),
       };
     }
 
     return {
       status: 'verified',
-      message: 'Email verified successfully. You can now log in.',
+      message: localizeMessage('Email verified successfully. You can now log in.', requestLocale()),
     };
   }
 
@@ -587,7 +603,10 @@ export class AuthService {
     const user = await this.users.findByEmail(email);
     if (user) await this.sendVerification(user);
     return {
-      message: 'If that address has an account waiting for confirmation, a new code is on its way.',
+      message: localizeMessage(
+        'If that address has an account waiting for confirmation, a new code is on its way.',
+        requestLocale(),
+      ),
     };
   }
 
@@ -617,7 +636,9 @@ export class AuthService {
     );
     if (!issued) return;
     this.recordVerificationSend(user.email);
-    await this.email.sendVerificationEmail(user.email, token, code);
+    // The language of the screen that asked — resend may come from an anonymous
+    // visitor, and a sign-in from any device; the request is what they read.
+    await this.email.sendVerificationEmail(user.email, token, code, requestLocale());
     this.logger.log(`Verification code and link sent to ${user.email}`);
   }
 
@@ -719,7 +740,10 @@ export class AuthService {
    */
   async requestPasswordReset(email: string) {
     const generic = {
-      message: 'If an account exists for that address, a reset link is on its way.',
+      message: localizeMessage(
+        'If an account exists for that address, a reset link is on its way.',
+        requestLocale(),
+      ),
     };
 
     const user = await this.users.findByEmail(email);
@@ -737,7 +761,9 @@ export class AuthService {
       passwordResetExpiry: new Date(Date.now() + 30 * 60 * 1000),
     });
 
-    await this.email.sendPasswordResetEmail(user.email, token);
+    // The REQUEST's language: whoever asked is reading the portal in it, and the
+    // visitor is anonymous until the link is used.
+    await this.email.sendPasswordResetEmail(user.email, token, requestLocale());
     // The recipient, never the token — the link is a credential (R-6.3).
     this.logger.log(`Password reset requested for ${user.email}`);
     return generic;
@@ -808,7 +834,12 @@ export class AuthService {
     await this.refreshTokens.revokeAllForSubject('portal', user.id);
 
     this.logger.log(`Password reset completed for ${user.email}; all sessions revoked`);
-    return { message: 'Your password has been updated. Please sign in again.' };
+    return {
+      message: localizeMessage(
+        'Your password has been updated. Please sign in again.',
+        requestLocale(),
+      ),
+    };
   }
 
   // ─── Login ────────────────────────────────────────────────────────────────────
@@ -1112,7 +1143,7 @@ export class AuthService {
     if (userId) return this.logout(userId, res);
 
     this.clearAuthCookies(res);
-    return { message: 'Logged out successfully.' };
+    return { message: localizeMessage('Logged out successfully.', requestLocale()) };
   }
 
   /**
@@ -1146,7 +1177,7 @@ export class AuthService {
     // logging out on one device must not leave the others live (R-3.3).
     await this.refreshTokens.revokeAllForSubject('portal', userId);
     this.clearAuthCookies(res);
-    return { message: 'Logged out successfully.' };
+    return { message: localizeMessage('Logged out successfully.', requestLocale()) };
   }
 
   /**
@@ -1308,6 +1339,7 @@ export class AuthService {
       stateProvince: user.stateProvince,
       postalCode: user.postalCode,
       createdAt: user.createdAt,
+      locale: user.locale ?? 'en',
       /*
        * A URL, composed here, from a FILENAME stored in the column.
        *
@@ -1504,11 +1536,14 @@ export class AuthService {
       `Password changed for ${user.email}; all ${revoked} session(s) revoked, caller re-issued`,
     );
 
+    // Printed as is by the portal's change-password form, so in the client's language.
     return {
-      message:
+      message: localizeMessage(
         others > 0
           ? `Your password has been updated. ${others} other session(s) were signed out.`
           : 'Your password has been updated.',
+        requestLocale(),
+      ),
     };
   }
 
@@ -1571,6 +1606,6 @@ export class AuthService {
     if (revoked === 0) throw new NotFoundError('That session no longer exists.');
 
     this.logger.log(`Session ${familyId} revoked by its owner (${revoked} token(s))`);
-    return { message: 'That session has been signed out.' };
+    return { message: localizeMessage('That session has been signed out.', requestLocale()) };
   }
 }

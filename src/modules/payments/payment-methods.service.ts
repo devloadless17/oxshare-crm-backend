@@ -30,6 +30,8 @@ import type { Actor } from '../../common/security/actor';
 import type { CreatePaymentMethodDto, UpdatePaymentMethodDto } from './dto/payment-method.dto';
 import { PaymentProviderRegistry } from './providers/payment-provider-registry';
 import { normaliseProofFields } from '../../common/payments/proof-fields';
+import { arabicText } from '../../common/dto/arabic-text';
+import { registerLabelTwins } from '../../common/i18n/localize-message';
 import {
   assertDepositMethodKeyAllowed,
   generateMethodKey,
@@ -403,6 +405,8 @@ export class PaymentMethodsService {
   async assertUsable(key: string, clientCountry: string | null): Promise<ClientPaymentMethod> {
     const row = await this.findOne(key);
     if (!row) throw new NotFoundError(`Unknown payment method ${this.normalise(key)}.`);
+    // Every refusal from here on names the method — in Arabic for an Arabic reader.
+    registerLabelTwins([[row.name, row.nameAr]]);
     if (!row.enabled) {
       throw new ValidationError(`${row.name} is not currently available. Choose another method.`);
     }
@@ -497,6 +501,7 @@ export class PaymentMethodsService {
       .values({
         key,
         name: dto.name.trim(),
+        nameAr: arabicText(dto.nameAr),
         internalLabel,
         currency,
         logoUrl: dto.logoUrl ?? null,
@@ -523,6 +528,7 @@ export class PaymentMethodsService {
      */
     this.audit.record(actor.id, 'payment_method.create', 'payment_method', row.key, {
       name: row.name,
+      nameAr: row.nameAr,
       internalLabel: row.internalLabel,
       currency: row.currency,
       enabled: row.enabled,
@@ -594,6 +600,7 @@ export class PaymentMethodsService {
       .update(paymentMethods)
       .set({
         ...(dto.name !== undefined ? { name: dto.name.trim() } : {}),
+        ...(dto.nameAr !== undefined ? { nameAr: arabicText(dto.nameAr) } : {}),
         ...(internalLabel !== undefined ? { internalLabel } : {}),
         ...(currency !== undefined ? { currency } : {}),
         ...(dto.logoUrl !== undefined ? { logoUrl: dto.logoUrl } : {}),
@@ -623,6 +630,7 @@ export class PaymentMethodsService {
     const changed: Record<string, { before: unknown; after: unknown }> = {};
     for (const field of [
       'name',
+      'nameAr',
       'internalLabel',
       'currency',
       'enabled',

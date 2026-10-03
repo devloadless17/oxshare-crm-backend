@@ -1,5 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { NoClientFields } from '../../../common/security/client-field.decorator';
+import { OptionalArabicText } from '../../../common/dto/arabic-text';
 import {
   IsArray,
   IsBoolean,
@@ -53,8 +54,23 @@ export class ProductDto {
   @ApiProperty({ example: 'Standard' })
   name: string;
 
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    example: 'قياسي',
+    description: 'The name in Arabic (0179); null = not translated, show `name`.',
+  })
+  nameAr: string | null;
+
   @ApiPropertyOptional({ type: String, nullable: true })
   description: string | null;
+
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    description: 'The description in Arabic (0179); null = not translated, show `description`.',
+  })
+  descriptionAr: string | null;
 
   @ApiProperty({ description: 'A disabled product stops being sold and keeps its accounts.' })
   enabled: boolean;
@@ -93,11 +109,19 @@ export class UpsertProductDto {
   @MaxLength(80)
   name: string;
 
+  /** A PUT that omits it keeps the stored Arabic; null or blank clears it. */
+  @OptionalArabicText(80, 'قياسي')
+  nameAr?: string | null;
+
   @ApiPropertyOptional({ type: String, nullable: true, maxLength: 2000 })
   @IsOptional()
   @IsString()
   @MaxLength(2000)
   description?: string | null;
+
+  /** A PUT that omits it keeps the stored Arabic; null or blank clears it. */
+  @OptionalArabicText(2000, 'حسابات بفروق أسعار منخفضة وعمولة ثابتة.')
+  descriptionAr?: string | null;
 
   @ApiProperty({ example: true })
   @IsBoolean()
@@ -209,12 +233,27 @@ export class AgencyDto {
   })
   name: string;
 
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    example: 'الوكالة الذهبية',
+    description: 'The name in Arabic (0179); null = not translated, show `name`.',
+  })
+  nameAr: string | null;
+
   @ApiPropertyOptional({
     type: String,
     nullable: true,
     description: 'Read by an applicant deciding which agency to request. Worth writing well.',
   })
   description: string | null;
+
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    description: 'The description in Arabic (0179); null = not translated, show `description`.',
+  })
+  descriptionAr: string | null;
 
   @ApiProperty({
     description: 'A disabled agency stops taking applications and keeps its partners.',
@@ -250,11 +289,19 @@ export class UpsertAgencyDto {
   @MaxLength(80)
   name: string;
 
+  /** A PUT that omits it keeps the stored Arabic; null or blank clears it. */
+  @OptionalArabicText(80, 'الوكالة الذهبية')
+  nameAr?: string | null;
+
   @ApiPropertyOptional({ type: String, nullable: true, maxLength: 2000 })
   @IsOptional()
   @IsString()
   @MaxLength(2000)
   description?: string | null;
+
+  /** A PUT that omits it keeps the stored Arabic; null or blank clears it. */
+  @OptionalArabicText(2000)
+  descriptionAr?: string | null;
 
   @ApiProperty({ example: true })
   @IsBoolean()
@@ -304,8 +351,23 @@ export class PublicAgencyDto {
   @ApiProperty({ example: 'Gold Agency' })
   name: string;
 
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    example: 'الوكالة الذهبية',
+    description: 'The name in Arabic (0179); null = not translated, show `name`.',
+  })
+  nameAr: string | null;
+
   @ApiPropertyOptional({ type: String, nullable: true })
   description: string | null;
+
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    description: 'The description in Arabic (0179); null = not translated, show `description`.',
+  })
+  descriptionAr: string | null;
 
   @ApiProperty({
     type: [String],
@@ -313,4 +375,14 @@ export class PublicAgencyDto {
     description: 'Product NAMES, not ids — the applicant is reading, not selecting.',
   })
   products: string[];
+
+  @ApiProperty({
+    type: 'array',
+    items: { type: 'string', nullable: true },
+    example: ['قياسي', null],
+    description:
+      'The same products in Arabic (0179), index for index with `products`; a null item is ' +
+      'untranslated — show that index of `products`.',
+  })
+  productsAr: (string | null)[];
 }

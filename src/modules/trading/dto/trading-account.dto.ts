@@ -104,6 +104,16 @@ export class TradingAccountDto {
   })
   product: string | null;
 
+  @ApiProperty({
+    type: 'string',
+    nullable: true,
+    example: 'قياسي',
+    description:
+      "The same product's name in Arabic (0179), from the same catalogue row as `product`. " +
+      'Null when untranslated or when there is no product — show `product`.',
+  })
+  productAr: string | null;
+
   @ApiProperty({ enum: TRADING_ENVIRONMENTS })
   environment: TradingEnvironment;
 

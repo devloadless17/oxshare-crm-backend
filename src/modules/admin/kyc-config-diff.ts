@@ -62,6 +62,14 @@ function describeStepChanges(before: KycStepConfig, after: KycStepConfig): strin
   if ((before.description ?? '') !== (after.description ?? '')) {
     changes.push(`${name}: description changed`);
   }
+  if ((before.titleAr ?? '') !== (after.titleAr ?? '')) {
+    changes.push(
+      `${name}: Arabic title ${after.titleAr ? `set to "${after.titleAr}"` : 'removed'}`,
+    );
+  }
+  if ((before.descriptionAr ?? '') !== (after.descriptionAr ?? '')) {
+    changes.push(`${name}: Arabic description changed`);
+  }
   if (
     after.slug !== 'personal' &&
     (before.evidenceRequired !== false) !== (after.evidenceRequired !== false)
@@ -131,6 +139,17 @@ function describeStepChanges(before: KycStepConfig, after: KycStepConfig): strin
         `${name}: "${field.label}" choices changed to ${joined(field.options) || 'none'}`,
       );
     }
+    if ((was.labelAr ?? '') !== (field.labelAr ?? '')) {
+      changes.push(
+        `${name}: "${field.label}" Arabic label ${field.labelAr ? `set to "${field.labelAr}"` : 'removed'}`,
+      );
+    }
+    if ((was.hintAr ?? '') !== (field.hintAr ?? '')) {
+      changes.push(`${name}: "${field.label}" Arabic hint changed`);
+    }
+    if (arabicChoices(was.optionsAr) !== arabicChoices(field.optionsAr)) {
+      changes.push(`${name}: "${field.label}" Arabic choices changed`);
+    }
   }
   return changes;
 }
@@ -151,6 +170,11 @@ function describeField(field: KycFieldConfig): string {
 
 function documentName(type: string): string {
   return documentForFieldType(type)?.label ?? type;
+}
+
+/** A field's Arabic choices, comparably — order-free, since they are keyed. */
+function arabicChoices(optionsAr: Readonly<Record<string, string>> | undefined): string {
+  return JSON.stringify(Object.entries(optionsAr ?? {}).sort(([a], [b]) => a.localeCompare(b)));
 }
 
 function joined(options: readonly string[] | undefined): string {

@@ -42,6 +42,7 @@ import {
   KycStepDto,
   RejectDto,
   RejectionReasonDto,
+  UpdateRejectionReasonDto,
   CorrectKycIdentityDto,
   ReverifyKycDto,
 } from './dto/requests/compliance.dto';
@@ -379,6 +380,7 @@ export class AdminComplianceController {
       dto.reason,
       dto.rejectedFields,
       dto.reasonId,
+      dto.reasonAr,
     );
   }
 
@@ -407,7 +409,13 @@ export class AdminComplianceController {
     @Body() dto: ReverifyKycDto,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
-    return this.compliance.requestReverification(userId, req.admin, dto.reason, dto.items);
+    return this.compliance.requestReverification(
+      userId,
+      req.admin,
+      dto.reason,
+      dto.items,
+      dto.reasonAr,
+    );
   }
 
   // ── Rejection reasons (FR-ADM-03 configurable list) ───────────────────────
@@ -439,7 +447,7 @@ export class AdminComplianceController {
     @Body() dto: RejectionReasonDto,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
-    return this.compliance.createRejectionReason(dto.context, dto.label, req.admin);
+    return this.compliance.createRejectionReason(dto.context, dto.label, req.admin, dto.labelAr);
   }
 
   @Put('rejection-reasons/:id')
@@ -452,10 +460,10 @@ export class AdminComplianceController {
   @Audited('rejection_reason.update')
   updateRejectionReason(
     @Param('id', UuidParam) id: string,
-    @Body('label') label: string,
+    @Body() dto: UpdateRejectionReasonDto,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
-    return this.compliance.updateRejectionReason(id, label, req.admin);
+    return this.compliance.updateRejectionReason(id, dto.label, req.admin, dto.labelAr);
   }
 
   @Delete('rejection-reasons/:id')
@@ -526,13 +534,15 @@ export class AdminComplianceController {
   @ApiOkResponse({ type: [KycFieldConfigDto] })
   @NotClientScoped('A catalogue of the platform’s identity fields — no client data.')
   getIdentityCatalogue() {
-    return IDENTITY_FIELDS.map(({ id, name, label, type, required, hint }) => ({
+    return IDENTITY_FIELDS.map(({ id, name, label, labelAr, type, required, hint, hintAr }) => ({
       id,
       name,
       label,
+      ...(labelAr ? { labelAr } : {}),
       type,
       required,
       ...(hint ? { hint } : {}),
+      ...(hint && hintAr ? { hintAr } : {}),
     }));
   }
 
@@ -589,7 +599,8 @@ export class AdminComplianceController {
     @Body() dto: KycStepDto,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
-    return this.compliance.updateKycStep(id, dto, req.admin);
+    // A null Arabic (cleared) is normalised away by the store on write.
+    return this.compliance.updateKycStep(id, dto as unknown as Partial<KycStepConfig>, req.admin);
   }
 
   @Delete('kyc-config/steps/:id')

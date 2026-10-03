@@ -11,9 +11,11 @@ import {
   IsString,
   IsUUID,
   MaxLength,
+  ValidateBy,
   ValidateNested,
 } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
+import { OptionalArabicText } from '../../../../common/dto/arabic-text';
 import type { RejectionContext } from '../../../../store/rejection-reasons.store';
 import type { KycDocumentType } from '../../../../store/kyc-config.store';
 import { DOCUMENT_CATALOGUE, documentFieldType } from '../../../../common/kyc/document-catalogue';
@@ -60,7 +62,9 @@ const KYC_FIELD_TYPES = [
 // `deposit` joins them with the offline deposit desk: a refused receipt needs a
 // reason a client can act on, and typing it freehand every time is how a queue
 // ends up with twelve spellings of "the image is unreadable".
-const REJECTION_CONTEXTS = ['kyc', 'withdrawal', 'deposit'] as const;
+// 'partner' too: the enum has carried it since 0030, and the partner reject dialog
+// reads its reasons from this same catalogue.
+const REJECTION_CONTEXTS = ['kyc', 'withdrawal', 'deposit', 'partner'] as const;
 
 /** The most a reviewer's reason may hold — it is emailed and shown as written. */
 const KYC_REASON_MAX = 500;
@@ -100,6 +104,13 @@ export class RejectDto {
   @IsOptional()
   reasonId?: string;
 
+  /**
+   * The free-text `reason` in Arabic, for a client reading the portal in Arabic
+   * (0179). Stored beside the English; a configured reason brings its own Arabic.
+   */
+  @OptionalArabicText(KYC_REASON_MAX, 'جواز السفر منتهي الصلاحية')
+  reasonAr?: string | null;
+
   @ApiPropertyOptional({
     type: [String],
     description:
@@ -123,6 +134,10 @@ export class ReverifyKycDto {
   @KycReason('Your passport on file has expired. Please upload your new one.')
   reason: string;
 
+  /** `reason` in Arabic, for a client reading in Arabic (0179). Optional. */
+  @OptionalArabicText(KYC_REASON_MAX, 'انتهت صلاحية جواز سفرك المسجَّل. يُرجى رفع الجواز الجديد.')
+  reasonAr?: string | null;
+
   @ApiProperty({ type: [String], example: ['doc_front', 'address'], minItems: 1 })
   @IsArray()
   @ArrayNotEmpty({ message: 'Name at least one thing for the client to update.' })
@@ -130,6 +145,9 @@ export class ReverifyKycDto {
   @MaxLength(100, { each: true })
   items: string[];
 }
+
+/** The most a rejection reason may hold — the column's width. */
+const REJECTION_REASON_MAX = 500;
 
 export class RejectionReasonDto {
   @ApiProperty({ enum: REJECTION_CONTEXTS })
@@ -139,6 +157,57 @@ export class RejectionReasonDto {
   @ApiProperty({ example: 'Document expired' })
   @IsString()
   label: string;
+
+  /** What a client reading the portal in Arabic is shown for this reason (0179). */
+  @OptionalArabicText(REJECTION_REASON_MAX, 'الوثيقة منتهية الصلاحية')
+  labelAr?: string | null;
+}
+
+/**
+ * Body of `PUT /admin/rejection-reasons/:id`. `labelAr` omitted keeps the
+ * stored Arabic; null or blank clears it.
+ */
+export class UpdateRejectionReasonDto {
+  @ApiProperty({ example: 'Document expired', maxLength: REJECTION_REASON_MAX })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(REJECTION_REASON_MAX)
+  label: string;
+
+  @OptionalArabicText(REJECTION_REASON_MAX, 'الوثيقة منتهية الصلاحية')
+  labelAr?: string | null;
+}
+
+/** The most one choice's Arabic may hold, and how many choices may carry one. */
+const OPTION_AR_MAX = 200;
+const OPTIONS_AR_MAX_KEYS = 500;
+
+/**
+ * `optionsAr`: an object whose every value is a string of at most
+ * {@link OPTION_AR_MAX} characters. Keys are the field's English option values;
+ * one that names no option is dropped on save (`kyc-config.store.ts`), not
+ * refused — an operator who deletes a choice has not made a mistake.
+ */
+function IsArabicOptions() {
+  return ValidateBy({
+    name: 'isArabicOptions',
+    validator: {
+      validate: (value: unknown) => {
+        if (value === null || value === undefined) return true;
+        if (typeof value !== 'object' || Array.isArray(value)) return false;
+        const entries = Object.entries(value as Record<string, unknown>);
+        return (
+          entries.length <= OPTIONS_AR_MAX_KEYS &&
+          entries.every(
+            ([key, text]) =>
+              key.length <= 200 && typeof text === 'string' && text.length <= OPTION_AR_MAX,
+          )
+        );
+      },
+      defaultMessage: () =>
+        `optionsAr must map each choice to its Arabic label (text of at most ${OPTION_AR_MAX} characters).`,
+    },
+  });
 }
 
 export class KycFieldDto {
@@ -176,6 +245,30 @@ export class KycFieldDto {
   @IsString()
   @IsOptional()
   hint?: string;
+
+  /*
+   * The Arabic twins (0179). On the platform's own fields (`system`, documents,
+   * the country and nationality lists) they are ACCEPTED AND IGNORED like the
+   * English label: the platform's Arabic is rebuilt on every read.
+   */
+  @OptionalArabicText(200, 'الاسم الأول')
+  labelAr?: string | null;
+
+  @OptionalArabicText(500, 'كما يظهر في وثيقة هويتك')
+  hintAr?: string | null;
+
+  @ApiPropertyOptional({
+    type: 'object',
+    additionalProperties: { type: 'string' },
+    nullable: true,
+    description:
+      'Arabic label per choice, keyed by the ENGLISH option value. Trimmed; blank entries and ' +
+      'keys that are not among `options` are dropped on save.',
+    example: { Employed: 'موظف' },
+  })
+  @IsOptional()
+  @IsArabicOptions()
+  optionsAr?: Record<string, string> | null;
 
   /**
    * ACCEPTED AND IGNORED. The GET hydrates every document field with
@@ -247,6 +340,13 @@ export class KycStepDto {
   @IsString()
   @IsOptional()
   description?: string;
+
+  /** The Arabic twins (0179): blank or null = not translated. */
+  @OptionalArabicText(200, 'المعلومات الشخصية')
+  titleAr?: string | null;
+
+  @OptionalArabicText(2000)
+  descriptionAr?: string | null;
 
   @ApiPropertyOptional({ description: 'lucide icon name.', example: 'User' })
   @IsString()

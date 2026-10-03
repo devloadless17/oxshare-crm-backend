@@ -432,6 +432,7 @@ export class AdminMoneyController {
         tradingAccountId: id,
         amount: dto.amount,
         reason: dto.reason,
+        reasonAr: dto.reasonAr,
         direction: dto.direction,
       },
       reference,
@@ -583,7 +584,7 @@ export class AdminMoneyController {
     @Body() dto: WithdrawalRejectDto,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
-    return this.money.rejectWithdrawal(id, req.admin, dto.reason, dto.reasonId);
+    return this.money.rejectWithdrawal(id, req.admin, dto.reason, dto.reasonId, dto.reasonAr);
   }
 
   /*
@@ -668,7 +669,7 @@ export class AdminMoneyController {
     @Body() dto: DepositRejectDto,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
-    return this.money.rejectDeposit(id, req.admin, dto.reason, dto.reasonId);
+    return this.money.rejectDeposit(id, req.admin, dto.reason, dto.reasonId, dto.reasonAr);
   }
 
   @Patch('withdrawals/:id/settle')
@@ -737,7 +738,7 @@ export class AdminMoneyController {
     @Body() dto: WithdrawalRejectDto,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
-    return this.money.cancelWithdrawal(id, req.admin, dto.reason, dto.reasonId);
+    return this.money.cancelWithdrawal(id, req.admin, dto.reason, dto.reasonId, dto.reasonAr);
   }
 
   /** RESEND a payout a person must decide (0173, every provider). */
@@ -991,7 +992,7 @@ export class AdminMoneyController {
     @Body() dto: AbandonTransferDto,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
-    return transferView(await this.money.abandonTransfer(id, req.admin, dto.reason));
+    return transferView(await this.money.abandonTransfer(id, req.admin, dto.reason, dto.reasonAr));
   }
 
   /**

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { IDENTITY_FIELDS } from '../../common/kyc/identity-core';
+import { requestContext } from '../../common/logging/request-context';
 import {
   approvalBlockers,
   stepStates,
@@ -355,5 +356,82 @@ describe('what the reviewer returned', () => {
     // On file: the utility bill (COMPLETE). Left over: the agreement's additional page.
     const switched = stateOf('address', { ...COMPLETE, rejectedFields: ['address_proof_2'] });
     expect(switched).toMatchObject({ complete: true, missing: [], returned: [] });
+  });
+});
+
+describe('what is owed, named in the reader’s language (0179)', () => {
+  const arabic = <T>(run: () => T): T => requestContext.run({ requestId: 't', locale: 'ar' }, run);
+
+  const ARABIC_STEPS: StateStep[] = STEPS.map((step) =>
+    step.slug === 'additional-documents'
+      ? {
+          ...step,
+          titleAr: 'وثائق إضافية',
+          fields: [
+            { ...step.fields[0], labelAr: 'عقد الإيجار' },
+            step.fields[1], // no Arabic: falls back to the English
+          ],
+        }
+      : step.slug === 'selfie'
+        ? { ...step, fields: [{ ...step.fields[0], labelAr: 'صورة سيلفي' }] }
+        : step,
+  );
+
+  it('names a document page, an identity detail, the selfie and a broker’s question in Arabic', () => {
+    const sub: StateSubmission = {
+      ...COMPLETE,
+      personalInfo: { ...(COMPLETE.personalInfo as object), firstName: '' },
+      document: { docType: 'national_id', frontFilePath: 'uploads/kyc/front.png' },
+      selfie: null,
+      stepData: {},
+    };
+    const labels = arabic(() =>
+      stepStates(ARABIC_STEPS, sub, NOW).flatMap((state) => state.missing.map((m) => m.label)),
+    );
+    expect(labels).toEqual([
+      'الاسم الأول',
+      'بطاقة الهوية الوطنية: الوجه الخلفي',
+      'صورة سيلفي',
+      'عقد الإيجار',
+      'I live here',
+    ]);
+  });
+
+  it('names the choice of document by the step’s Arabic title, and a returned page in Arabic', () => {
+    const steps = ARABIC_STEPS.map((step) =>
+      step.slug === 'address' ? { ...step, titleAr: 'إثبات العنوان' } : step,
+    );
+    const owed = arabic(
+      () => stateOf('address', { ...COMPLETE, addressProof: null }, steps).missing,
+    );
+    expect(owed).toEqual([{ id: 'docType', label: 'إثبات العنوان', kind: 'choice' }]);
+
+    const returned = arabic(
+      () =>
+        stateOf(
+          'document',
+          {
+            ...COMPLETE,
+            document: {
+              docType: 'national_id',
+              frontFilePath: 'uploads/kyc/f.png',
+              backFilePath: 'uploads/kyc/b.png',
+            },
+            rejectedFields: ['doc_back'],
+          },
+          steps,
+        ).returned,
+    );
+    expect(returned.map((item) => item.label)).toEqual(['بطاقة الهوية الوطنية (الوجه الخلفي)']);
+  });
+
+  it('stays English, word for word, outside an Arabic request', () => {
+    const sub: StateSubmission = {
+      ...COMPLETE,
+      document: { docType: 'national_id', frontFilePath: 'uploads/kyc/front.png' },
+    };
+    expect(stateOf('document', sub, ARABIC_STEPS).missing.map((m) => m.label)).toEqual([
+      'National ID: Back Side',
+    ]);
   });
 });

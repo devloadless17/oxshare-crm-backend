@@ -15,6 +15,7 @@ import {
   PRODUCT_BY_ID,
   PRODUCT_GROUP_JOIN_ON,
   PRODUCT_NAME,
+  PRODUCT_NAME_AR,
 } from '../../common/account-product';
 import {
   ExternalServiceError,
@@ -178,6 +179,7 @@ export class TradingService {
         name: tradingAccounts.name,
         mt5Group: tradingAccounts.mt5Group,
         product: PRODUCT_NAME,
+        productAr: PRODUCT_NAME_AR,
         environment: tradingAccounts.environment,
         currency: tradingAccounts.currency,
         balance: tradingAccounts.balance,
@@ -322,6 +324,7 @@ export class TradingService {
         name: tradingAccounts.name,
         mt5Group: tradingAccounts.mt5Group,
         product: PRODUCT_NAME,
+        productAr: PRODUCT_NAME_AR,
         environment: tradingAccounts.environment,
         currency: tradingAccounts.currency,
         balance: tradingAccounts.balance,

@@ -16,6 +16,7 @@ import {
 import { NoClientFields, NotClientField } from '../../../common/security/client-field.decorator';
 import { LOGO_URL_MESSAGE, LOGO_URL_PATTERN } from './payment-method.dto';
 import { METHOD_KEY_MESSAGE, METHOD_KEY_PATTERN } from '../method-keys';
+import { OptionalArabicText } from '../../../common/dto/arabic-text';
 
 /**
  * A WITHDRAWAL method as the console manages it — one `withdrawal_payment_methods`
@@ -45,6 +46,14 @@ export class AdminWithdrawalMethodDto {
 
   @ApiProperty({ example: 'Whish Money', description: 'What the client picks from.' })
   name: string;
+
+  @ApiProperty({
+    type: 'string',
+    nullable: true,
+    example: 'ويش ماني',
+    description: 'The name in Arabic (0179); null = not translated, show `name`.',
+  })
+  nameAr: string | null;
 
   @ApiProperty({ type: String, nullable: true })
   logoUrl: string | null;
@@ -164,6 +173,9 @@ export class CreateWithdrawalMethodDto {
   @Length(1, 80)
   name: string;
 
+  @OptionalArabicText(80, 'تحويل مصرفي')
+  nameAr?: string | null;
+
   @ApiPropertyOptional({
     maxLength: 80,
     example: 'OMT – Hamra branch',
@@ -238,6 +250,10 @@ export class UpdateWithdrawalMethodDto {
   @IsString()
   @Length(1, 80)
   name?: string;
+
+  /** Omitted keeps the stored Arabic; null or blank clears it. */
+  @OptionalArabicText(80, 'تحويل مصرفي')
+  nameAr?: string | null;
 
   @ApiPropertyOptional({ maxLength: 2048, example: '/v1/uploads/payment-logos/8f2c….png' })
   @IsOptional()

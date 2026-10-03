@@ -1,4 +1,18 @@
-import { button, esc, fine, layout, p, panel, type RenderedEmail } from './layout';
+import type { Locale } from '../../../common/i18n/locale';
+import {
+  button,
+  buttonAr,
+  esc,
+  fine,
+  fineAr,
+  layout,
+  layoutAr,
+  p,
+  pAr,
+  panel,
+  panelAr,
+  type RenderedEmail,
+} from './layout';
 
 /**
  * "Confirm your email" — sent on registration, on resend, and when an
@@ -24,7 +38,12 @@ import { button, esc, fine, layout, p, panel, type RenderedEmail } from './layou
  * finished URL rather than the token itself: a template that built the link
  * would be a second place that knows the token, and one of them would log it.
  */
-export function verifyEmail(verificationUrl: string, code?: string): RenderedEmail {
+export function verifyEmail(
+  verificationUrl: string,
+  code?: string,
+  locale: Locale = 'en',
+): RenderedEmail {
+  if (locale === 'ar') return verifyEmailAr(verificationUrl, code);
   if (!code) {
     return {
       subject: 'Verify Your Email — OxShare Portal',
@@ -62,6 +81,53 @@ export function verifyEmail(verificationUrl: string, code?: string): RenderedEma
         fine(
           'If you did not create an OxShare account, you can ignore this email — ' +
             'nothing happens unless the code or the link is used.',
+        ),
+      ].join('\n'),
+    ),
+  };
+}
+
+/**
+ * The Arabic twin. Same order — the code first, large and LEFT-TO-RIGHT so the
+ * digits read as typed, then the link — and the code still leads the subject
+ * so a phone can offer it from the notification.
+ */
+function verifyEmailAr(verificationUrl: string, code?: string): RenderedEmail {
+  if (!code) {
+    return {
+      subject: 'تأكيد بريدك الإلكتروني — OXShare',
+      html: layoutAr(
+        'مرحباً بك في بوابة OXShare',
+        [
+          pAr('يُرجى تأكيد عنوان بريدك الإلكتروني لإكمال تسجيلك.'),
+          buttonAr(verificationUrl, 'تأكيد البريد الإلكتروني'),
+          fineAr('إذا لم تطلب هذه الرسالة، يُرجى تجاهلها.'),
+        ].join('\n'),
+      ),
+    };
+  }
+
+  return {
+    subject: `${code} هو رمز التحقق الخاص بك في OXShare`,
+    html: layoutAr(
+      'تأكيد بريدك الإلكتروني',
+      [
+        pAr(
+          'شكراً لتسجيلك في OXShare. أدخل هذا الرمز في شاشة التأكيد لتأكيد بريدك ' +
+            'الإلكتروني وتسجيل الدخول:',
+        ),
+        panelAr(
+          `<div dir="ltr" style="font-size: 32px; font-weight: 700; letter-spacing: 10px; text-align: center; direction: ltr; unicode-bidi: isolate; font-family: 'Courier New', Courier, monospace;">${esc(code)}</div>`,
+        ),
+        fineAr(
+          'تنتهي صلاحية الرمز خلال 15 دقيقة، ولا يمكن استخدامه إلا مرة واحدة. لا تشاركه مع أي ' +
+            'شخص — لن تطلبه منك OXShare أبداً.',
+        ),
+        pAr('هل تفتح هذه الرسالة على جهاز آخر؟ يمكنك التأكيد عبر رابط بدلاً من ذلك:'),
+        buttonAr(verificationUrl, 'التأكيد عبر رابط'),
+        fineAr(
+          'إذا لم تُنشئ حساباً في OXShare، يمكنك تجاهل هذه الرسالة — لن يحدث شيء ما لم ' +
+            'يُستخدم الرمز أو الرابط.',
         ),
       ].join('\n'),
     ),

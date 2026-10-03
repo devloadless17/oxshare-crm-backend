@@ -22,6 +22,7 @@ import { enumQuery } from '../../common/query-params';
 import { positionStatusEnum } from '../../database/schema';
 import { TradingService } from './trading.service';
 import { TradingAccountDto } from './dto/trading-account.dto';
+import { SelfServiceOfferDto } from './dto/self-service.dto';
 import { PositionDto } from './dto/position.dto';
 import {
   AccountHistoryDto,
@@ -282,7 +283,8 @@ export class TradingController {
       'actually be denominated in. An environment with no types is switched off and the portal ' +
       'hides it.',
   })
-  async selfService(@Req() req: Request & { user: { id: number } }) {
+  @ApiOkResponse({ type: SelfServiceOfferDto })
+  async selfService(@Req() req: Request & { user: { id: number } }): Promise<SelfServiceOfferDto> {
     /*
      * Currencies come from MT5 rather than from the catalogue.
      *
@@ -311,6 +313,8 @@ export class TradingController {
         group: option.mt5Group,
         currency: known.get(option.mt5Group.toLowerCase()) ?? option.currency,
         product: option.productName,
+        // The product's name in Arabic (0179); null = untranslated, show `product`.
+        productAr: option.productNameAr,
         // Sent back on create (0142): a group may back several products, so
         // the product is what identifies which offer the client picked.
         productId: option.productId,

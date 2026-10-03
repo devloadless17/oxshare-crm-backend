@@ -7,6 +7,8 @@ import {
 } from '@nestjs/common';
 import { Response } from 'express';
 import { MAX_UPLOAD_BYTES } from './upload-limits';
+import { localizeMessage } from '../../common/i18n/localize-message';
+import { requestLocale } from '../../common/i18n/locale';
 
 /**
  * Turn multer's "File too large" into something a client can act on.
@@ -41,10 +43,13 @@ export class UploadSizeFilter implements ExceptionFilter {
     res.status(HttpStatus.PAYLOAD_TOO_LARGE).json({
       statusCode: HttpStatus.PAYLOAD_TOO_LARGE,
       code: 'PAYLOAD_TOO_LARGE',
-      message:
+      // In the portal's language — this filter answers instead of AllExceptionsFilter.
+      message: localizeMessage(
         `That file is larger than the ${limitMb}MB limit. ` +
-        'Most phone cameras can be set to a smaller size, or you can retake the photo — a clear ' +
-        'photo of the document is usually well under the limit.',
+          'Most phone cameras can be set to a smaller size, or you can retake the photo — a clear ' +
+          'photo of the document is usually well under the limit.',
+        requestLocale(),
+      ),
       requestId: req.id ?? 'unknown',
       timestamp: new Date().toISOString(),
       path: req.path,

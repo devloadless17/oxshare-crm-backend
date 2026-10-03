@@ -203,10 +203,16 @@ describe('returning an APPROVED verification to the client', () => {
     expect(submission.rejectedFields).toEqual(['doc_front', 'address']);
     expect(user.verificationLevel, 'the money gate stayed open').toBe(0);
 
-    expect(asked).toHaveBeenCalledWith(CLIENT.email, 'Layla', REASON, [
-      'Passport',
-      'Residential Address',
-    ]);
+    // The trailing 'en' is the client's STORED language — an admin decision.
+    expect(asked).toHaveBeenCalledWith(
+      CLIENT.email,
+      'Layla',
+      REASON,
+      ['Passport', 'Residential Address'],
+      'en',
+      // No Arabic was written with it (0179).
+      null,
+    );
     expect(refused, 'the client was sent the REJECTION email').not.toHaveBeenCalled();
     asked.mockRestore();
     refused.mockRestore();
@@ -299,7 +305,7 @@ describe('returning an APPROVED verification to the client', () => {
     const { submission } = await row();
     expect(submission.status).toBe('rejected');
     expect(submission.rejectionReason).toBe('Expired');
-    expect(asked).toHaveBeenCalledWith(CLIENT.email, 'Layla', 'Expired', ['Passport']);
+    expect(asked).toHaveBeenCalledWith(CLIENT.email, 'Layla', 'Expired', ['Passport'], 'en', null);
     asked.mockRestore();
   });
 });

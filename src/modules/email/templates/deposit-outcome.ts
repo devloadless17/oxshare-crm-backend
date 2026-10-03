@@ -1,4 +1,19 @@
-import { button, card, esc, p, pRich, type RenderedEmail } from './layout';
+import type { Locale } from '../../../common/i18n/locale';
+import {
+  button,
+  buttonAr,
+  card,
+  cardAr,
+  esc,
+  greetingAr,
+  headingAr,
+  ltrHtml,
+  p,
+  pAr,
+  pRich,
+  pRichAr,
+  type RenderedEmail,
+} from './layout';
 import { displayMoney } from '../../../common/money-display';
 
 /**
@@ -25,7 +40,11 @@ export function depositOutcome(
   portalUrl: string,
   /** The desk's reason. Only ever set for `rejected`. */
   reason?: string,
+  locale: Locale = 'en',
 ): RenderedEmail {
+  if (locale === 'ar') {
+    return depositOutcomeAr(firstName, outcome, amount, currency, portalUrl, reason);
+  }
   const succeeded = outcome === 'succeeded';
   const rejected = outcome === 'rejected';
   // Formatted for a reader, escaped because it is composed into markup — see
@@ -110,5 +129,68 @@ export function depositOutcome(
 ${p(`Hello ${firstName || 'Valued Client'},`)}
 ${body}
 ${button(portalUrl, 'Go to Portal')}`),
+  };
+}
+
+/**
+ * The Arabic twin, under the same rules as the English: a rejected OFFLINE
+ * deposit never promises a refund and never says "no funds were taken".
+ */
+function depositOutcomeAr(
+  firstName: string,
+  outcome: 'succeeded' | 'failed' | 'rejected',
+  amount: string,
+  currency: string,
+  portalUrl: string,
+  reason?: string,
+): RenderedEmail {
+  const succeeded = outcome === 'succeeded';
+  const rejected = outcome === 'rejected';
+  const money = ltrHtml(esc(displayMoney(amount, currency)));
+
+  const body = rejected
+    ? [
+        pRichAr(
+          `لم يتم قبول إيداعك بمبلغ <strong>${money}</strong>، لذا لم تُضَف أي أموال إلى محفظتك.`,
+        ),
+        reason ? pAr(`السبب: ${reason}`) : '',
+        pAr(
+          'إذا كنت قد أرسلت هذا التحويل بالفعل، فتواصل مع فريق الدعم وأرفق إيصال الدفع وسنتحقق ' +
+            'من الأمر. يمكنك أيضاً بدء إيداع جديد من البوابة.',
+        ),
+      ]
+        .filter(Boolean)
+        .join('\n')
+    : succeeded
+      ? pRichAr(
+          `تم تأكيد إيداعك بمبلغ <strong>${money}</strong> وإضافته إلى محفظتك. الأموال متاحة الآن.`,
+        )
+      : [
+          pRichAr(
+            `تعذّر إتمام إيداعك بمبلغ <strong>${money}</strong>، ولم تقتطع OXShare أي أموال.`,
+          ),
+          pAr(
+            'يمكنك بدء إيداع جديد من البوابة متى كنت مستعداً. إذا كنت تعتقد أن المبلغ قد خُصم ' +
+              'منك، فتواصل مع فريق الدعم مع ذكر التاريخ والمبلغ وسنتتبّع العملية.',
+          ),
+        ].join('\n');
+
+  return {
+    subject: rejected
+      ? 'لم يتم قبول الإيداع — OXShare'
+      : succeeded
+        ? 'تم تأكيد الإيداع — OXShare'
+        : 'تعذّر إتمام الإيداع — OXShare',
+    html: cardAr(`${headingAr(
+      succeeded
+        ? 'تمت إضافة إيداعك إلى محفظتك'
+        : rejected
+          ? 'لم يتم قبول إيداعك'
+          : 'لم يكتمل إيداعك',
+      succeeded ? '#047857' : '#b42318',
+    )}
+${greetingAr(firstName)}
+${body}
+${buttonAr(portalUrl, 'الانتقال إلى البوابة')}`),
   };
 }

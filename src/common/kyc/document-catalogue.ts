@@ -37,14 +37,19 @@ export interface DocumentPart {
   /** Stable within the document. Also the upload slot suffix. */
   key: string;
   label: string;
+  /** The label in Arabic, for the portal's Arabic readers (0179). The platform's, like `label`. */
+  labelAr: string;
   required: boolean;
   hint?: string;
+  hintAr?: string;
 }
 
 export interface CatalogueDocument {
   /** Stored in `document.docType` / `addressProof.docType`. Never renamed. */
   value: string;
   label: string;
+  /** The document's name in Arabic (0179). Fixed by the platform, never configured. */
+  labelAr: string;
   /** Which kind of proof this satisfies — the builder groups by it. */
   category: 'identity' | 'address';
   parts: DocumentPart[];
@@ -60,6 +65,7 @@ export const DOCUMENT_CATALOGUE: readonly CatalogueDocument[] = [
   {
     value: 'passport',
     label: 'Passport',
+    labelAr: 'جواز السفر',
     category: 'identity',
     // ONE part. A passport has no back to photograph, and asking for one is a
     // question the client cannot answer.
@@ -67,77 +73,91 @@ export const DOCUMENT_CATALOGUE: readonly CatalogueDocument[] = [
       {
         key: 'front',
         label: 'Photo Page',
+        labelAr: 'صفحة الصورة',
         required: true,
         hint: 'The page with your photo and details',
+        hintAr: 'الصفحة التي تحمل صورتك وبياناتك',
       },
     ],
   },
   {
     value: 'national_id',
     label: 'National ID',
+    labelAr: 'بطاقة الهوية الوطنية',
     category: 'identity',
     parts: [
-      { key: 'front', label: 'Front Side', required: true },
-      { key: 'back', label: 'Back Side', required: true },
+      { key: 'front', label: 'Front Side', labelAr: 'الوجه الأمامي', required: true },
+      { key: 'back', label: 'Back Side', labelAr: 'الوجه الخلفي', required: true },
     ],
   },
   {
     value: 'driving_license',
     label: 'Driving License',
+    labelAr: 'رخصة القيادة',
     category: 'identity',
     parts: [
-      { key: 'front', label: 'Front Side', required: true },
-      { key: 'back', label: 'Back Side', required: true },
+      { key: 'front', label: 'Front Side', labelAr: 'الوجه الأمامي', required: true },
+      { key: 'back', label: 'Back Side', labelAr: 'الوجه الخلفي', required: true },
     ],
   },
   {
     value: 'residence_permit',
     label: 'Residence Permit',
+    labelAr: 'تصريح الإقامة',
     category: 'identity',
     parts: [
-      { key: 'front', label: 'Front Side', required: true },
-      { key: 'back', label: 'Back Side', required: true },
+      { key: 'front', label: 'Front Side', labelAr: 'الوجه الأمامي', required: true },
+      { key: 'back', label: 'Back Side', labelAr: 'الوجه الخلفي', required: true },
     ],
   },
   {
     value: 'utility_bill',
     label: 'Utility Bill',
+    labelAr: 'فاتورة خدمات',
     category: 'address',
     parts: [
       {
         key: 'front',
         label: 'The Bill',
+        labelAr: 'الفاتورة',
         required: true,
         hint: 'Must show your name, address and a date in the last 3 months',
+        hintAr: 'يجب أن تُظهر اسمك وعنوانك وتاريخًا خلال آخر 3 أشهر',
       },
     ],
   },
   {
     value: 'bank_statement',
     label: 'Bank Statement',
+    labelAr: 'كشف حساب مصرفي',
     category: 'address',
     parts: [
       {
         key: 'front',
         label: 'The Statement',
+        labelAr: 'الكشف',
         required: true,
         hint: 'Must show your name, address and a date in the last 3 months',
+        hintAr: 'يجب أن يُظهر اسمك وعنوانك وتاريخًا خلال آخر 3 أشهر',
       },
     ],
   },
   {
     value: 'tenancy_agreement',
     label: 'Tenancy Agreement',
+    labelAr: 'عقد الإيجار',
     category: 'address',
     parts: [
-      { key: 'front', label: 'Signature Page', required: true },
+      { key: 'front', label: 'Signature Page', labelAr: 'صفحة التوقيع', required: true },
       // The one optional slot in the catalogue, and the reason `required` lives
       // per part rather than per document.
       {
         key: 'back',
         label: 'Additional Page',
+        labelAr: 'صفحة إضافية',
         required: false,
         hint: 'Only if your address is on a separate page',
+        hintAr: 'فقط إذا كان عنوانك في صفحة منفصلة',
       },
     ],
   },

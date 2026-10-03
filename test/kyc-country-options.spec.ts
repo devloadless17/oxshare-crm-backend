@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { KYC_COUNTRY_OPTIONS, KYC_NATIONALITY_OPTIONS } from '../src/common/kyc/country-options';
+import {
+  countryLabelsAr,
+  countryNameAr,
+  KYC_COUNTRY_OPTIONS,
+  KYC_NATIONALITY_OPTIONS,
+  NATIONALITY_AR,
+  nationalityLabelsAr,
+  WORLD_COUNTRIES,
+} from '../src/common/kyc/country-options';
 
 /**
  * The KYC country and nationality lists, now served rather than hard-coded in
@@ -40,5 +48,34 @@ describe('the offered countries', () => {
 
   it('carries no duplicates', () => {
     expect(new Set(KYC_NATIONALITY_OPTIONS).size).toBe(KYC_NATIONALITY_OPTIONS.length);
+  });
+});
+
+describe('the lists in Arabic (0179)', () => {
+  it('has a hand-written Arabic for EVERY nationality offered, and no two alike', () => {
+    const missing = KYC_NATIONALITY_OPTIONS.filter((n) => !NATIONALITY_AR[n]?.trim());
+    expect(missing).toEqual([]);
+    const arabic = KYC_NATIONALITY_OPTIONS.map((n) => NATIONALITY_AR[n]);
+    expect(arabic.every((text) => /[؀-ۿ]/.test(text))).toBe(true);
+    expect(new Set(arabic).size).toBe(arabic.length);
+    expect(NATIONALITY_AR.Lebanese).toBe('لبناني');
+    expect(NATIONALITY_AR.American).toBe('أمريكي');
+    expect(NATIONALITY_AR.British).toBe('بريطاني');
+    expect(NATIONALITY_AR.Emirati).toBe('إماراتي');
+  });
+
+  it('names EVERY country code in Arabic from the runtime', () => {
+    const unnamed = WORLD_COUNTRIES.filter((c) => !countryNameAr(c.code));
+    expect(unnamed).toEqual([]);
+    expect(countryNameAr('LB')).toBe('لبنان');
+  });
+
+  it('serves each list keyed by its ENGLISH value, every entry covered', () => {
+    const countries = countryLabelsAr(KYC_COUNTRY_OPTIONS);
+    expect(Object.keys(countries).sort()).toEqual([...KYC_COUNTRY_OPTIONS].sort());
+    expect(countries['United Arab Emirates']).toBe(countryNameAr('AE'));
+    const nationalities = nationalityLabelsAr(KYC_NATIONALITY_OPTIONS);
+    expect(Object.keys(nationalities)).toHaveLength(KYC_NATIONALITY_OPTIONS.length);
+    expect(nationalityLabelsAr(['Lebanese', 'Martian'])).toEqual({ Lebanese: 'لبناني' });
   });
 });

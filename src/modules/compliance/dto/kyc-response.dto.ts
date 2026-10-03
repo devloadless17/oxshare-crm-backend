@@ -78,8 +78,15 @@ export class KycDocumentPartDto {
   key: string;
   @ApiProperty({ description: 'What the client is asked to upload.', example: 'Back Side' })
   label: string;
+  @ApiProperty({
+    description: 'The label in Arabic — the platform’s, fixed.',
+    example: 'الوجه الخلفي',
+  })
+  labelAr: string;
   @ApiProperty() required: boolean;
   @ApiPropertyOptional({ example: 'Both sides must be readable.' }) hint?: string;
+  @ApiPropertyOptional({ description: 'The hint in Arabic, when there is a hint.' })
+  hintAr?: string;
 }
 
 /**
@@ -98,6 +105,11 @@ export class KycDocumentTypeDto {
   @ApiProperty({ description: 'Stored in document.docType. Never renamed.', example: 'passport' })
   value: string;
   @ApiProperty({ example: 'Passport' }) label: string;
+  @ApiProperty({
+    description: 'The name in Arabic — the platform’s, fixed.',
+    example: 'جواز السفر',
+  })
+  labelAr: string;
   @ApiProperty({ enum: ['identity', 'address'] }) category: 'identity' | 'address';
   @ApiProperty({ type: [KycDocumentPartDto] }) parts: KycDocumentPartDto[];
 }
@@ -124,6 +136,27 @@ export class KycFieldConfigDto {
   @ApiPropertyOptional({ type: [String], description: 'Choices, for type: select.' })
   options?: string[];
   @ApiPropertyOptional({ example: 'As on your ID' }) hint?: string;
+  /*
+   * The Arabic twins (0179). Blank or absent = not translated: show the English.
+   * The platform's fields (`system`, documents) and the country and nationality
+   * lists always carry the platform's Arabic.
+   */
+  @ApiPropertyOptional({
+    description: 'The label in Arabic, when translated.',
+    example: 'الاسم الأول',
+  })
+  labelAr?: string;
+  @ApiPropertyOptional({ description: 'The hint in Arabic, when translated.' })
+  hintAr?: string;
+  @ApiPropertyOptional({
+    type: 'object',
+    additionalProperties: { type: 'string' },
+    description:
+      'Arabic label per choice, keyed by the ENGLISH option value — the value submitted and ' +
+      'stored is always the English one. A choice without an entry shows its English.',
+    example: { Lebanese: 'لبناني' },
+  })
+  optionsAr?: Record<string, string>;
   /**
    * Present when this `select` chooses a DOCUMENT rather than a plain value.
    *
@@ -171,6 +204,13 @@ export class KycStepConfigDto {
   slug: string;
   @ApiProperty({ example: 'Personal Information' }) title: string;
   @ApiPropertyOptional() description?: string;
+  @ApiPropertyOptional({
+    description: 'The title in Arabic, when translated; absent = show the English.',
+    example: 'المعلومات الشخصية',
+  })
+  titleAr?: string;
+  @ApiPropertyOptional({ description: 'The description in Arabic, when translated.' })
+  descriptionAr?: string;
   @ApiPropertyOptional({ description: 'lucide icon name.', example: 'User' }) icon?: string;
   @ApiProperty() enabled: boolean;
   @ApiProperty({ type: [KycFieldConfigDto] }) fields: KycFieldConfigDto[];
@@ -274,6 +314,17 @@ export class KycStatusDto {
   stepData?: Record<string, Record<string, string | { filePath: string }>>;
 
   @ApiPropertyOptional({ description: 'Set when status is rejected.' }) rejectionReason?: string;
+  /**
+   * The reason in Arabic (0179), resolved on READ: present only when the stored
+   * reason is, word for word, one of the configured KYC reasons that has Arabic.
+   * A reviewer's own wording has no translation and is shown as written.
+   */
+  @ApiPropertyOptional({
+    description:
+      'Arabic for `rejectionReason` when it is a configured reason with Arabic; absent for a ' +
+      'reviewer’s own wording.',
+  })
+  rejectionReasonAr?: string;
 
   @ApiPropertyOptional({
     type: [String],

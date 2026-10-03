@@ -1,4 +1,21 @@
-import { button, card, esc, p, pRich, panel, type RenderedEmail } from './layout';
+import type { Locale } from '../../../common/i18n/locale';
+import {
+  button,
+  buttonAr,
+  card,
+  cardAr,
+  esc,
+  greetingAr,
+  headingAr,
+  ltrHtml,
+  p,
+  pAr,
+  pRich,
+  pRichAr,
+  panel,
+  panelAr,
+  type RenderedEmail,
+} from './layout';
 import { displayMoney } from '../../../common/money-display';
 
 /**
@@ -30,7 +47,9 @@ export function walletCredit(
   currency: string,
   reason: string,
   portalUrl: string,
+  locale: Locale = 'en',
 ): RenderedEmail {
+  if (locale === 'ar') return walletCreditAr(firstName, amount, currency, reason, portalUrl);
   /*
    * FORMATTED for display, and the rule this replaces is still honoured.
    *
@@ -59,4 +78,49 @@ ${panel(`<strong>Reason:</strong> ${esc(reason)}`)}
 ${p('The funds are available now. You can see the credit on your transactions page alongside your other activity.')}
 ${button(portalUrl, 'Go to Portal')}`),
   };
+}
+
+function walletCreditAr(
+  firstName: string,
+  amount: string,
+  currency: string,
+  reason: string,
+  portalUrl: string,
+): RenderedEmail {
+  const money = ltrHtml(esc(displayMoney(amount, currency)));
+  return {
+    subject: 'تمت إضافة أموال إلى محفظتك — OXShare',
+    html: cardAr(`${headingAr('تمت إضافة أموال إلى محفظتك', '#047857')}
+${greetingAr(firstName)}
+${pRichAr(`أضاف فريقنا مبلغ <strong>${money}</strong> إلى محفظتك في OXShare.`)}
+${panelAr(`<strong>السبب:</strong> ${esc(reason)}`)}
+${pAr('الأموال متاحة الآن. يمكنك الاطلاع على هذه العملية في صفحة المعاملات إلى جانب نشاطك الآخر.')}
+${buttonAr(portalUrl, 'الانتقال إلى البوابة')}`),
+  };
+}
+
+/**
+ * The REASON line of the hourly commission / rebate summary mail — server
+ * composed, so the server writes it in the recipient's language. The English is
+ * exactly what `CommissionService` wrote before it moved here.
+ */
+export function commissionSummaryReason(
+  kind: 'commission' | 'rebate',
+  count: number,
+  locale: Locale = 'en',
+): string {
+  if (locale !== 'ar') {
+    return kind === 'rebate'
+      ? `Trading rebate on ${count} closed trade(s)`
+      : `Partner commission on ${count} closed trade(s)`;
+  }
+  const trades = {
+    zero: `${count} صفقة مغلقة`,
+    one: 'صفقة مغلقة واحدة',
+    two: 'صفقتين مغلقتين',
+    few: `${count} صفقات مغلقة`,
+    many: `${count} صفقة مغلقة`,
+    other: `${count} صفقة مغلقة`,
+  }[new Intl.PluralRules('ar').select(count)];
+  return kind === 'rebate' ? `عمولة مستردة عن ${trades}` : `عمولة الشريك عن ${trades}`;
 }

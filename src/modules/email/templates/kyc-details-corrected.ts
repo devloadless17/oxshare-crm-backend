@@ -1,4 +1,14 @@
-import { button, layout, p, type RenderedEmail } from './layout';
+import type { Locale } from '../../../common/i18n/locale';
+import {
+  button,
+  buttonAr,
+  greetingAr,
+  layout,
+  layoutAr,
+  p,
+  pAr,
+  type RenderedEmail,
+} from './layout';
 
 /**
  * "We corrected details on your verified profile" — sent when a reviewer
@@ -15,7 +25,9 @@ export function kycDetailsCorrected(
   firstName: string,
   details: readonly string[],
   portalUrl: string,
+  locale: Locale = 'en',
 ): RenderedEmail {
+  if (locale === 'ar') return kycDetailsCorrectedAr(firstName, details, portalUrl);
   return {
     subject: 'We corrected details on your verified profile — OxShare',
     html: layout(
@@ -31,6 +43,31 @@ export function kycDetailsCorrected(
             'email or contact support.',
         ),
         button(`${portalUrl}/profile`, 'View your profile'),
+      ].join('\n'),
+    ),
+  };
+}
+
+function kycDetailsCorrectedAr(
+  firstName: string,
+  details: readonly string[],
+  portalUrl: string,
+): RenderedEmail {
+  return {
+    subject: 'صحّحنا بعض البيانات في ملفك الشخصي الموثَّق — OXShare',
+    html: layoutAr(
+      'تم تصحيح بياناتك الموثَّقة',
+      [
+        greetingAr(firstName),
+        pAr(
+          'صحّح فريق التحقق لدينا البيانات التالية في ملفك الشخصي الموثَّق: ' +
+            `${details.join('، ')}. يظل التحقق من هويتك سارياً.`,
+        ),
+        pAr(
+          'يمكنك الاطلاع على بياناتك في ملفك الشخصي. إذا كان أي تصحيح غير دقيق، فتواصل مع ' +
+            'فريق الدعم.',
+        ),
+        buttonAr(`${portalUrl}/profile`, 'عرض ملفك الشخصي'),
       ].join('\n'),
     ),
   };

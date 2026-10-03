@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from 'async_hooks';
 import { EMPTY_MASK, type FieldMask } from '../security/field-mask';
+import type { Locale } from '../i18n/locale';
 
 export interface RequestContext {
   requestId: string;
@@ -21,6 +22,16 @@ export interface RequestContext {
    * search, a sort) as well as not by reading. Absent outside an admin request.
    */
   fieldMask?: FieldMask;
+  /** The portal's `X-OxShare-Locale` (`common/i18n/locale.ts`). Absent = English. */
+  locale?: Locale;
+  /**
+   * Operator-authored labels this request has read, English → Arabic (3 Oct 2026) —
+   * a broker's KYC question, a payment method's proof field. Registered by the
+   * code that reads them (`registerLabelTwins`) so a sentence naming one
+   * ("Favourite colour is required.") is translated with its Arabic label on the
+   * way out. Absent until something registers one.
+   */
+  labelTwins?: Map<string, string>;
 }
 
 /**

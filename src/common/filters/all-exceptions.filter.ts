@@ -36,6 +36,9 @@ import {
   ValidationError,
 } from '../errors/domain-errors';
 import { safeLogPath } from '../logging/redact';
+import { requestContext } from '../logging/request-context';
+import { localizeFields, localizeMessage } from '../i18n/localize-message';
+import { LOCALE_HEADER, parseLocale, type Locale } from '../i18n/locale';
 
 /**
  * The single place transport concerns meet domain errors.
@@ -185,6 +188,85 @@ export function rateLimitMessage(retryAfter: number | string | string[] | undefi
   return `Too many attempts. Please try again in ${minutes} minute${minutes === 1 ? '' : 's'}.`;
 }
 
+/** English with no Arabic in it — a sentence the catalogue could not translate. */
+function isUntranslatedEnglish(original: string, localized: string): boolean {
+  return localized === original && /[A-Za-z]/.test(original) && !/[\u0600-\u06FF]/.test(original);
+}
+
+/**
+ * The headline an Arabic reader is shown for a sentence the catalogue could not
+ * translate — chosen by the STATUS, since that is all that is known about it.
+ * Text from outside the platform (a payment provider, the MT5 bridge, the mail
+ * server) is English and cannot be catalogued in advance; this keeps it from
+ * being an Arabic reader's headline, and `detail` keeps the original.
+ */
+export function arabicFallbackFor(status: number): string {
+  if (status === 400) return 'تعذّر قبول الطلب.';
+  if (status === 401) return 'يلزم تسجيل الدخول للمتابعة.';
+  if (status === 403) return 'لا تملك صلاحية تنفيذ هذا الإجراء.';
+  if (status === 404) return 'العنصر المطلوب غير موجود.';
+  if (status === 409)
+    return 'تعذّر إتمام الطلب لأن البيانات تغيّرت. أعد تحميل الصفحة وحاول مجدداً.';
+  if (status === 413) return 'حجم الطلب كبير جداً.';
+  if (status === 422) return 'تعذّر تنفيذ هذه العملية.';
+  if (status === 429) return 'محاولات كثيرة جداً. يُرجى الانتظار قليلاً ثم المحاولة مجدداً.';
+  if (status === 502 || status === 503 || status === 504) {
+    return 'الخدمة غير متاحة مؤقتاً. يُرجى المحاولة لاحقاً.';
+  }
+  if (status >= 500) return 'حدث خطأ غير متوقع. يُرجى المحاولة لاحقاً.';
+  return 'تعذّر إتمام الطلب.';
+}
+
+/** What one field's untranslatable message becomes for an Arabic reader. */
+const ARABIC_FIELD_FALLBACK = 'هذه القيمة غير مقبولة.';
+
+/**
+ * The envelope's sentences in the request's language (2–3 Oct 2026).
+ *
+ * Every sentence goes through the catalogue (`localizeMessage`). For an ARABIC
+ * request, a sentence it could not translate — English with no Arabic in it — is
+ * replaced by a generic Arabic sentence for the status (a field's by a generic
+ * field sentence), and the original English goes into `detail`, so nothing is
+ * lost and nothing English is the headline. English requests are untouched.
+ */
+export function arabicEnvelope(
+  message: string | string[],
+  fields: Record<string, string> | undefined,
+  status: number,
+  locale: Locale,
+): { message: string | string[]; fields?: Record<string, string>; detail?: string } {
+  if (locale !== 'ar') return { message, fields };
+  const untranslated: string[] = [];
+  const headline = (line: string): string => {
+    const localized = localizeMessage(line, locale);
+    if (!isUntranslatedEnglish(line, localized)) return localized;
+    untranslated.push(line);
+    return arabicFallbackFor(status);
+  };
+  const localizedMessage = Array.isArray(message)
+    ? [...new Set(message.map(headline))]
+    : headline(message);
+
+  let localizedFields: Record<string, string> | undefined;
+  if (fields) {
+    localizedFields = {};
+    for (const [key, value] of Object.entries(localizeFields(fields, locale))) {
+      const original = fields[key];
+      if (typeof original === 'string' && isUntranslatedEnglish(original, value)) {
+        localizedFields[key] = ARABIC_FIELD_FALLBACK;
+        untranslated.push(`${key}: ${original}`);
+      } else {
+        localizedFields[key] = value;
+      }
+    }
+  }
+  return {
+    message: localizedMessage,
+    fields: localizedFields,
+    ...(untranslated.length > 0 ? { detail: untranslated.join('\n') } : {}),
+  };
+}
+
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {
   private readonly logger = new Logger('ExceptionFilter');
@@ -259,17 +341,41 @@ export class AllExceptionsFilter implements ExceptionFilter {
       this.logger.warn(`${request.method} ${path} → ${status} ${code}`);
     }
 
+    /*
+     * THE CLIENT'S LANGUAGE (2 Oct 2026). The portal sends `X-OxShare-Locale`;
+     * for Arabic every sentence — `message` and each `fields` entry — is
+     * translated here, the one place errors leave the process, from the
+     * catalogue in `common/i18n/server-messages.ar.ts`. `code` never changes:
+     * it is what a screen branches on. The admin console never sends the
+     * header, so it stays English. The header is read directly as a fallback
+     * because a body-parser refusal is raised before the middleware that sets
+     * the request context has run.
+     */
+    const locale = this.localeOf(request);
+    const translated = arabicEnvelope(message, fields, status, locale);
+
     response.status(status).json({
       statusCode: status,
       code,
-      message,
+      message: translated.message,
       // Omitted entirely rather than sent as `null`: a consumer checking
       // `if (body.fields)` should not have to also check for an empty object.
-      ...(fields && Object.keys(fields).length > 0 ? { fields } : {}),
+      ...(translated.fields && Object.keys(translated.fields).length > 0
+        ? { fields: translated.fields }
+        : {}),
+      // The English an Arabic reader was NOT shown (3 Oct 2026) — see `arabicEnvelope`.
+      ...(translated.detail ? { detail: translated.detail } : {}),
       requestId,
       timestamp: new Date().toISOString(),
       path,
     });
+  }
+
+  private localeOf(request: Request): Locale {
+    return (
+      requestContext.getStore()?.locale ??
+      parseLocale((request.headers as Record<string, unknown> | undefined)?.[LOCALE_HEADER])
+    );
   }
 
   private classify(exception: unknown): {

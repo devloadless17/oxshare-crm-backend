@@ -293,5 +293,6 @@
   "PUT /v1/admin/roles/{id}",
   "PUT /v1/admin/settings/scheduled-jobs/{key}",
   "PUT /v1/admin/settings/smtp",
-  "PUT /v1/admin/settings/trading"
+  "PUT /v1/admin/settings/trading",
+  "PUT /v1/profile/locale"
 ]

@@ -37,7 +37,11 @@ export interface ProductGroupRow {
 export interface ProductRow {
   id: string;
   name: string;
+  /** The client-facing name in Arabic (0179); null = not translated. */
+  nameAr: string | null;
   description: string | null;
+  /** The description in Arabic (0179); null = not translated. */
+  descriptionAr: string | null;
   enabled: boolean;
   /**
    * Fixed at creation. `demo` exists at most once and is offered globally;
@@ -56,7 +60,10 @@ export interface ProductRow {
 export interface AgencyRow {
   id: string;
   name: string;
+  /** Arabic twins for the portal (0179); null = not translated. */
+  nameAr: string | null;
   description: string | null;
+  descriptionAr: string | null;
   enabled: boolean;
   sortOrder: number;
   /** The programme partners of this agency are appointed on, or null for none (0107). */
@@ -67,6 +74,7 @@ export interface AgencyRow {
 export interface OfferedGroup {
   productId: string;
   productName: string;
+  productNameAr: string | null;
   mt5Group: string;
   currency: string;
 }
@@ -117,7 +125,9 @@ export class ProductsStore {
     return rows.map((row) => ({
       id: row.id,
       name: row.name,
+      nameAr: row.nameAr,
       description: row.description,
+      descriptionAr: row.descriptionAr,
       enabled: row.enabled,
       commissionTypeId: row.commissionTypeId,
       type: row.type,
@@ -169,7 +179,9 @@ export class ProductsStore {
 
   async createProduct(values: {
     name: string;
+    nameAr: string | null;
     description: string | null;
+    descriptionAr: string | null;
     enabled: boolean;
     type: 'real' | 'demo';
     commissionTypeId: string | null;
@@ -199,7 +211,11 @@ export class ProductsStore {
     id: string,
     values: {
       name: string;
+      /** Omitted keeps the stored Arabic — a console predating 0179 sends none. */
+      nameAr?: string | null;
       description: string | null;
+      /** Omitted keeps the stored Arabic, like `nameAr`. */
+      descriptionAr?: string | null;
       enabled: boolean;
       commissionTypeId: string | null;
       sortOrder: number | undefined;
@@ -326,7 +342,9 @@ export class ProductsStore {
     return rows.map((row) => ({
       id: row.id,
       name: row.name,
+      nameAr: row.nameAr,
       description: row.description,
+      descriptionAr: row.descriptionAr,
       enabled: row.enabled,
       sortOrder: row.sortOrder,
       productIds: links.filter((link) => link.agencyId === row.id).map((link) => link.productId),
@@ -335,7 +353,9 @@ export class ProductsStore {
 
   async createAgency(values: {
     name: string;
+    nameAr: string | null;
     description: string | null;
+    descriptionAr: string | null;
     enabled: boolean;
     sortOrder: number | undefined;
   }): Promise<AgencyRow> {
@@ -356,7 +376,10 @@ export class ProductsStore {
     id: string,
     values: {
       name: string;
+      /** Omitted keeps the stored Arabic — a console predating 0179 sends none. */
+      nameAr?: string | null;
       description: string | null;
+      descriptionAr?: string | null;
       enabled: boolean;
       sortOrder: number | undefined;
     },
@@ -465,6 +488,7 @@ export class ProductsStore {
       .select({
         productId: tradingProducts.id,
         productName: tradingProducts.name,
+        productNameAr: tradingProducts.nameAr,
         sortOrder: tradingProducts.sortOrder,
         mt5Group: tradingProductGroups.mt5Group,
         currency: tradingProductGroups.currency,
@@ -498,6 +522,7 @@ export class ProductsStore {
     return rows.map((row) => ({
       productId: row.productId,
       productName: row.productName,
+      productNameAr: row.productNameAr,
       mt5Group: row.mt5Group,
       currency: row.currency,
     }));

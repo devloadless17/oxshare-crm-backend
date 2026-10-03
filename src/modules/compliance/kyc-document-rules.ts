@@ -44,6 +44,7 @@
  * see which pages were sent. Both are live, so both are understood here.
  */
 import { catalogueDocument } from '../../common/kyc/document-catalogue';
+import { pickLocalized, type Locale } from '../../common/i18n/locale';
 import { isFileField } from './step-slugs';
 
 /** The part of a configured step these rules read — structural, so fixtures stay small. */
@@ -56,6 +57,8 @@ export interface RuleStep {
 export interface RuleField {
   name: string;
   label: string;
+  /** The label in Arabic (0179), for a flag named to an Arabic reader. */
+  labelAr?: string;
   type: string;
   /** Resolved from `doc:<value>` when the config is served. */
   document?: { value: string };
@@ -203,13 +206,15 @@ export function documentFlagLabel(
   id: string,
   steps: readonly RuleStep[],
   stored: StoredDocumentTypes,
+  /** The reader's language (0179). English unless a client asked in Arabic. */
+  locale: Locale = 'en',
 ): string {
   const slug = canonicalStepOf(id);
   const fields = steps.flatMap((step) => step.fields);
 
   if (slug === 'selfie') {
     const selfie = steps.find((step) => step.slug === 'selfie')?.fields.find(isFileField);
-    return selfie?.label ?? 'Selfie';
+    return pickLocalized(selfie?.label ?? 'Selfie', selfie?.labelAr ?? 'صورة سيلفي', locale);
   }
 
   if (slug === 'document' || slug === 'address') {
@@ -220,16 +225,22 @@ export function documentFlagLabel(
     const configured = type
       ? steps.find((step) => step.slug === slug)?.fields.find((f) => f.document?.value === type)
       : undefined;
-    const name =
+    const name = pickLocalized(
       configured?.label ??
-      entry?.label ??
-      (slug === 'document' ? 'Identity document' : 'Proof of address');
+        entry?.label ??
+        (slug === 'document' ? 'Identity document' : 'Proof of address'),
+      configured?.labelAr ??
+        entry?.labelAr ??
+        (slug === 'document' ? 'وثيقة الهوية' : 'إثبات العنوان'),
+      locale,
+    );
     const page = id === 'doc_back' || id === 'address_proof_2' ? 1 : 0;
     const part = entry && entry.parts.length > 1 ? entry.parts[page] : undefined;
-    return part ? `${name} (${part.label})` : name;
+    return part ? `${name} (${pickLocalized(part.label, part.labelAr, locale)})` : name;
   }
 
-  return fields.find((f) => f.name === id)?.label ?? id;
+  const field = fields.find((f) => f.name === id);
+  return field ? pickLocalized(field.label, field.labelAr, locale) : id;
 }
 
 /** One canonical document as stored: its type and the files of its pages, in order. */

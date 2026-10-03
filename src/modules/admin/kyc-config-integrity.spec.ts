@@ -408,3 +408,61 @@ describe('every step has its own address, and keeps it', () => {
     );
   });
 });
+
+describe('the Arabic is judged like the English (0179)', () => {
+  it('accepts the default form with its Arabic, and a custom step with its own', () => {
+    const form = [...FORM, custom({ titleAr: 'مصدر الأموال' })];
+    expect(() => assertKycConfigIntegrity(FORM, form)).not.toThrow();
+  });
+
+  it('refuses two steps sharing an Arabic title, on the second', () => {
+    const form = [...FORM, custom({ titleAr: 'المعلومات الشخصية' })];
+    const { message, fields } = refusal(() => assertStepTitles(form));
+    expect(message).toContain('in Arabic');
+    expect(Object.keys(fields)).toEqual([`steps.${form.length - 1}`]);
+  });
+
+  it('refuses a question whose ARABIC label names what the platform collects', () => {
+    const form = [
+      ...FORM,
+      custom({
+        fields: [
+          {
+            id: 'field-1',
+            name: 'customField_1',
+            label: 'Employer',
+            labelAr: 'الاســم الأول',
+            type: 'text',
+            required: true,
+          },
+        ],
+      }),
+    ];
+    const { message, fields } = refusal(() => assertNoSecondCopies(form));
+    expect(message).toContain('First Name');
+    expect(Object.keys(fields)).toEqual([`steps.${form.length - 1}.fields.0`]);
+  });
+
+  it('still reports the ENGLISH clash first, word for word', () => {
+    const form = [
+      ...FORM,
+      custom({
+        fields: [
+          {
+            id: 'a',
+            name: 'a1',
+            label: 'Employer',
+            labelAr: 'جواز السفر',
+            type: 'text',
+            required: true,
+          },
+          { id: 'b', name: 'b1', label: 'First name', type: 'text', required: true },
+        ],
+      }),
+    ];
+    expect(refusal(() => assertNoSecondCopies(form)).message).toBe(
+      '"First name" is already collected by the platform (First Name), in its fixed place. ' +
+        'A second box would be a second answer that can disagree with the first.',
+    );
+  });
+});

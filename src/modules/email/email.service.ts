@@ -1,7 +1,9 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as nodemailer from 'nodemailer';
 import { SmtpConfigService, type EffectiveSmtpConfig } from './smtp-config.service';
+import type { Locale } from '../../common/i18n/locale';
+import { RejectionReasonsStore, type RejectionContext } from '../../store/rejection-reasons.store';
 import {
   emailChangedNotice,
   adminInvite,
@@ -66,6 +68,12 @@ export class EmailService {
   constructor(
     private readonly configService: ConfigService,
     private readonly smtpConfig: SmtpConfigService,
+    /*
+     * Optional so a spec that constructs this by hand keeps working; in the app
+     * the global StoreModule always provides it. Without it a reason is simply
+     * mailed as typed.
+     */
+    @Optional() private readonly rejectionReasons?: RejectionReasonsStore,
   ) {
     // Every mail's logo comes from THIS environment's portal — see `layout.ts`.
     setEmailLogoOrigin(this.portalUrl());
@@ -134,6 +142,51 @@ export class EmailService {
     }
   }
 
+  /**
+   * An operator's REASON, in the language of the mail — the one place emails
+   * translate operator text.
+   *
+   * A reason is free text, but usually it is a label picked from the
+   * configurable catalogue (`rejection_reasons`), and since 0179 a label may
+   * carry an Arabic twin. So: when the mail is Arabic and the reason IS a
+   * catalogue label of the same context — exactly, or as the
+   * "label — reviewer's note" a partner refusal composes — the label is
+   * swapped for its Arabic and the note kept as typed. Anything else, and any
+   * failure to look, is mailed exactly as the operator wrote it: a reason in
+   * English beats no mail.
+   *
+   * The Arabic STORED with the decision comes first (3 Oct 2026): the
+   * reviewer's own Arabic, or the catalogue's as it read when they decided —
+   * what the portal shows the client, so the mail and the screen agree.
+   */
+  private async reasonIn(
+    context: RejectionContext,
+    reason: string | undefined,
+    locale: Locale,
+    storedArabic?: string | null,
+  ): Promise<string | undefined> {
+    if (locale !== 'ar' || !reason) return reason;
+    if (typeof storedArabic === 'string' && storedArabic.trim() !== '') return storedArabic;
+    if (!this.rejectionReasons) return reason;
+    try {
+      // The store's own resolver — the same lookup the client DTOs use: the
+      // exact label, a "label — note" with the label translated, or a sentence
+      // the system wrote.
+      const arabicOf = await this.rejectionReasons.arabicFor([context]);
+      const arabic = arabicOf(context, reason);
+      if (arabic) return arabic;
+      // "label — reviewer's note" against any resolver: the label in Arabic, the note as typed.
+      const separator = ' — ';
+      for (let at = reason.indexOf(separator); at > 0; at = reason.indexOf(separator, at + 1)) {
+        const label = arabicOf(context, reason.slice(0, at));
+        if (label) return `${label}${reason.slice(at)}`;
+      }
+    } catch (error) {
+      this.logger.warn(`Could not look up an Arabic ${context} reason: ${failureReason(error)}`);
+    }
+    return reason;
+  }
+
   /** Where the portal lives, for links that point back into it. */
   private portalUrl(): string {
     return this.configService.get<string>('PORTAL_URL', 'http://localhost:3000');
@@ -185,16 +238,21 @@ export class EmailService {
    * it signs its holder in, and `email-never-logs-credentials.spec.ts` holds
    * this file to that.
    */
-  async sendVerificationEmail(email: string, token: string, code?: string): Promise<void> {
+  async sendVerificationEmail(
+    email: string,
+    token: string,
+    code?: string,
+    locale: Locale = 'en',
+  ): Promise<void> {
     const url = `${this.portalUrl()}/auth/verify-email?token=${token}`;
     this.logLink('verification link', email, url);
-    await this.send(email, 'verification email', verifyEmail(url, code));
+    await this.send(email, 'verification email', verifyEmail(url, code, locale));
   }
 
-  async sendPasswordResetEmail(email: string, token: string): Promise<void> {
+  async sendPasswordResetEmail(email: string, token: string, locale: Locale = 'en'): Promise<void> {
     const url = `${this.portalUrl()}/auth/reset-password?token=${token}`;
     this.logLink('password reset link', email, url);
-    await this.send(email, 'password reset email', passwordReset(url));
+    await this.send(email, 'password reset email', passwordReset(url, locale));
   }
 
   // FR-ADM-03 / ARCH §8.5: approve and reject both notify the client inline.
@@ -211,7 +269,11 @@ export class EmailService {
    * from every other mail this system sends, and one that is definitely
    * configured wherever mail works at all.
    */
-  async sendEmailChangedNotice(previousEmail: string, newEmail: string): Promise<void> {
+  async sendEmailChangedNotice(
+    previousEmail: string,
+    newEmail: string,
+    locale: Locale = 'en',
+  ): Promise<void> {
     /*
      * The try/catch is around `resolve()` as well as the send, and that is the
      * whole point of it.
@@ -229,7 +291,11 @@ export class EmailService {
      */
     try {
       const { from } = await this.smtpConfig.resolve();
-      await this.send(previousEmail, 'email-changed notice', emailChangedNotice(newEmail, from));
+      await this.send(
+        previousEmail,
+        'email-changed notice',
+        emailChangedNotice(newEmail, from, locale),
+      );
     } catch (error) {
       this.logger.error(
         `Failed to send email-changed notice to ${previousEmail}: ${failureReason(error)}`,
@@ -243,11 +309,15 @@ export class EmailService {
     decision: 'approved' | 'rejected',
     reason?: string,
     rejectedFields?: string[],
+    locale: Locale = 'en',
+    /** The reason's stored Arabic (0179), preferred in an Arabic mail. */
+    reasonAr?: string | null,
   ): Promise<void> {
+    const shown = await this.reasonIn('kyc', reason, locale, reasonAr);
     await this.send(
       email,
       `KYC ${decision} email`,
-      kycDecision(firstName, decision, this.portalUrl(), reason, rejectedFields),
+      kycDecision(firstName, decision, this.portalUrl(), shown, rejectedFields, locale),
     );
   }
 
@@ -260,11 +330,12 @@ export class EmailService {
     email: string,
     firstName: string,
     details: readonly string[],
+    locale: Locale = 'en',
   ): Promise<void> {
     await this.send(
       email,
       'KYC details corrected email',
-      kycDetailsCorrected(firstName, details, this.portalUrl()),
+      kycDetailsCorrected(firstName, details, this.portalUrl(), locale),
     );
   }
 
@@ -274,11 +345,15 @@ export class EmailService {
     firstName: string,
     reason: string,
     items: readonly string[],
+    locale: Locale = 'en',
+    /** The reason's stored Arabic (0179), preferred in an Arabic mail. */
+    reasonAr?: string | null,
   ): Promise<void> {
+    const shown = (await this.reasonIn('kyc', reason, locale, reasonAr)) ?? reason;
     await this.send(
       email,
       'KYC re-verification email',
-      kycReverification(firstName, reason, items, this.portalUrl()),
+      kycReverification(firstName, shown, items, this.portalUrl(), locale),
     );
   }
 
@@ -293,12 +368,20 @@ export class EmailService {
     email: string,
     firstName: string,
     decision: 'approved' | 'rejected',
-    options: { referralCode?: string; reason?: string } = {},
+    options: { referralCode?: string; reason?: string; reasonAr?: string | null } = {},
+    locale: Locale = 'en',
   ): Promise<void> {
+    const reason = await this.reasonIn('partner', options.reason, locale, options.reasonAr);
     await this.send(
       email,
       `partner ${decision} email`,
-      partnerDecision(firstName, decision, this.portalUrl(), options),
+      partnerDecision(
+        firstName,
+        decision,
+        this.portalUrl(),
+        { referralCode: options.referralCode, reason },
+        locale,
+      ),
     );
   }
 
@@ -316,11 +399,15 @@ export class EmailService {
     amount: string,
     currency: string,
     reason?: string,
+    locale: Locale = 'en',
+    /** The reason's stored Arabic (0179), preferred in an Arabic mail. */
+    reasonAr?: string | null,
   ): Promise<void> {
+    const shown = await this.reasonIn('withdrawal', reason, locale, reasonAr);
     await this.send(
       email,
       `withdrawal ${decision} email`,
-      withdrawalDecision(firstName, decision, amount, currency, this.portalUrl(), reason),
+      withdrawalDecision(firstName, decision, amount, currency, this.portalUrl(), shown, locale),
     );
   }
 
@@ -339,11 +426,15 @@ export class EmailService {
     currency: string,
     /** The desk's reason, for `rejected` only. */
     reason?: string,
+    locale: Locale = 'en',
+    /** The reason's stored Arabic (0179), preferred in an Arabic mail. */
+    reasonAr?: string | null,
   ): Promise<void> {
+    const shown = await this.reasonIn('deposit', reason, locale, reasonAr);
     await this.send(
       email,
       `deposit ${outcome} email`,
-      depositOutcome(firstName, outcome, amount, currency, this.portalUrl(), reason),
+      depositOutcome(firstName, outcome, amount, currency, this.portalUrl(), shown, locale),
     );
   }
 
@@ -364,11 +455,18 @@ export class EmailService {
     amount: string,
     currency: string,
     reason: string,
+    locale: Locale = 'en',
+    /** The operator's own Arabic for the reason (0179), used in an Arabic mail. */
+    reasonAr?: string | null,
   ): Promise<void> {
+    // No catalogue behind a credit reason: it is mailed as the operator typed it —
+    // in Arabic when they wrote it in Arabic too and the mail is Arabic.
+    const shown =
+      locale === 'ar' && typeof reasonAr === 'string' && reasonAr.trim() !== '' ? reasonAr : reason;
     await this.send(
       email,
       'wallet credit email',
-      walletCredit(firstName, amount, currency, reason, this.portalUrl()),
+      walletCredit(firstName, amount, currency, shown, this.portalUrl(), locale),
     );
   }
 
@@ -404,6 +502,7 @@ export class EmailService {
     investorPassword: string,
     accountName?: string,
     balance?: string,
+    locale: Locale = 'en',
   ): Promise<void> {
     this.logCredentials(`trading account ${login} credentials`, email, {
       login,
@@ -427,6 +526,7 @@ export class EmailService {
         this.portalUrl(),
         accountName,
         balance,
+        locale,
       ),
     );
   }
@@ -454,6 +554,7 @@ export class EmailService {
     environment: 'live' | 'demo',
     masterPassword: string,
     investorPassword: string,
+    locale: Locale = 'en',
   ): Promise<void> {
     this.logCredentials(`trading account ${login} new passwords`, email, {
       login,
@@ -471,6 +572,8 @@ export class EmailService {
         masterPassword,
         investorPassword,
         this.portalUrl(),
+        undefined,
+        locale,
       ),
     );
   }

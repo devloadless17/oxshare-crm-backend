@@ -1,4 +1,5 @@
 import { COUNTRY_REFUSAL, countryEligible } from '../../common/payments/method-eligibility';
+import { parseLocale } from '../../common/i18n/locale';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { readProofDetails, type ProofDetail } from '../../common/payments/proof-fields';
 import Decimal from 'decimal.js';
@@ -70,6 +71,8 @@ export const TRANSACTION_KINDS = [
 export type TransactionListRow = TransactionView & {
   /** Resolved server-side so a client and an operator read the same words. */
   methodName: string | null;
+  /** The method's Arabic name (0179); null when untranslated or no method. */
+  methodNameAr: string | null;
   kind: MovementKind;
   /** The trading account a TRANSFER moved money to or from. Null on a payment. */
   tradingAccountId: string | null;
@@ -94,6 +97,8 @@ interface CombinedRow {
   /** The client's answers to an offline method's details (0163). */
   proof_details: ProofDetail[] | null;
   rejection_reason: string | null;
+  /** Its Arabic, written with it (0179). A transfer's `failure_reason_ar`. */
+  rejection_reason_ar: string | null;
   reviewed_by: string | null;
   reviewed_at: string | null;
   settled_at: string | null;
@@ -107,6 +112,8 @@ interface CombinedRow {
   created_at: string;
   /** Selected by `methodNamesOf`, for the rows a read shows. */
   method_name: string | null;
+  /** The method's Arabic name (0179). CLIENT reads only. */
+  method_name_ar?: string | null;
   /** The desk's label, falling back to the name (0161). ADMIN reads only. */
   method_label?: string | null;
   kind: MovementKind;
@@ -353,7 +360,9 @@ const instantOrNull = (value: string | null): Date | null =>
  * it runs once per row shown.
  *
  * `desk` adds the DESK's name (0161, `method_label`): admin reads select it,
- * the client's never do.
+ * the client's never do. The client's read adds the Arabic name instead
+ * (0179, `method_name_ar`) — null when untranslated, so the portal falls back to
+ * `method_name`; a rebate's name is the portal's own string (keyed off `kind`).
  */
 function methodNamesOf(row: 'page' | 'combined', desk: boolean): SQL {
   const r = sql.raw(row);
@@ -363,7 +372,14 @@ function methodNamesOf(row: 'page' | 'combined', desk: boolean): SQL {
         WHERE wpm.key = ${r}.withdrawal_method_key),
       ${r}.arm_method_name
     ) AS method_name`;
-  if (!desk) return name;
+  if (!desk) {
+    return sql`${name},
+    COALESCE(
+      (SELECT pm.name_ar FROM payment_methods pm WHERE pm.key = ${r}.method_key),
+      (SELECT wpm.name_ar FROM withdrawal_payment_methods wpm
+        WHERE wpm.key = ${r}.withdrawal_method_key)
+    ) AS method_name_ar`;
+  }
   return sql`${name},
     COALESCE(
       (SELECT coalesce(pm.internal_label, pm.name) FROM payment_methods pm
@@ -429,6 +445,7 @@ function toMovementRow(row: AdminCombinedRow) {
     providerPaymentId: row.provider_payment_id,
     destination: row.destination,
     rejectionReason: row.rejection_reason,
+    rejectionReasonAr: row.rejection_reason_ar ?? null,
     // The receipt on an offline deposit, so the desk can show the image beside
     // the row it is deciding on. Null on every other movement.
     proofFilename: row.proof_filename,
@@ -479,6 +496,8 @@ import {
   providerWebhookUrl,
 } from './providers/payment-provider-registry';
 import type { PaymentRoute } from './providers/payment-provider';
+import { rebateNameArabic, systemSentenceArabic } from '../../common/i18n/reason-arabic';
+import { registerLabelTwins } from '../../common/i18n/localize-message';
 import type { DepositAttentionReason } from '../../common/notifications/admin-notification-catalogue';
 import {
   AuthorizationError,
@@ -835,6 +854,7 @@ export class TransactionsService {
       .select({
         key: withdrawalPaymentMethods.key,
         name: withdrawalPaymentMethods.name,
+        nameAr: withdrawalPaymentMethods.nameAr,
         logoUrl: withdrawalPaymentMethods.logoUrl,
         providerCode: withdrawalPaymentMethods.providerCode,
         channelCode: withdrawalPaymentMethods.channelCode,
@@ -851,17 +871,21 @@ export class TransactionsService {
     }
     // What the client must give, from the method's payout channel (0168) — the
     // portal renders the field by its kind, never by the method's key.
-    return offered.map(({ providerCode, channelCode, ...method }) => {
-      const channel = this.providers.findChannel({ providerCode, channelCode }, 'payout');
-      const destination = channel?.destination;
-      return {
-        ...method,
-        destinationKind: destination?.kind ?? 'text',
-        destinationNetwork: destination?.network ?? null,
-        // The wallet currencies it pays out, or null for any (0173).
-        currencies: !channel || channel.currencies === 'any' ? null : [...channel.currencies],
-      };
-    });
+    // The country rule decided WHETHER it is offered; it is the desk's configuration
+    // and not part of what a client is sent (`WithdrawalMethodDto` does not name it).
+    return offered.map(
+      ({ providerCode, channelCode, countryRule: _rule, countryCodes: _codes, ...method }) => {
+        const channel = this.providers.findChannel({ providerCode, channelCode }, 'payout');
+        const destination = channel?.destination;
+        return {
+          ...method,
+          destinationKind: destination?.kind ?? 'text',
+          destinationNetwork: destination?.network ?? null,
+          // The wallet currencies it pays out, or null for any (0173).
+          currencies: !channel || channel.currencies === 'any' ? null : [...channel.currencies],
+        };
+      },
+    );
   }
 
   /**
@@ -973,6 +997,8 @@ export class TransactionsService {
     if (!method || !method.enabled) {
       throw new ValidationError('That withdrawal method is not available.');
     }
+    // A refusal below that names the method names it in Arabic for an Arabic reader.
+    registerLabelTwins([[method.name, method.nameAr]]);
     const [withdrawer] = await this.db
       .select({ country: users.country })
       .from(users)
@@ -1358,6 +1384,7 @@ export class TransactionsService {
         providerRef: transactions.providerRef,
         destination: transactions.destination,
         rejectionReason: transactions.rejectionReason,
+        rejectionReasonAr: transactions.rejectionReasonAr,
         requestedAt: transactions.createdAt,
         /*
          * WHO decided. Recorded since the lifecycle existed and projected
@@ -1522,6 +1549,7 @@ export class TransactionsService {
        */
       methodName: r.withdrawalMethodName ?? r.provider,
       rejectionReason: r.rejectionReason,
+      rejectionReasonAr: r.rejectionReasonAr,
       requestedAt: r.requestedAt,
       reviewedBy: r.reviewedBy,
       reviewedAt: r.reviewedAt,
@@ -1792,6 +1820,7 @@ export class TransactionsService {
           NULL::varchar,                          -- proof_filename
           NULL::jsonb,                            -- proof_details
           NULL::text,                             -- rejection_reason: it cannot fail
+          NULL::text,                             -- rejection_reason_ar
           NULL::uuid,                             -- reviewed_by
           NULL::timestamptz,                      -- reviewed_at
           le.created_at                           AS settled_at,
@@ -1893,6 +1922,7 @@ export class TransactionsService {
           t.proof_filename,
           t.proof_details,
           t.rejection_reason,
+          t.rejection_reason_ar,
           t.reviewed_by,
           t.reviewed_at,
           t.settled_at,
@@ -1957,6 +1987,7 @@ export class TransactionsService {
            * screen showing the reason shows it for every kind of movement.
            */
           tr.failure_reason,
+          tr.failure_reason_ar,
           NULL::uuid,                             -- reviewed_by
           NULL::timestamptz,                      -- reviewed_at
           tr.settled_at,
@@ -2026,6 +2057,7 @@ export class TransactionsService {
           NULL::varchar,                          -- proof_filename
           NULL::jsonb,                            -- proof_details
           NULL::text,                             -- rejection_reason: it cannot fail
+          NULL::text,                             -- rejection_reason_ar
           NULL::uuid,                             -- reviewed_by
           NULL::timestamptz,                      -- reviewed_at
           iwt.created_at                          AS settled_at,
@@ -2195,12 +2227,15 @@ export class TransactionsService {
         proofFilename: row.proof_filename,
         proofDetails: row.proof_details,
         rejectionReason: row.rejection_reason,
+        // The Arabic written with it (0179); the controller falls back to the catalogue.
+        ...(row.rejection_reason_ar ? { rejectionReasonAr: row.rejection_reason_ar } : {}),
         reviewedBy: row.reviewed_by,
         reviewedAt: instantOrNull(row.reviewed_at),
         settledAt: instantOrNull(row.settled_at),
         providerPaymentId: row.provider_payment_id,
         createdAt: instantOf(row.created_at),
         methodName: row.method_name,
+        methodNameAr: row.method_name_ar ?? rebateNameArabic(row.kind, row.method_name),
         kind: row.kind,
         tradingAccountId: row.trading_account_id,
       })),
@@ -2937,7 +2972,14 @@ export class TransactionsService {
     });
   }
 
-  async reject(id: string, adminId: string, reason: string, withinTx?: WithinTransaction) {
+  async reject(
+    id: string,
+    adminId: string,
+    reason: string,
+    withinTx?: WithinTransaction,
+    /** The reason in Arabic (0179); omitted = the catalogue's Arabic of a system sentence. */
+    reasonAr?: string | null,
+  ) {
     /*
      * One transaction: the state change and the REFUND commit together, so a
      * failure can never leave a rejected withdrawal with the client's money
@@ -2947,7 +2989,13 @@ export class TransactionsService {
       const row = await this.transition(
         id,
         'pending',
-        { state: 'rejected', rejectionReason: reason, reviewedBy: adminId, reviewedAt: new Date() },
+        {
+          state: 'rejected',
+          rejectionReason: reason,
+          rejectionReasonAr: reasonAr === undefined ? systemSentenceArabic(reason) : reasonAr,
+          reviewedBy: adminId,
+          reviewedAt: new Date(),
+        },
         dbTx,
       );
       if (!row) {
@@ -3052,6 +3100,8 @@ export class TransactionsService {
     withinTx?: WithinTransaction,
     /** A provider operator's note (0172) — admin-only, never the client's reason. */
     providerNote: string | null = null,
+    /** The reason in Arabic (0179); omitted = the catalogue's Arabic of a system sentence. */
+    reasonAr?: string | null,
   ) {
     // Failing a withdrawal RETURNS the money to the client, so it belongs with
     // settlement rather than with approval — it is the settle step's error
@@ -3061,7 +3111,13 @@ export class TransactionsService {
       const row = await this.transition(
         id,
         'approved',
-        { state: 'failure', rejectionReason: reason, providerNote, settledAt: new Date() },
+        {
+          state: 'failure',
+          rejectionReason: reason,
+          rejectionReasonAr: reasonAr === undefined ? systemSentenceArabic(reason) : reasonAr,
+          providerNote,
+          settledAt: new Date(),
+        },
         dbTx,
       );
       if (!row) {
@@ -3491,6 +3547,13 @@ export class TransactionsService {
                */
               rejectionReason:
                 error instanceof Error ? error.message : 'The payment could not be started.',
+              /*
+               * Its Arabic (0179): the provider's own words are English, so an
+               * Arabic reader is told the fixed sentence instead of reading them.
+               */
+              rejectionReasonAr:
+                (error instanceof Error ? systemSentenceArabic(error.message) : null) ??
+                systemSentenceArabic('The payment could not be started.'),
               settledAt: new Date(),
             })
             .where(eq(transactions.id, tx.id));
@@ -3861,7 +3924,15 @@ export class TransactionsService {
    *
    * `settledAt` stays null: nothing settled.
    */
-  async rejectDeposit(id: string, adminId: string, reason: string, withinTx?: WithinTransaction) {
+  async rejectDeposit(
+    id: string,
+    adminId: string,
+    reason: string,
+    withinTx?: WithinTransaction,
+    /** The reason in Arabic (0179); omitted = the catalogue's Arabic of a system sentence. */
+    reasonAr?: string | null,
+  ) {
+    const arabic = reasonAr === undefined ? systemSentenceArabic(reason) : reasonAr;
     const tx = await this.getById(id);
     if (tx.direction !== 'deposit') {
       throw new ValidationError('That transaction is not a deposit.');
@@ -3880,7 +3951,13 @@ export class TransactionsService {
       const rejected = await this.transition(
         id,
         'pending',
-        { state: 'rejected', rejectionReason: reason, reviewedBy: adminId, reviewedAt: new Date() },
+        {
+          state: 'rejected',
+          rejectionReason: reason,
+          rejectionReasonAr: arabic,
+          reviewedBy: adminId,
+          reviewedAt: new Date(),
+        },
         dbTx,
       );
       if (!rejected) {
@@ -3901,6 +3978,7 @@ export class TransactionsService {
             amount: tx.amount,
             currency: tx.currency,
             reason,
+            ...(arabic ? { reasonAr: arabic } : {}),
           },
           dedupeKey: `deposit.rejected:${tx.id}`,
         },
@@ -3916,7 +3994,14 @@ export class TransactionsService {
      * out before the rejection was durable — and a client told their deposit was
      * refused by a transaction that then rolled back is worse than a late email.
      */
-    void this.sendDepositOutcomeEmail(tx.userId, 'rejected', tx.amount, tx.currency, reason);
+    void this.sendDepositOutcomeEmail(
+      tx.userId,
+      'rejected',
+      tx.amount,
+      tx.currency,
+      reason,
+      arabic,
+    );
     return row;
   }
 
@@ -3957,6 +4042,8 @@ export class TransactionsService {
     amount: string,
     currency: string,
     reason?: string,
+    /** The reason's stored Arabic (0179). */
+    reasonAr?: string | null,
   ): Promise<void> {
     try {
       const [user] = await this.db.select().from(users).where(eq(users.id, userId)).limit(1);
@@ -3968,6 +4055,9 @@ export class TransactionsService {
         amount,
         currency,
         reason,
+        // Settled by a webhook, a sweep or the desk: the client's stored language.
+        parseLocale(user.locale),
+        reasonAr,
       );
     } catch (error) {
       this.logger.warn(

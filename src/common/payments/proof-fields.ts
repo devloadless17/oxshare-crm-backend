@@ -1,5 +1,6 @@
 import { FieldValidationError } from '../errors/domain-errors';
 import { phoneProblem, toE164 } from '../profile/client-profile';
+import { registerLabelTwins } from '../i18n/localize-message';
 
 /**
  * The details a client gives with an OFFLINE deposit — the pure rules (0163).
@@ -42,12 +43,18 @@ export interface ProofField {
   enabled: boolean;
   /** One line under the input, e.g. "The number the transfer was sent from". */
   hint?: string;
+  /** The label in Arabic for the portal's Arabic readers (0179). Absent = not translated. */
+  labelAr?: string;
+  /** The hint in Arabic (0179). Absent = not translated. */
+  hintAr?: string;
 }
 
 /** One answer, as filed — the label is the one the client was shown. */
 export interface ProofDetail {
   fieldId: string;
   label: string;
+  /** The Arabic label as it read at filing, when the field had one (0179). */
+  labelAr?: string;
   type: ProofFieldType;
   value: string;
 }
@@ -56,9 +63,11 @@ export interface ProofDetail {
 export interface AskedProofField {
   id: string;
   label: string;
+  labelAr: string | null;
   type: ProofFieldType;
   required: boolean;
   hint: string | null;
+  hintAr: string | null;
 }
 
 export const PROOF_FIELD_LIMITS = {
@@ -91,6 +100,8 @@ export interface ProofFieldInput {
   required?: boolean;
   enabled?: boolean;
   hint?: string | null;
+  labelAr?: string | null;
+  hintAr?: string | null;
 }
 
 /**
@@ -112,6 +123,9 @@ export function normaliseProofFields(input: readonly ProofFieldInput[]): ProofFi
     const at = `proofFields.${i}`;
     const label = raw.label.trim();
     const hint = raw.hint?.trim() ?? '';
+    // The Arabic twins are optional: blank means "not translated" and is not stored.
+    const labelAr = raw.labelAr?.trim() ?? '';
+    const hintAr = raw.hintAr?.trim() ?? '';
 
     if (!PROOF_FIELD_ID_PATTERN.test(raw.id)) {
       errors[`${at}.id`] = 'This detail has an invalid id. Remove it and add it again.';
@@ -133,6 +147,13 @@ export function normaliseProofFields(input: readonly ProofFieldInput[]): ProofFi
     if (hint.length > PROOF_FIELD_LIMITS.hint) {
       errors[`${at}.hint`] = `Keep the hint under ${PROOF_FIELD_LIMITS.hint} characters.`;
     }
+    if (labelAr.length > PROOF_FIELD_LIMITS.label) {
+      errors[`${at}.labelAr`] =
+        `Keep the Arabic name under ${PROOF_FIELD_LIMITS.label} characters.`;
+    }
+    if (hintAr.length > PROOF_FIELD_LIMITS.hint) {
+      errors[`${at}.hintAr`] = `Keep the Arabic hint under ${PROOF_FIELD_LIMITS.hint} characters.`;
+    }
 
     fields.push({
       id: raw.id,
@@ -141,6 +162,8 @@ export function normaliseProofFields(input: readonly ProofFieldInput[]): ProofFi
       required: raw.required ?? false,
       enabled: raw.enabled ?? true,
       ...(hint === '' ? {} : { hint }),
+      ...(labelAr === '' ? {} : { labelAr }),
+      ...(hintAr === '' ? {} : { hintAr }),
     });
   });
 
@@ -164,9 +187,11 @@ export function askedProofFields(
     .map((field) => ({
       id: field.id,
       label: field.label,
+      labelAr: field.labelAr ?? null,
       type: field.type,
       required: field.required,
       hint: field.hint ?? null,
+      hintAr: field.hintAr ?? null,
     }));
 }
 
@@ -202,9 +227,12 @@ export function readProofDetails(
     });
   }
 
+  const asked = askedProofFields(fields, requiresProof);
+  // "<label> is required." names the field in Arabic for an Arabic reader (3 Oct 2026).
+  registerLabelTwins(asked.map((field) => [field.label, field.labelAr] as const));
   const errors: Record<string, string> = {};
   const answers: ProofDetail[] = [];
-  for (const field of askedProofFields(fields, requiresProof)) {
+  for (const field of asked) {
     const given = Object.hasOwn(raw, field.id) ? (raw as Record<string, string>)[field.id] : '';
     const text = (given ?? '').trim();
     const at = `details.${field.id}`;
@@ -221,7 +249,7 @@ export function readProofDetails(
         errors[at] = phoneProblem(text) ?? 'Enter a valid phone number.';
         continue;
       }
-      answers.push({ fieldId: field.id, label: field.label, type: field.type, value: e164 });
+      answers.push({ ...answerLabels(field), type: field.type, value: e164 });
       continue;
     }
     if (hasControlCharacter(text) || text.length > PROOF_FIELD_LIMITS.value) {
@@ -229,12 +257,24 @@ export function readProofDetails(
         `${field.label} must be at most ${PROOF_FIELD_LIMITS.value} characters, on one line.`;
       continue;
     }
-    answers.push({ fieldId: field.id, label: field.label, type: field.type, value: text });
+    answers.push({ ...answerLabels(field), type: field.type, value: text });
   }
 
   const first = Object.values(errors)[0];
   if (first) throw new FieldValidationError(first, errors);
   return answers;
+}
+
+/**
+ * The question an answer keeps: its id, its label, and its Arabic label when the
+ * field had one at filing (0179) — so an old answer and a new one read alike.
+ */
+function answerLabels(field: AskedProofField): Pick<ProofDetail, 'fieldId' | 'label' | 'labelAr'> {
+  return {
+    fieldId: field.id,
+    label: field.label,
+    ...(field.labelAr ? { labelAr: field.labelAr } : {}),
+  };
 }
 
 /** One cell for an export: `Phone number: +96170123456; Code: 88213`. */

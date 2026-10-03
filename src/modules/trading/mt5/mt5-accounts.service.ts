@@ -8,6 +8,7 @@ import { currencies, mt5Deals, tradingAccounts, users } from '../../../database/
 import { Mt5BridgeClient } from './mt5-bridge.client';
 import { AdminAuditService } from '../../admin/admin-audit.service';
 import { EmailService } from '../../email/email.service';
+import { parseLocale, requestLocale } from '../../../common/i18n/locale';
 import { assertActorCan } from '../../../common/security/actor';
 import { maskedFieldsFor } from '../../../common/security/field-mask';
 import { clientScopePredicate } from '../../../common/security/client-scope';
@@ -326,6 +327,7 @@ export class Mt5AccountsService {
         lastName: users.lastName,
         country: users.country,
         phone: users.phone,
+        locale: users.locale,
       })
       .from(users)
       .where(and(eq(users.id, input.userId), clientScopePredicate(actor.clientScope, users.id)))
@@ -462,6 +464,10 @@ export class Mt5AccountsService {
       created.leverage,
       created.masterPassword,
       created.investorPassword,
+      undefined,
+      undefined,
+      // Opened by STAFF: the client's stored language, not the console's.
+      parseLocale(client.locale),
     );
 
     const response = {
@@ -752,6 +758,8 @@ export class Mt5AccountsService {
       // and the mail correctly omits the line rather than promising money that
       // is not there.
       snapshot?.balance ?? '0',
+      // The client's own request: the language they are reading the portal in.
+      requestLocale(),
     );
 
     /*
@@ -879,6 +887,7 @@ export class Mt5AccountsService {
       account.environment,
       reset.masterPassword,
       reset.investorPassword,
+      requestLocale(),
     );
 
     return { login: account.login, credentialsSentTo: account.email };

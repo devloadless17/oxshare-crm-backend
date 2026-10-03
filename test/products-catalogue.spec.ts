@@ -731,3 +731,71 @@ describe('positions without an order field', () => {
     expect(second.sortOrder).toBeGreaterThan(first.sortOrder);
   });
 });
+
+describe('Arabic names and descriptions (0179)', () => {
+  it('stores a product’s Arabic, keeps it on a PUT that omits it, and clears blank', async () => {
+    const created = await service.createProduct(
+      { name: 'Standard', nameAr: '  قياسي ', enabled: true },
+      TEST_ACTOR,
+    );
+    expect(created.nameAr).toBe('قياسي');
+    expect((await service.listProducts()).find((p) => p.id === created.id)?.nameAr).toBe('قياسي');
+
+    const renamed = await service.updateProduct(
+      created.id,
+      { name: 'Standard+', enabled: true },
+      TEST_ACTOR,
+    );
+    expect(renamed.nameAr).toBe('قياسي');
+
+    const cleared = await service.updateProduct(
+      created.id,
+      { name: 'Standard+', nameAr: '   ', enabled: true },
+      TEST_ACTOR,
+    );
+    expect(cleared.nameAr).toBeNull();
+  });
+
+  it('stores an agency’s Arabic and serves it, with the products’ Arabic index for index', async () => {
+    const standard = await service.createProduct(
+      { name: 'Standard', nameAr: 'قياسي', enabled: true },
+      TEST_ACTOR,
+    );
+    const ecn = await service.createProduct({ name: 'ECN', enabled: true }, TEST_ACTOR);
+    const agency = await service.createAgency(
+      { name: 'Gold', nameAr: 'ذهبي', descriptionAr: '  ', enabled: true },
+      TEST_ACTOR,
+    );
+    expect(agency).toMatchObject({ nameAr: 'ذهبي', descriptionAr: null });
+    await service.setAgencyProducts(agency.id, [standard.id, ecn.id], TEST_ACTOR);
+
+    const kept = await service.updateAgency(
+      agency.id,
+      { name: 'Gold+', descriptionAr: 'وصف', enabled: true },
+      TEST_ACTOR,
+    );
+    expect(kept).toMatchObject({ nameAr: 'ذهبي', descriptionAr: 'وصف' });
+
+    const [open] = await service.listOpenAgencies();
+    expect(open).toMatchObject({ nameAr: 'ذهبي', descriptionAr: 'وصف' });
+    const pairs = open.products.map((name, i) => [name, open.productsAr[i]]);
+    expect(pairs.sort()).toEqual([
+      ['ECN', null],
+      ['Standard', 'قياسي'],
+    ]);
+  });
+
+  it('offers a product with its Arabic name', async () => {
+    const id = (
+      await service.createProduct({ name: 'Standard', nameAr: 'قياسي', enabled: true }, TEST_ACTOR)
+    ).id;
+    await service.attachGroup(
+      id,
+      { environment: 'live', mt5Group: 'real\\Standard-USD' },
+      TEST_ACTOR,
+    );
+    const client = await makeUser('arabic@offered.local');
+    const [offer] = await store.offeredTo(client, 'live');
+    expect(offer).toMatchObject({ productName: 'Standard', productNameAr: 'قياسي' });
+  });
+});

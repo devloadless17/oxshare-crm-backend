@@ -98,6 +98,25 @@ export function assertStepTitles(next: readonly KycStepConfig[]): void {
     }
     seen.set(key, index);
   });
+  /*
+   * The same rule for the Arabic titles (0179), judged after the English so an
+   * English clash is always the one reported: an Arabic reader tells steps
+   * apart by the Arabic. An untranslated step shows its English, already judged.
+   */
+  const seenAr = new Map<string, number>();
+  next.forEach((step, index) => {
+    const titleAr = step.titleAr?.trim() ?? '';
+    if (!titleAr) return;
+    const key = normaliseLabel(titleAr);
+    if (seenAr.has(key)) {
+      throw refuse(
+        `Two steps are called "${titleAr}" in Arabic. Give each its own Arabic title, so a ` +
+          'client reading in Arabic can tell them apart.',
+        index,
+      );
+    }
+    seenAr.set(key, index);
+  });
 }
 
 /**
@@ -304,6 +323,27 @@ export function assertNoSecondCopies(next: readonly KycStepConfig[]): void {
         throw refuse(
           `"${field.label}" is already collected by the platform (${meaning}), in its fixed ` +
             'place. A second box would be a second answer that can disagree with the first.',
+          stepIndex,
+          fieldIndex,
+        );
+      }
+    });
+  });
+  /*
+   * The same second box, labelled in ARABIC (0179): "الاسم الأول" asks for the
+   * first name as surely as "First name" does. After the English, so an English
+   * clash is always the one reported.
+   */
+  next.forEach((step, stepIndex) => {
+    step.fields.forEach((field, fieldIndex) => {
+      if (isPlatformField(step.slug, field)) return;
+      const labelAr = field.labelAr?.trim();
+      const meaning = labelAr ? platformMeaningOf(labelAr) : undefined;
+      if (meaning) {
+        throw refuse(
+          `"${labelOf(field)}" is labelled "${labelAr}" in Arabic, which the platform already ` +
+            `collects (${meaning}) in its fixed place. A second box would be a second answer ` +
+            'that can disagree with the first.',
           stepIndex,
           fieldIndex,
         );

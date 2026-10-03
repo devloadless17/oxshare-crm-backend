@@ -131,6 +131,8 @@ async function bootstrap() {
       'X-OxShare-CSRF',
       'Idempotency-Key',
       'If-Match',
+      // The portal's language (common/i18n/locale.ts), on every request.
+      'X-OxShare-Locale',
     ],
     // So a caller can read the id back off a response it did not set one on.
     //

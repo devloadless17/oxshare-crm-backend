@@ -230,3 +230,27 @@ describe('the screens that inherit this', () => {
     expect(rows[0].balance).toBe('900.00000000');
   });
 });
+
+/* Arabic (0179): the account list names its product in both languages. */
+describe('the product name in Arabic', () => {
+  it('serves productAr from the same product row as product, null when untranslated', async () => {
+    const { rows } = await ctx.db.execute<{ id: string }>(sql`
+      INSERT INTO trading_products (name, name_ar, enabled, type, sort_order)
+      VALUES ('Freshness Arabic', 'منتج', true, 'real', 990)
+      ON CONFLICT (name) DO UPDATE SET name_ar = 'منتج'
+      RETURNING id
+    `);
+    await makeAccount('500091', { syncedSecondsAgo: 0 });
+    await makeAccount('500092', { syncedSecondsAgo: 0 });
+    await ctx.db.execute(sql`
+      UPDATE trading_accounts SET product_id = ${rows[0].id} WHERE login = '500091'
+    `);
+
+    const accounts = await service().listMine(userId);
+    const byLogin = new Map(accounts.map((account) => [account.login, account]));
+    expect(byLogin.get('500091')).toMatchObject({ product: 'Freshness Arabic', productAr: 'منتج' });
+    expect(byLogin.get('500092')?.productAr).toBeNull();
+    const one = await service().findMine(userId, byLogin.get('500091')!.id);
+    expect(one.productAr).toBe('منتج');
+  });
+});

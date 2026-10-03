@@ -1,14 +1,20 @@
 import { createHash } from 'crypto';
+import { registerLabelTwins } from '../common/i18n/localize-message';
 import { documentForFieldType } from '../common/kyc/document-catalogue';
-import { offeredLists, type OfferedLists } from '../common/kyc/country-options';
+import {
+  countryLabelsAr,
+  nationalityLabelsAr,
+  offeredLists,
+  type OfferedLists,
+} from '../common/kyc/country-options';
 import {
   CORE_STEPS,
   DEFAULT_IDENTITY_PLACEMENTS,
   DOCUMENT_CATALOGUE_BY_CATEGORY,
-  documentField,
   inFormOrder,
   isPlatformField,
   platformStep,
+  storedDocumentField,
   storedStep,
 } from '../common/kyc/identity-core';
 import { asc, inArray, sql } from 'drizzle-orm';
@@ -21,8 +27,11 @@ import { kycConfigSteps, kycFieldLabels, offeredCountries } from '../database/sc
 export interface KycDocumentPart {
   key: string;
   label: string;
+  /** The platform's Arabic (0179), from the catalogue like the English. */
+  labelAr: string;
   required: boolean;
   hint?: string;
+  hintAr?: string;
 }
 
 /**
@@ -40,6 +49,7 @@ export interface KycDocumentPart {
 export interface KycDocumentType {
   value: string;
   label: string;
+  labelAr: string;
   category: 'identity' | 'address';
   parts: KycDocumentPart[];
 }
@@ -57,6 +67,17 @@ export interface KycFieldConfig {
   required: boolean;
   options?: string[]; // for select type
   hint?: string;
+  /*
+   * THE ARABIC TWINS (0179). Optional; blank means "not translated" and the
+   * portal shows the English. `optionsAr` is keyed by the option's ENGLISH
+   * value — the stored answer is always the English value, so reordering or
+   * deleting a choice cannot misalign its Arabic. The platform's fields (and
+   * the country and nationality lists) carry the platform's Arabic, served on
+   * every read and never stored.
+   */
+  labelAr?: string;
+  hintAr?: string;
+  optionsAr?: Record<string, string>;
   /**
    * The catalogue entry this field collects, resolved from its `type` when
    * serving. NOT persisted — the type is the only stored fact, so a field can
@@ -76,6 +97,9 @@ export interface KycStepConfig {
   slug: string;
   title: string;
   description: string;
+  /** Arabic twins (0179, columns). A built-in step still on its default English gets the platform's. */
+  titleAr?: string;
+  descriptionAr?: string;
   icon: string;
   enabled: boolean;
   fields: KycFieldConfig[];
@@ -113,8 +137,8 @@ export interface KycStepConfig {
  * which documents each document step accepts, whether a step is on, and its
  * description.
  */
-const identityDocuments = DOCUMENT_CATALOGUE_BY_CATEGORY.identity.map(documentField);
-const addressDocuments = DOCUMENT_CATALOGUE_BY_CATEGORY.address.map(documentField);
+const identityDocuments = DOCUMENT_CATALOGUE_BY_CATEGORY.identity.map(storedDocumentField);
+const addressDocuments = DOCUMENT_CATALOGUE_BY_CATEGORY.address.map(storedDocumentField);
 
 export const DEFAULT_KYC_STEPS: KycStepConfig[] = CORE_STEPS.map((core, index) => ({
   id: `step-${index + 1}`,
@@ -122,6 +146,8 @@ export const DEFAULT_KYC_STEPS: KycStepConfig[] = CORE_STEPS.map((core, index) =
   slug: core.slug,
   title: core.title,
   description: core.description,
+  titleAr: core.titleAr,
+  descriptionAr: core.descriptionAr,
   icon: core.icon,
   enabled: true,
   evidenceRequired: core.slug === 'personal' ? undefined : true,
@@ -168,12 +194,20 @@ type Row = typeof kycConfigSteps.$inferSelect;
  * Since the identity core, those two fields are never stored at all; the strip
  * below still runs, for the rows written before.
  */
-type SystemOptions = Readonly<Record<'nationality' | 'country', readonly string[]>>;
+type SystemList = { options: readonly string[]; optionsAr: Readonly<Record<string, string>> };
+type SystemOptions = Readonly<Record<'nationality' | 'country', SystemList>>;
 
-/** The two system lists: the broker's offered countries and their nationalities (0178). */
+/**
+ * The two system lists: the broker's offered countries and their nationalities
+ * (0178), each with its Arabic (0179) — the same functions `GET /profile/options`
+ * serves them through, so the two cannot disagree.
+ */
 const systemOptions = (lists: OfferedLists): SystemOptions => ({
-  nationality: lists.nationalities,
-  country: lists.countries,
+  nationality: {
+    options: lists.nationalities,
+    optionsAr: nationalityLabelsAr(lists.nationalities),
+  },
+  country: { options: lists.countries, optionsAr: countryLabelsAr(lists.countries) },
 });
 
 const hasSystemOptions = (name: string): name is keyof SystemOptions =>
@@ -197,7 +231,8 @@ const withResolvedDocuments = (
     // A base type (`text`, `date`, …) resolves to nothing and passes through.
     if (document) return { ...field, document };
     if (field.type === 'select' && hasSystemOptions(field.name)) {
-      return { ...field, options: [...options[field.name]] };
+      const list = options[field.name];
+      return { ...field, options: [...list.options], optionsAr: { ...list.optionsAr } };
     }
     return field;
   });
@@ -213,6 +248,8 @@ const toStep = (r: Row, options: SystemOptions): KycStepConfig => {
     slug: r.slug,
     title: r.title,
     description: r.description ?? '',
+    ...(r.titleAr ? { titleAr: r.titleAr } : {}),
+    ...(r.descriptionAr ? { descriptionAr: r.descriptionAr } : {}),
     icon: r.icon ?? 'FileText',
     enabled: r.enabled,
     evidenceRequired: r.evidenceRequired,
@@ -231,11 +268,42 @@ const toStep = (r: Row, options: SystemOptions): KycStepConfig => {
 const stripResolved = (fields: KycFieldConfig[]): KycFieldConfig[] =>
   fields.map(({ document: _resolved, ...field }) => {
     if (field.type === 'select' && hasSystemOptions(field.name)) {
-      const { options: _system, ...rest } = field;
-      return rest;
+      const { options: _system, optionsAr: _systemAr, ...rest } = field;
+      return withArabic(rest);
     }
-    return field;
+    return withArabic(field);
   });
+
+/** Trimmed, or `undefined` when there is nothing to keep. */
+const kept = (text: unknown): string | undefined =>
+  typeof text === 'string' && text.trim() !== '' ? text.trim() : undefined;
+
+/**
+ * A field's Arabic as it is STORED (0179): trimmed; a blank dropped (blank is
+ * "not translated", never an empty label); a hint's Arabic only beside an
+ * English hint; and an option's Arabic only for an option the field still
+ * offers — a choice deleted or renamed takes its Arabic with it, so a stale
+ * translation can never resurface under another answer.
+ */
+function withArabic(field: KycFieldConfig): KycFieldConfig {
+  const { labelAr, hintAr, optionsAr, ...rest } = field;
+  const label = kept(labelAr);
+  const hint = rest.hint?.trim() ? kept(hintAr) : undefined;
+  const offered = new Set(rest.options ?? []);
+  const choices =
+    optionsAr && typeof optionsAr === 'object'
+      ? Object.entries(optionsAr).flatMap(([value, text]) => {
+          const arabic = kept(text);
+          return offered.has(value) && arabic ? [[value, arabic] as const] : [];
+        })
+      : [];
+  return {
+    ...rest,
+    ...(label ? { labelAr: label } : {}),
+    ...(hint ? { hintAr: hint } : {}),
+    ...(choices.length > 0 ? { optionsAr: Object.fromEntries(choices) } : {}),
+  };
+}
 
 /** A step as it is STORED — the platform's parts removed (`storedStep`). */
 const toRow = (s: KycStepConfig) => {
@@ -246,6 +314,8 @@ const toRow = (s: KycStepConfig) => {
     slug: stored.slug,
     title: stored.title,
     description: stored.description,
+    titleAr: kept(stored.titleAr) ?? null,
+    descriptionAr: kept(stored.descriptionAr) ?? null,
     icon: stored.icon,
     enabled: stored.enabled,
     evidenceRequired: stored.evidenceRequired !== false,
@@ -274,7 +344,7 @@ export function kycConfigVersion(steps: readonly KycStepConfig[]): string {
     ...step,
     fields: step.fields.map((field) =>
       field.type === 'select' && hasSystemOptions(field.name)
-        ? { ...field, options: undefined }
+        ? { ...field, options: undefined, optionsAr: undefined }
         : field,
     ),
   }));
@@ -296,7 +366,20 @@ export class KycConfigStore {
       .from(offeredCountries)
       .limit(1);
     const options = systemOptions(offeredLists(offered?.codes ?? null));
-    return inFormOrder(rows.map((row) => toStep(row, options)));
+    const steps = inFormOrder(rows.map((row) => toStep(row, options)));
+    /*
+     * The broker's own labels, for this request's error sentences (3 Oct 2026):
+     * "Favourite colour is required." names the question in Arabic when the
+     * client reads Arabic. Every refusal that names a question or a step reads
+     * the form through here first. A no-op outside a request.
+     */
+    registerLabelTwins(
+      steps.flatMap((step) => [
+        [step.title, step.titleAr] as const,
+        ...step.fields.map((field) => [field.label, field.labelAr] as const),
+      ]),
+    );
+    return steps;
   }
 
   /**

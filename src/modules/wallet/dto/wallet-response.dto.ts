@@ -289,6 +289,12 @@ export class StatementLineDto {
   @ApiProperty({
     type: String,
     nullable: true,
+    description: 'The rail name in Arabic (0179); null = not translated, show `methodName`.',
+  })
+  methodNameAr: string | null;
+  @ApiProperty({
+    type: String,
+    nullable: true,
     description: 'Payment provider; `manual_admin` for money the team placed by hand.',
   })
   provider: string | null;

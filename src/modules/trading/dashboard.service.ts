@@ -6,6 +6,8 @@ import { positions, tradingAccounts, transactions, users } from '../../database/
 import { WalletService } from '../wallet/wallet.service';
 import { TradingService } from './trading.service';
 import type { DashboardDto } from './dto/dashboard.dto';
+import { RejectionReasonsStore } from '../../store/rejection-reasons.store';
+import { withReasonArabicRows } from '../payments/reason-arabic-rows';
 
 /** The union's own column names, before they are mapped for the DTO. */
 interface RecentRow {
@@ -20,6 +22,7 @@ interface RecentRow {
   provider_ref: string | null;
   destination: string | null;
   rejection_reason: string | null;
+  rejection_reason_ar: string | null;
   created_at: Date;
   kind: 'payment' | 'transfer';
 }
@@ -61,6 +64,8 @@ export class DashboardService {
     @Inject(DRIZZLE_DB) private readonly db: Db,
     private readonly wallets: WalletService,
     private readonly trading: TradingService,
+    /* A refused movement's reason in Arabic (0179) — `rejectionReasonAr`. */
+    private readonly reasons: RejectionReasonsStore,
   ) {}
 
   /**
@@ -143,7 +148,7 @@ export class DashboardService {
         SELECT
           t.id, t.user_id, t.wallet_id, t.direction::text AS direction, t.amount, t.currency,
           t.state::text AS state, t.provider, t.provider_ref, t.destination,
-          t.rejection_reason, t.created_at, 'payment'::text AS kind
+          t.rejection_reason, t.rejection_reason_ar, t.created_at, 'payment'::text AS kind
         FROM transactions t
         WHERE t.user_id = ${userId}
 
@@ -159,7 +164,7 @@ export class DashboardService {
             ELSE 'pending'
           END,
           'transfer'::varchar, NULL::varchar, NULL::text,
-          tr.failure_reason, tr.created_at, 'transfer'::text
+          tr.failure_reason, tr.failure_reason_ar, tr.created_at, 'transfer'::text
         FROM transfers tr
         WHERE tr.user_id = ${userId}
       )
@@ -168,7 +173,7 @@ export class DashboardService {
       LIMIT ${RECENT_TRANSACTION_LIMIT}
     `);
 
-    return (rows.rows as unknown as RecentRow[]).map((row) => ({
+    const recent = (rows.rows as unknown as RecentRow[]).map((row) => ({
       id: row.id,
       userId: row.user_id,
       walletId: row.wallet_id,
@@ -180,9 +185,12 @@ export class DashboardService {
       providerRef: row.provider_ref,
       destination: row.destination,
       rejectionReason: row.rejection_reason,
+      rejectionReasonAr: row.rejection_reason_ar,
       createdAt: row.created_at,
       kind: row.kind,
     }));
+    // `rejectionReasonAr` (0179): stored, else the catalogue's — as the history list.
+    return withReasonArabicRows(recent, this.reasons);
   }
 
   /**

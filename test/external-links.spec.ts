@@ -75,7 +75,15 @@ describe('what a client is shown', () => {
      * response every customer receives.
      */
     const [row] = await service.listEnabled();
-    expect(Object.keys(row).sort()).toEqual(['description', 'id', 'sortOrder', 'title', 'url']);
+    expect(Object.keys(row).sort()).toEqual([
+      'description',
+      'descriptionAr',
+      'id',
+      'sortOrder',
+      'title',
+      'titleAr',
+      'url',
+    ]);
   });
 
   it('answers with an empty list rather than anything else when none are configured', async () => {
@@ -258,5 +266,45 @@ describe('the URL a client is handed', () => {
     await expect(service.update(calendarId, { url: 'javascript:alert(1)' }, ACTOR)).rejects.toThrow(
       /http or https/i,
     );
+  });
+});
+
+/*
+ * Arabic twins (0179): optional, trimmed, blank → null, and served to the client
+ * beside the English so the portal can pick without a refetch.
+ */
+describe('the Arabic title and description', () => {
+  it('stores them, serves them to the client and to the console, and blank is null', async () => {
+    const created = await service.create(
+      {
+        title: 'Calendar',
+        titleAr: '  المفكرة الاقتصادية ',
+        url: 'https://example.com/cal',
+        description: 'Every release',
+        descriptionAr: '   ',
+      },
+      ACTOR,
+    );
+    expect(created.titleAr).toBe('المفكرة الاقتصادية');
+    expect(created.descriptionAr).toBeNull();
+
+    const [client] = await service.listEnabled();
+    expect(client.titleAr).toBe('المفكرة الاقتصادية');
+    expect(client.descriptionAr).toBeNull();
+    expect((await service.listAll())[0].titleAr).toBe('المفكرة الاقتصادية');
+  });
+
+  it('keeps the Arabic when an edit omits it, and clears it on null or blank', async () => {
+    const created = await service.create(
+      { title: 'Calendar', titleAr: 'المفكرة', descriptionAr: 'كل إصدار', url: 'https://x.com' },
+      ACTOR,
+    );
+    const renamed = await service.update(created.id, { title: 'Economic calendar' }, ACTOR);
+    expect(renamed.titleAr).toBe('المفكرة');
+    expect(renamed.descriptionAr).toBe('كل إصدار');
+
+    const cleared = await service.update(created.id, { titleAr: null, descriptionAr: ' ' }, ACTOR);
+    expect(cleared.titleAr).toBeNull();
+    expect(cleared.descriptionAr).toBeNull();
   });
 });

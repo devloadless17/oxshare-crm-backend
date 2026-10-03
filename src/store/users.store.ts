@@ -22,6 +22,7 @@ import {
 import type { CursorPosition } from '../common/pagination';
 import { PROFILE_FIELD_KEYS, type ProfileKey } from '../common/profile/client-profile';
 import { sortKey, sortOrder } from '../common/sorting';
+import { parseLocale, type Locale } from '../common/i18n/locale';
 import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db, Executor } from '../database/db';
@@ -210,6 +211,13 @@ export interface User {
    * another.
    */
   referredByIbUserId?: number;
+  /**
+   * The portal language the client last chose (0179) — what mail sent OUTSIDE
+   * their own request (admin decisions, jobs) is written in. Always set on a
+   * row read through `toUser`; optional only so hand-built fixtures and an
+   * INSERT that omits it (the column defaults to 'en') still type-check.
+   */
+  locale?: Locale;
   createdAt: Date;
 }
 
@@ -254,6 +262,7 @@ const toUser = ({
   stateProvince: r.stateProvince ?? undefined,
   postalCode: r.postalCode ?? undefined,
   referredByIbUserId: r.referredByIbUserId ?? undefined,
+  locale: parseLocale(r.locale),
 });
 
 /**
