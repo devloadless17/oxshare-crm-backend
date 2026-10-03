@@ -135,6 +135,31 @@ function localizeCapture(value: string, table: Map<string, string>): string {
   return value;
 }
 
+/*
+ * A left-to-right RUN inside Arabic text: an amount, a currency code, an id, an
+ * English label the catalogue could not translate. It starts with a letter or
+ * digit (a sign and a currency symbol may lead), may hold spaces and the
+ * punctuation that lives INSIDE such values, and ends on a letter, digit or `%`
+ * — so the sentence's own full stop or comma stays outside.
+ */
+const LTR_RUN = /[-+]?[$€£]?[A-Za-z0-9](?:[A-Za-z0-9 .,:/@_+#%&'’-]*[A-Za-z0-9%])?/g;
+const LRI = '\u2066';
+const PDI = '\u2069';
+
+/**
+ * Wrap every left-to-right run of an Arabic sentence in LEFT-TO-RIGHT ISOLATE …
+ * POP DIRECTIONAL ISOLATE (U+2066 … U+2069) — the portal's `ltr()` convention.
+ *
+ * Without it the bidi algorithm reorders a run inside right-to-left text:
+ * "$1,000.00" read "1,000.00$" and "50000 USD" read "USD 50000" in the portal's
+ * Arabic error box (found in the Arabic end-to-end test, 3 Oct 2026). The
+ * characters are invisible and travel in a JSON string, so every place the
+ * portal prints the sentence — an alert, a toast, a field error — is fixed at once.
+ */
+export function isolateLtrRuns(text: string): string {
+  return text.replace(LTR_RUN, (run) => LRI + run + PDI);
+}
+
 export function localizeMessage(text: string, locale: Locale): string {
   if (locale !== 'ar' || typeof text !== 'string' || text === '') return text;
   if (!exact || !patterns) compile();
@@ -147,10 +172,15 @@ export function localizeMessage(text: string, locale: Locale): string {
     const match = pattern.regex.exec(text);
     if (!match) continue;
     const groups = match.groups ?? {};
-    return pattern.arabic.replace(PLACEHOLDER, (_, n: string) => {
-      const captured = groups[`p${n}`];
-      return captured === undefined ? '' : localizeCapture(captured, table);
-    });
+    // Only a FILLED pattern is isolated: its captures are the values (amounts,
+    // codes, untranslated labels) that bidi reorders. An exact sentence is
+    // written by hand and returned as written.
+    return isolateLtrRuns(
+      pattern.arabic.replace(PLACEHOLDER, (_, n: string) => {
+        const captured = groups[`p${n}`];
+        return captured === undefined ? '' : localizeCapture(captured, table);
+      }),
+    );
   }
   return text;
 }
