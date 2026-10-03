@@ -75,6 +75,8 @@ export const SERVER_MESSAGES_AR: Readonly<Record<string, string>> = {
   'A value in the request is not a valid identifier.': 'إحدى القيم في الطلب ليست معرّفاً صالحاً.',
   'An unexpected error occurred. Quote the request id when reporting this.':
     'حدث خطأ غير متوقع. يُرجى ذكر رقم الطلب عند الإبلاغ عنه.',
+  'The service is briefly unavailable. Please try again in a moment.':
+    'الخدمة غير متاحة مؤقتاً. يُرجى المحاولة مرة أخرى بعد لحظات.',
 
   // ── Framework defaults (Nest, multer, the built-in pipes) ────────────────────
   Unauthorized: 'يلزم تسجيل الدخول',
@@ -345,6 +347,8 @@ export const SERVER_MESSAGES_AR: Readonly<Record<string, string>> = {
     'لا يمكن طلب إعادة التحقق إلا لتحقق مقبول. أما الطلب الذي لا يزال قيد المراجعة فيُعاد برفضه.',
   'This verification changed while you were deciding. Reload it and try again.':
     'تغيّر هذا التحقق أثناء اتخاذك القرار. أعد تحميله ثم حاول مرة أخرى.',
+  'This submission changed while it was being approved: {1}. Reload it and try again.':
+    'تغيّر هذا الطلب أثناء اعتماده: {1}. أعد تحميله ثم حاول مرة أخرى.',
   'KYC is under review. You cannot change your documents now.':
     'طلب التحقق من الهوية قيد المراجعة. لا يمكنك تغيير وثائقك الآن.',
   'Another reviewer is holding this submission. It must be handed back first.':
@@ -835,6 +839,10 @@ export const SERVER_MESSAGES_AR: Readonly<Record<string, string>> = {
     'لا يمكن تسوية إلا تحويل قيد الانتظار؛ حالة هذا التحويل: {1}.',
   'Only a pending transfer can fail; this one is {1}.':
     'لا يمكن أن يفشل إلا تحويل قيد الانتظار؛ حالة هذا التحويل: {1}.',
+  'Transfers in {1} go to {2} decimal places. Use {3} instead.':
+    'تتم التحويلات بعملة {1} حتى {2} منازل عشرية. استخدم {3} بدلاً من ذلك.',
+  'That idempotency key was already used for a different transfer. Use a new key.':
+    'استُخدم مفتاح منع التكرار هذا لتحويل مختلف. استخدم مفتاحاً جديداً.',
   'A withdrawal method with the key {1} already exists.': 'توجد طريقة سحب بالمفتاح {1} مسبقاً.',
   'Unknown withdrawal method {1}.': 'طريقة سحب غير معروفة: {1}.',
   '{1} has been used by withdrawals and cannot be deleted. Disable it instead.':
@@ -881,6 +889,8 @@ export const SERVER_MESSAGES_AR: Readonly<Record<string, string>> = {
   'A verified detail changes only with a reason — it is recorded on the verification.':
     'لا تتغير البيانات الموثَّقة إلا مع ذكر سبب — يُسجَّل السبب في طلب التحقق.',
   'Give a reason for changing a verified detail.': 'اذكر سبب تغيير البيانات الموثَّقة.',
+  "The client's verification changed while you were editing. Reload and try again.":
+    'تغيّر تحقق العميل أثناء التعديل. أعد التحميل ثم حاول مرة أخرى.',
 
   // ── trading ──────────────────────────────────────────────────────────────────
   'page must be a whole number': 'يجب أن يكون رقم الصفحة عدداً صحيحاً',
@@ -937,6 +947,8 @@ export const SERVER_MESSAGES_AR: Readonly<Record<string, string>> = {
     'هذا المنتج لا يبيع مجموعة MT5 "{1}". اختر منتجاً يتضمنها، أو اربط المجموعة به أولاً.',
   'The MT5 bridge is not configured on this deployment, so trading accounts cannot be opened or funded. Set MT5_BRIDGE_URL and MT5_BRIDGE_API_KEY.':
     'لم يُضبط جسر MT5 على هذا النظام، لذا لا يمكن فتح حسابات التداول أو تمويلها.',
+  'Your account could not be registered. Our team has been alerted and will finish setting it up; you do not need to try again.':
+    'تعذّر تسجيل حسابك. أُبلغ فريقنا وسيُكمل إعداده؛ لا حاجة إلى إعادة المحاولة.',
   'An MT5 login is a number, e.g. 5000123.': 'رقم دخول MT5 هو رقم، مثل 5000123.',
   'The chosen product does not sell the MT5 group "{1}". Choose a product that carries this group, or attach the group to it first.':
     'المنتج المختار لا يبيع مجموعة MT5 "{1}". اختر منتجاً يتضمنها، أو اربط المجموعة به أولاً.',

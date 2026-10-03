@@ -1,3 +1,4 @@
+import { IbStore } from '../src/store/ib.store';
 import { Logger } from '@nestjs/common';
 import { emailStubAs } from './email-stub';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -168,6 +169,7 @@ beforeAll(async () => {
        about the money, not about who may see whom — the scoping itself is
        covered by `ib-accrual-reversal.spec.ts`. */
     { assertVisible: () => Promise.resolve() } as never,
+    new IbStore(ctx.db),
   );
   deals = new DealCommissionService(ctx.db, commissions, adminBell);
 }, 180_000);

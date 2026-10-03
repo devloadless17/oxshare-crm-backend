@@ -129,6 +129,9 @@ const WRITTEN_BY_MIGRATIONS: Readonly<Record<string, string>> = {
  */
 const WRITES_DETAILS: readonly string[] = [
   'admin.avatar_change',
+  // Sign in with Google (0180): the ADMIN's own Google address and how it was linked — no client data.
+  'admin.google_link',
+  'admin.google_unlink',
   'admin.invite',
   'admin.invite_accept',
   'admin.invite_revoke',
@@ -236,7 +239,6 @@ const WRITES_DETAILS: readonly string[] = [
   'trading.withdraw',
   'transfer.abandon',
   'wallet.create',
-  'wallet.credit',
   'wallet.delete',
   // A person finishes a flagged payout (0174): names the client by `userId`.
   'withdrawal.finish_paid',

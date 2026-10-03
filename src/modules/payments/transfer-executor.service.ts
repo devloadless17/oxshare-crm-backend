@@ -5,7 +5,11 @@ import type { Db } from '../../database/db';
 import { tradingAccounts } from '../../database/schema';
 import { TransfersService } from './transfers.service';
 import { Mt5BridgeClient } from '../trading/mt5/mt5-bridge.client';
-import { PaymentIndeterminateError, ValidationError } from '../../common/errors/domain-errors';
+import {
+  ExternalServiceError,
+  PaymentIndeterminateError,
+  ValidationError,
+} from '../../common/errors/domain-errors';
 import { systemSentenceArabic } from '../../common/i18n/reason-arabic';
 
 /** What an Arabic reader of a refused transfer is told (its Arabic is in the catalogue). */
@@ -134,7 +138,7 @@ export class TransferExecutor {
        * moving money again.
        */
       const message = error instanceof Error ? error.message : String(error);
-      if (isIndeterminate(error, message)) {
+      if (isIndeterminate(error)) {
         this.logger.error(
           `Transfer ${transferId} is INDETERMINATE on MT5 (${message}). Left pending — retry ` +
             'is safe, the idempotency key is the transfer id',
@@ -225,7 +229,7 @@ export class TransferExecutor {
  * operator can finish; a hold released against money that moved is a client
  * holding the same funds twice, and nothing in the system will notice.
  */
-function isIndeterminate(error: unknown, message: string): boolean {
+function isIndeterminate(error: unknown): boolean {
   /*
    * ⚠️ THE TYPE FIRST. This used to read the MESSAGE only, and it was wrong in
    * BOTH directions — measured against the strings this system actually
@@ -255,7 +259,7 @@ function isIndeterminate(error: unknown, message: string): boolean {
   if (error instanceof PaymentIndeterminateError) return true;
   // Ours, raised before the request left this process — MT5 cannot have acted.
   if (error instanceof ValidationError) return false;
-  return !isDefiniteRefusal(message);
+  return !isDefiniteRefusal(error);
 }
 
 /**
@@ -270,29 +274,13 @@ function isIndeterminate(error: unknown, message: string): boolean {
  * this list is a decision to release a client's hold on the strength of it, and
  * it needs the same evidence: that MT5 cannot have moved the money.
  */
-function isDefiniteRefusal(message: string): boolean {
+function isDefiniteRefusal(error: unknown): boolean {
   /*
-   * A STATUS, NOT VOCABULARY. This was
-   * `/\b400\b|validation|invalid|malformed/i`, and the three words were an
-   * attempt to recognise the same thing the 400 already states — the bridge
-   * rejecting a request before it called MT5.
-   *
-   * They over-matched, and on this path over-matching RELEASES A CLIENT'S HOLD.
-   * undici reports an unreadable answer as "Invalid response body", which the
-   * executor wraps as `ExternalServiceError('MT5 bridge unreachable …')`: the
-   * bridge could not be reached or could not be read, so whether MT5 posted the
-   * deal is precisely what we do not know. `/invalid/` classified that as
-   * proof it had refused.
-   *
-   * The words also did not do the job they were added for: our own
-   * `ValidationError` carries the word "validation" in its CLASS NAME and not
-   * in its message, so the case they were meant to catch was never caught by
-   * them. It is handled by type above, where it can be stated exactly.
-   *
-   * What remains is the one signal that means what it says. Adding anything
-   * back here is a decision to release a client's hold on the strength of it,
-   * and it needs the same evidence the note above demands: that MT5 cannot have
-   * moved the money.
+   * THE STATUS ITSELF, NOT ITS PROSE. This tested `/\b400\b/` against the
+   * message, which carries up to 200 chars of the response BODY — so a 500 or
+   * a 409 whose body echoed an amount of "400.00" read as a refusal and
+   * released the hold while MT5 may have moved the money. Only the HTTP status
+   * the bridge actually answered with counts.
    */
-  return /\b400\b/.test(message);
+  return error instanceof ExternalServiceError && error.upstreamStatus === 400;
 }

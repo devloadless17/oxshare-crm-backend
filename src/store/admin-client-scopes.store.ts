@@ -64,6 +64,44 @@ export class AdminClientScopesStore {
     );
   }
 
+  /**
+   * `scopeFor` for MANY administrators in ONE query — the notification fan-out,
+   * which used to await one territory lookup per admin on the request path of
+   * every deposit, withdrawal and KYC submit. Same rule as `scopeFor`, same
+   * fail-loud stance: no try/catch, a database error propagates.
+   */
+  async scopesFor(
+    admins: readonly { id: string; seesUntriaged?: boolean; seesAllClients?: boolean }[],
+  ): Promise<Map<string, ClientScope>> {
+    const tagIdsByAdmin = new Map<string, string[]>();
+    if (admins.length > 0) {
+      const rows = await this.db
+        .select({ adminId: adminClientTagScopes.adminId, tagId: adminClientTagScopes.tagId })
+        .from(adminClientTagScopes)
+        .where(
+          inArray(
+            adminClientTagScopes.adminId,
+            admins.map((a) => a.id),
+          ),
+        );
+      for (const row of rows) {
+        const list = tagIdsByAdmin.get(row.adminId) ?? [];
+        list.push(row.tagId);
+        tagIdsByAdmin.set(row.adminId, list);
+      }
+    }
+    return new Map(
+      admins.map((admin) => [
+        admin.id,
+        scopeOf(
+          tagIdsByAdmin.get(admin.id) ?? [],
+          admin.seesUntriaged ?? false,
+          admin.seesAllClients ?? false,
+        ),
+      ]),
+    );
+  }
+
   /** The scope with tag names attached, for the admin directory and the modal. */
   async describeFor(adminId: string): Promise<AdminScopeTag[]> {
     return this.db

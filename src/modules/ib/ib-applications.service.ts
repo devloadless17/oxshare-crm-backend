@@ -4,7 +4,7 @@ import { RejectionReasonsStore } from '../../store/rejection-reasons.store';
 import { composeReasonArabic } from '../../common/i18n/reason-arabic';
 import { randomBytes } from 'node:crypto';
 import { DRIZZLE_DB } from '../../database/database.module';
-import type { Db } from '../../database/db';
+import type { Db, Executor } from '../../database/db';
 import {
   NOTIFICATION_DISPATCH,
   type NotificationDispatchPort,
@@ -867,6 +867,15 @@ export class IbApplicationsService {
     }
 
     const account = await this.db.transaction(async (tx) => {
+      /*
+       * The parent was checked above for a precise refusal; re-checked here,
+       * under the tree lock and in the write's own transaction, so a parent
+       * suspended in between cannot still receive the new partner.
+       */
+      if (parentIbUserId) {
+        await this.ib.lockTree(tx);
+        await this.assertParentHasRoom(parentIbUserId, tx);
+      }
       const updated = await this.ib.transition(
         applicationId,
         ['pending'],
@@ -1530,17 +1539,26 @@ export class IbApplicationsService {
        * can speak, and a scoped desk can only reassign within its own territory.
        */
       await this.visibility.assertVisible(parentIbUserId, scope);
-
-      if (await this.wouldCreateCycle(userId, parentIbUserId)) {
-        throw new ValidationError(
-          'That partner already sits beneath this one, so the change would create a loop in the ' +
-            'payout chain.',
-        );
-      }
-      await this.assertParentHasRoom(parentIbUserId);
     }
 
-    const updated = await this.ib.updateAccount(userId, { parentIbUserId });
+    /*
+     * Check AND write in one transaction under the tree lock. Checked outside
+     * it, A→B and B→A each pass against a tree the other has not yet changed,
+     * both commit, and the ring the database cannot refuse is closed.
+     */
+    const updated = await this.db.transaction(async (tx) => {
+      await this.ib.lockTree(tx);
+      if (parentIbUserId) {
+        if (await this.wouldCreateCycle(userId, parentIbUserId, tx)) {
+          throw new ValidationError(
+            'That partner already sits beneath this one, so the change would create a loop in ' +
+              'the payout chain.',
+          );
+        }
+        await this.assertParentHasRoom(parentIbUserId, tx);
+      }
+      return this.ib.updateAccount(userId, { parentIbUserId }, tx);
+    });
     if (!updated) throw new NotFoundError('That partner does not exist.');
 
     /*
@@ -1575,8 +1593,15 @@ export class IbApplicationsService {
     // screen re-sending the current state) is recognisable below. The write
     // itself stays unconditional — setting a state to itself is harmless; the
     // ANNOUNCEMENT of it is not.
-    const previous = await this.ib.findAccount(userId);
-    const updated = await this.ib.updateAccount(userId, { active });
+    // Under the tree lock, so a suspension cannot land between a placement's
+    // "is the parent active?" check and its write.
+    const { previous, updated } = await this.db.transaction(async (tx) => {
+      await this.ib.lockTree(tx);
+      return {
+        previous: await this.ib.findAccount(userId, tx),
+        updated: await this.ib.updateAccount(userId, { active }, tx),
+      };
+    });
     if (!updated) throw new NotFoundError('That partner does not exist.');
 
     /*
@@ -1637,8 +1662,13 @@ export class IbApplicationsService {
    * The NAME is unchanged on purpose: "has room" still reads correctly at the
    * call site, and a partner who is suspended has no room for anybody.
    */
-  private async assertParentHasRoom(parentIbUserId: number): Promise<void> {
-    const parent = await this.ib.findAccount(parentIbUserId);
+  private async assertParentHasRoom(parentIbUserId: number, tx?: Executor): Promise<void> {
+    /*
+     * Given `tx`, the caller holds the tree lock and writes in the same
+     * transaction, so the parent read here cannot go stale before that write.
+     * `setActive` takes the same lock, so a suspension cannot slip between.
+     */
+    const parent = await this.ib.findAccount(parentIbUserId, tx);
     if (!parent) throw new ValidationError('The chosen parent partner does not exist.');
     if (!parent.active) {
       throw new ValidationError('The chosen parent partner is suspended.');
@@ -1685,11 +1715,12 @@ export class IbApplicationsService {
    * A cycle is not a cosmetic problem: the payout walk climbs parents until it
    * runs out, and a loop is a walk that never does.
    */
-  async wouldCreateCycle(userId: number, parentIbUserId: number): Promise<boolean> {
+  async wouldCreateCycle(userId: number, parentIbUserId: number, tx?: Executor): Promise<boolean> {
     if (userId === parentIbUserId) return true;
     // If the proposed parent already sits BENEATH this partner, pointing at
-    // them closes the ring.
-    const ancestorsOfParent = await this.ib.ancestorsOf(parentIbUserId);
+    // them closes the ring. Read on the caller's transaction, under its tree
+    // lock, so the answer holds until the write commits.
+    const ancestorsOfParent = await this.ib.ancestorsOf(parentIbUserId, tx);
     return ancestorsOfParent.includes(userId);
   }
 

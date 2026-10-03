@@ -53,12 +53,13 @@ const KNOWN_DYNAMIC = new Set([
   'src/modules/identity/auth.service.ts profileError', // client-profile.ts
   'src/modules/identity/auth.service.ts errors',
   'src/modules/identity/auth.service.ts lockoutMessage(lockedFor)', // lockout-message.ts
-  'src/modules/compliance/kyc.service.ts message', // refusalFor, sentence file
-  'src/modules/compliance/kyc.service.ts fields',
-  'src/modules/compliance/kyc.service.ts problems[0].message', // kyc-answers.ts
-  'src/modules/compliance/kyc.service.ts Object.fromEntries(problems.map((problem) => [problem.field, problem.message]))',
+  'src/modules/compliance/kyc-client.service.ts message', // refusalFor, sentence file
+  'src/modules/compliance/kyc-client.service.ts fields',
+  'src/modules/compliance/kyc-client.service.ts problems[0].message', // kyc-answers.ts
+  'src/modules/compliance/kyc-client.service.ts Object.fromEntries(problems.map((problem) => [problem.field, problem.message]))',
   'src/modules/compliance/uploads.controller.ts policy.adminForbidden', // sentence file
   'src/modules/compliance/uploads.controller.ts policy.clientForbidden',
+  'src/modules/compliance/uploads.controller.ts policy.notFound',
   'src/modules/profile/client-profile.service.ts message', // client-profile.ts
   'src/modules/profile/client-profile.service.ts check.errors',
   'src/modules/profile/client-profile.service.ts refusal',
@@ -68,11 +69,12 @@ const KNOWN_DYNAMIC = new Set([
   'src/modules/payments/payment-methods.service.ts Object.values(fields)[0]', // admin form
   'src/modules/payments/payment-methods.service.ts fields',
   'src/modules/payments/payment-methods.service.ts COUNTRY_REFUSAL', // method-eligibility.ts
-  'src/modules/payments/transactions.service.ts COUNTRY_REFUSAL',
-  'src/modules/payments/transactions.service.ts destinationIssue', // wish-phone, threepay-address
+  'src/modules/payments/withdrawal-commands.ts COUNTRY_REFUSAL',
+  'src/modules/payments/withdrawal-commands.ts destinationIssue', // wish-phone, threepay-address
   'src/modules/payments/providers/payment-providers.service.ts `${adapter.name} · ${field.label}: ${problem}`', // admin
   'src/modules/payments/providers/payment-providers.service.ts problem',
   'src/modules/payments/providers/rival/rival.client.ts message', // Rival's own words
+  'src/modules/trading/mt5/mt5-bridge.client.ts message', // assertBridgeConfigured: callers pass catalogued sentences
   'src/modules/payments/providers/threepay/threepay.provider.ts explain(error)', // admin test
   'src/modules/currencies/currencies.service.ts Object.values(problems)[0]', // currency-limits.ts
   'src/modules/currencies/currencies.service.ts problems',

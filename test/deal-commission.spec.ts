@@ -1,3 +1,4 @@
+import { IbStore } from '../src/store/ib.store';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { emailStubAs } from './email-stub';
 import { randomUUID } from 'node:crypto';
@@ -153,7 +154,6 @@ function refusingService(): DealCommissionService {
       .fn()
       .mockRejectedValue(new CommissionRefusedError('total exceeds the revenue')),
     accrueForClosedPosition: vi.fn(),
-    accrueForSettledDeposit: vi.fn(),
   });
 }
 
@@ -273,6 +273,7 @@ beforeAll(async () => {
        about the money, not about who may see whom — the scoping itself is
        covered by `ib-accrual-reversal.spec.ts`. */
     { assertVisible: () => Promise.resolve() } as never,
+    new IbStore(ctx.db),
   );
   deals = new DealCommissionService(ctx.db, commissions);
 }, 180_000);
@@ -979,22 +980,6 @@ describe('a deposit cannot accrue a revenue share', () => {
       sql`SELECT count(*)::int n FROM ib_accruals WHERE source_id = ${transactionId}`,
     );
     expect(rows[0].n).toBe(0);
-  });
-
-  it('keeps the deposit itself whole — the port swallows the refusal', async () => {
-    /*
-     * The no-throw contract, and it is load-bearing: by the time this runs the
-     * client's deposit has already credited their wallet. A commission refusal
-     * must not roll that back or report the deposit as failed.
-     */
-    await expect(
-      commissions.accrueForSettledDeposit({
-        transactionId: randomUUID(),
-        clientUserId: clientId,
-        amount: '1000.00000000',
-        currency: 'USD',
-      }),
-    ).resolves.toBe(0);
   });
 });
 

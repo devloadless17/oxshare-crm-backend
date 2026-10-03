@@ -48,6 +48,7 @@ import {
   outstandingDocumentFlags,
 } from './kyc-document-rules';
 import {
+  DOCUMENT_PAGE_SLOTS,
   identityField,
   isPlatformField,
   withPolicy,
@@ -133,14 +134,9 @@ export interface ChosenDocument {
   docType: string;
 }
 
-const PAGE_SLOTS: Readonly<Record<string, readonly [string, string]>> = {
-  document: ['doc_front', 'doc_back'],
-  address: ['address_proof', 'address_proof_2'],
-};
-
 /** The slots and category a step's catalogue document is filed under, if it has one. */
 function documentSlotsOf(slug: string): readonly [string, string] | undefined {
-  return Object.prototype.hasOwnProperty.call(PAGE_SLOTS, slug) ? PAGE_SLOTS[slug] : undefined;
+  return slug === 'document' || slug === 'address' ? DOCUMENT_PAGE_SLOTS[slug] : undefined;
 }
 
 /** An upload the client makes into a field of its own — not a catalogue document's page. */

@@ -413,6 +413,12 @@ export class AuditLogStore {
        * came from is worse than one that stops early.
        */
       unclampedLimit?: boolean;
+      /**
+       * `false` skips the `count()` — an export pages by cursor and never shows
+       * a total, and counting the filtered set once per 1,000-row batch is a
+       * full scan each time. `total` is then 0. Default `true`.
+       */
+      withTotal?: boolean;
     } = {},
   ) {
     const page = Math.max(1, filter.page ?? 1);
@@ -553,7 +559,10 @@ export class AuditLogStore {
       .limit(limit + 1)
       .offset(usingCursor ? 0 : (page - 1) * limit);
 
-    const [{ value: total }] = await db.select({ value: count() }).from(auditLog).where(where);
+    const total =
+      filter.withTotal === false
+        ? 0
+        : (await db.select({ value: count() }).from(auditLog).where(where))[0].value;
 
     // The sort key is stamped into the cursor so it cannot be replayed under a
     // different ordering — `decodeCursor` refuses one that was, rather than

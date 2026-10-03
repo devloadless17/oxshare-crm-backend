@@ -36,7 +36,7 @@ import { WalletService, type Executor } from './wallet.service';
  *
  * Worth recording, because the comment here once claimed otherwise: the
  * KYC-APPROVAL catch-up this block used to name as the safety net WAS NEVER
- * WIRED. `KycService.approve` does not touch wallets and never has. Lazy
+ * WIRED. `KycReviewService.approve` does not touch wallets and never has. Lazy
  * creation through `getOrCreateWallet` on the money paths is the real fallback,
  * and it is a real one — it just does not cover the list screen.
  *

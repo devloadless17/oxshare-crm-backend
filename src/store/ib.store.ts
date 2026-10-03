@@ -32,6 +32,14 @@ import {
 } from '../common/security/client-scope';
 import { clientIdentitySearch } from './users.store';
 
+/** One rung of a chain walk — see `IbStore.chainOf`. */
+export interface IbChainNode {
+  userId: number;
+  parentIbUserId: number | null;
+  active: boolean;
+  level: number;
+}
+
 export type IbApplicationStatus = (typeof ibApplications.status.enumValues)[number];
 
 export type IbApplicationRow = typeof ibApplications.$inferSelect;
@@ -335,8 +343,8 @@ export class IbStore {
 
   // ── accounts ───────────────────────────────────────────────────────────────
 
-  async findAccount(userId: number): Promise<IbAccountRow | undefined> {
-    const [row] = await this.db
+  async findAccount(userId: number, executor?: Executor): Promise<IbAccountRow | undefined> {
+    const [row] = await (executor ?? this.db)
       .select()
       .from(ibAccounts)
       .where(eq(ibAccounts.userId, userId))
@@ -488,31 +496,71 @@ export class IbStore {
   }
 
   /**
-   * Every partner between this one and the top of their chain.
+   * THE chain walk — the one definition of "who stands above this partner",
+   * shared by the payout walk (`CommissionService`) and the cycle guard
+   * (`ancestorsOf`), so the two can never read the tree differently.
    *
-   * A recursive CTE rather than a loop of round trips, because the cycle guard
-   * calls it on every reassignment and a chain walked one query per level is a
-   * request whose cost depends on how deep the tree happens to be.
+   * Starts at `userId` (depth 1) and follows `parent_ib_user_id` upward, in
+   * depth order. Two guards:
+   *  - `path` stops a chain that is ALREADY cyclic inside Postgres (a self-FK
+   *    only checks the target exists, so the table can hold A→B→A), rather
+   *    than looping until the depth bound;
+   *  - `maxDepth`, when given, bounds the walk (the payout walk passes
+   *    `MAX_CHAIN_DEPTH`). The cycle guard passes none: a tree may be deeper
+   *    than the ladder pays, and a bounded walk could miss a ring above it.
    *
-   * `UNION` — not `UNION ALL` — is doing real work: it deduplicates, so a chain
-   * that is ALREADY cyclic terminates here instead of spinning forever. The
-   * table can hold a cycle (a self-FK only checks the target exists), so this
-   * query must survive one rather than assume it cannot happen.
+   * Raw SQL bypasses drizzle's mappers; every column is a plain scalar
+   * (int, int|null, bool, int), so nothing needs parsing on the way out.
    */
-  async ancestorsOf(userId: number): Promise<number[]> {
-    const result = await this.db.execute<{ user_id: number }>(sql`
+  async chainOf(userId: number, maxDepth?: number, executor?: Executor): Promise<IbChainNode[]> {
+    const bound = maxDepth === undefined ? sql`TRUE` : sql`c.depth < ${maxDepth}`;
+    const result = await (executor ?? this.db).execute(sql`
       WITH RECURSIVE chain AS (
-        SELECT user_id, parent_ib_user_id
-          FROM ib_accounts
-         WHERE user_id = ${userId}
-        UNION
-        SELECT a.user_id, a.parent_ib_user_id
-          FROM ib_accounts a
-          JOIN chain c ON a.user_id = c.parent_ib_user_id
+        SELECT a.user_id, a.parent_ib_user_id, a.active, a.level,
+               1 AS depth, ARRAY[a.user_id] AS path
+          FROM ${ibAccounts} a
+         WHERE a.user_id = ${userId}
+        UNION ALL
+        SELECT p.user_id, p.parent_ib_user_id, p.active, p.level,
+               c.depth + 1, c.path || p.user_id
+          FROM ${ibAccounts} p
+          JOIN chain c ON p.user_id = c.parent_ib_user_id
+         WHERE ${bound}
+           AND NOT p.user_id = ANY(c.path)
       )
-      SELECT user_id FROM chain WHERE user_id <> ${userId}
+      SELECT user_id, parent_ib_user_id, active, level FROM chain ORDER BY depth
     `);
-    return result.rows.map((r) => r.user_id);
+    const rows = result.rows as unknown as {
+      user_id: number;
+      parent_ib_user_id: number | null;
+      active: boolean;
+      level: number;
+    }[];
+    return rows.map((row) => ({
+      userId: row.user_id,
+      parentIbUserId: row.parent_ib_user_id,
+      active: row.active,
+      level: row.level,
+    }));
+  }
+
+  /** Every partner between this one and the top of their chain (self excluded). */
+  async ancestorsOf(userId: number, executor?: Executor): Promise<number[]> {
+    const chain = await this.chainOf(userId, undefined, executor);
+    return chain.map((n) => n.userId).filter((id) => id !== userId);
+  }
+
+  /**
+   * Serialise every edit of the partner TREE for the rest of `tx`.
+   *
+   * The cycle check and the write it guards must not interleave with another
+   * move: A→B and B→A each pass a check read before the other commits, and
+   * together close a ring the database cannot refuse. Tree edits are rare, so
+   * one transaction-scoped advisory lock is cheaper than reasoning about row
+   * locks across a whole chain.
+   */
+  async lockTree(tx: Executor): Promise<void> {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('ib_tree'))`);
   }
 
   /** The partner list. Joined to the person, because a uuid is not a partner. */
@@ -1016,8 +1064,9 @@ export class IbStore {
      * nothing on the live path writes it.
      */
     patch: Partial<Pick<IbAccountRow, 'level' | 'programId' | 'parentIbUserId' | 'active'>>,
+    executor?: Executor,
   ): Promise<IbAccountRow | undefined> {
-    const [row] = await this.db
+    const [row] = await (executor ?? this.db)
       .update(ibAccounts)
       .set({ ...patch, updatedAt: new Date() })
       .where(eq(ibAccounts.userId, userId))

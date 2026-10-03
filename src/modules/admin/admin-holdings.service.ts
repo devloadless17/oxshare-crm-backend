@@ -136,9 +136,9 @@ export const DEFAULT_WALLET_SORT: WalletSortKey = 'createdAt';
  *
  * `balance` is here for the same reason and with the same caveat as the wallet
  * list's, and `trading_accounts.balance` carries the schema's own warning: the
- * CRM owns that number only until the MT5 bridge lands. Sorting by it is
- * sorting by what this database believes, which is the honest thing a CRM
- * screen can offer today.
+ * number is the CRM's mirror of MT5, kept by the bridge. Sorting by it is
+ * sorting by the last figure the bridge reported, which is the honest thing a
+ * CRM screen can offer without a live read per row.
  *
  * `login` is NULLABLE — an account has no MT5 login until one is assigned — so
  * the query pins `NULLS LAST` in both directions and migration 0038's index
@@ -1113,15 +1113,15 @@ export class AdminHoldingsService {
    */
   async listClientClosedPositions(filter: {
     userId: number;
-    page?: number;
-    limit?: number;
+    page?: string | number;
+    limit?: string | number;
     scope?: ClientScope;
   }) {
     // Visibility first, so an out-of-scope client is a 404 like every sibling.
     await this.visibility.assertVisible(filter.userId, filter.scope ?? UNRESTRICTED);
 
-    const page = Math.max(1, filter.page ?? 1);
-    const limit = Math.min(100, Math.max(1, filter.limit ?? 25));
+    const page = Math.max(1, Number.parseInt(String(filter.page ?? '1'), 10) || 1);
+    const limit = pageSize(filter.limit);
     const scoped = clientScopePredicate(filter.scope ?? UNRESTRICTED, tradingAccounts.userId);
 
     const where = and(
@@ -1247,8 +1247,8 @@ export class AdminHoldingsService {
    */
   async listClientTransactions(filter: {
     userId: number;
-    page?: number;
-    limit?: number;
+    page?: string | number;
+    limit?: string | number;
     scope?: ClientScope;
   }) {
     /*
@@ -1268,8 +1268,8 @@ export class AdminHoldingsService {
      */
     await this.visibility.assertVisible(filter.userId, filter.scope ?? UNRESTRICTED);
 
-    const page = Math.max(1, filter.page ?? 1);
-    const limit = Math.min(100, Math.max(1, filter.limit ?? 25));
+    const page = Math.max(1, Number.parseInt(String(filter.page ?? '1'), 10) || 1);
+    const limit = pageSize(filter.limit);
     const scoped = clientScopePredicate(filter.scope ?? UNRESTRICTED, transactions.userId);
 
     const where = and(eq(transactions.userId, filter.userId), ...(scoped ? [scoped] : []));

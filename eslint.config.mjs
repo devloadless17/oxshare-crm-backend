@@ -342,6 +342,45 @@ export default tseslint.config(
     rules: { 'no-restricted-imports': ['error', { patterns: [NO_PROVIDER_FOLDER] }] },
   },
   {
+    // ── The payments core depends INWARD only ──────────────────────────────
+    // core/ decides for every provider; the outer payments services (the
+    // transaction books, payment methods) implement ports it declares
+    // (core/payments-ledger.port.ts) and payments.module.ts binds them. So
+    // core/ may import core/, providers/ (the contract and the registry), the
+    // shared layers (common, store, database, config) — and, as named
+    // exceptions, the wallet, currencies and email modules it posts and
+    // mails through. Never a payments-root service: that cycle is what the
+    // ports replaced. Same block carries the provider-folder ban, since flat
+    // config's last matching block replaces a rule's options outright.
+    files: ['src/modules/payments/core/**/*.ts'],
+    ignores: ['**/*.spec.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            NO_PROVIDER_FOLDER,
+            {
+              regex: '^\\.\\./(?!providers/|\\.\\./)[^/]+(/|$)',
+              message:
+                'payments/core must not import the outer payments module. Declare a port in core/ and bind it in payments.module.ts.',
+            },
+            {
+              regex: '^\\.\\./\\.\\./(?!wallet/|currencies/|email/)[^./][^/]*/',
+              message:
+                'payments/core may reach other feature modules only through ports (wallet, currencies and email are the named exceptions).',
+            },
+            {
+              regex: '^\\.\\./\\.\\./\\.\\./(?!common/|store/|database/|config/)',
+              message:
+                'payments/core may import only common/, store/, database/ and config/ from src.',
+            },
+          ],
+        },
+      ],
+    },
+  },
+  {
     // The providers/ root (the registry, the provider page, the webhook doors)
     // is core too: it reaches a provider only through the registry.
     files: ['src/modules/payments/providers/*.ts'],

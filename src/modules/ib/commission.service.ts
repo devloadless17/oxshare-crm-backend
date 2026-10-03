@@ -1,8 +1,9 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { and, eq, gt, inArray, lte, sql } from 'drizzle-orm';
+import { and, eq, gt, inArray, isNull, lt, lte, or, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db, Executor } from '../../database/db';
-import { ibAccounts, ibAccrualBatches, ibAccruals, ibLevels, users } from '../../database/schema';
+import { ibAccrualBatches, ibAccruals, ibLevels, users } from '../../database/schema';
+import { IbStore } from '../../store/ib.store';
 import { LEDGER_REFERENCE, type LedgerReferenceType } from '../../database/ledger-reference';
 import { NotFoundError } from '../../common/errors/domain-errors';
 import Decimal from 'decimal.js';
@@ -132,6 +133,8 @@ export class CommissionService implements CommissionAccrualPort {
      * than a reshuffle.
      */
     private readonly visibility: ClientVisibilityService,
+    /** The one chain walk (`chainOf`), shared with the cycle guard. Appended last, as above. */
+    private readonly ib: IbStore,
   ) {}
 
   /**
@@ -220,46 +223,6 @@ export class CommissionService implements CommissionAccrualPort {
   }
 
   /**
-   * `CommissionAccrualPort` — the entry point payments calls, and the ONLY one
-   * that swallows its errors.
-   *
-   * The no-throw contract is the whole reason this wrapper exists rather than
-   * payments calling `accrueForDeposit` directly: by the time this runs, the
-   * client's deposit has already credited their wallet. A commission failure
-   * must not roll that back, and must not report the deposit as failed. The
-   * accrual is recoverable — the deposit is re-accruable because nothing was
-   * written — where a reversed deposit is a support incident.
-   */
-  async accrueForSettledDeposit(deposit: {
-    transactionId: string;
-    clientUserId: number;
-    amount: string;
-    currency: string;
-  }): Promise<number> {
-    try {
-      return await this.accrueForDeposit(deposit);
-    } catch (error) {
-      this.logger.error(
-        `Commission accrual failed for transaction ${deposit.transactionId}; the deposit itself ` +
-          `stands and the accrual can be re-run: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-      );
-      return 0;
-    }
-  }
-
-  /**
-   * Accrue commissions for one settled client deposit.
-   *
-   * Safe to run repeatedly. Returns how many accrual rows the call CREATED —
-   * zero on a replay, which is what makes a retried job a no-op rather than a
-   * double payment.
-   *
-   * `executor` lets the caller run this inside their own transaction, so the
-   * deposit's own state change and the accrual it causes commit together.
-   */
-  /**
    * Accrue on a CLOSED POSITION — the only thing that earns a partner anything.
    *
    * ## The base is the BROKER's revenue, never the client's money
@@ -285,13 +248,12 @@ export class CommissionService implements CommissionAccrualPort {
    * It receives a client and an amount, never an account, so the demo gate for
    * this path lives in `PositionsService.close` — which refuses before calling
    * here. That is sound today because `close` is the only caller AND the feed
-   * constant below refuses anyway.
+   * constant below refuses anyway (0186 kept the `positions` table and its
+   * service; nothing writes to it).
    *
-   * It stops being sound the moment somebody flips `LIVE_REVENUE_FEED` to
-   * `position` and adds a second caller: the deal path keeps its own
-   * `environment !== 'live'` check inside the loop, and this one would have
-   * nothing. Whoever makes that change must either take the account here and
-   * check it, or prove `close` is still the only door.
+   * Whoever flips `LIVE_REVENUE_FEED` to `position` and adds a caller must take
+   * the account here and check `environment === 'live'`, as the deal path does
+   * inside its loop.
    */
   async accrueForClosedPosition(position: {
     positionId: string;
@@ -480,13 +442,13 @@ export class CommissionService implements CommissionAccrualPort {
 
     if (!client?.referredBy) return 0; // Not referred — nobody earns. Not an error.
 
-    const chainNodes = await this.loadChain(this.db, client.referredBy);
+    const chainNodes = await this.loadChain(client.referredBy);
     const chain = resolveChain(client.referredBy, (id) => chainNodes.get(id));
     if (chain.length === 0) return 0;
 
     /*
-     * The whole ladder, not a lookup per earner. It is two or three rows —
-     * `ib_max_levels` bounds it — so one unfiltered read is cheaper than an IN
+     * The whole ladder, not a lookup per earner. It is at most ten rows —
+     * `ABSOLUTE_IB_MAX_LEVELS` bounds it — so one unfiltered read is cheaper than an IN
      * list, and it means a rung nobody in this chain occupies still appears if
      * a later step needs it.
      */
@@ -679,10 +641,7 @@ export class CommissionService implements CommissionAccrualPort {
    * way and for the same reason; this is the third, and it is not
    * `isLiveRevenueFeed` because a deposit is not a revenue feed at all — that is
    * the whole point. Flipping `LIVE_REVENUE_FEED` must never make this payable.
-   *
-   * `accrueForSettledDeposit` swallows this, per its no-throw contract, and logs
-   * it — so a caller who wires it up gets a loud line and a deposit that still
-   * credits, rather than a failed deposit.
+
    */
   /*
    * `async` with nothing to await, on purpose: the port's contract is a REJECTED
@@ -732,14 +691,34 @@ export class CommissionService implements CommissionAccrualPort {
    * accrual marked `confirmed` with no ledger entry behind it — or a credit with
    * no accrual pointing at it — is a state this system cannot reach.
    */
-  async confirmPending(limit = 500): Promise<{ confirmed: number; failed: number; held: number }> {
+  async confirmPending(
+    limit = 500,
+    /** Skip rows whose credit already failed at or after this instant (one drain run). */
+    skipFailedSince?: Date,
+  ): Promise<{ confirmed: number; failed: number; held: number }> {
     const payableFrom = new Date(Date.now() - (await this.holdSeconds()) * 1_000);
 
     const pending = await this.db
       .select()
       .from(ibAccruals)
-      .where(and(eq(ibAccruals.status, 'pending'), lte(ibAccruals.createdAt, payableFrom)))
-      .orderBy(ibAccruals.createdAt)
+      .where(
+        and(
+          eq(ibAccruals.status, 'pending'),
+          lte(ibAccruals.createdAt, payableFrom),
+          skipFailedSince
+            ? or(
+                isNull(ibAccruals.lastConfirmFailedAt),
+                lt(ibAccruals.lastConfirmFailedAt, skipFailedSince),
+              )
+            : undefined,
+        ),
+      )
+      /*
+       * Never-failed rows first, then oldest failure first (0182). Ordered by
+       * `created_at` alone, rows that fail for good kept the head of the queue
+       * and took the same batch slots on every run, starving everything newer.
+       */
+      .orderBy(sql`${ibAccruals.lastConfirmFailedAt} ASC NULLS FIRST`, ibAccruals.createdAt)
       .limit(limit);
 
     /*
@@ -851,6 +830,7 @@ export class CommissionService implements CommissionAccrualPort {
       const userId = rebate ? accrual.clientUserId : accrual.ibUserId;
       if (!userId) {
         failed += 1;
+        await this.markConfirmFailed([accrual.id]);
         this.logger.error(`Accrual ${accrual.id} has no beneficiary; leaving it pending.`);
         continue;
       }
@@ -875,7 +855,34 @@ export class CommissionService implements CommissionAccrualPort {
 
     for (const group of groups.values()) {
       try {
-        await this.db.transaction(async (tx) => {
+        const credited = await this.db.transaction(async (tx) => {
+          /*
+           * CLAIM the rows before any money moves: re-read them under a row
+           * lock, still `pending`, and pay only what this transaction holds.
+           * The read above is unlocked, so a concurrent confirm run (the job
+           * lease fails open) or a `reverseAccrual` of a pending row may have
+           * settled some of them since. Each run's batch id is fresh, so the
+           * ledger's reference key cannot dedupe a second run — this claim is
+           * what does.
+           */
+          const claimed = await tx
+            .select({ id: ibAccruals.id, amount: ibAccruals.amount })
+            .from(ibAccruals)
+            .where(
+              and(
+                inArray(
+                  ibAccruals.id,
+                  group.accruals.map((a) => a.id),
+                ),
+                eq(ibAccruals.status, 'pending'),
+              ),
+            )
+            // A fixed lock order, so two runs claiming overlapping rows cannot deadlock.
+            .orderBy(ibAccruals.id)
+            .for('update');
+          if (claimed.length === 0) return null;
+          const total = claimed.reduce((sum, row) => sum.plus(row.amount), new Decimal(0));
+
           /*
            * The wallet is resolved FIRST, because the batch row references it
            * and the credit has to land in the same one. `ensure` opens a
@@ -907,8 +914,8 @@ export class CommissionService implements CommissionAccrualPort {
               walletId: wallet.id,
               kind: group.kind,
               currency: group.currency,
-              amount: money(group.total),
-              accrualCount: group.accruals.length,
+              amount: money(total),
+              accrualCount: claimed.length,
             })
             .returning();
 
@@ -924,7 +931,7 @@ export class CommissionService implements CommissionAccrualPort {
                * no reason to make.
                */
               kind: group.walletKind,
-              amount: money(group.total),
+              amount: money(total),
               entryType: group.kind === 'rebate' ? 'rebate' : 'commission',
               referenceType: LEDGER_REFERENCE.accrualBatch,
               referenceId: batch.id,
@@ -933,10 +940,9 @@ export class CommissionService implements CommissionAccrualPort {
           );
 
           /*
-           * Every accrual in the group marked in ONE statement, still guarded on
-           * `status = 'pending'` so two workers racing the same queue cannot
-           * both pass — the second updates nothing, and `post` has already
-           * returned the original entry rather than writing a second credit.
+           * Every CLAIMED accrual marked in ONE statement. The row locks above
+           * mean a second worker racing the same queue blocks, then claims
+           * nothing and credits nothing.
            *
            * `ledgerEntryId` now points at the BATCH's entry, so several accruals
            * share one. It was never unique and nothing assumed it was: it is the
@@ -955,20 +961,22 @@ export class CommissionService implements CommissionAccrualPort {
               and(
                 inArray(
                   ibAccruals.id,
-                  group.accruals.map((a) => a.id),
+                  claimed.map((a) => a.id),
                 ),
                 eq(ibAccruals.status, 'pending'),
               ),
             );
+          return { count: claimed.length, total };
         });
 
-        confirmed += group.accruals.length;
+        if (!credited) continue;
+        confirmed += credited.count;
         recordPayout(
           group.userId,
           group.kind,
-          money(group.total),
+          money(credited.total),
           group.currency,
-          group.accruals.length,
+          credited.count,
         );
       } catch (error) {
         /*
@@ -981,6 +989,7 @@ export class CommissionService implements CommissionAccrualPort {
          * credited together and they stay pending together.
          */
         failed += group.accruals.length;
+        await this.markConfirmFailed(group.accruals.map((a) => a.id));
         this.logger.error(
           `Could not credit ${group.accruals.length} ${group.kind} accrual(s) to ` +
             `${group.userId}: ${error instanceof Error ? error.message : String(error)}`,
@@ -994,6 +1003,30 @@ export class CommissionService implements CommissionAccrualPort {
     await this.notifySummaries(payouts);
 
     return { confirmed, failed, held };
+  }
+
+  /**
+   * Record a failed credit attempt, which moves the rows BEHIND every
+   * never-failed row in the confirm order (0182). They stay `pending` and are
+   * retried — idempotency is unchanged — but can no longer hold the head of
+   * the queue. Best effort: losing this write only costs ordering.
+   */
+  private async markConfirmFailed(ids: string[]): Promise<void> {
+    try {
+      await this.db
+        .update(ibAccruals)
+        .set({
+          confirmAttempts: sql`${ibAccruals.confirmAttempts} + 1`,
+          lastConfirmFailedAt: new Date(),
+        })
+        .where(and(inArray(ibAccruals.id, ids), eq(ibAccruals.status, 'pending')));
+    } catch (error) {
+      this.logger.error(
+        `Could not record a failed confirm on ${ids.length} accrual(s): ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
   }
 
   /**
@@ -1306,7 +1339,7 @@ export class CommissionService implements CommissionAccrualPort {
    * The obvious repair is a loop of `SELECT`s, which is an N+1 on the money path
    * and puts a variable number of round-trips inside the accrual of every trade.
    *
-   * A recursive CTE walks it server-side in one statement instead: start at the
+   * A recursive CTE (`IbStore.chainOf`, shared with the cycle guard) walks it server-side in one statement instead: start at the
    * introducer, follow `parent_ib_user_id` upward, stop at `MAX_CHAIN_DEPTH`.
    *
    * ## The `path` array is a CYCLE GUARD, and it is not redundant
@@ -1323,65 +1356,11 @@ export class CommissionService implements CommissionAccrualPort {
    * database's version would silently promote a suspended partner's parent from
    * depth 3 to depth 2 and pay them the wrong tier.
    */
-  private async loadChain(db: Executor, introducerId: number): Promise<Map<number, ChainNode>> {
-    const result = await db.execute(sql`
-      WITH RECURSIVE chain AS (
-        SELECT a.user_id, a.parent_ib_user_id, a.active, a.level,
-               1 AS depth, ARRAY[a.user_id] AS path
-          FROM ${ibAccounts} a
-         WHERE a.user_id = ${introducerId}
-        UNION ALL
-        SELECT p.user_id, p.parent_ib_user_id, p.active, p.level,
-               c.depth + 1, c.path || p.user_id
-          FROM ${ibAccounts} p
-          JOIN chain c ON p.user_id = c.parent_ib_user_id
-         WHERE c.depth < ${MAX_CHAIN_DEPTH}
-           AND NOT p.user_id = ANY(c.path)
-      )
-      SELECT user_id, parent_ib_user_id, active, level FROM chain
-    `);
-
-    /*
-     * Raw SQL bypasses drizzle's column mappers, so these are the DATABASE's
-     * names and types. All four are plain scalars — uuid, uuid|null, bool, uuid
-     * — with no timestamp or numeric among them, so unlike the raw queries in
-     * `transactions.service.ts` there is nothing here that needs parsing on the
-     * way out.
-     */
-    const rows = result.rows as unknown as {
-      user_id: number;
-      parent_ib_user_id: number | null;
-      active: boolean;
-      level: number;
-    }[];
-
-    return new Map(
-      rows.map((row) => [
-        row.user_id,
-        {
-          userId: row.user_id,
-          parentIbUserId: row.parent_ib_user_id,
-          active: row.active,
-          level: row.level,
-        },
-      ]),
-    );
+  private async loadChain(introducerId: number): Promise<Map<number, ChainNode>> {
+    const nodes = await this.ib.chainOf(introducerId, MAX_CHAIN_DEPTH);
+    return new Map(nodes.map((node) => [node.userId, node]));
   }
 
-  /**
-   * The terms every earner in a chain is paid on, keyed by programme id.
-   *
-   * Read per event rather than cached: an operator editing a programme expects
-   * the next trade to pay the new rate, and a cache here would make "when does
-   * this take effect" a question with no answer anybody could state.
-   *
-   * Two queries rather than a join, and the reason is the empty case. A
-   * `LEFT JOIN` onto the tiers returns one all-null row for a programme with no
-   * tiers — a `rebate_only` programme, legitimately — and reassembling terms
-   * from that means a null check on every row to avoid materialising a tier at
-   * `depth: null`. Two reads keyed by id have no such row to misread, and both
-   * are indexed lookups over at most `MAX_CHAIN_DEPTH` programmes.
-   */
   /**
    * The commission ladder, keyed by rung — 0112.
    *
@@ -1390,8 +1369,8 @@ export class CommissionService implements CommissionAccrualPort {
    * there is no second table to join and no depth map to build: the row IS the
    * card.
    *
-   * Read whole rather than filtered to the rungs in hand. `ib_max_levels` bounds
-   * this to a couple of rows, so an IN list would cost more to construct than
+   * Read whole rather than filtered to the rungs in hand. `ABSOLUTE_IB_MAX_LEVELS`
+   * caps `ib_levels` at ten rows, so an IN list would cost more to construct than
    * the rows it saves.
    */
   private async loadLevels(db: Executor): Promise<Map<number, LevelTerms>> {

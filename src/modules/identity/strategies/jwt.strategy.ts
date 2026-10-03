@@ -11,6 +11,8 @@ import {
   TOKEN_KIND,
 } from '../../../common/security/token-audience';
 import { ConfigService } from '@nestjs/config';
+import { JwtService } from '@nestjs/jwt';
+import { SessionEndedException } from '../../../common/security/session-ended';
 import { Request } from 'express';
 import { parsePortalId, UsersStore } from '../../../store/users.store';
 import { RefreshTokensService } from '../../../common/security/refresh-tokens.service';
@@ -36,10 +38,13 @@ export interface JwtPayload {
 
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
+  private readonly accessSecret: string;
+
   constructor(
     config: ConfigService,
     private readonly users: UsersStore,
     private readonly refreshTokens: RefreshTokensService,
+    private readonly jwt: JwtService,
   ) {
     super({
       /*
@@ -83,6 +88,33 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
       // not a top-level Strategy option and is silently ignored if placed there.
       jsonWebTokenOptions: { clockTolerance: TOKEN_CLOCK_TOLERANCE_SECONDS },
     });
+    this.accessSecret = config.getOrThrow<string>('JWT_ACCESS_SECRET');
+  }
+
+  /**
+   * Verify a portal ACCESS token by hand and run `validate` on it — the
+   * Passport pipeline without Passport, for a caller that must resolve the
+   * principal itself (the `/uploads` file routes serve two audiences). Same
+   * secret, audience, issuer, algorithms and clock tolerance as `super()`
+   * above, then the same checks, so the two doors cannot drift.
+   *
+   * An unverifiable token is a plain 401; a session that was ENDED is a
+   * `SessionEndedException`.
+   */
+  async authenticateToken(token: string): Promise<Awaited<ReturnType<JwtStrategy['validate']>>> {
+    let payload: JwtPayload;
+    try {
+      payload = this.jwt.verify<JwtPayload>(token, {
+        secret: this.accessSecret,
+        audience: TOKEN_AUDIENCE.portal,
+        issuer: TOKEN_ISSUER,
+        algorithms: TOKEN_ALGORITHMS,
+        clockTolerance: TOKEN_CLOCK_TOLERANCE_SECONDS,
+      });
+    } catch {
+      throw new UnauthorizedException('Invalid or expired token.');
+    }
+    return this.validate(payload);
   }
 
   async validate(payload: JwtPayload) {
@@ -102,7 +134,7 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
     if (!user) throw new UnauthorizedException('User not found. Please log in again.');
     // Suspension takes effect on the next request — a live token is no shield.
     if (user.status === 'suspended') {
-      throw new UnauthorizedException('Your account has been suspended.');
+      throw new SessionEndedException('Your account has been suspended.');
     }
     /*
      * Has this particular login been ended?
@@ -125,7 +157,7 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
      * control that does not revoke.
      */
     if (payload.fam && (await this.refreshTokens.familyIsRevoked('portal', payload.fam))) {
-      throw new UnauthorizedException('That session has been signed out. Please log in again.');
+      throw new SessionEndedException('That session has been signed out. Please log in again.');
     }
     /*
      * A password change takes effect on the next request too, for the same
@@ -167,7 +199,7 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
       payload.iat &&
       (payload.iat + 1) * 1000 <= user.passwordChangedAt.getTime()
     ) {
-      throw new UnauthorizedException('Your password was changed. Please sign in again.');
+      throw new SessionEndedException('Your password was changed. Please sign in again.');
     }
     return user;
   }

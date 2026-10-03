@@ -1,3 +1,4 @@
+import { IbStore } from '../src/store/ib.store';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { emailStubAs } from './email-stub';
 import { sql } from 'drizzle-orm';
@@ -83,6 +84,7 @@ async function serviceWithHold(seconds: number | undefined): Promise<CommissionS
        about the money, not about who may see whom — the scoping itself is
        covered by `ib-accrual-reversal.spec.ts`. */
     { assertVisible: () => Promise.resolve() } as never,
+    new IbStore(ctx.db),
   );
 }
 
@@ -380,6 +382,7 @@ describe('how the window is configured', () => {
       emailStubAs(),
       /* The territory gate on `reverseAccrual`, unreached by `confirmPending`. */
       { assertVisible: () => Promise.resolve() } as never,
+      new IbStore(ctx.db),
     );
     const result = await service.confirmPending();
 
