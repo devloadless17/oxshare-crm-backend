@@ -1433,6 +1433,29 @@ describe('approve', () => {
       USER.email,
       USER.firstName,
       'approved',
+      undefined,
+      undefined,
+      undefined,
+    );
+  });
+
+  /*
+   * An ADMIN decision is written in the language the CLIENT stored, never the
+   * request's — the console sends no locale, so the request is always English.
+   */
+  it("emails the decision in the client's STORED language", async () => {
+    const h = build({
+      stored: completeSubmission({ status: 'submitted' }),
+      user: { ...USER, locale: 'ar' },
+    });
+    await h.service.approve(1000001, 'admin-1');
+    expect(h.email.sendKycDecisionEmail).toHaveBeenCalledWith(
+      USER.email,
+      USER.firstName,
+      'approved',
+      undefined,
+      undefined,
+      'ar',
     );
   });
 
@@ -1516,6 +1539,9 @@ describe('reject', () => {
       'rejected',
       'Blurry document',
       ['Passport', 'Last Name'],
+      undefined,
+      // No Arabic was written with it (0179).
+      null,
     );
   });
 

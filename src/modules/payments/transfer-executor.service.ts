@@ -6,6 +6,10 @@ import { tradingAccounts } from '../../database/schema';
 import { TransfersService } from './transfers.service';
 import { Mt5BridgeClient } from '../trading/mt5/mt5-bridge.client';
 import { PaymentIndeterminateError, ValidationError } from '../../common/errors/domain-errors';
+import { systemSentenceArabic } from '../../common/i18n/reason-arabic';
+
+/** What an Arabic reader of a refused transfer is told (its Arabic is in the catalogue). */
+const MT5_REFUSED_SENTENCE = 'The trading platform refused this transfer.';
 
 /**
  * Carries a pending transfer across to MT5, then settles or fails it.
@@ -138,7 +142,15 @@ export class TransferExecutor {
         return transfer;
       }
 
-      await this.transfers.fail(transferId, `MT5 refused the movement: ${message}`);
+      /*
+       * The bridge's words are English and technical; an Arabic reader is told
+       * the fixed sentence instead (0179), and the English keeps the detail.
+       */
+      await this.transfers.fail(
+        transferId,
+        `MT5 refused the movement: ${message}`,
+        systemSentenceArabic(MT5_REFUSED_SENTENCE),
+      );
       this.logger.warn(`Transfer ${transferId} failed on MT5: ${message}`);
       return await this.transfers.findById(transferId);
     }

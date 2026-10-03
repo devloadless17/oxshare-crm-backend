@@ -27,6 +27,8 @@ export type IdentityDecisionRow = {
   method: string;
   decidedBy: string | null;
   reason: string | null;
+  /** The reason in Arabic as the client was shown it (0179). */
+  reasonAr: string | null;
   returnedItems: string[];
   decidedAt: Date;
 };
@@ -87,7 +89,8 @@ export class ClientIdentityStore {
        ORDER BY d.slot, d.frozen_at DESC NULLS FIRST, d.created_at DESC`);
     const decisions = await this.db.execute<IdentityDecisionRow>(sql`
       SELECT seq, outcome, level_after AS "levelAfter", method, admin_email AS "decidedBy",
-             reason, returned_items AS "returnedItems", decided_at AS "decidedAt"
+             reason, reason_ar AS "reasonAr", returned_items AS "returnedItems",
+             decided_at AS "decidedAt"
         FROM client_verifications
        WHERE user_id = ${userId}::integer
        ORDER BY seq DESC`);

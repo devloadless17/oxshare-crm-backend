@@ -394,7 +394,8 @@ describe('what a reviewer is checking cannot move under them', () => {
         reason: 'Typo',
         via: 'admin_edit',
       });
-      expect(told).toHaveBeenCalledWith(email, 'Layla', ['Date of Birth']);
+      // 'en': the client's stored language — a reviewer's correction, not their request.
+      expect(told).toHaveBeenCalledWith(email, 'Layla', ['Date of Birth'], 'en');
 
       // Still verified: a correction is not a new verification.
       const [kyc] = await ctx.db.db

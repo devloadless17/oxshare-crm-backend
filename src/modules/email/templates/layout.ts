@@ -271,3 +271,113 @@ export function panel(innerHtml: string): string {
 export function link(href: string, label: string): string {
   return `<a href="${href}" style="color: ${LINK}; font-weight: 600; text-decoration: underline;">${esc(label)}</a>`;
 }
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * ARABIC (RTL) — the same card, mirrored (2 Oct 2026).
+ *
+ * A client reading the portal in Arabic gets their mail in Arabic. The English
+ * helpers above are deliberately UNTOUCHED — every English message stays
+ * byte-identical — and the Arabic ones below are separate functions rather than
+ * a `locale` flag threaded through them.
+ *
+ * Mail clients ignore most CSS, so direction is stated three ways at once: a
+ * full `<html lang="ar" dir="rtl">` document, a presentation table whose cell
+ * carries `dir`/`align` (Outlook's Word engine reads those and little else), and
+ * `dir="rtl"` + inline `direction: rtl; text-align: right` on every block.
+ *
+ * Anything that must read left to right inside Arabic text — an amount, a code,
+ * a login, an email address, a password — goes through `ltr()`, so the bidi
+ * algorithm cannot reorder "$1,234.56" or move a trailing punctuation mark into
+ * the middle of a code. Tahoma and Arial carry Arabic glyphs on every desktop.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+const AR_FONT = "'Segoe UI', Tahoma, Arial, sans-serif";
+const RTL = 'direction: rtl; text-align: right;';
+
+/** A left-to-right run inside Arabic text. ESCAPED — pass plain text. */
+export function ltr(text: string): string {
+  return `<span dir="ltr" style="unicode-bidi: isolate;">${esc(text)}</span>`;
+}
+
+/** `ltr()` for a value that is ALREADY escaped (e.g. a formatted amount). */
+export function ltrHtml(innerHtml: string): string {
+  return `<span dir="ltr" style="unicode-bidi: isolate;">${innerHtml}</span>`;
+}
+
+function footerAr(): string {
+  return `        <div dir="rtl" style="margin-top: 32px; padding-top: 16px; border-top: 1px solid ${BORDER}; ${RTL}">
+          <p dir="rtl" style="font-size: 11px; color: ${MUTED}; margin: 0; ${RTL}">
+            هذه رسالة آلية من OXShare، يُرجى عدم الرد عليها.
+          </p>
+        </div>`;
+}
+
+/** An Arabic heading, in the accent or in an outcome colour. Escaped. */
+export function headingAr(text: string, color: string = HEADING): string {
+  return `        <h2 dir="rtl" style="color: ${color}; margin-top: 0; ${RTL}">${esc(text)}</h2>`;
+}
+
+/**
+ * The Arabic card: a whole RTL document, so `lang`/`dir` sit on `<html>` where
+ * screen readers and mail clients look for them.
+ */
+export function cardAr(innerHtml: string): string {
+  return `<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head>
+<body dir="rtl" style="margin: 0; padding: 0; ${RTL}">
+  <table role="presentation" dir="rtl" width="100%" cellpadding="0" cellspacing="0" border="0" style="direction: rtl;">
+    <tr>
+      <td dir="rtl" align="right" style="${RTL} font-family: ${AR_FONT};">
+      <div dir="rtl" lang="ar" style="font-family: ${AR_FONT}; max-width: 600px; margin: 0 auto; padding: 24px; border-radius: 12px; ${RTL}">
+${masthead()}
+${innerHtml}
+${footerAr()}
+      </div>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
+}
+
+/** `layout()` in Arabic: accent heading (escaped) plus composed body html. */
+export function layoutAr(heading: string, bodyHtml: string): string {
+  return cardAr(`${headingAr(heading)}
+${bodyHtml}`);
+}
+
+/** An Arabic paragraph. Escaped — do not pre-escape (see `p`). */
+export function pAr(text: string): string {
+  return `        <p dir="rtl" style="${RTL}">${esc(text)}</p>`;
+}
+
+/** An Arabic paragraph that may contain markup — the caller escapes its values. */
+export function pRichAr(innerHtml: string): string {
+  return `        <p dir="rtl" style="${RTL}">${innerHtml}</p>`;
+}
+
+/** Arabic small print. Escaped. */
+export function fineAr(text: string): string {
+  return `        <p dir="rtl" style="font-size: 12px; color: ${MUTED}; ${RTL}">${esc(text)}</p>`;
+}
+
+/** The boxed detail block, right-aligned. Takes ALREADY-ESCAPED html. */
+export function panelAr(innerHtml: string): string {
+  return `        <div dir="rtl" style="background: rgba(128,128,128,0.12); border: 1px solid ${BORDER}; border-radius: 8px; padding: 12px 16px; margin: 20px 0; ${RTL}">${innerHtml}</div>`;
+}
+
+/** The call-to-action button, right-aligned. `href` is built by us — see `button`. */
+export function buttonAr(href: string, label: string): string {
+  return `
+        <div dir="rtl" style="margin: 30px 0; ${RTL}">
+          <a href="${href}" dir="rtl" style="background: ${BUTTON_BG}; color: ${BUTTON_TEXT}; padding: 12px 24px; border-radius: 8px; text-decoration: none; font-weight: bold; display: inline-block; font-family: ${AR_FONT};">
+            ${esc(label)}
+          </a>
+        </div>`;
+}
+
+/** "Hello {name}," in Arabic, with the same fallback the English uses. */
+export function greetingAr(firstName: string): string {
+  return pAr(`مرحباً ${firstName || 'عميلنا العزيز'}،`);
+}

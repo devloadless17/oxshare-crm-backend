@@ -63,6 +63,42 @@ function seedE2eFixtures(): boolean {
   return process.env.SEED_E2E_FIXTURES !== 'false';
 }
 
+/**
+ * The seeded reasons’ Arabic (0179) — the same wording migration 0179 gives a database
+ * seeded before it, so a fresh one is not left untranslated. Keyed by the English label.
+ */
+const SEEDED_REASON_AR: Readonly<Record<string, string>> = {
+  'Identity document is blurry or unreadable': 'وثيقة الهوية غير واضحة أو غير مقروءة',
+  'Identity document is expired': 'وثيقة الهوية منتهية الصلاحية',
+  'Selfie does not match the identity document': 'الصورة الشخصية لا تطابق وثيقة الهوية',
+  'Proof of address is older than 3 months': 'إثبات العنوان أقدم من 3 أشهر',
+  'Proof of address does not match the declared address':
+    'إثبات العنوان لا يطابق العنوان المُصرَّح به',
+  'Personal information does not match the documents': 'المعلومات الشخصية لا تطابق الوثائق',
+  'Document appears altered or tampered with': 'يبدو أن الوثيقة معدَّلة أو تم التلاعب بها',
+  'Beneficiary details do not match the account holder': 'بيانات المستفيد لا تطابق صاحب الحساب',
+  'Insufficient verified balance': 'الرصيد الموثَّق غير كافٍ',
+  'Account verification (KYC) incomplete': 'التحقق من هوية الحساب غير مكتمل',
+  'Suspicious activity — additional verification required': 'نشاط مشبوه — يلزم تحقق إضافي',
+  'Insufficient trading or introducing experience': 'خبرة غير كافية في التداول أو في إحالة العملاء',
+  'Introducing volume does not meet the programme minimum':
+    'حجم الإحالات لا يبلغ الحد الأدنى للبرنامج',
+  'Unable to verify the website or business details provided':
+    'تعذّر التحقق من الموقع الإلكتروني أو بيانات النشاط التجاري المقدَّمة',
+  'Application is incomplete or unclear': 'الطلب غير مكتمل أو غير واضح',
+  'Does not meet the eligibility criteria for this programme':
+    'لا يستوفي شروط الأهلية لهذا البرنامج',
+  'The receipt is unreadable — please send a clearer photo':
+    'الإيصال غير مقروء — يُرجى إرسال صورة أوضح',
+  'The amount on the receipt does not match the amount requested':
+    'المبلغ الوارد في الإيصال لا يطابق المبلغ المطلوب',
+  'No payment matching this receipt has reached our account':
+    'لم تصل إلى حسابنا أي دفعة مطابقة لهذا الإيصال',
+  'The receipt is for a different transfer we have already credited':
+    'الإيصال يخص تحويلاً آخر سبق أن أضفناه إلى رصيدك',
+  'The receipt does not show who sent the payment': 'الإيصال لا يُظهر اسم مُرسِل الدفعة',
+};
+
 export async function runSeeds(): Promise<void> {
   const db = getDb();
 
@@ -694,7 +730,12 @@ export async function runSeeds(): Promise<void> {
 
   await db
     .insert(rejectionReasons)
-    .values([...kycReasons, ...withdrawalReasons, ...partnerReasons, ...depositReasons])
+    .values(
+      [...kycReasons, ...withdrawalReasons, ...partnerReasons, ...depositReasons].map((reason) => ({
+        ...reason,
+        labelAr: SEEDED_REASON_AR[reason.label] ?? null,
+      })),
+    )
     .onConflictDoNothing();
 
   // Default KYC onboarding steps — only when the config table is empty, so a
@@ -708,6 +749,8 @@ export async function runSeeds(): Promise<void> {
         slug: s.slug,
         title: s.title,
         description: s.description,
+        titleAr: s.titleAr ?? null,
+        descriptionAr: s.descriptionAr ?? null,
         icon: s.icon,
         enabled: s.enabled,
         fields: s.fields as unknown as Record<string, unknown>[],

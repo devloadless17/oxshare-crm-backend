@@ -1,6 +1,7 @@
 import { Global, Module } from '@nestjs/common';
 import { ClientProfileService } from './client-profile.service';
 import { ProfileOptionsController } from './profile-options.controller';
+import { ProfileLocaleController } from './profile-locale.controller';
 
 /**
  * Global, like the stores it sits on: registration (identity), the KYC personal
@@ -9,7 +10,7 @@ import { ProfileOptionsController } from './profile-options.controller';
  */
 @Global()
 @Module({
-  controllers: [ProfileOptionsController],
+  controllers: [ProfileOptionsController, ProfileLocaleController],
   providers: [ClientProfileService],
   exports: [ClientProfileService],
 })

@@ -429,11 +429,13 @@ describe('what the route refuses', () => {
       country: 'Syria',
       firstName: ORIGINAL.firstName,
     });
-    expect(told).toHaveBeenCalledWith(expect.any(String), ORIGINAL.firstName, [
-      'Last Name',
-      'Nationality',
-      'Country of Residence',
-    ]);
+    expect(told).toHaveBeenCalledWith(
+      expect.any(String),
+      ORIGINAL.firstName,
+      ['Last Name', 'Nationality', 'Country of Residence'],
+      // The client's stored language: a reviewer's correction, not their request.
+      'en',
+    );
     told.mockRestore();
   });
 

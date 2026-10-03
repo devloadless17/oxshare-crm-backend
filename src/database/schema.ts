@@ -119,6 +119,8 @@ export const users = pgTable(
     status: userStatusEnum('status').notNull().default('active'),
     verificationLevel: integer('verification_level').notNull().default(0),
     emailVerified: boolean('email_verified').notNull().default(false),
+    /** The client's portal language, for what the server writes in advance — email (0179). */
+    locale: varchar('locale', { length: 5 }).notNull().default('en'),
     /*
      * Email verification — a SHA-256 HASH of the emailed token, never the token.
      *
@@ -847,6 +849,8 @@ export const kycSubmissions = pgTable(
       .notNull()
       .default({}),
     rejectionReason: text('rejection_reason'),
+    /** The reason as an Arabic reader is shown it, written with the decision (0179). */
+    rejectionReasonAr: text('rejection_reason_ar'),
     rejectedFields: jsonb('rejected_fields').$type<string[]>(),
     /**
      * When a reviewer returned an APPROVED verification to the client to redo
@@ -981,6 +985,8 @@ export const kycSubmissionAttempts = pgTable(
       .notNull()
       .default({}),
     rejectionReason: text('rejection_reason'),
+    /** Archived alongside `rejection_reason` (0179). */
+    rejectionReasonAr: text('rejection_reason_ar'),
     rejectedFields: jsonb('rejected_fields').$type<string[]>(),
     submittedAt: timestamp('submitted_at', { withTimezone: true }),
     reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
@@ -1084,6 +1090,8 @@ export const clientVerifications = pgTable(
     adminEmail: text('admin_email'),
     reasonId: uuid('reason_id'),
     reason: text('reason'),
+    /** The reason in Arabic, copied from the attempt it decided (0179). */
+    reasonAr: text('reason_ar'),
     returnedItems: jsonb('returned_items').$type<string[]>().notNull().default([]),
     provider: text('provider'),
     providerRef: text('provider_ref'),
@@ -1111,6 +1119,9 @@ export const kycConfigSteps = pgTable('kyc_config_steps', {
   slug: varchar('slug', { length: 100 }).notNull(),
   title: varchar('title', { length: 200 }).notNull(),
   description: text('description'),
+  /** The step's title and description in Arabic (0179); blank falls back to English. */
+  titleAr: varchar('title_ar', { length: 200 }),
+  descriptionAr: text('description_ar'),
   icon: varchar('icon', { length: 50 }),
   enabled: boolean('enabled').notNull().default(true),
   fields: jsonb('fields').$type<Record<string, unknown>[]>().notNull().default([]),
@@ -1141,6 +1152,8 @@ export const rejectionReasons = pgTable(
     id: uuid('id').defaultRandom().primaryKey(),
     context: rejectionContextEnum('context').notNull(),
     label: varchar('label', { length: 500 }).notNull(),
+    /** Arabic wording shown to clients reading the portal in Arabic (0179). */
+    labelAr: varchar('label_ar', { length: 500 }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [uniqueIndex('rejection_reasons_context_label_uq').on(t.context, t.label)],
@@ -1641,6 +1654,8 @@ export const currencies = pgTable(
     /** ISO-4217 where one exists ('USD'), the ticker where none does ('USDT'). */
     code: varchar('code', { length: 10 }).primaryKey(),
     name: varchar('name', { length: 80 }).notNull(),
+    /** The currency's name in Arabic (0179). */
+    nameAr: varchar('name_ar', { length: 80 }),
     /** '$', 'USDT'. Display only; `code` is what anything logical compares. */
     symbol: varchar('symbol', { length: 8 }).notNull(),
     /** Decimal places to SHOW. Storage is always NUMERIC(28,8) — see above. */
@@ -1810,6 +1825,9 @@ export const externalLinks = pgTable(
      * costs nothing on either side.
      */
     description: varchar('description', { length: 300 }),
+    /** Arabic title and description for the portal's Arabic readers (0179). */
+    titleAr: varchar('title_ar', { length: 80 }),
+    descriptionAr: varchar('description_ar', { length: 300 }),
     /*
      * Sized for a real URL rather than 255, for the reason `platform_links.url`
      * gives: campaign and locale parameters routinely pass 255, and a column
@@ -2097,8 +2115,12 @@ export const tradingProducts = pgTable(
     id: uuid('id').defaultRandom().primaryKey(),
     /** What the client sees. "Standard", "ECN", "Raw Spread". */
     name: varchar('name', { length: 80 }).notNull().unique(),
+    /** The client-facing name in Arabic (0179). */
+    nameAr: varchar('name_ar', { length: 80 }),
     /** Shown to a client choosing, and to an applicant reading an agency. */
     description: text('description'),
+    /** The description in Arabic (0179). */
+    descriptionAr: text('description_ar'),
     /**
      * A disabled product stops being OFFERED and keeps its accounts trading.
      *
@@ -2229,6 +2251,9 @@ export const agencies = pgTable('agencies', {
   name: varchar('name', { length: 80 }).notNull().unique(),
   /** Read by an applicant deciding which one to request. Worth writing well. */
   description: text('description'),
+  /** Arabic name and description for the portal's Arabic readers (0179). */
+  nameAr: varchar('name_ar', { length: 80 }),
+  descriptionAr: text('description_ar'),
   /**
    * A disabled agency stops accepting APPLICATIONS and keeps its partners.
    *
@@ -2517,6 +2542,8 @@ export const paymentMethods = pgTable(
     key: varchar('key', { length: 40 }).primaryKey(),
     /** What the CLIENT sees. */
     name: varchar('name', { length: 80 }).notNull(),
+    /** The client-facing name in Arabic (0179). */
+    nameAr: varchar('name_ar', { length: 80 }),
     /**
      * What the DESK sees, types and renames — on every admin screen, export and
      * bell (0161). Required and unique case-insensitively, because it is how a
@@ -2653,6 +2680,8 @@ export const withdrawalPaymentMethods = pgTable(
     key: varchar('key', { length: 40 }).primaryKey(),
     /** What the CLIENT sees. */
     name: varchar('name', { length: 80 }).notNull(),
+    /** The client-facing name in Arabic (0179). */
+    nameAr: varchar('name_ar', { length: 80 }),
     /** The DESK's name for the rail — see `paymentMethods.internalLabel`. */
     internalLabel: varchar('internal_label', { length: 80 }).notNull(),
     /**
@@ -3516,6 +3545,8 @@ export const transactions = pgTable(
      */
     proofDetails: jsonb('proof_details').$type<ProofDetail[]>(),
     rejectionReason: text('rejection_reason'),
+    /** `rejection_reason` as an Arabic reader is shown it, written with it (0179). */
+    rejectionReasonAr: text('rejection_reason_ar'),
     /** The admin who decided. No FK — same reasoning as `audit_log.actor_id`. */
     reviewedBy: uuid('reviewed_by'),
     reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
@@ -3659,6 +3690,8 @@ export const transfers = pgTable(
     state: transferStateEnum('state').notNull().default('pending'),
     /** Why it was refused. Null unless `state = 'failed'`. */
     failureReason: text('failure_reason'),
+    /** `failure_reason` in Arabic, written with it (0179). */
+    failureReasonAr: text('failure_reason_ar'),
     settledAt: timestamp('settled_at', { withTimezone: true }),
     /*
      * ── THE RESUME BACKOFF (0123) ──────────────────────────────────────────
@@ -4447,6 +4480,8 @@ export const ibApplications = pgTable(
      * may have been edited would show them a different one.
      */
     rejectionReason: text('rejection_reason'),
+    /** The composed reason in Arabic, written with it (0179). */
+    rejectionReasonAr: text('rejection_reason_ar'),
     /** The admin who decided. No FK to admin_users — see `audit_log.actor_id`. */
     reviewedBy: uuid('reviewed_by'),
     reviewedAt: timestamp('reviewed_at', { withTimezone: true }),

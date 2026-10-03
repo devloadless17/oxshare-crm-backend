@@ -1,4 +1,5 @@
 import type { transfers } from '../../database/schema';
+import { systemSentenceArabic } from '../../common/i18n/reason-arabic';
 
 type TransferRow = typeof transfers.$inferSelect;
 
@@ -26,6 +27,7 @@ export type TransferView = Pick<
   | 'currency'
   | 'state'
   | 'failureReason'
+  | 'failureReasonAr'
   | 'settledAt'
   | 'createdAt'
 >;
@@ -41,6 +43,8 @@ export function transferView(row: TransferRow): TransferView {
     currency: row.currency,
     state: row.state,
     failureReason: row.failureReason,
+    // Written with it (0179); a row failed before then gets the catalogue's Arabic.
+    failureReasonAr: row.failureReasonAr ?? systemSentenceArabic(row.failureReason),
     settledAt: row.settledAt,
     createdAt: row.createdAt,
   };

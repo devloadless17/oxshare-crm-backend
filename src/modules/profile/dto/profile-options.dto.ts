@@ -36,6 +36,26 @@ export class ProfileOptionsDto {
   nationalities!: string[];
 
   @ApiProperty({
+    type: 'object',
+    additionalProperties: { type: 'string' },
+    description:
+      'Arabic name per country, keyed by the English value in `countries` (0179). The value ' +
+      'sent and stored is always the English one.',
+    example: { Lebanon: 'لبنان' },
+  })
+  countryLabelsAr!: Record<string, string>;
+
+  @ApiProperty({
+    type: 'object',
+    additionalProperties: { type: 'string' },
+    description:
+      'Arabic per nationality, keyed by the English value in `nationalities` (0179). The value ' +
+      'sent and stored is always the English one.',
+    example: { Lebanese: 'لبناني' },
+  })
+  nationalityLabelsAr!: Record<string, string>;
+
+  @ApiProperty({
     type: ProfileRequiredDto,
     description:
       'Which fields are required, and when. Served so no form keeps its own copy of the rule ' +

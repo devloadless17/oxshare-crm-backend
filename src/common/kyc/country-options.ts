@@ -503,3 +503,260 @@ export function offeredLists(codes: readonly string[] | null): OfferedLists {
     ),
   };
 }
+
+/*
+ * ── THE LISTS IN ARABIC (0179) ───────────────────────────────────────────────
+ *
+ * The stored answer is always the ENGLISH value — "Lebanon", "Lebanese" — which
+ * is what the profile accepts and every screen and report reads. Arabic is only
+ * what an Arabic reader is SHOWN beside it, served as `optionsAr` on the KYC form
+ * and as `countryLabelsAr` / `nationalityLabelsAr` on `GET /profile/options`,
+ * keyed by that English value. One pair of functions builds both.
+ */
+
+/**
+ * Countries in Arabic, from the runtime's own CLDR data by ISO code — the same
+ * source that names them in every Arabic browser, so nothing here is typed by
+ * hand. Node ships full ICU.
+ */
+const ARABIC_REGIONS = new Intl.DisplayNames(['ar'], { type: 'region' });
+
+/** A country's Arabic name by ISO code, or undefined when the runtime has none. */
+export function countryNameAr(code: string): string | undefined {
+  const iso = code.trim().toUpperCase();
+  try {
+    const name = ARABIC_REGIONS.of(iso);
+    return name && name !== iso ? name : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+const COUNTRY_AR_BY_NAME: ReadonlyMap<string, string> = new Map(
+  WORLD_COUNTRIES.flatMap((country) => {
+    const arabic = countryNameAr(country.code);
+    return arabic ? [[country.name, arabic] as const] : [];
+  }),
+);
+
+/** Arabic for each English country name given (matched as `countryByName` does); unknown names are left out. */
+export function countryLabelsAr(names: readonly string[]): Record<string, string> {
+  const labels: Record<string, string> = {};
+  for (const name of names) {
+    const arabic =
+      COUNTRY_AR_BY_NAME.get(name) ?? COUNTRY_AR_BY_NAME.get(countryByName(name)?.name ?? '');
+    if (arabic) labels[name] = arabic;
+  }
+  return labels;
+}
+
+/**
+ * Nationalities in Arabic: the masculine singular adjective (نسبة), the form an
+ * Arabic form uses for "Nationality: ___". Hand-written because no runtime
+ * carries demonyms. A demonym with no settled Arabic adjective is phrased
+ * "from <country>" (من …), as Arabic forms commonly do.
+ *
+ * Every entry of `KYC_NATIONALITY_OPTIONS` has one — `kyc-country-options.spec.ts`
+ * refuses a nationality added without its Arabic.
+ */
+export const NATIONALITY_AR: Readonly<Record<string, string>> = {
+  Afghan: 'أفغاني',
+  Albanian: 'ألباني',
+  Algerian: 'جزائري',
+  American: 'أمريكي',
+  Andorran: 'أندوري',
+  Angolan: 'أنغولي',
+  Antiguan: 'من أنتيغوا وباربودا',
+  Argentine: 'أرجنتيني',
+  Armenian: 'أرميني',
+  Australian: 'أسترالي',
+  Austrian: 'نمساوي',
+  Azerbaijani: 'أذربيجاني',
+  Bahamian: 'باهامي',
+  Bahraini: 'بحريني',
+  Bangladeshi: 'بنغلاديشي',
+  Barbadian: 'بربادوسي',
+  Belarusian: 'بيلاروسي',
+  Belgian: 'بلجيكي',
+  Belizean: 'بليزي',
+  Beninese: 'بنيني',
+  Bhutanese: 'بوتاني',
+  Bolivian: 'بوليفي',
+  Bosnian: 'بوسني',
+  Brazilian: 'برازيلي',
+  British: 'بريطاني',
+  Bruneian: 'بروني',
+  Bulgarian: 'بلغاري',
+  Burkinabe: 'بوركيني',
+  Burmese: 'ميانماري',
+  Burundian: 'بوروندي',
+  Cambodian: 'كمبودي',
+  Cameroonian: 'كاميروني',
+  Canadian: 'كندي',
+  'Cape Verdean': 'من الرأس الأخضر',
+  'Central African': 'من أفريقيا الوسطى',
+  Chadian: 'تشادي',
+  Chilean: 'تشيلي',
+  Chinese: 'صيني',
+  Colombian: 'كولومبي',
+  Comoran: 'قمري',
+  Congolese: 'كونغولي',
+  'Costa Rican': 'كوستاريكي',
+  Croatian: 'كرواتي',
+  Cuban: 'كوبي',
+  Cypriot: 'قبرصي',
+  Czech: 'تشيكي',
+  Danish: 'دنماركي',
+  Djiboutian: 'جيبوتي',
+  Dominican: 'دومينيكاني',
+  Dutch: 'هولندي',
+  'East Timorese': 'تيموري',
+  Ecuadorean: 'إكوادوري',
+  Egyptian: 'مصري',
+  Emirati: 'إماراتي',
+  'Equatorial Guinean': 'من غينيا الاستوائية',
+  Eritrean: 'إريتري',
+  Estonian: 'إستوني',
+  Ethiopian: 'إثيوبي',
+  Fijian: 'فيجي',
+  Filipino: 'فلبيني',
+  Finnish: 'فنلندي',
+  French: 'فرنسي',
+  Gabonese: 'غابوني',
+  Gambian: 'غامبي',
+  Georgian: 'جورجي',
+  German: 'ألماني',
+  Ghanaian: 'غاني',
+  Greek: 'يوناني',
+  Grenadian: 'غرينادي',
+  Guatemalan: 'غواتيمالي',
+  Guinean: 'غيني',
+  Guyanese: 'غياني',
+  Haitian: 'هايتي',
+  Honduran: 'هندوراسي',
+  Hungarian: 'مجري',
+  Icelander: 'آيسلندي',
+  Indian: 'هندي',
+  Indonesian: 'إندونيسي',
+  Iranian: 'إيراني',
+  Iraqi: 'عراقي',
+  Irish: 'أيرلندي',
+  Italian: 'إيطالي',
+  Ivorian: 'إيفواري',
+  Jamaican: 'جامايكي',
+  Japanese: 'ياباني',
+  Jordanian: 'أردني',
+  Kazakhstani: 'كازاخستاني',
+  Kenyan: 'كيني',
+  Kittitian: 'من سانت كيتس ونيفيس',
+  Kuwaiti: 'كويتي',
+  Kyrgyz: 'قيرغيزي',
+  Laotian: 'لاوسي',
+  Latvian: 'لاتفي',
+  Lebanese: 'لبناني',
+  Liberian: 'ليبيري',
+  Libyan: 'ليبي',
+  Liechtensteiner: 'ليختنشتايني',
+  Lithuanian: 'ليتواني',
+  Luxembourger: 'لوكسمبورغي',
+  Macedonian: 'مقدوني',
+  Malagasy: 'مدغشقري',
+  Malawian: 'مالاوي',
+  Malaysian: 'ماليزي',
+  Maldivian: 'مالديفي',
+  Malian: 'مالي',
+  Maltese: 'مالطي',
+  Marshallese: 'من جزر مارشال',
+  Mauritanian: 'موريتاني',
+  Mauritian: 'موريشيوسي',
+  Mexican: 'مكسيكي',
+  Micronesian: 'ميكرونيزي',
+  Moldovan: 'مولدوفي',
+  Monacan: 'موناكي',
+  Mongolian: 'منغولي',
+  Montenegrin: 'مونتينيغري',
+  Moroccan: 'مغربي',
+  Mozambican: 'موزمبيقي',
+  Namibian: 'ناميبي',
+  Nauruan: 'ناوروي',
+  Nepalese: 'نيبالي',
+  'New Zealander': 'نيوزيلندي',
+  Nicaraguan: 'نيكاراغوي',
+  Nigerian: 'نيجيري',
+  Nigerien: 'نيجري',
+  'North Korean': 'كوري شمالي',
+  Norwegian: 'نرويجي',
+  Omani: 'عماني',
+  Pakistani: 'باكستاني',
+  Palauans: 'بالاوي',
+  Palestinian: 'فلسطيني',
+  Panamanian: 'بنمي',
+  'Papua New Guinean': 'من بابوا غينيا الجديدة',
+  Paraguayan: 'باراغواياني',
+  Peruvian: 'بيروفي',
+  Polish: 'بولندي',
+  Portuguese: 'برتغالي',
+  Qatari: 'قطري',
+  Romanian: 'روماني',
+  Russian: 'روسي',
+  Rwandan: 'رواندي',
+  'Saint Lucian': 'من سانت لوسيا',
+  Salvadoran: 'سلفادوري',
+  Samoan: 'ساموي',
+  'San Marinese': 'سان ماريني',
+  'Sao Tomean': 'من ساو تومي وبرينسيب',
+  Saudi: 'سعودي',
+  Senegalese: 'سنغالي',
+  Serbian: 'صربي',
+  Seychellois: 'سيشيلي',
+  'Sierra Leonean': 'سيراليوني',
+  Singaporean: 'سنغافوري',
+  Slovak: 'سلوفاكي',
+  Slovenian: 'سلوفيني',
+  'Solomon Islander': 'من جزر سليمان',
+  Somali: 'صومالي',
+  'South African': 'جنوب أفريقي',
+  'South Korean': 'كوري جنوبي',
+  'South Sudanese': 'جنوب سوداني',
+  Spanish: 'إسباني',
+  'Sri Lankan': 'سريلانكي',
+  Sudanese: 'سوداني',
+  Surinamer: 'سورينامي',
+  Swazi: 'إسواتيني',
+  Swedish: 'سويدي',
+  Swiss: 'سويسري',
+  Syrian: 'سوري',
+  Taiwanese: 'تايواني',
+  Tajik: 'طاجيكي',
+  Tanzanian: 'تنزاني',
+  Thai: 'تايلاندي',
+  Togolese: 'توغولي',
+  Tongan: 'تونغي',
+  Trinidadian: 'ترينيدادي',
+  Tunisian: 'تونسي',
+  Turkish: 'تركي',
+  Turkmen: 'تركماني',
+  Tuvaluan: 'توفالي',
+  Ugandan: 'أوغندي',
+  Ukrainian: 'أوكراني',
+  Uruguayan: 'أوروغواياني',
+  Uzbek: 'أوزبكي',
+  Vanuatuans: 'فانواتي',
+  Venezuelan: 'فنزويلي',
+  Vietnamese: 'فيتنامي',
+  Yemeni: 'يمني',
+  Zambian: 'زامبي',
+  Zimbabwean: 'زيمبابوي',
+};
+
+/** Arabic for each English nationality given; one without an entry is left out. */
+export function nationalityLabelsAr(names: readonly string[]): Record<string, string> {
+  const labels: Record<string, string> = {};
+  for (const name of names) {
+    const arabic = Object.prototype.hasOwnProperty.call(NATIONALITY_AR, name)
+      ? NATIONALITY_AR[name]
+      : undefined;
+    if (arabic) labels[name] = arabic;
+  }
+  return labels;
+}

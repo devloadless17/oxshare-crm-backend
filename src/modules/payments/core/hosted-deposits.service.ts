@@ -30,6 +30,7 @@ import { CurrenciesService } from '../../currencies/currencies.service';
 import { TransactionsService, depositStateOf } from '../transactions.service';
 import { PaymentMethodsService } from '../payment-methods.service';
 import { PaymentProviderRegistry } from '../providers/payment-provider-registry';
+import { systemSentenceArabic } from '../../../common/i18n/reason-arabic';
 import {
   ProviderBusyError,
   type DepositCreditPolicy,
@@ -554,6 +555,9 @@ export class HostedDepositsService {
         rejectionReason: result.expired
           ? 'The payment link expired before the payment arrived.'
           : null,
+        rejectionReasonAr: result.expired
+          ? systemSentenceArabic('The payment link expired before the payment arrived.')
+          : null,
       })
       .where(and(eq(transactions.id, tx.id), eq(transactions.state, 'pending')))
       .returning();
@@ -623,6 +627,7 @@ export class HostedDepositsService {
           // The CLIENT reads this on their transaction; the desk's own finding
           // stays in the audit row below — it was written for colleagues.
           rejectionReason: CLIENT_SAFE_DEPOSIT_CLOSED,
+          rejectionReasonAr: systemSentenceArabic(CLIENT_SAFE_DEPOSIT_CLOSED),
           reviewedBy: actor.id,
           reviewedAt: new Date(),
         })
@@ -829,6 +834,7 @@ export class HostedDepositsService {
         state: 'failure',
         settledAt: new Date(),
         rejectionReason: 'The payment could not be started.',
+        rejectionReasonAr: systemSentenceArabic('The payment could not be started.'),
       })
       .where(and(eq(transactions.id, tx.id), eq(transactions.state, 'pending')));
     return false;

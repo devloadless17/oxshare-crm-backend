@@ -1,4 +1,21 @@
-import { button, card, esc, p, pRich, panel, type RenderedEmail } from './layout';
+import type { Locale } from '../../../common/i18n/locale';
+import {
+  button,
+  buttonAr,
+  card,
+  cardAr,
+  esc,
+  greetingAr,
+  headingAr,
+  ltr,
+  p,
+  pAr,
+  pRich,
+  pRichAr,
+  panel,
+  panelAr,
+  type RenderedEmail,
+} from './layout';
 
 /**
  * The credentials for a trading account that has just been opened.
@@ -36,7 +53,22 @@ export function tradingAccountOpened(
   accountName?: string,
   /** What the account actually holds — a funded demo, or nothing. */
   balance?: string,
+  locale: Locale = 'en',
 ): RenderedEmail {
+  if (locale === 'ar') {
+    return tradingAccountOpenedAr(
+      firstName,
+      login,
+      environment,
+      currency,
+      leverage,
+      masterPassword,
+      investorPassword,
+      portalUrl,
+      accountName,
+      balance,
+    );
+  }
   const kind = environment === 'live' ? 'live' : 'demo';
 
   return {
@@ -79,5 +111,60 @@ ${pRich(
 )}
 ${p('Never share your master password. Nobody at OxShare will ever ask you for it.')}
 ${button(portalUrl, 'Go to Portal')}`),
+  };
+}
+
+/** Both passwords, explained, in Arabic — shared with the reset mail. */
+export function passwordsPanelAr(masterPassword: string, investorPassword: string): string {
+  return panelAr(
+    `<strong>كلمة المرور الرئيسية:</strong> <code dir="ltr" style="unicode-bidi: isolate;">${esc(masterPassword)}</code><br>` +
+      '<span style="color:#6b7280;">وصول كامل — لتنفيذ الصفقات وإدارة الحساب.</span>' +
+      '<br><br>' +
+      `<strong>كلمة مرور المستثمر:</strong> <code dir="ltr" style="unicode-bidi: isolate;">${esc(investorPassword)}</code><br>` +
+      '<span style="color:#6b7280;">للقراءة فقط — تعرض الصفقات والسجل لكنها لا تسمح بالتداول. ' +
+      'هذه هي كلمة المرور التي يمكنك مشاركتها إذا احتاج أحد إلى متابعة حسابك.</span>',
+  );
+}
+
+function tradingAccountOpenedAr(
+  firstName: string,
+  login: string,
+  environment: 'live' | 'demo',
+  currency: string,
+  leverage: number,
+  masterPassword: string,
+  investorPassword: string,
+  portalUrl: string,
+  accountName?: string,
+  balance?: string,
+): RenderedEmail {
+  const kind = environment === 'live' ? 'الحقيقي' : 'التجريبي';
+
+  return {
+    subject: `حساب التداول ${kind} ${esc(login)} جاهز — OXShare`,
+    html: cardAr(`${headingAr(`حساب التداول ${kind} الخاص بك جاهز`, '#047857')}
+${greetingAr(firstName)}
+${pAr(
+  environment === 'live'
+    ? 'تم فتح حساب التداول الحقيقي الخاص بك. سيحتوي على أموال حقيقية بمجرد أن تموّله.'
+    : 'تم فتح حساب التداول التجريبي الخاص بك. يحتوي على أموال افتراضية للتدريب، لذا يمكنك التداول عليه دون أي مخاطرة.',
+)}
+${panelAr(
+  (accountName ? `<strong>الاسم:</strong> ${esc(accountName)}<br>` : '') +
+    `<strong>رقم الدخول:</strong> ${ltr(login)}<br>` +
+    `<strong>العملة:</strong> ${ltr(currency)}<br>` +
+    `<strong>الرافعة المالية:</strong> ${ltr(`1:${String(leverage)}`)}` +
+    (balance && Number.parseFloat(balance) > 0
+      ? `<br><strong>الرصيد الافتتاحي:</strong> ${ltr(`${balance} ${currency}`)}`
+      : ''),
+)}
+${pRichAr('<strong>كلمات المرور الخاصة بك</strong>')}
+${passwordsPanelAr(masterPassword, investorPassword)}
+${pRichAr(
+  'يُرجى حفظها في مكان آمن ثم حذف هذه الرسالة. <strong>نحن لا نحتفظ بنسخة منها</strong> — ' +
+    'وإذا فقدتها، يمكنك إعادة تعيينها من البوابة وسنرسل إليك كلمتي مرور جديدتين عبر البريد الإلكتروني.',
+)}
+${pAr('لا تشارك كلمة المرور الرئيسية مع أي شخص. لن يطلبها منك أحد في OXShare أبداً.')}
+${buttonAr(portalUrl, 'الانتقال إلى البوابة')}`),
   };
 }

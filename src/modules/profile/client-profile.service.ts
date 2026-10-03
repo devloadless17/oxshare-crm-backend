@@ -22,6 +22,7 @@ import {
   type ProfileKey,
 } from '../../common/profile/client-profile';
 import { identityField } from '../../common/kyc/identity-core';
+import { pickLocalized } from '../../common/i18n/locale';
 import { AuditLogStore, type AuditSubjectType } from '../../store/audit-log.store';
 import {
   IDENTITY_REVIEW,
@@ -362,7 +363,13 @@ export class ClientProfileService {
       void this.email?.sendKycDetailsCorrectedEmail(
         written.user.email,
         written.user.firstName,
-        written.changed.map((key) => identityField(key)?.label ?? key),
+        // Named in the language the mail is written in (0179).
+        written.changed.map((key) => {
+          const field = identityField(key);
+          return field ? pickLocalized(field.label, field.labelAr, written.user.locale) : key;
+        }),
+        // A reviewer's correction: the client's stored language.
+        written.user.locale,
       );
     }
     return { ...written, corrected };

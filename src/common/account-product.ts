@@ -104,3 +104,15 @@ export const PRODUCT_GROUP_JOIN_ON = sql`"trading_product_groups"."id" = (
 export const PRODUCT_NAME = sql<
   string | null
 >`coalesce(${PRODUCT_BY_ID.name}, ${PRODUCT_BY_GROUP.name})`;
+
+/**
+ * The same product's name in Arabic (0179) — from the SAME row `PRODUCT_NAME`
+ * read, never a coalesce across the two: a recorded product with no Arabic must
+ * not borrow the Arabic of whichever product the group happens to match now.
+ * NULL when untranslated or when there is no product; the portal shows
+ * `product` then.
+ */
+export const PRODUCT_NAME_AR = sql<string | null>`CASE
+  WHEN ${PRODUCT_BY_ID.id} IS NOT NULL THEN ${PRODUCT_BY_ID.nameAr}
+  ELSE ${PRODUCT_BY_GROUP.nameAr}
+END`;

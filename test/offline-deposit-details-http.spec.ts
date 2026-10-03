@@ -10,7 +10,13 @@ import {
 } from './http-setup';
 import { KYC_TEST_PNG } from './support/kyc-upload';
 import { PasswordService } from '../src/common/security/password.service';
-import { currencies, paymentMethods, transactions, users } from '../src/database/schema';
+import {
+  currencies,
+  paymentMethods,
+  transactions,
+  users,
+  withdrawalPaymentMethods,
+} from '../src/database/schema';
 
 /**
  * The offline deposit form, end to end through HTTP (0163).
@@ -106,4 +112,109 @@ describe('the offline deposit form carries the details (0163)', () => {
     );
     expect(after.rows[0].n).toBe(before.rows[0].n);
   });
+});
+
+/*
+ * Arabic (0179): the client reads the method's name and each question in both
+ * languages, the filed answer keeps the Arabic label it was asked with, and the
+ * history names the method in Arabic from a LIVE lookup.
+ */
+describe('the Arabic twins reach the client', () => {
+  const AR_METHOD = 'omt_details_http_ar';
+  const CODE = 'f_code000001';
+
+  beforeAll(async () => {
+    await ctx.db.db.insert(paymentMethods).values({
+      key: AR_METHOD,
+      name: 'OMT Arabic',
+      nameAr: 'أو إم تي',
+      internalLabel: 'OMT – details http ar',
+      currency: 'USD',
+      requiresProof: true,
+      providerCode: 'manual',
+      channelCode: 'offline',
+      proofFields: [
+        {
+          id: CODE,
+          label: 'Transfer code',
+          labelAr: 'رمز التحويل',
+          hint: 'On your slip',
+          hintAr: 'على الإيصال',
+          type: 'text',
+          required: true,
+          enabled: true,
+        },
+        { id: PHONE, label: 'Phone', type: 'phone', required: false, enabled: true },
+      ],
+    });
+  });
+
+  it('serves nameAr and each field’s labelAr/hintAr on GET /payments/methods', async () => {
+    const res = await client.get('/v1/payments/methods');
+    expect(res.status).toBe(200);
+    const method = (res.body as { key: string }[]).find((m) => m.key === AR_METHOD);
+    expect(method).toMatchObject({
+      name: 'OMT Arabic',
+      nameAr: 'أو إم تي',
+      proofFields: [
+        { id: CODE, label: 'Transfer code', labelAr: 'رمز التحويل', hintAr: 'على الإيصال' },
+        { id: PHONE, label: 'Phone', labelAr: null, hintAr: null },
+      ],
+    });
+    // Untranslated is null, never absent or ''.
+    const plain = (res.body as { key: string; nameAr: unknown }[]).find((m) => m.key === METHOD);
+    expect(plain?.nameAr).toBeNull();
+  });
+
+  it('copies the Arabic label onto the answer, and the history names the method live', async () => {
+    const filed = await client
+      .post('/v1/payments/deposits/offline', undefined)
+      .set('Idempotency-Key', randomUUID())
+      .field('amount', '100')
+      .field('currency', 'USD')
+      .field('method', AR_METHOD)
+      .field(`details[${CODE}]`, 'AB12')
+      .attach('file', KYC_TEST_PNG, { filename: 'receipt.png', contentType: 'image/png' });
+    expect(filed.status, JSON.stringify(filed.body)).toBe(201);
+    const id = (filed.body as { id: string }).id;
+
+    const history = await client.get('/v1/payments/transactions');
+    expect(history.status).toBe(200);
+    const row = (history.body as { items: Record<string, unknown>[] }).items.find(
+      (item) => item.id === id,
+    );
+    expect(row).toMatchObject({
+      methodName: 'OMT Arabic',
+      methodNameAr: 'أو إم تي',
+      proofDetails: [
+        { fieldId: CODE, label: 'Transfer code', labelAr: 'رمز التحويل', value: 'AB12' },
+      ],
+    });
+
+    // A rename of the Arabic reaches the old row at once — it is a join, not a copy.
+    await ctx.db.db
+      .update(paymentMethods)
+      .set({ nameAr: null })
+      .where(eq(paymentMethods.key, AR_METHOD));
+    const after = await client.get('/v1/payments/transactions');
+    const again = (after.body as { items: Record<string, unknown>[] }).items.find(
+      (item) => item.id === id,
+    );
+    expect(again?.methodNameAr).toBeNull();
+  });
+});
+
+it('serves a withdrawal method nameAr on GET /payments/withdrawal-methods', async () => {
+  await ctx.db.db.insert(withdrawalPaymentMethods).values({
+    key: 'desk_ar_http',
+    name: 'Cash at the desk',
+    nameAr: 'نقدًا في المكتب',
+    internalLabel: 'Desk cash ar http',
+    providerCode: 'manual',
+    channelCode: 'desk',
+  });
+  const res = await client.get('/v1/payments/withdrawal-methods');
+  expect(res.status).toBe(200);
+  const method = (res.body as { key: string }[]).find((m) => m.key === 'desk_ar_http');
+  expect(method).toMatchObject({ name: 'Cash at the desk', nameAr: 'نقدًا في المكتب' });
 });

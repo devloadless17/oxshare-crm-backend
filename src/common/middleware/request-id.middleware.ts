@@ -6,6 +6,7 @@ import { clientIp, trustedProxyHops } from '../security/client-ip';
 import { ProxyDepthObserver, proxyDepthSummary } from '../security/proxy-depth';
 import { ALERT_KINDS, raiseAlert } from '../logging/alerts';
 import { safeLogPath } from '../logging/redact';
+import { LOCALE_HEADER, parseLocale } from '../i18n/locale';
 
 /**
  * Correlation ID for every request.
@@ -54,6 +55,7 @@ export class RequestIdMiddleware implements NestMiddleware {
         // Resolved once here, under the configured trust boundary, so every audit
         // row and log line downstream agrees about who the caller was.
         ip: clientIp(req),
+        locale: parseLocale(req.headers[LOCALE_HEADER]),
       },
       next,
     );

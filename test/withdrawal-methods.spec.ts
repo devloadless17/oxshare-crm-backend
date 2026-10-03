@@ -216,3 +216,21 @@ describe('the desk’s label, reserved keys and deleting (0161)', () => {
     expect(await methods.findOne('typo')).toBeNull();
   });
 });
+
+describe('the Arabic name (0179)', () => {
+  it('stores it trimmed, keeps it on an omitting edit, and clears it on blank', async () => {
+    const created = await methods.create(
+      { key: 'bank_ar', name: 'Bank transfer', nameAr: '  تحويل مصرفي ' },
+      TEST_ACTOR,
+    );
+    expect(created.nameAr).toBe('تحويل مصرفي');
+    expect((await methods.listAll()).find((m) => m.key === 'bank_ar')?.nameAr).toBe('تحويل مصرفي');
+
+    const renamed = await methods.update('bank_ar', { name: 'Bank' }, TEST_ACTOR);
+    expect(renamed.nameAr).toBe('تحويل مصرفي');
+
+    const cleared = await methods.update('bank_ar', { nameAr: '   ' }, TEST_ACTOR);
+    expect(cleared.nameAr).toBeNull();
+    expect((await methods.create({ key: 'plain', name: 'Plain' }, TEST_ACTOR)).nameAr).toBeNull();
+  });
+});

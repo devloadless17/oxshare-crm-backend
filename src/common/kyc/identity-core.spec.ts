@@ -3,6 +3,7 @@ import { PROFILE_FIELD_KEYS } from '../profile/client-profile';
 import { DOCUMENT_CATALOGUE } from './document-catalogue';
 import {
   CORE_STEPS,
+  coreTitleMatching,
   documentField,
   IDENTITY_FIELDS,
   inFormOrder,
@@ -269,5 +270,65 @@ describe('labels that name something the platform collects', () => {
   it('match the WHOLE label only', () => {
     expect(platformMeaningOf('Employer name')).toBeUndefined();
     expect(platformMeaningOf('Previous address')).toBeUndefined();
+  });
+});
+
+describe('the platform’s Arabic (0179)', () => {
+  const personal = (fields: FormStep['fields'], over: Partial<FormStep> = {}) =>
+    platformStep(step('personal', { title: 'Personal Information', fields, ...over }));
+
+  it('serves each identity field with its fixed Arabic label and hint, never stored', () => {
+    const served = personal([
+      {
+        id: 'x',
+        name: 'firstName',
+        label: 'Hacked',
+        labelAr: 'مخترق',
+        type: 'text',
+        required: true,
+      },
+    ]);
+    expect(served.fields[0]).toMatchObject({
+      label: 'First Name',
+      labelAr: 'الاسم الأول',
+      hintAr: 'كما يظهر في وثيقة هويتك',
+      system: true,
+    });
+    expect(storedStep(served).fields[0]).not.toHaveProperty('labelAr');
+  });
+
+  it('drops the Arabic “leave blank” hint with the English one where the detail is required', () => {
+    const served = personal([
+      { id: 'p', name: 'postalCode', label: 'Postal / ZIP code', type: 'text', required: true },
+    ]);
+    expect(served.fields[0].hint).toBeUndefined();
+    expect(served.fields[0].hintAr).toBeUndefined();
+  });
+
+  it('gives a built-in step on its default English the platform’s Arabic, and keeps the broker’s own', () => {
+    expect(personal([])).toMatchObject({ titleAr: 'المعلومات الشخصية' });
+    expect(personal([], { title: 'About you' }).titleAr).toBeUndefined();
+    expect(personal([], { titleAr: 'عنك' }).titleAr).toBe('عنك');
+    expect(CORE_STEPS.every((core) => core.titleAr && core.descriptionAr)).toBe(true);
+  });
+
+  it('names documents and the selfie in Arabic, and does not store a document’s Arabic', () => {
+    const served = platformStep(
+      step('document', { fields: [documentField(DOCUMENT_CATALOGUE[0])] }),
+    );
+    expect(served.fields[0].labelAr).toBe('جواز السفر');
+    expect(storedStep(served).fields[0]).not.toHaveProperty('labelAr');
+    expect(platformStep(step('selfie')).fields[0].labelAr).toBe('صورة سيلفي');
+    expect(
+      DOCUMENT_CATALOGUE.every((doc) => doc.labelAr && doc.parts.every((part) => part.labelAr)),
+    ).toBe(true);
+  });
+
+  it('recognises the platform’s own names in Arabic, and leaves others alone', () => {
+    expect(platformMeaningOf('الاسم الأول')).toBe('First Name');
+    expect(platformMeaningOf('جواز  السفر')).toBe('Passport');
+    expect(platformMeaningOf('بطاقة الهوية الوطنية - الوجه الخلفي')).toBe('National ID');
+    expect(platformMeaningOf('اسم صاحب العمل')).toBeUndefined();
+    expect(coreTitleMatching('إثبات العنوان')).toBe('Proof of Address');
   });
 });

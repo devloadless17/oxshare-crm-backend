@@ -41,6 +41,7 @@ import {
   type ProviderNotice,
 } from '../providers/payment-provider';
 import { ChannelSwitchesService, type ChannelSwitch } from './channel-switches.service';
+import { systemSentenceArabic } from '../../../common/i18n/reason-arabic';
 
 type TransactionRow = typeof transactions.$inferSelect;
 
@@ -776,6 +777,7 @@ export class PayoutEngine {
               amount: failed.amount,
               currency: failed.currency,
               reason: CLIENT_SAFE_PROVIDER_REFUSAL,
+              reasonAr: systemSentenceArabic(CLIENT_SAFE_PROVIDER_REFUSAL),
             },
           },
           dbTx,
@@ -1210,6 +1212,7 @@ export class PayoutEngine {
               amount: failed.amount,
               currency: failed.currency,
               reason: CLIENT_SAFE_PROVIDER_REFUSAL,
+              reasonAr: systemSentenceArabic(CLIENT_SAFE_PROVIDER_REFUSAL),
             },
           },
           dbTx,
@@ -1398,7 +1401,7 @@ export class PayoutEngine {
   }
 
   private async emailDecision(
-    row: { userId: number; amount: string; currency: string },
+    row: { userId: number; amount: string; currency: string; rejectionReasonAr?: string | null },
     decision: 'paid' | 'rejected',
     reason?: string,
   ): Promise<void> {
@@ -1412,6 +1415,8 @@ export class PayoutEngine {
         row.amount,
         row.currency,
         reason,
+        user.locale,
+        row.rejectionReasonAr,
       );
     } catch (error) {
       this.logger.warn(`Could not send the withdrawal ${decision} email: ${messageOf(error)}`);

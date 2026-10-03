@@ -18,7 +18,12 @@ export function ibAccountView(
   row: Pick<
     IbAccountRow,
     'userId' | 'level' | 'parentIbUserId' | 'referralCode' | 'active' | 'approvedAt'
-  > & { agencyName?: string | null; products?: unknown },
+  > & {
+    agencyName?: string | null;
+    agencyNameAr?: string | null;
+    products?: unknown;
+    productsAr?: unknown;
+  },
 ) {
   return {
     userId: row.userId,
@@ -28,7 +33,9 @@ export function ibAccountView(
     active: row.active,
     approvedAt: row.approvedAt,
     ...(row.agencyName !== undefined ? { agencyName: row.agencyName } : {}),
+    ...(row.agencyNameAr !== undefined ? { agencyNameAr: row.agencyNameAr } : {}),
     ...(row.products !== undefined ? { products: row.products } : {}),
+    ...(row.productsAr !== undefined ? { productsAr: row.productsAr } : {}),
   };
 }
 
@@ -45,7 +52,12 @@ export function ibApplicationView(
     | 'reviewedBy'
     | 'reviewedAt'
     | 'submittedAt'
-  > & { agencyName?: string | null },
+  > & {
+    agencyName?: string | null;
+    agencyNameAr?: string | null;
+    /** The reason's Arabic as written with it (0179). */
+    rejectionReasonAr?: string | null;
+  },
 ) {
   return {
     id: row.id,
@@ -54,9 +66,11 @@ export function ibApplicationView(
     website: row.website,
     status: row.status,
     rejectionReason: row.rejectionReason,
+    ...(row.rejectionReasonAr ? { rejectionReasonAr: row.rejectionReasonAr } : {}),
     reviewedBy: row.reviewedBy,
     reviewedAt: row.reviewedAt,
     submittedAt: row.submittedAt,
     ...(row.agencyName !== undefined ? { agencyName: row.agencyName } : {}),
+    ...(row.agencyNameAr !== undefined ? { agencyNameAr: row.agencyNameAr } : {}),
   };
 }

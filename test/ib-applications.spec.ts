@@ -901,6 +901,46 @@ describe('approval', () => {
       expect(childStatus.account?.products).toEqual(parentStatus.account?.products);
     });
 
+    /* Arabic (0179): the agency and its products travel in both languages. */
+    it('serves the agency and product names in Arabic beside the English', async () => {
+      await ctx.db.execute(sql`
+        UPDATE agencies SET name_ar = 'وكالة الاختبار' WHERE id = ${AGENCY.id}
+      `);
+      const { rows: product } = await ctx.db.execute<{ id: string }>(sql`
+        INSERT INTO trading_products (name, name_ar, enabled, type, sort_order)
+        VALUES ('Arabic Product', 'منتج عربي', true, 'real', 951)
+        ON CONFLICT (name) DO UPDATE SET name_ar = 'منتج عربي'
+        RETURNING id
+      `);
+      await ctx.db.execute(sql`
+        INSERT INTO agency_products (agency_id, product_id)
+        VALUES (${AGENCY.id}, ${product[0].id})
+        ON CONFLICT DO NOTHING
+      `);
+
+      const { partner, client } = await partnerWithClient(AGENCY.id, [
+        'arabic-parent@test.local',
+        'arabic-child@test.local',
+      ]);
+      const before = await service.statusFor(client);
+      expect(before.inheritedAgency).toMatchObject({
+        name: 'Test Agency',
+        nameAr: 'وكالة الاختبار',
+      });
+
+      const application = await service.apply(client, {});
+      expect((await service.statusFor(client)).application?.agencyNameAr).toBe('وكالة الاختبار');
+      await service.approve(application.id, REVIEWER, UNRESTRICTED);
+
+      const status = await service.statusFor(partner);
+      expect(status.account?.agencyNameAr).toBe('وكالة الاختبار');
+      const pairs = (status.account?.products ?? []).map((name, i) => [
+        name,
+        status.account?.productsAr[i],
+      ]);
+      expect(pairs).toContainEqual(['Arabic Product', 'منتج عربي']);
+    });
+
     /*
      * A DIRECT applicant — nobody above them — still chooses, because there is
      * no introducer for the answer to come from. The mirror of the cases above,
@@ -1229,6 +1269,7 @@ describe('the decision email', () => {
       'Test',
       'approved',
       { referralCode: account.referralCode },
+      'en',
     );
   });
 
@@ -1249,6 +1290,7 @@ describe('the decision email', () => {
       'Test',
       'rejected',
       { reason: 'Application is incomplete or unclear — No website given.' },
+      'en',
     );
   });
 

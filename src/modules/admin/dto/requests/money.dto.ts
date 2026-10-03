@@ -11,6 +11,7 @@ import {
   Matches,
   Min,
 } from 'class-validator';
+import { OptionalArabicText } from '../../../../common/dto/arabic-text';
 
 // Request DTOs for the withdrawal lifecycle and IB commission programs.
 // See the note in ./auth.dto.ts for why these moved out of the controller.
@@ -20,6 +21,9 @@ import {
 // NUMERIC(28,8) — `Number('12345678901234567.89')` is already wrong. The example
 // values carry the stored 8dp scale so a consumer of the generated types sees
 // the real shape rather than guessing at "12.5".
+
+/** The most an Arabic reason may hold — the English sibling's bound. */
+const REASON_AR_MAX = 500;
 
 const PROGRAM_MODES = ['commission', 'rebate', 'hybrid'] as const;
 const PROGRAM_METHODS = ['spread_share', 'per_lot', 'fixed_per_deal'] as const;
@@ -34,6 +38,13 @@ export class WithdrawalRejectDto {
   @IsString()
   @IsOptional()
   reasonId?: string;
+
+  /**
+   * The free-text `reason` in Arabic, for a client reading in Arabic (0179).
+   * A configured reason brings its own Arabic; this is the reviewer's note.
+   */
+  @OptionalArabicText(REASON_AR_MAX, 'بيانات المستفيد غير صحيحة')
+  reasonAr?: string | null;
 }
 
 /**
@@ -60,6 +71,10 @@ export class AbandonTransferDto {
   @IsString()
   @Length(10, 500)
   reason: string;
+
+  /** `reason` in Arabic — the client reads it on the failed transfer (0179). Optional. */
+  @OptionalArabicText(REASON_AR_MAX, 'راجعنا سجل الصفقات في MT5 — لم يصل المبلغ إلى الحساب.')
+  reasonAr?: string | null;
 }
 
 export class ResolveAttentionDto {
@@ -184,6 +199,13 @@ export class CreditWalletDto {
   @IsString()
   @Length(3, 500)
   reason: string;
+
+  /**
+   * `reason` in Arabic (0179): the client's credit email and bell show it to a
+   * client reading in Arabic. Optional — without it they read the English.
+   */
+  @OptionalArabicText(REASON_AR_MAX, 'تسوية تعويضية عن تحويل 4 أغسطس الذي لم يكتمل.')
+  reasonAr?: string | null;
 }
 
 /**
@@ -229,6 +251,10 @@ export class FundTradingAccountDto {
   @IsString()
   @Length(3, 500)
   reason: string;
+
+  /** `reason` in Arabic (0179) — it reaches a deposit's credit email and bell. Optional. */
+  @OptionalArabicText(REASON_AR_MAX, 'تمويل الحوالة الواردة في 4 أغسطس.')
+  reasonAr?: string | null;
 
   /**
    * WHICH WAY, and the amount above stays unsigned.
@@ -376,4 +402,8 @@ export class DepositRejectDto {
   @IsUUID()
   @IsOptional()
   reasonId?: string;
+
+  /** The free-text `reason` in Arabic, for a client reading in Arabic (0179). */
+  @OptionalArabicText(REASON_AR_MAX, 'لم يصل المبلغ بعد إلى حسابنا')
+  reasonAr?: string | null;
 }

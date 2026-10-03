@@ -327,3 +327,45 @@ describe('uploading a logo', () => {
     expect(res.status).toBe(404);
   });
 });
+
+describe('the Arabic name and proof labels (0179)', () => {
+  it('stores them trimmed, reads them back, keeps them on an omitting edit, clears blank', async () => {
+    const created = await master.post('/v1/admin/payment-methods', {
+      key: 'e2e_arabic',
+      name: 'Arabic Bank',
+      nameAr: '  بنك عربي ',
+      currency: 'USD',
+      requiresProof: true,
+      proofFields: [
+        {
+          id: 'f_arabic01',
+          label: 'Code',
+          labelAr: ' الرمز ',
+          hintAr: '   ',
+          type: 'text',
+          required: true,
+          enabled: true,
+        },
+      ],
+    });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    expect(created.body).toMatchObject({ nameAr: 'بنك عربي' });
+    expect(created.body.proofFields[0]).toMatchObject({ labelAr: 'الرمز', hintAr: null });
+
+    const listed = await master.get('/v1/admin/payment-methods');
+    const row = (listed.body as { key: string }[]).find((m) => m.key === 'e2e_arabic');
+    expect(row).toMatchObject({ nameAr: 'بنك عربي' });
+
+    const renamed = await master.patch('/v1/admin/payment-methods/e2e_arabic', { name: 'AB' });
+    expect(renamed.body.nameAr).toBe('بنك عربي');
+
+    const cleared = await master.patch('/v1/admin/payment-methods/e2e_arabic', { nameAr: '  ' });
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.nameAr).toBeNull();
+
+    const tooLong = await master.patch('/v1/admin/payment-methods/e2e_arabic', {
+      nameAr: 'ا'.repeat(81),
+    });
+    expect(tooLong.status).toBe(400);
+  });
+});

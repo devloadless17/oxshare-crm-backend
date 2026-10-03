@@ -8,6 +8,7 @@ import { placeInOrder, renumber } from '../../common/ordering';
 import type { Actor } from '../../common/security/actor';
 import { AdminAuditService } from '../admin/admin-audit.service';
 import type { CreateExternalLinkDto, UpdateExternalLinkDto } from './dto/external-link.dto';
+import { arabicText } from '../../common/dto/arabic-text';
 
 /**
  * The links the operator puts on the client portal's sidebar.
@@ -60,7 +61,9 @@ export class ExternalLinksService {
       .select({
         id: externalLinks.id,
         title: externalLinks.title,
+        titleAr: externalLinks.titleAr,
         description: externalLinks.description,
+        descriptionAr: externalLinks.descriptionAr,
         url: externalLinks.url,
         sortOrder: externalLinks.sortOrder,
       })
@@ -97,7 +100,9 @@ export class ExternalLinksService {
         .insert(externalLinks)
         .values({
           title,
+          titleAr: arabicText(dto.titleAr),
           description: dto.description?.trim() || null,
+          descriptionAr: arabicText(dto.descriptionAr),
           url,
           enabled: dto.enabled ?? true,
           sortOrder: await this.placeOrder(tx, null, dto.sortOrder),
@@ -131,6 +136,11 @@ export class ExternalLinksService {
           ...(title !== undefined ? { title } : {}),
           // An empty string CLEARS it — see `UpdateExternalLinkDto.description`.
           ...(dto.description !== undefined ? { description: dto.description.trim() || null } : {}),
+          // Omitted keeps the stored Arabic; null or blank clears it (0179).
+          ...(dto.titleAr !== undefined ? { titleAr: arabicText(dto.titleAr) } : {}),
+          ...(dto.descriptionAr !== undefined
+            ? { descriptionAr: arabicText(dto.descriptionAr) }
+            : {}),
           ...(url !== undefined ? { url } : {}),
           ...(dto.enabled !== undefined ? { enabled: dto.enabled } : {}),
           ...(dto.sortOrder !== undefined
@@ -151,7 +161,15 @@ export class ExternalLinksService {
      * about a link that pointed somewhere wrong for six hours last Tuesday.
      */
     const changed: Record<string, { before: unknown; after: unknown }> = {};
-    for (const key of ['title', 'description', 'url', 'enabled', 'sortOrder'] as const) {
+    for (const key of [
+      'title',
+      'titleAr',
+      'description',
+      'descriptionAr',
+      'url',
+      'enabled',
+      'sortOrder',
+    ] as const) {
       if (current[key] !== updated[key]) {
         changed[key] = { before: current[key], after: updated[key] };
       }

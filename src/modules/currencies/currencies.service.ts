@@ -18,6 +18,7 @@ import { AdminAuditService } from '../admin/admin-audit.service';
 import type { Actor } from '../../common/security/actor';
 import { placeInOrder } from '../../common/ordering';
 import type { CreateCurrencyDto, UpdateCurrencyDto } from './dto/currency.dto';
+import { arabicText } from '../../common/dto/arabic-text';
 
 type Db = ReturnType<typeof getDb>;
 type Executor = Db | Parameters<Parameters<Db['transaction']>[0]>[0];
@@ -258,6 +259,7 @@ export class CurrenciesService {
         .values({
           code,
           name: dto.name.trim(),
+          nameAr: arabicText(dto.nameAr),
           symbol: dto.symbol.trim(),
           decimals: dto.decimals ?? 2,
           enabled: dto.enabled ?? true,
@@ -284,6 +286,7 @@ export class CurrenciesService {
      */
     this.audit.record(actor.id, 'currency.create', 'currency', row.code, {
       name: row.name,
+      nameAr: row.nameAr,
       symbol: row.symbol,
       decimals: row.decimals,
       enabled: row.enabled,
@@ -341,6 +344,7 @@ export class CurrenciesService {
         .update(currencies)
         .set({
           ...(dto.name !== undefined ? { name: dto.name.trim() } : {}),
+          ...(dto.nameAr !== undefined ? { nameAr: arabicText(dto.nameAr) } : {}),
           ...(dto.symbol !== undefined ? { symbol: dto.symbol.trim() } : {}),
           ...(dto.decimals !== undefined ? { decimals: dto.decimals } : {}),
           ...(dto.enabled !== undefined ? { enabled: dto.enabled } : {}),
@@ -368,6 +372,7 @@ export class CurrenciesService {
     const changed: Record<string, { before: unknown; after: unknown }> = {};
     for (const field of [
       'name',
+      'nameAr',
       'symbol',
       'decimals',
       'enabled',

@@ -1,5 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { NoClientFields } from '../../../common/security/client-field.decorator';
+import { OptionalArabicText } from '../../../common/dto/arabic-text';
 import { IsBoolean, IsInt, IsOptional, IsString, Length, Matches, Max, Min } from 'class-validator';
 
 /*
@@ -30,6 +31,13 @@ const limitDoc = (description: string, example: string) => ({
 export class CurrencyDto {
   @ApiProperty({ example: 'USD' }) code: string;
   @ApiProperty({ example: 'US Dollar' }) name: string;
+  @ApiProperty({
+    type: 'string',
+    nullable: true,
+    example: 'دولار أمريكي',
+    description: 'The name in Arabic (0179); null = not translated, show `name`.',
+  })
+  nameAr: string | null;
   @ApiProperty({ example: '$' }) symbol: string;
   @ApiProperty({ example: 2, description: 'Display precision only; storage is always 8dp.' })
   decimals: number;
@@ -72,6 +80,9 @@ export class CreateCurrencyDto {
   @IsString()
   @Length(1, 80)
   name: string;
+
+  @OptionalArabicText(80, 'يورو')
+  nameAr?: string | null;
 
   @ApiProperty({ example: '€' })
   @IsString()
@@ -141,6 +152,10 @@ export class UpdateCurrencyDto {
   @IsString()
   @Length(1, 80)
   name?: string;
+
+  /** Omitted keeps the stored Arabic; null or blank clears it. */
+  @OptionalArabicText(80, 'يورو')
+  nameAr?: string | null;
 
   @ApiPropertyOptional({ example: '€' })
   @IsOptional()

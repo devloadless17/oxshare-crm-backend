@@ -38,7 +38,10 @@ export type TransactionView = Pick<
   | 'reviewedAt'
   | 'settledAt'
   | 'createdAt'
->;
+> & {
+  /** The reason's Arabic as written with it (0179). Absent when there is none. */
+  rejectionReasonAr?: string;
+};
 
 export function transactionView(row: TransactionRow): TransactionView {
   return {
@@ -57,6 +60,7 @@ export function transactionView(row: TransactionRow): TransactionView {
     proofFilename: row.proofFilename,
     proofDetails: row.proofDetails,
     rejectionReason: row.rejectionReason,
+    ...(row.rejectionReasonAr ? { rejectionReasonAr: row.rejectionReasonAr } : {}),
     reviewedBy: row.reviewedBy,
     reviewedAt: row.reviewedAt,
     settledAt: row.settledAt,

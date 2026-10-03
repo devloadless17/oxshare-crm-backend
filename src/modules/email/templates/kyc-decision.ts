@@ -1,4 +1,19 @@
-import { button, card, esc, p, panel, type RenderedEmail } from './layout';
+import type { Locale } from '../../../common/i18n/locale';
+import {
+  button,
+  buttonAr,
+  card,
+  cardAr,
+  esc,
+  greetingAr,
+  headingAr,
+  p,
+  pAr,
+  panel,
+  panelAr,
+  pRichAr,
+  type RenderedEmail,
+} from './layout';
 
 /**
  * The KYC verdict — approved, or rejected with what to fix.
@@ -17,7 +32,9 @@ export function kycDecision(
   portalUrl: string,
   reason?: string,
   rejectedFields?: string[],
+  locale: Locale = 'en',
 ): RenderedEmail {
+  if (locale === 'ar') return kycDecisionAr(firstName, decision, portalUrl, reason, rejectedFields);
   const approved = decision === 'approved';
 
   const body = approved
@@ -51,5 +68,46 @@ export function kycDecision(
 ${p(`Hello ${firstName || 'Valued Client'},`)}
 ${body}
 ${button(portalUrl, 'Go to Portal')}`),
+  };
+}
+
+function kycDecisionAr(
+  firstName: string,
+  decision: 'approved' | 'rejected',
+  portalUrl: string,
+  reason?: string,
+  rejectedFields?: string[],
+): RenderedEmail {
+  const approved = decision === 'approved';
+
+  const body = approved
+    ? pAr(
+        'تمت الموافقة على طلب التحقق من هويتك. رُفِع حسابك إلى مستوى التحقق 1، وأصبحت جميع ' +
+          'الميزات المقيّدة متاحة لك الآن.',
+      )
+    : [
+        pAr('راجعنا طلب التحقق من هويتك، ويحتاج إلى بعض التصحيحات قبل أن نتمكن من الموافقة عليه.'),
+        panelAr(`<strong>السبب:</strong> ${esc(reason)}`),
+        rejectedFields && rejectedFields.length > 0
+          ? pRichAr(
+              `<strong>الحقول المطلوب تصحيحها:</strong> ${rejectedFields.map(esc).join('، ')}`,
+            )
+          : '',
+        pAr('يُرجى تسجيل الدخول، وتحديث المعلومات المحددة، ثم إعادة إرسال الطلب.'),
+      ]
+        .filter(Boolean)
+        .join('\n');
+
+  return {
+    subject: approved
+      ? 'تم التحقق من هويتك — OXShare'
+      : 'إجراء مطلوب: طلب التحقق من هويتك يحتاج إلى تصحيح — OXShare',
+    html: cardAr(`${headingAr(
+      approved ? 'تم التحقق من هويتك' : 'طلب التحقق من هويتك يحتاج إلى تصحيح',
+      approved ? '#047857' : '#b42318',
+    )}
+${greetingAr(firstName)}
+${body}
+${buttonAr(portalUrl, 'الانتقال إلى البوابة')}`),
   };
 }

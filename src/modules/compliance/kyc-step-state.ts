@@ -47,10 +47,18 @@ import {
   missingRequiredPages,
   outstandingDocumentFlags,
 } from './kyc-document-rules';
-import { isPlatformField, withPolicy, type FormPolicy } from '../../common/kyc/identity-core';
+import {
+  identityField,
+  isPlatformField,
+  withPolicy,
+  type FormPolicy,
+} from '../../common/kyc/identity-core';
+import { pickLocalized } from '../../common/i18n/locale';
 import { isProfileKey } from '../../common/profile/client-profile';
 import { identityProblems, isAnswered } from './kyc-profile';
 import { isStoredFile } from './step-slugs';
+import { localizeMessage } from '../../common/i18n/localize-message';
+import { requestLocale } from '../../common/i18n/locale';
 
 /** What is owed — each kind reads differently to the client. */
 export type OwedKind = 'choice' | 'page' | 'upload' | 'answer' | 'invalid' | 'returned';
@@ -84,6 +92,8 @@ export interface StepState {
 export interface StateField {
   name: string;
   label: string;
+  /** The label in Arabic (0179) — what an Arabic reader is told is owed. */
+  labelAr?: string;
   type: string;
   required: boolean;
   options?: readonly string[];
@@ -92,6 +102,7 @@ export interface StateField {
 export interface StateStep {
   slug: string;
   title: string;
+  titleAr?: string;
   enabled: boolean;
   fields: readonly StateField[];
   /** An evidence step whose evidence the client may skip (Phase 2). */
@@ -228,7 +239,9 @@ function documentOwed(
   if (!presenting) {
     // Optional evidence (Phase 2): not started is skipped, and owes nothing.
     if (step.evidenceRequired === false) return [];
-    return files[0] ? [] : [{ id: 'docType', label: step.title, kind: 'choice' }];
+    return files[0]
+      ? []
+      : [{ id: 'docType', label: pickLocalized(step.title, step.titleAr), kind: 'choice' }];
   }
   // Pages on file belong to the stored document — never to another one.
   const own = presenting === stored?.docType ? files : [];
@@ -236,9 +249,16 @@ function documentOwed(
   if (step.evidenceRequired === false && !own.some(Boolean)) return [];
   const fallback = category === 'identity' ? 'Identity document' : 'Proof of address';
   const entry = catalogueDocument(presenting);
+  // The same name in Arabic (0179), from the catalogue: "بطاقة الهوية الوطنية: الوجه الخلفي".
+  const arabic = (page: { index: number; label?: string }) => {
+    const part = page.label ? entry?.parts[page.index] : undefined;
+    if (entry && part) return `${entry.labelAr}: ${part.labelAr}`;
+    return entry?.labelAr ?? (category === 'identity' ? 'وثيقة الهوية' : 'إثبات العنوان');
+  };
+  const locale = requestLocale();
   return missingRequiredPages({ docType: presenting, files: own }, category).map((page) => ({
     id: slots[page.index] ?? slots[0],
-    label: page.label ?? entry?.label ?? fallback,
+    label: pickLocalized(page.label ?? entry?.label ?? fallback, arabic(page), locale),
     kind: 'page' as const,
   }));
 }
@@ -257,8 +277,12 @@ function fieldsOwed(step: StateStep, submission: StateSubmission, now: Date): Ow
    * Phase 2 the broker may make it optional.
    */
   if (step.slug === 'selfie' && step.evidenceRequired !== false && !submission.selfie?.filePath) {
-    const label = step.fields.find((field) => isCanonicalSelfie(step, field))?.label;
-    owed.push({ id: 'selfie', label: label || 'Selfie', kind: 'upload' });
+    const camera = step.fields.find((field) => isCanonicalSelfie(step, field));
+    owed.push({
+      id: 'selfie',
+      label: pickLocalized(camera?.label || 'Selfie', camera?.labelAr || 'صورة سيلفي'),
+      kind: 'upload',
+    });
   }
 
   /*
@@ -271,14 +295,17 @@ function fieldsOwed(step: StateStep, submission: StateSubmission, now: Date): Ow
       .filter((field) => isProfileKey(field.name))
       .map((field) => ({ name: field.name, required: field.required }));
     for (const problem of identityProblems(typed ?? undefined, now, asked)) {
+      // The platform's own name for the detail, in the reader's language (0179).
+      const label = pickLocalized(problem.label, identityField(problem.key)?.labelAr);
       owed.push(
         problem.kind === 'missing'
-          ? { id: problem.key, label: problem.label, kind: 'answer' }
+          ? { id: problem.key, label, kind: 'answer' }
           : {
               id: problem.key,
-              label: problem.label,
+              label,
               kind: 'invalid',
-              message: problem.message,
+              // Printed as is by the portal, so in the client's language.
+              message: localizeMessage(problem.message, requestLocale()),
               code: problem.code,
             },
       );
@@ -292,14 +319,19 @@ function fieldsOwed(step: StateStep, submission: StateSubmission, now: Date): Ow
     if (!field.required) continue;
     if (isPlainUpload(field)) {
       if (!isStoredFile(files?.[field.name] ?? answerElsewhere(submission, field.name))) {
-        owed.push({ id: field.name, label: field.label || field.name, kind: 'upload' });
+        owed.push({ id: field.name, label: ownLabel(field), kind: 'upload' });
       }
     } else if (!isAnswered(field, typed?.[field.name] ?? answerElsewhere(submission, field.name))) {
-      owed.push({ id: field.name, label: field.label || field.name, kind: 'answer' });
+      owed.push({ id: field.name, label: ownLabel(field), kind: 'answer' });
     }
   }
 
   return owed;
+}
+
+/** A broker's field as the client reads it: its Arabic label when asked in Arabic (0179). */
+function ownLabel(field: StateField): string {
+  return pickLocalized(field.label || field.name, field.labelAr);
 }
 
 /** The documents on file, as the flag rules read them. */
@@ -329,7 +361,7 @@ function returnedOn(
       .filter((id) => ids.has(id) && isPageOfStored(id, stored))
       .map((id) => ({
         id,
-        label: documentFlagLabel(id, steps, stored),
+        label: documentFlagLabel(id, steps, stored, requestLocale()),
         kind: 'returned' as const,
         blocking: blocking.has(id),
       }))

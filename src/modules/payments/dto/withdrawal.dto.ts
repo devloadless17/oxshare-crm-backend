@@ -62,6 +62,14 @@ export class WithdrawalMethodDto {
   @ApiProperty({ example: 'Whish Money', description: "The operator's own name for the rail." })
   name: string;
 
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    example: 'ويش ماني',
+    description: 'The name in Arabic (0179); null = not translated, show `name`.',
+  })
+  nameAr: string | null;
+
   /**
    * Explicitly `type: String, nullable: true` — reflection cannot see through a
    * union, and an unannotated `string | null` generates `Record<string, never>`
@@ -239,6 +247,15 @@ export class TransactionDto {
   @ApiPropertyOptional({ type: String, nullable: true })
   methodName?: string | null;
 
+  /**
+   * The method's name in Arabic, when the operator wrote one (0179) — looked up
+   * live, like `methodName`, so a translation added later reaches old rows too.
+   * On a REBATE it is the server's Arabic for "Rebate" / "Rebate · N trades".
+   * Null (or absent) means "show `methodName`".
+   */
+  @ApiPropertyOptional({ type: String, nullable: true, example: 'ويش ماني' })
+  methodNameAr?: string | null;
+
   @ApiPropertyOptional({
     description:
       "The provider's own reference. Backs UNIQUE(provider, provider_ref), which is what makes settlement idempotent in the database (§6.3).",
@@ -296,6 +313,19 @@ export class TransactionDto {
   @ApiPropertyOptional({ type: ProofDetailDto, isArray: true, nullable: true })
   proofDetails?: ProofDetailDto[] | null;
   @ApiPropertyOptional({ type: String, nullable: true }) rejectionReason?: string | null;
+  /**
+   * The reason in Arabic (0179): the Arabic written with the decision (the
+   * reviewer's own, or the configured reason's as it read then), else the
+   * configured reason's Arabic for an older row, else the Arabic of a sentence
+   * the system wrote. Absent when there is none — show `rejectionReason`.
+   */
+  @ApiPropertyOptional({
+    type: String,
+    description:
+      'Arabic for `rejectionReason`: written with the decision, else the configured reason’s, ' +
+      'else the system sentence’s. Absent when there is none (show the English).',
+  })
+  rejectionReasonAr?: string;
   @ApiPropertyOptional({ type: String, nullable: true }) reviewedBy?: string | null;
   @ApiPropertyOptional({ type: Date, nullable: true }) reviewedAt?: Date | null;
   @ApiPropertyOptional({ type: Date, nullable: true }) settledAt?: Date | null;

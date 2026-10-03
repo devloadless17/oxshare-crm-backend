@@ -131,6 +131,8 @@ export interface KycAttempt {
    */
   stepData: Record<string, Record<string, string | { filePath: string }>>;
   rejectionReason?: string;
+  /** The reason in Arabic as written with the decision (0179). */
+  rejectionReasonAr?: string;
   rejectedFields?: string[];
   submittedAt?: Date;
   reviewedAt?: Date;
@@ -142,6 +144,11 @@ export interface KycSubmission {
   userId: number;
   status: KycStatus;
   rejectionReason?: string;
+  /**
+   * The reason as an Arabic reader is shown it, written with the decision (0179):
+   * the reviewer's own Arabic, or the configured reason's Arabic as it read then.
+   */
+  rejectionReasonAr?: string;
   rejectedFields?: string[];
   reviewedBy?: string;
   reviewedAt?: Date;
@@ -178,7 +185,15 @@ export interface KycSubmission {
 export type KycFormSnapshot = {
   slug: string;
   title: string;
-  fields: { name: string; label: string; type: string }[];
+  /** The Arabic as asked (0179). Absent on snapshots taken before, and when untranslated. */
+  titleAr?: string;
+  fields: {
+    name: string;
+    label: string;
+    type: string;
+    labelAr?: string;
+    optionsAr?: Record<string, string>;
+  }[];
 }[];
 
 /** A row with its three documents rebuilt from the record (`identity_evidence`). */
@@ -231,6 +246,7 @@ const toSubmission = (r: Row): KycSubmission => ({
   userId: r.userId,
   status: r.status,
   rejectionReason: r.rejectionReason ?? undefined,
+  rejectionReasonAr: r.rejectionReasonAr ?? undefined,
   rejectedFields: r.rejectedFields ?? undefined,
   reviewedBy: r.reviewedBy ?? undefined,
   reviewedAt: r.reviewedAt ?? undefined,
@@ -256,6 +272,7 @@ const toColumns = (
   const map: Array<[keyof KycSubmission, string]> = [
     ['status', 'status'],
     ['rejectionReason', 'rejectionReason'],
+    ['rejectionReasonAr', 'rejectionReasonAr'],
     ['rejectedFields', 'rejectedFields'],
     ['reviewedBy', 'reviewedBy'],
     ['reviewedAt', 'reviewedAt'],
@@ -791,6 +808,7 @@ export class KycStore {
           // partial record of what they decided on.
           stepData: submission.stepData,
           rejectionReason: submission.rejectionReason ?? null,
+          rejectionReasonAr: submission.rejectionReasonAr ?? null,
           rejectedFields: submission.rejectedFields ?? null,
           submittedAt: submission.submittedAt ?? null,
           reviewedAt: submission.reviewedAt ?? null,
@@ -823,6 +841,7 @@ export class KycStore {
       addressProof: (r.addressProof as unknown as AddressInfo) ?? undefined,
       stepData: r.stepData ?? {},
       rejectionReason: r.rejectionReason ?? undefined,
+      rejectionReasonAr: r.rejectionReasonAr ?? undefined,
       rejectedFields: r.rejectedFields ?? undefined,
       submittedAt: r.submittedAt ?? undefined,
       reviewedAt: r.reviewedAt ?? undefined,

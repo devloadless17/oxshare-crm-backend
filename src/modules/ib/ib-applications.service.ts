@@ -1,5 +1,7 @@
 import { ibAccountView } from './ib-views';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
+import { RejectionReasonsStore } from '../../store/rejection-reasons.store';
+import { composeReasonArabic } from '../../common/i18n/reason-arabic';
 import { randomBytes } from 'node:crypto';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
@@ -25,7 +27,7 @@ import { IbLevelsService } from './ib-levels.service';
 import { ClientVisibilityService } from '../../common/security/client-visibility.service';
 import { EmailService } from '../email/email.service';
 import { AdminAuditService } from '../admin/admin-audit.service';
-import { ProductsStore } from '../../store/products.store';
+import { ProductsStore, type ProductRow } from '../../store/products.store';
 import { WalletProvisioningService } from '../wallet/wallet-provisioning.service';
 import type { Actor } from '../../common/security/actor';
 import type { ClientScope } from '../../common/security/client-scope';
@@ -33,6 +35,8 @@ import { maskedFieldsFor, type FieldMask } from '../../common/security/field-mas
 import { REFERRAL_CODE_ALPHABET, REFERRAL_CODE_LENGTH } from '../../common/referral-code';
 import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/domain-errors';
 import type { IbIneligibleCode } from './dto/ib-application.dto';
+import { localizeMessage } from '../../common/i18n/localize-message';
+import { requestLocale } from '../../common/i18n/locale';
 
 /**
  * The verification level a client must hold before they may apply.
@@ -143,6 +147,12 @@ export class IbApplicationsService {
      * constructed positionally in `ib-applications.spec.ts`.
      */
     private readonly walletProvisioning: WalletProvisioningService,
+    /*
+     * The configured reasons' Arabic, copied onto a refusal as it is written
+     * (0179). APPENDED LAST and optional, for the positional construction above:
+     * without it a refusal simply stores the reviewer's own Arabic, if any.
+     */
+    @Optional() private readonly reasons?: RejectionReasonsStore,
   ) {}
 
   // ── the client's side ──────────────────────────────────────────────────────
@@ -208,8 +218,17 @@ export class IbApplicationsService {
    * method's job is to make it available.
    */
   async statusFor(userId: number): Promise<{
-    account: (IbAccountRow & { agencyName: string | null; products: string[] }) | null;
-    application: (IbApplicationRow & { agencyName: string | null }) | null;
+    account:
+      | (IbAccountRow & {
+          agencyName: string | null;
+          /** Arabic twins (0179): null = untranslated; `productsAr[i]` is `products[i]`. */
+          agencyNameAr: string | null;
+          products: string[];
+          productsAr: (string | null)[];
+        })
+      | null;
+    application:
+      (IbApplicationRow & { agencyName: string | null; agencyNameAr: string | null }) | null;
     eligible: boolean;
     /** Why not, in a sentence the portal can show verbatim. Null when eligible. */
     ineligibleReason: string | null;
@@ -225,7 +244,7 @@ export class IbApplicationsService {
      * which programme they are joining instead of "one has been chosen for
      * you", which reads as an error.
      */
-    inheritedAgency: { id: string; name: string } | null;
+    inheritedAgency: { id: string; name: string; nameAr: string | null } | null;
   }> {
     const [account, application, user] = await Promise.all([
       this.ib.findAccount(userId),
@@ -275,28 +294,37 @@ export class IbApplicationsService {
       : [[], []];
 
     const agencyOf = (id: string | null) => agencies.find((agency) => agency.id === id) ?? null;
-    const productName = new Map(products.map((product) => [product.id, product.name]));
+    const productOf = new Map(products.map((product) => [product.id, product]));
 
     const accountAgency = agencyOf(account?.agencyId ?? null);
     const inheritedAgency = agencyOf(inheritedAgencyId);
+    const applicationAgency = application ? agencyOf(application.agencyId) : null;
+    // Index for index with their Arabic (0179), so the two lists cannot misalign.
+    const sold = (accountAgency?.productIds ?? [])
+      .map((id) => productOf.get(id))
+      .filter((product): product is ProductRow => Boolean(product?.name));
 
     return {
       account: account
         ? {
             ...account,
             agencyName: accountAgency?.name ?? null,
+            agencyNameAr: accountAgency?.nameAr ?? null,
             /*
              * Names, not ids — this goes to a partner, who has no use for a
              * uuid. Empty when they are on no agency, which means their clients
              * are offered the full catalogue rather than nothing.
              */
-            products: (accountAgency?.productIds ?? [])
-              .map((id) => productName.get(id))
-              .filter((name): name is string => Boolean(name)),
+            products: sold.map((product) => product.name),
+            productsAr: sold.map((product) => product.nameAr),
           }
         : null,
       application: application
-        ? { ...application, agencyName: agencyOf(application.agencyId)?.name ?? null }
+        ? {
+            ...application,
+            agencyName: applicationAgency?.name ?? null,
+            agencyNameAr: applicationAgency?.nameAr ?? null,
+          }
         : null,
       /*
        * TWO gates again, and `chain_full` is reported FIRST when both are
@@ -307,14 +335,18 @@ export class IbApplicationsService {
        * step, which is the honest answer for somebody the ladder cannot hold.
        */
       eligible: verified && !chainFull,
+      // Printed as is by the portal, so in the client's language.
       ineligibleReason: chainFull
-        ? CHAIN_FULL_REASON
+        ? localizeMessage(CHAIN_FULL_REASON, requestLocale())
         : verified
           ? null
-          : 'Your identity must be verified before you can apply to the partner programme.',
+          : localizeMessage(
+              'Your identity must be verified before you can apply to the partner programme.',
+              requestLocale(),
+            ),
       ineligibleCode: chainFull ? 'chain_full' : verified ? null : 'unverified',
       inheritedAgency: inheritedAgency
-        ? { id: inheritedAgency.id, name: inheritedAgency.name }
+        ? { id: inheritedAgency.id, name: inheritedAgency.name, nameAr: inheritedAgency.nameAr }
         : null,
     };
   }
@@ -947,11 +979,17 @@ export class IbApplicationsService {
   private async notifyDecision(
     userId: number,
     decision: 'approved' | 'rejected',
-    options: { referralCode?: string; reason?: string },
+    options: { referralCode?: string; reason?: string; reasonAr?: string | null },
   ): Promise<void> {
     const user = await this.users.findById(userId);
     if (!user) return;
-    await this.email.sendPartnerDecisionEmail(user.email, user.firstName, decision, options);
+    await this.email.sendPartnerDecisionEmail(
+      user.email,
+      user.firstName,
+      decision,
+      options,
+      user.locale,
+    );
   }
 
   /**
@@ -967,10 +1005,27 @@ export class IbApplicationsService {
     applicationId: string,
     actor: Actor,
     scope: ClientScope,
-    input: { reason?: string; note?: string },
+    input: { reason?: string; note?: string; reasonAr?: string | null; noteAr?: string | null },
   ): Promise<IbApplicationRow> {
     const reviewerId = actor.id;
     const reason = composeReason(input.reason, input.note);
+    /*
+     * Its Arabic, decided now and stored with it (0179): the label's Arabic —
+     * the reviewer's own, else the catalogue's as it reads today — and the
+     * note's, joined the way the English is.
+     */
+    const label = input.reason?.trim() || null;
+    const labelAr =
+      input.reasonAr ??
+      (label && this.reasons
+        ? ((await this.reasons.arabicFor(['partner']))('partner', label) ?? null)
+        : null);
+    const reasonAr = composeReasonArabic({
+      label,
+      labelAr,
+      note: input.note,
+      noteAr: input.noteAr,
+    });
 
     const application = await this.ib.findById(applicationId);
     if (!application) throw new NotFoundError('Application not found.');
@@ -988,6 +1043,7 @@ export class IbApplicationsService {
     const updated = await this.ib.transition(applicationId, ['pending'], {
       status: 'rejected',
       rejectionReason: reason,
+      rejectionReasonAr: reasonAr,
       reviewedBy: reviewerId,
       reviewedAt: new Date(),
     });
@@ -1006,17 +1062,21 @@ export class IbApplicationsService {
     this.audit.record(actor.id, 'ib.reject', 'ib_application', applicationId, {
       userId: application.userId,
       reason,
+      reasonAr,
     });
 
     // The composed sentence, not the parts — the client reads the same text the
     // portal shows them, so the two can never disagree.
-    void this.notifyDecision(application.userId, 'rejected', { reason });
+    void this.notifyDecision(application.userId, 'rejected', {
+      reason,
+      ...(reasonAr ? { reasonAr } : {}),
+    });
     // Post-write like the email: the conditional transition already absorbed
     // any race, so a second reject cannot reach this line twice.
     void this.notifications.notify({
       recipient: { kind: 'client', id: application.userId },
       kind: 'partner.rejected',
-      params: { reason },
+      params: { reason, ...(reasonAr ? { reasonAr } : {}) },
     });
 
     return updated;

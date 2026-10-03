@@ -65,6 +65,14 @@ export interface FormField {
   required: boolean;
   hint?: string;
   options?: string[];
+  /**
+   * The Arabic twins (0179): the label, the hint, and each option's label keyed
+   * by its English value (the stored answer is always the English value). The
+   * platform's fields carry the platform's Arabic, rebuilt here like `label`.
+   */
+  labelAr?: string;
+  hintAr?: string;
+  optionsAr?: Record<string, string>;
   /** Platform-owned: served on read, never stored, never editable. */
   system?: boolean;
 }
@@ -76,6 +84,9 @@ export interface FormStep<F extends FormField = FormField> {
   slug: string;
   title: string;
   description: string;
+  /** The title and description in Arabic (0179); absent = not translated. */
+  titleAr?: string;
+  descriptionAr?: string;
   icon: string;
   enabled: boolean;
   fields: F[];
@@ -116,67 +127,99 @@ export interface IdentityField extends FormField {
  * client two opposite things (found in local testing, 29 Sep 2026).
  */
 const BLANK_ALLOWED_HINT = 'Leave blank if your address has none';
+const BLANK_ALLOWED_HINT_AR = 'اتركه فارغًا إذا لم يتضمّن عنوانك ذلك';
 
+/*
+ * The Arabic beside each English label and hint (0179) is the PLATFORM's, like
+ * the English: served on every read, never stored, never editable.
+ */
 export const IDENTITY_FIELDS: readonly IdentityField[] = [
   {
     id: 'f-1',
     name: 'firstName',
     label: 'First Name',
+    labelAr: 'الاسم الأول',
     type: 'text',
     required: true,
     hint: 'As on your ID',
+    hintAr: 'كما يظهر في وثيقة هويتك',
   },
   {
     id: 'f-2',
     name: 'lastName',
     label: 'Last Name',
+    labelAr: 'اسم العائلة',
     type: 'text',
     required: true,
     hint: 'As on your ID',
+    hintAr: 'كما يظهر في وثيقة هويتك',
   },
   {
     id: 'f-3',
     name: 'dateOfBirth',
     label: 'Date of Birth',
+    labelAr: 'تاريخ الميلاد',
     type: 'date',
     required: true,
     hint: 'Must be 18+',
+    hintAr: 'يجب أن يكون عمرك 18 عامًا أو أكثر',
   },
-  { id: 'f-5', name: 'nationality', label: 'Nationality', type: 'select', required: true },
+  {
+    id: 'f-5',
+    name: 'nationality',
+    label: 'Nationality',
+    labelAr: 'الجنسية',
+    type: 'select',
+    required: true,
+  },
   {
     id: 'f-4',
     name: 'phone',
     label: 'Phone Number',
+    labelAr: 'رقم الهاتف',
     type: 'phone',
     required: true,
     hint: 'International format',
+    hintAr: 'بالصيغة الدولية',
   },
   {
     id: 'f-6',
     name: 'country',
     label: 'Country of Residence',
+    labelAr: 'بلد الإقامة',
     type: 'select',
     required: true,
   },
-  { id: 'f-7', name: 'address', label: 'Residential Address', type: 'text', required: true },
-  { id: 'f-city', name: 'city', label: 'City', type: 'text', required: true },
+  {
+    id: 'f-7',
+    name: 'address',
+    label: 'Residential Address',
+    labelAr: 'عنوان السكن',
+    type: 'text',
+    required: true,
+  },
+  { id: 'f-city', name: 'city', label: 'City', labelAr: 'المدينة', type: 'text', required: true },
   {
     // Added 28 Sep 2026 (the owner's list): free text, optional — many
     // countries have no state or province in an address.
     id: 'f-state-province',
     name: 'stateProvince',
     label: 'State / Province',
+    labelAr: 'الولاية / المحافظة',
     type: 'text',
     required: false,
     hint: BLANK_ALLOWED_HINT,
+    hintAr: BLANK_ALLOWED_HINT_AR,
   },
   {
     id: 'f-postal-code',
     name: 'postalCode',
     label: 'Postal / ZIP code',
+    labelAr: 'الرمز البريدي',
     type: 'text',
     required: false,
     hint: BLANK_ALLOWED_HINT,
+    hintAr: BLANK_ALLOWED_HINT_AR,
   },
 ];
 
@@ -210,9 +253,16 @@ export type CoreSlug = 'personal' | 'document' | 'selfie' | 'address';
 export interface CoreStep {
   slug: CoreSlug;
   title: string;
+  /**
+   * The default title in Arabic (0179) — served for a step still wearing the
+   * default English title with no Arabic of its own (`platformStep`).
+   */
+  titleAr: string;
   icon: string;
   /** The default wording. The broker may reword it; the title is fixed. */
   description: string;
+  /** The default wording in Arabic; the broker may reword it like `description`. */
+  descriptionAr: string;
   /** Personal Information and Identity Document: a verification is these. */
   alwaysOn: boolean;
   /** The kind of catalogue document the step collects, when it collects one. */
@@ -223,30 +273,38 @@ export const CORE_STEPS: readonly CoreStep[] = [
   {
     slug: 'personal',
     title: 'Personal Information',
+    titleAr: 'المعلومات الشخصية',
     icon: 'User',
     description: 'Legal identity details exactly as they appear on your government ID.',
+    descriptionAr: 'بيانات هويتك القانونية كما تظهر تمامًا في وثيقة هويتك الرسمية.',
     alwaysOn: false,
   },
   {
     slug: 'document',
     title: 'Identity Document',
+    titleAr: 'وثيقة الهوية',
     icon: 'FileText',
     description: 'Upload a valid Passport, National ID, Driving License or Residence Permit.',
+    descriptionAr: 'حمّل جواز سفر أو بطاقة هوية وطنية أو رخصة قيادة أو تصريح إقامة ساري المفعول.',
     alwaysOn: false,
     documents: 'identity',
   },
   {
     slug: 'selfie',
     title: 'Selfie Verification',
+    titleAr: 'التحقق بصورة سيلفي',
     icon: 'Camera',
     description: 'Live selfie photo matching your identity document.',
+    descriptionAr: 'صورة سيلفي مباشرة تطابق وثيقة هويتك.',
     alwaysOn: false,
   },
   {
     slug: 'address',
     title: 'Proof of Address',
+    titleAr: 'إثبات العنوان',
     icon: 'Home',
     description: 'Document dated within the last 3 months showing your residential address.',
+    descriptionAr: 'وثيقة مؤرَّخة خلال آخر 3 أشهر تُظهر عنوان سكنك.',
     alwaysOn: false,
     documents: 'address',
   },
@@ -273,6 +331,7 @@ export const SELFIE_FIELD: FormField = {
   id: 'f-11',
   name: 'selfie',
   label: 'Selfie Photo',
+  labelAr: 'صورة سيلفي',
   type: 'camera',
   required: true,
 };
@@ -312,9 +371,16 @@ export function documentField(doc: CatalogueDocument): FormField {
     id: keys.id,
     name: keys.name,
     label: doc.label,
+    labelAr: doc.labelAr,
     type: documentFieldType(doc.value),
     required: false,
   };
+}
+
+/** A document field as STORED: its type is the fact, and its Arabic name follows from it. */
+export function storedDocumentField(doc: CatalogueDocument): FormField {
+  const { labelAr: _platform, ...field } = documentField(doc);
+  return field;
 }
 
 /** The catalogue, split the way the two document steps offer it. */
@@ -380,10 +446,12 @@ export function platformStep<S extends FormStep>(step: S): S {
       placed.add(field.name);
       const detail = identityField(field.name)!;
       const required = Boolean(field.required);
-      const { hint, ...rest } = detail;
+      const { hint, hintAr, ...rest } = detail;
+      const advise = Boolean(hint) && !(required && hint === BLANK_ALLOWED_HINT);
       own.push({
         ...rest,
-        ...(hint && !(required && hint === BLANK_ALLOWED_HINT) ? { hint } : {}),
+        ...(advise ? { hint } : {}),
+        ...(advise && hintAr ? { hintAr } : {}),
         required,
         system: true,
       });
@@ -399,6 +467,7 @@ export function platformStep<S extends FormStep>(step: S): S {
         : [];
   return {
     ...step,
+    ...coreArabic(core, step),
     icon: core.icon,
     evidenceRequired: core.slug === 'personal' ? undefined : evidenceRequired,
     core: true,
@@ -406,6 +475,27 @@ export function platformStep<S extends FormStep>(step: S): S {
     // The platform's fields are plain `FormField`s; the caller's field type is a
     // structural superset whose extra members are all optional.
     fields: [...(platform as S['fields']), ...(own as S['fields'])],
+  };
+}
+
+/**
+ * The platform's Arabic for a built-in step still wearing the platform's English
+ * (0179). A step whose title or description the broker reworded keeps whatever
+ * Arabic the broker wrote — the platform's would translate words no longer
+ * there. The broker's own Arabic always wins.
+ */
+function coreArabic(
+  core: CoreStep,
+  step: Pick<FormStep, 'title' | 'description' | 'titleAr' | 'descriptionAr'>,
+): Pick<FormStep, 'titleAr' | 'descriptionAr'> {
+  const own = (text: string | undefined) => (text?.trim() ? text : undefined);
+  const titleAr = own(step.titleAr) ?? (step.title === core.title ? core.titleAr : undefined);
+  const descriptionAr =
+    own(step.descriptionAr) ??
+    (step.description === core.description ? core.descriptionAr : undefined);
+  return {
+    ...(titleAr ? { titleAr } : { titleAr: undefined }),
+    ...(descriptionAr ? { descriptionAr } : { descriptionAr: undefined }),
   };
 }
 
@@ -434,7 +524,7 @@ export function storedStep<S extends FormStep>(step: S): S {
     }
   }
   const documents: FormField[] = spec.documents
-    ? acceptedDocuments(unflagged, spec.documents).map(documentField)
+    ? acceptedDocuments(unflagged, spec.documents).map(storedDocumentField)
     : [];
   return {
     ...rest,
@@ -644,11 +734,15 @@ export function newCustomSlug(title: string, taken: ReadonlySet<string>): string
 
 /** A label as compared: accents, case, spacing and punctuation removed. */
 export function normaliseLabel(label: string): string {
-  return label
-    .normalize('NFKD')
-    .replace(/\p{M}/gu, '')
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}]/gu, '');
+  return (
+    label
+      .normalize('NFKD')
+      .replace(/\p{M}/gu, '')
+      .toLowerCase()
+      // Arabic's tatweel (ـ) only stretches a word; "الاســم" is "الاسم".
+      .replace(/ـ/g, '')
+      .replace(/[^\p{L}\p{N}]/gu, '')
+  );
 }
 
 /**
@@ -718,14 +812,65 @@ const DOCUMENT_PAGE_LABELS: ReadonlyMap<string, string> = new Map(
   ),
 );
 
+/**
+ * The same names IN ARABIC (0179), meaning the same English things: an Arabic
+ * label naming the client's first name is the same second box as an English
+ * one. The platform's own Arabic labels, a few everyday synonyms, and each
+ * document page in Arabic. Kept apart from the English maps, so the English
+ * matching stays exactly what it was.
+ */
+const ARABIC_PLATFORM_LABELS: ReadonlyMap<string, string> = new Map(
+  (
+    [
+      ...IDENTITY_FIELDS.map((field) => [field.labelAr!, field.label] as const),
+      ['الاسم', 'First Name'],
+      ['الاسم الكامل', 'First Name'],
+      ['الاسم الثلاثي', 'First Name'],
+      ['اللقب', 'Last Name'],
+      ['الكنية', 'Last Name'],
+      ['تاريخ الولادة', 'Date of Birth'],
+      ['المواطنة', 'Nationality'],
+      ['الهاتف', 'Phone Number'],
+      ['رقم الجوال', 'Phone Number'],
+      ['رقم الموبايل', 'Phone Number'],
+      ['البلد', 'Country of Residence'],
+      ['الدولة', 'Country of Residence'],
+      ['دولة الإقامة', 'Country of Residence'],
+      ['العنوان', 'Residential Address'],
+      ['البريد الإلكتروني', 'Email'],
+      ...DOCUMENT_CATALOGUE.map(
+        (doc) =>
+          [doc.labelAr, doc.category === 'identity' ? doc.label : 'Proof of Address'] as const,
+      ),
+      ...DOCUMENT_CATALOGUE.flatMap((doc) =>
+        doc.parts.map(
+          (part) =>
+            [
+              `${doc.labelAr} ${part.labelAr}`,
+              doc.category === 'identity' ? doc.label : 'Proof of Address',
+            ] as const,
+        ),
+      ),
+      [SELFIE_FIELD.labelAr!, 'Selfie Photo'],
+      ['إثبات العنوان', 'Proof of Address'],
+    ] as const
+  ).map(([spelling, meaning]) => [normaliseLabel(spelling), meaning] as const),
+);
+
 /** What the platform already collects under this label, or `undefined`. */
 export function platformMeaningOf(label: string): string | undefined {
   const normalised = normaliseLabel(label);
-  return PLATFORM_LABELS.get(normalised) ?? DOCUMENT_PAGE_LABELS.get(normalised);
+  return (
+    PLATFORM_LABELS.get(normalised) ??
+    DOCUMENT_PAGE_LABELS.get(normalised) ??
+    ARABIC_PLATFORM_LABELS.get(normalised)
+  );
 }
 
-/** A built-in step's title, if a broker's step is trying to wear it. */
+/** A built-in step's title, if a broker's step is trying to wear it — in English or Arabic. */
 export function coreTitleMatching(title: string): string | undefined {
   const wanted = normaliseLabel(title);
-  return CORE_STEPS.find((step) => normaliseLabel(step.title) === wanted)?.title;
+  return CORE_STEPS.find(
+    (step) => normaliseLabel(step.title) === wanted || normaliseLabel(step.titleAr) === wanted,
+  )?.title;
 }

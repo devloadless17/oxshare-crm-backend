@@ -1,4 +1,20 @@
-import { button, card, esc, p, pRich, panel, type RenderedEmail } from './layout';
+import type { Locale } from '../../../common/i18n/locale';
+import {
+  button,
+  buttonAr,
+  card,
+  cardAr,
+  esc,
+  greetingAr,
+  headingAr,
+  ltrHtml,
+  p,
+  pRich,
+  pRichAr,
+  panel,
+  panelAr,
+  type RenderedEmail,
+} from './layout';
 import { displayMoney } from '../../../common/money-display';
 
 /**
@@ -37,7 +53,11 @@ export function withdrawalDecision(
   currency: string,
   portalUrl: string,
   reason?: string,
+  locale: Locale = 'en',
 ): RenderedEmail {
+  if (locale === 'ar') {
+    return withdrawalDecisionAr(firstName, decision, amount, currency, portalUrl, reason);
+  }
   /*
    * FORMATTED, not the raw column value — see `displayMoney`. This read
    * "11.00000000 USD" in a client's inbox while the portal showed them "$11.00"
@@ -102,5 +122,52 @@ export function withdrawalDecision(
 ${p(`Hello ${firstName || 'Valued Client'},`)}
 ${body}
 ${button(portalUrl, 'Go to Portal')}`),
+  };
+}
+
+function withdrawalDecisionAr(
+  firstName: string,
+  decision: 'approved' | 'paid' | 'rejected',
+  amount: string,
+  currency: string,
+  portalUrl: string,
+  reason?: string,
+): RenderedEmail {
+  const money = ltrHtml(esc(displayMoney(amount, currency)));
+
+  const heading = {
+    approved: 'تمت الموافقة على طلب السحب الخاص بك',
+    paid: 'تم إرسال مبلغ السحب الخاص بك',
+    rejected: 'تم رفض طلب السحب الخاص بك',
+  }[decision];
+
+  const body =
+    decision === 'approved'
+      ? pRichAr(
+          `تمت الموافقة على طلب سحب <strong>${money}</strong> وهو قيد المعالجة الآن. ` +
+            'ستصلك رسالة تأكيد بالبريد الإلكتروني فور إرسال الأموال.',
+        )
+      : decision === 'paid'
+        ? pRichAr(`تمت معالجة طلب سحب <strong>${money}</strong> وإرساله إلى الجهة التي حددتها.`)
+        : [
+            pRichAr(`تعذّرت معالجة طلب سحب <strong>${money}</strong>.`),
+            reason ? panelAr(`<strong>السبب:</strong> ${esc(reason)}`) : '',
+            pRichAr(`أُعيد مبلغ ${money} إلى رصيدك، ويمكنك تقديم طلب جديد متى كنت مستعداً.`),
+          ]
+            .filter(Boolean)
+            .join('\n');
+
+  const subject = {
+    approved: 'تمت الموافقة على طلب السحب — OXShare',
+    paid: 'تم إرسال مبلغ السحب — OXShare',
+    rejected: 'تم رفض طلب السحب — OXShare',
+  }[decision];
+
+  return {
+    subject,
+    html: cardAr(`${headingAr(heading, decision === 'rejected' ? '#b42318' : '#047857')}
+${greetingAr(firstName)}
+${body}
+${buttonAr(portalUrl, 'الانتقال إلى البوابة')}`),
   };
 }

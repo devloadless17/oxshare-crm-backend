@@ -18,6 +18,7 @@ export function paymentMethodView(row: PaymentMethodRow) {
   return {
     key: row.key,
     name: row.name,
+    nameAr: row.nameAr ?? null,
     currency: row.currency,
     logoUrl: row.logoUrl,
     enabled: row.enabled,
@@ -49,10 +50,12 @@ export function adminPaymentMethodView(row: AdminPaymentMethod) {
     proofFields: row.proofFields.map((field) => ({
       id: field.id,
       label: field.label,
+      labelAr: field.labelAr ?? null,
       type: field.type,
       required: field.required,
       enabled: field.enabled,
       hint: field.hint ?? null,
+      hintAr: field.hintAr ?? null,
     })),
   };
 }

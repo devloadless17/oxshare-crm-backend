@@ -9,6 +9,7 @@ import {
 import { DEFAULT_KYC_SORT, KYC_SORT_COLUMNS } from '../../store/kyc.store';
 import { sortKey, sortOrder } from '../../common/sorting';
 import { RejectionContext, RejectionReasonsStore } from '../../store/rejection-reasons.store';
+import { composeReasonArabic } from '../../common/i18n/reason-arabic';
 import { KycService } from '../compliance/kyc.service';
 import {
   FieldValidationError,
@@ -462,11 +463,14 @@ export class AdminComplianceService {
     reason?: string,
     rejectedFields?: string[],
     reasonId?: string,
+    /** The free-text reason in Arabic (0179). */
+    reasonAr?: string | null,
   ) {
     assertActorCan(actor, 'kyc.review', 'reject a KYC submission');
     await this.visibility.assertVisible(userId, actor.clientScope);
     const adminId = actor.id;
     let effectiveReason = reason?.trim();
+    let configuredLabel: { label: string; labelAr: string | null } | undefined;
     if (reasonId) {
       const configured = await this.rejectionReasons.findById(reasonId);
       if (!configured) throw new NotFoundError('Rejection reason not found.');
@@ -481,6 +485,7 @@ export class AdminComplianceService {
           reasonId: 'Choose one of the KYC rejection reasons.',
         });
       }
+      configuredLabel = configured;
       effectiveReason = effectiveReason
         ? `${configured.label} — ${effectiveReason}`
         : configured.label;
@@ -488,17 +493,26 @@ export class AdminComplianceService {
     if (!effectiveReason) {
       throw new ValidationError('A rejection reason (reasonId or reason text) is required.');
     }
+    // Its Arabic, decided now and stored with it (0179) — see `composeReasonArabic`.
+    const effectiveReasonAr = composeReasonArabic({
+      label: configuredLabel?.label,
+      labelAr: configuredLabel?.labelAr,
+      note: reason,
+      noteAr: reasonAr,
+    });
     const result = await this.kycService.reject(
       userId,
       adminId,
       effectiveReason,
       rejectedFields,
       reasonId,
+      effectiveReasonAr,
     );
     this.audit.record(adminId, 'kyc.reject', 'kyc_submission', userId, {
       status: result.status,
       verificationLevel: result.user?.verificationLevel,
       reason: effectiveReason,
+      reasonAr: effectiveReasonAr,
       rejectedFields,
     });
     /*
@@ -530,12 +544,22 @@ export class AdminComplianceService {
     actor: AuthenticatedAdmin,
     reason: string,
     items: string[],
+    /** `reason` in Arabic (0179). */
+    reasonAr?: string | null,
   ) {
     assertActorCan(actor, 'kyc.review', 'return a verification to the client');
     await this.visibility.assertVisible(userId, actor.clientScope);
-    const result = await this.kycService.requestReverification(userId, actor.id, reason, items);
+    const arabic = composeReasonArabic({ note: reason, noteAr: reasonAr });
+    const result = await this.kycService.requestReverification(
+      userId,
+      actor.id,
+      reason,
+      items,
+      arabic,
+    );
     this.audit.record(actor.id, 'kyc.reverification_request', 'kyc_submission', userId, {
       reason,
+      reasonAr: arabic,
       items: result.rejectedFields,
     });
     return {
@@ -559,21 +583,31 @@ export class AdminComplianceService {
    * recorded for exactly that reason: the current value answers nothing about
    * a complaint concerning last month's wording.
    */
-  async createRejectionReason(context: RejectionContext, label: string, actor: Admin) {
-    const created = await this.rejectionReasons.create(context, label);
+  async createRejectionReason(
+    context: RejectionContext,
+    label: string,
+    actor: Admin,
+    labelAr: string | null = null,
+  ) {
+    const created = await this.rejectionReasons.create(context, label, labelAr);
     this.audit.record(actor.id, 'rejection_reason.create', 'rejection_reason', created.id, {
       context,
       label,
+      ...(labelAr ? { labelAr } : {}),
     });
     return created;
   }
-  async updateRejectionReason(id: string, label: string, actor: Admin) {
+  /** `labelAr` undefined keeps the stored Arabic; null clears it (0179). */
+  async updateRejectionReason(id: string, label: string, actor: Admin, labelAr?: string | null) {
     const before = await this.rejectionReasons.findById(id);
-    const updated = await this.rejectionReasons.update(id, label);
+    const updated = await this.rejectionReasons.update(id, label, labelAr);
     if (!updated) throw new NotFoundError('Rejection reason not found.');
     this.audit.record(actor.id, 'rejection_reason.update', 'rejection_reason', id, {
       before: before?.label,
       after: label,
+      ...(labelAr !== undefined && labelAr !== before?.labelAr
+        ? { beforeAr: before?.labelAr ?? null, afterAr: labelAr }
+        : {}),
     });
     return updated;
   }

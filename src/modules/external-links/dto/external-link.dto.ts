@@ -1,5 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { NoClientFields } from '../../../common/security/client-field.decorator';
+import { OptionalArabicText } from '../../../common/dto/arabic-text';
 import { IsBoolean, IsInt, IsOptional, IsString, Length, MaxLength } from 'class-validator';
 
 /**
@@ -17,10 +18,25 @@ export class ExternalLinkDto {
   @ApiProperty({
     type: 'string',
     nullable: true,
+    maxLength: 80,
+    example: 'المفكرة الاقتصادية',
+    description: 'The title in Arabic (0179); null = not translated, show `title`.',
+  })
+  titleAr: string | null;
+  @ApiProperty({
+    type: 'string',
+    nullable: true,
     maxLength: 300,
     description: 'One line of context under the title. Null is a real answer, not an omission.',
   })
   description: string | null;
+  @ApiProperty({
+    type: 'string',
+    nullable: true,
+    maxLength: 300,
+    description: 'The description in Arabic (0179); null = not translated, show `description`.',
+  })
+  descriptionAr: string | null;
   @ApiProperty({ maxLength: 2048, example: 'https://example.com/calendar' }) url: string;
   @ApiProperty({ description: 'A disabled link is off the client menu and still on this screen.' })
   enabled: boolean;
@@ -47,7 +63,22 @@ export class ExternalLinkDto {
 export class ClientExternalLinkDto {
   @ApiProperty({ format: 'uuid' }) id: string;
   @ApiProperty({ maxLength: 80, example: 'Economic calendar' }) title: string;
+  @ApiProperty({
+    type: 'string',
+    nullable: true,
+    maxLength: 80,
+    example: 'المفكرة الاقتصادية',
+    description: 'The title in Arabic (0179); null = not translated, show `title`.',
+  })
+  titleAr: string | null;
   @ApiProperty({ type: 'string', nullable: true, maxLength: 300 }) description: string | null;
+  @ApiProperty({
+    type: 'string',
+    nullable: true,
+    maxLength: 300,
+    description: 'The description in Arabic (0179); null = not translated, show `description`.',
+  })
+  descriptionAr: string | null;
   @ApiProperty({ maxLength: 2048, example: 'https://example.com/calendar' }) url: string;
   @ApiProperty({ description: 'The operator’s order, which is the order to render.' })
   sortOrder: number;
@@ -59,11 +90,17 @@ export class CreateExternalLinkDto {
   @Length(1, 80)
   title: string;
 
+  @OptionalArabicText(80, 'المفكرة الاقتصادية')
+  titleAr?: string | null;
+
   @ApiPropertyOptional({ maxLength: 300 })
   @IsOptional()
   @IsString()
   @MaxLength(300)
   description?: string;
+
+  @OptionalArabicText(300)
+  descriptionAr?: string | null;
 
   /**
    * Validated as a STRING here and parsed in the service.
@@ -106,6 +143,10 @@ export class UpdateExternalLinkDto {
   @Length(1, 80)
   title?: string;
 
+  /** Omitted keeps the stored Arabic; null or blank clears it. */
+  @OptionalArabicText(80, 'المفكرة الاقتصادية')
+  titleAr?: string | null;
+
   /**
    * An empty string CLEARS the description rather than storing `''`.
    *
@@ -118,6 +159,10 @@ export class UpdateExternalLinkDto {
   @IsString()
   @MaxLength(300)
   description?: string;
+
+  /** Omitted keeps the stored Arabic; null or blank clears it. */
+  @OptionalArabicText(300)
+  descriptionAr?: string | null;
 
   @ApiPropertyOptional({ maxLength: 2048 })
   @IsOptional()

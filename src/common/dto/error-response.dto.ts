@@ -47,6 +47,18 @@ export class ErrorResponseDto {
   })
   fields?: Record<string, string>;
 
+  @ApiPropertyOptional({
+    example: 'The payment provider is not responding.',
+    description:
+      'Present only on an ARABIC request (`X-OxShare-Locale: ar`) whose message — or a ' +
+      '`fields` entry — had no Arabic: typically text from an external system (a payment ' +
+      'provider, the MT5 bridge, the mail server). `message` then carries a generic Arabic ' +
+      'sentence for the status (a field, a generic field sentence) and this carries the ' +
+      'original English, one line each (`<field>: <text>` for a field), so nothing is lost. ' +
+      'Show it as secondary detail if at all; never parse it.',
+  })
+  detail?: string;
+
   @ApiProperty({
     example: 'req-lz4k2p-8f3a91c2',
     description:

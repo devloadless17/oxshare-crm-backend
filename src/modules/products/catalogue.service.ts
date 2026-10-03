@@ -42,7 +42,9 @@ export class CatalogueService {
   async createProduct(
     input: {
       name: string;
+      nameAr?: string | null;
       description?: string | null;
+      descriptionAr?: string | null;
       enabled: boolean;
       type?: 'real' | 'demo';
       commissionTypeId?: string | null;
@@ -67,7 +69,9 @@ export class CatalogueService {
     const row = await this.store
       .createProduct({
         name: input.name.trim(),
+        nameAr: emptyToNull(input.nameAr),
         description: emptyToNull(input.description),
+        descriptionAr: emptyToNull(input.descriptionAr),
         enabled: input.enabled,
         type,
         commissionTypeId,
@@ -80,6 +84,8 @@ export class CatalogueService {
 
     this.audit.record(actor.id, 'product.create', 'trading_products', row.id, {
       name: row.name,
+      nameAr: row.nameAr,
+      descriptionAr: row.descriptionAr,
       enabled: row.enabled,
       type: row.type,
       commissionTypeId: row.commissionTypeId,
@@ -115,7 +121,9 @@ export class CatalogueService {
     id: string,
     input: {
       name: string;
+      nameAr?: string | null;
       description?: string | null;
+      descriptionAr?: string | null;
       enabled: boolean;
       type?: 'real' | 'demo';
       commissionTypeId?: string | null;
@@ -153,7 +161,13 @@ export class CatalogueService {
 
     const row = await this.store.updateProduct(id, {
       name: input.name.trim(),
+      // A PUT, but OMITTED keeps the stored Arabic — a console predating 0179
+      // sends none, and must not erase a translation every time it saves.
+      ...(input.nameAr !== undefined ? { nameAr: emptyToNull(input.nameAr) } : {}),
       description: emptyToNull(input.description),
+      ...(input.descriptionAr !== undefined
+        ? { descriptionAr: emptyToNull(input.descriptionAr) }
+        : {}),
       enabled: input.enabled,
       commissionTypeId,
       sortOrder: input.sortOrder,
@@ -178,7 +192,9 @@ export class CatalogueService {
     const changed: Record<string, { before: unknown; after: unknown }> = {};
     for (const field of [
       'name',
+      'nameAr',
       'description',
+      'descriptionAr',
       'enabled',
       /*
        * In the diff because changing it changes what every partner is paid on
@@ -423,24 +439,33 @@ export class CatalogueService {
       this.store.listAgencies(),
       this.store.listProducts(),
     ]);
-    const nameOf = new Map(products.map((product) => [product.id, product.name]));
+    const productOf = new Map(products.map((product) => [product.id, product]));
 
     return agencies
       .filter((agency) => agency.enabled)
-      .map((agency) => ({
-        id: agency.id,
-        name: agency.name,
-        description: agency.description,
-        products: agency.productIds
-          .map((id) => nameOf.get(id))
-          .filter((name): name is string => Boolean(name)),
-      }));
+      .map((agency) => {
+        // Index for index: `productsAr[i]` is the Arabic of `products[i]`.
+        const sold = agency.productIds
+          .map((id) => productOf.get(id))
+          .filter((product): product is ProductRow => Boolean(product?.name));
+        return {
+          id: agency.id,
+          name: agency.name,
+          nameAr: agency.nameAr,
+          description: agency.description,
+          descriptionAr: agency.descriptionAr,
+          products: sold.map((product) => product.name),
+          productsAr: sold.map((product) => product.nameAr),
+        };
+      });
   }
 
   async createAgency(
     input: {
       name: string;
+      nameAr?: string | null;
       description?: string | null;
+      descriptionAr?: string | null;
       enabled: boolean;
       sortOrder?: number;
     },
@@ -448,13 +473,16 @@ export class CatalogueService {
   ): Promise<AgencyDto> {
     const row = await this.store.createAgency({
       name: input.name.trim(),
+      nameAr: emptyToNull(input.nameAr),
       description: emptyToNull(input.description),
+      descriptionAr: emptyToNull(input.descriptionAr),
       enabled: input.enabled,
       sortOrder: input.sortOrder,
     });
 
     this.audit.record(actor.id, 'agency.create', 'agencies', row.id, {
       name: row.name,
+      nameAr: row.nameAr,
       enabled: row.enabled,
     });
     return toAgencyDto(row);
@@ -464,7 +492,9 @@ export class CatalogueService {
     id: string,
     input: {
       name: string;
+      nameAr?: string | null;
       description?: string | null;
+      descriptionAr?: string | null;
       enabled: boolean;
       sortOrder?: number;
     },
@@ -475,7 +505,12 @@ export class CatalogueService {
 
     const row = await this.store.updateAgency(id, {
       name: input.name.trim(),
+      // OMITTED keeps the stored Arabic (see updateProduct); null or blank clears it.
+      ...(input.nameAr !== undefined ? { nameAr: emptyToNull(input.nameAr) } : {}),
       description: emptyToNull(input.description),
+      ...(input.descriptionAr !== undefined
+        ? { descriptionAr: emptyToNull(input.descriptionAr) }
+        : {}),
       enabled: input.enabled,
       sortOrder: input.sortOrder,
       /*
@@ -489,7 +524,14 @@ export class CatalogueService {
     if (!row) throw new NotFoundError('Agency not found.');
 
     const changed: Record<string, { before: unknown; after: unknown }> = {};
-    for (const field of ['name', 'description', 'enabled', 'sortOrder'] as const) {
+    for (const field of [
+      'name',
+      'nameAr',
+      'description',
+      'descriptionAr',
+      'enabled',
+      'sortOrder',
+    ] as const) {
       if (before[field] !== row[field])
         changed[field] = { before: before[field], after: row[field] };
     }
@@ -568,7 +610,9 @@ function toProductDto(row: ProductRow): ProductDto {
   return {
     id: row.id,
     name: row.name,
+    nameAr: row.nameAr,
     description: row.description,
+    descriptionAr: row.descriptionAr,
     enabled: row.enabled,
     type: row.type,
     commissionTypeId: row.commissionTypeId,
@@ -604,7 +648,9 @@ function toAgencyDto(row: AgencyRow): AgencyDto {
   return {
     id: row.id,
     name: row.name,
+    nameAr: row.nameAr,
     description: row.description,
+    descriptionAr: row.descriptionAr,
     enabled: row.enabled,
     sortOrder: row.sortOrder,
     productIds: row.productIds,

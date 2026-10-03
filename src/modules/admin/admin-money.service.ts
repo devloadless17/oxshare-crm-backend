@@ -5,6 +5,7 @@ import type { Db } from '../../database/db';
 import { clientScopePredicate } from '../../common/security/client-scope';
 import { TransferExecutor } from '../payments/transfer-executor.service';
 import { RejectionReasonsStore } from '../../store/rejection-reasons.store';
+import { composeReasonArabic } from '../../common/i18n/reason-arabic';
 import {
   NOTIFICATION_DISPATCH,
   type NotificationDispatchPort,
@@ -202,7 +203,14 @@ export class AdminMoneyService {
    * rather than relying on the HTTP interceptor alone.
    */
   async creditWallet(
-    params: { userId: number; amount: string; currency: string; reason: string },
+    params: {
+      userId: number;
+      amount: string;
+      currency: string;
+      reason: string;
+      /** The reason in Arabic, for a client reading in Arabic (0179). Optional. */
+      reasonAr?: string | null;
+    },
     reference: string,
     actor: AuthenticatedAdmin,
   ) {
@@ -222,6 +230,7 @@ export class AdminMoneyService {
     if (!reasonText) {
       throw new ValidationError('A reason is required when crediting a wallet by hand.');
     }
+    const reasonAr = composeReasonArabic({ note: reasonText, noteAr: params.reasonAr });
 
     /*
      * SCOPE FIRST, so an admin restricted to a subset of clients cannot credit
@@ -269,6 +278,7 @@ export class AdminMoneyService {
       amount: result.transaction.amount,
       currency: result.transaction.currency,
       reason: reasonText,
+      reasonAr,
     });
 
     /*
@@ -282,6 +292,8 @@ export class AdminMoneyService {
       result.transaction.amount,
       result.transaction.currency,
       reasonText,
+      user.locale,
+      reasonAr,
     );
 
     // Post-commit for the same reason as the email, and skipped on replay for
@@ -295,6 +307,8 @@ export class AdminMoneyService {
         amount: result.transaction.amount,
         currency: result.transaction.currency,
         reason: reasonText,
+        // The operator's own Arabic for it (0179) — the bell shows it to an Arabic reader.
+        ...(reasonAr ? { reasonAr } : {}),
       },
       dedupeKey: `wallet.credited:${result.transaction.id}`,
     });
@@ -365,6 +379,8 @@ export class AdminMoneyService {
       tradingAccountId: string;
       amount: string;
       reason: string;
+      /** The reason in Arabic (0179) — it reaches the client's credit mail and bell. */
+      reasonAr?: string | null;
       direction: 'deposit' | 'withdraw';
     },
     reference: string,
@@ -536,6 +552,7 @@ export class AdminMoneyService {
         amount: params.amount,
         currency: account.currency,
         reason: reasonText,
+        reasonAr: params.reasonAr,
       },
       reference,
       actor,
@@ -619,6 +636,7 @@ export class AdminMoneyService {
         transferState: transfer?.state ?? null,
         transferError,
         reason: reasonText,
+        reasonAr: composeReasonArabic({ note: reasonText, noteAr: params.reasonAr }),
       });
     }
 
@@ -1096,14 +1114,18 @@ export class AdminMoneyService {
     actor: AuthenticatedAdmin,
     reason?: string,
     reasonId?: string,
+    /** The free-text reason in Arabic (0179). */
+    reasonAr?: string | null,
   ) {
     assertActorCan(actor, 'withdrawals.approve', 'cancel an approved withdrawal');
     await this.assertWithdrawalVisible(id, actor.clientScope);
 
     let effectiveReason = reason?.trim();
+    let chosen: { label: string; labelAr: string | null } | undefined;
     if (reasonId) {
       const configured = await this.rejectionReasons.findById(reasonId);
       if (!configured) throw new NotFoundError('Rejection reason not found.');
+      chosen = configured;
       effectiveReason = effectiveReason
         ? `${configured.label} — ${effectiveReason}`
         : configured.label;
@@ -1111,6 +1133,13 @@ export class AdminMoneyService {
     if (!effectiveReason) {
       throw new ValidationError('A cancellation reason (reasonId or reason text) is required.');
     }
+    // Its Arabic, decided now and stored with it (0179).
+    const effectiveReasonAr = composeReasonArabic({
+      label: chosen?.label,
+      labelAr: chosen?.labelAr,
+      note: reason,
+      noteAr: reasonAr,
+    });
 
     const current = await this.transactions.getById(id);
 
@@ -1156,6 +1185,7 @@ export class AdminMoneyService {
           amount: failed.amount,
           currency: failed.currency,
           reason: effectiveReason,
+          reasonAr: effectiveReasonAr,
           provider: current.providerCode,
           providerPayoutId: current.providerPayoutId,
         });
@@ -1168,11 +1198,14 @@ export class AdminMoneyService {
               amount: failed.amount,
               currency: failed.currency,
               reason: effectiveReason ?? '',
+              ...(effectiveReasonAr ? { reasonAr: effectiveReasonAr } : {}),
             },
           },
           tx,
         );
       },
+      null,
+      effectiveReasonAr,
     );
     void this.emailWithdrawalDecision(row, 'rejected', effectiveReason);
     /*
@@ -1221,6 +1254,8 @@ export class AdminMoneyService {
     actor: AuthenticatedAdmin,
     reason?: string,
     reasonId?: string,
+    /** The free-text reason in Arabic (0179). */
+    reasonAr?: string | null,
   ) {
     assertActorCan(actor, 'withdrawals.approve', 'reject a withdrawal');
     await this.assertWithdrawalVisible(id, actor.clientScope);
@@ -1228,9 +1263,11 @@ export class AdminMoneyService {
     // FR-ADM-03: the reason comes from the configurable list; free text is an
     // optional note alongside it.
     let effectiveReason = reason?.trim();
+    let chosen: { label: string; labelAr: string | null } | undefined;
     if (reasonId) {
       const configured = await this.rejectionReasons.findById(reasonId);
       if (!configured) throw new NotFoundError('Rejection reason not found.');
+      chosen = configured;
       effectiveReason = effectiveReason
         ? `${configured.label} — ${effectiveReason}`
         : configured.label;
@@ -1238,6 +1275,13 @@ export class AdminMoneyService {
     if (!effectiveReason) {
       throw new ValidationError('A rejection reason (reasonId or reason text) is required.');
     }
+    // Its Arabic, decided now and stored with it (0179).
+    const effectiveReasonAr = composeReasonArabic({
+      label: chosen?.label,
+      labelAr: chosen?.labelAr,
+      note: reason,
+      noteAr: reasonAr,
+    });
 
     const row = await this.transactions.reject(
       id,
@@ -1248,6 +1292,7 @@ export class AdminMoneyService {
           amount: rejected.amount,
           currency: rejected.currency,
           reason: effectiveReason,
+          reasonAr: effectiveReasonAr,
         });
         await this.notifications.notify(
           {
@@ -1258,11 +1303,13 @@ export class AdminMoneyService {
               amount: rejected.amount,
               currency: rejected.currency,
               reason: effectiveReason ?? null,
+              ...(effectiveReasonAr ? { reasonAr: effectiveReasonAr } : {}),
             },
           },
           tx,
         );
       },
+      effectiveReasonAr,
     );
     void this.emailWithdrawalDecision(row, 'rejected', effectiveReason);
     /*
@@ -1345,7 +1392,7 @@ export class AdminMoneyService {
    * `void`-dispatched by all three callers, so it must also never reject.
    */
   private async emailWithdrawalDecision(
-    row: { userId: number; amount: string; currency: string },
+    row: { userId: number; amount: string; currency: string; rejectionReasonAr?: string | null },
     decision: 'approved' | 'paid' | 'rejected',
     reason?: string,
   ): Promise<void> {
@@ -1359,6 +1406,8 @@ export class AdminMoneyService {
         row.amount,
         row.currency,
         reason,
+        user.locale,
+        row.rejectionReasonAr,
       );
     } catch (error) {
       this.logger.warn(
@@ -1437,16 +1486,25 @@ export class AdminMoneyService {
    * `TransactionsService.rejectDeposit`. A deposit debits nothing when it is
    * filed, so there is no money here to give back.
    */
-  async rejectDeposit(id: string, actor: AuthenticatedAdmin, reason?: string, reasonId?: string) {
+  async rejectDeposit(
+    id: string,
+    actor: AuthenticatedAdmin,
+    reason?: string,
+    reasonId?: string,
+    /** The free-text reason in Arabic (0179). */
+    reasonAr?: string | null,
+  ) {
     assertActorCan(actor, 'deposits.reject', 'reject a deposit');
     await this.assertDepositVisible(id, actor.clientScope);
 
     // FR-ADM-03, identical to the withdrawal desk: the reason comes from the
     // configurable list, and free text is an optional note beside it.
     let effectiveReason = reason?.trim();
+    let chosen: { label: string; labelAr: string | null } | undefined;
     if (reasonId) {
       const configured = await this.rejectionReasons.findById(reasonId);
       if (!configured) throw new NotFoundError('Rejection reason not found.');
+      chosen = configured;
       effectiveReason = effectiveReason
         ? `${configured.label} — ${effectiveReason}`
         : configured.label;
@@ -1454,6 +1512,13 @@ export class AdminMoneyService {
     if (!effectiveReason) {
       throw new ValidationError('A rejection reason (reasonId or reason text) is required.');
     }
+    // Its Arabic, decided now and stored with it (0179).
+    const effectiveReasonAr = composeReasonArabic({
+      label: chosen?.label,
+      labelAr: chosen?.labelAr,
+      note: reason,
+      noteAr: reasonAr,
+    });
 
     const row = await this.transactions.rejectDeposit(
       id,
@@ -1464,8 +1529,10 @@ export class AdminMoneyService {
           amount: rejected.amount,
           currency: rejected.currency,
           reason: effectiveReason,
+          reasonAr: effectiveReasonAr,
         });
       },
+      effectiveReasonAr,
     );
     return this.toDepositDecision(row);
   }
@@ -1488,6 +1555,7 @@ export class AdminMoneyService {
     providerRef: string | null;
     proofFilename: string | null;
     rejectionReason: string | null;
+    rejectionReasonAr?: string | null;
     reviewedAt: Date | null;
     settledAt: Date | null;
   }): DepositDecisionDto {
@@ -1501,6 +1569,7 @@ export class AdminMoneyService {
       providerRef: row.providerRef,
       proofPath: row.proofFilename ? storedPath(DEPOSIT_PROOF_BUCKET.dir, row.proofFilename) : null,
       rejectionReason: row.rejectionReason,
+      rejectionReasonAr: row.rejectionReasonAr ?? null,
       reviewedAt: row.reviewedAt,
       settledAt: row.settledAt,
     };
@@ -1766,7 +1835,13 @@ export class AdminMoneyService {
    * a refusal — so the hold release and the state change stay in one
    * transaction and cannot disagree.
    */
-  async abandonTransfer(id: string, actor: AuthenticatedAdmin, reason: string) {
+  async abandonTransfer(
+    id: string,
+    actor: AuthenticatedAdmin,
+    reason: string,
+    /** The reason in Arabic (0179) — the client reads it on the failed transfer. */
+    reasonAr?: string | null,
+  ) {
     assertActorCan(actor, 'transfers.abandon', 'abandon a stuck transfer');
 
     const transfer = await this.transfers.findById(id);
@@ -1793,7 +1868,8 @@ export class AdminMoneyService {
       );
     }
 
-    const failed = await this.transfers.fail(id, reason.trim());
+    const arabic = composeReasonArabic({ note: reason, noteAr: reasonAr });
+    const failed = await this.transfers.fail(id, reason.trim(), arabic);
 
     /*
      * Audited with BOTH sides and the reason, because this is the one operation
@@ -1808,6 +1884,7 @@ export class AdminMoneyService {
       direction: transfer.direction,
       pendingSince: transfer.createdAt,
       reason: reason.trim(),
+      reasonAr: arabic,
     });
 
     return failed;

@@ -29,6 +29,8 @@ export interface StatementLine {
   balanceAfter: string;
   /** The payment rail's own name, for a line that came from a deposit or withdrawal. */
   methodName: string | null;
+  /** That name in Arabic, when the operator wrote one (0179); null = show `methodName`. */
+  methodNameAr: string | null;
   /** The payment's provider — `manual_admin` is money the team placed by hand. */
   provider: string | null;
   /** The MT5 login, for a line that moved money to or from a trading account. */
@@ -135,6 +137,7 @@ export class StatementService {
           le.amount::text               AS amount,
           le.balance_after::text        AS balance_after,
           COALESCE(pm.name, wpm.name)   AS method_name,
+          COALESCE(pm.name_ar, wpm.name_ar) AS method_name_ar,
           t.provider                    AS provider,
           ta.login                      AS trading_account_login,
           ta.name                       AS trading_account_name,
@@ -170,6 +173,7 @@ export class StatementService {
       amount: string;
       balance_after: string;
       method_name: string | null;
+      method_name_ar: string | null;
       provider: string | null;
       trading_account_login: string | null;
       trading_account_name: string | null;
@@ -193,6 +197,8 @@ export class StatementService {
         amount: money(row.amount),
         balanceAfter: money(row.balance_after),
         methodName: row.method_name,
+        // Only beside a name: an Arabic twin of a method no longer named is noise.
+        methodNameAr: row.method_name ? (row.method_name_ar ?? null) : null,
         provider: row.provider,
         tradingAccountLogin: row.trading_account_login,
         tradingAccountName: row.trading_account_name,

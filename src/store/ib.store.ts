@@ -186,7 +186,10 @@ export class IbStore {
     id: string,
     from: readonly IbApplicationStatus[],
     patch: Partial<
-      Pick<IbApplicationRow, 'status' | 'rejectionReason' | 'reviewedBy' | 'reviewedAt'>
+      Pick<
+        IbApplicationRow,
+        'status' | 'rejectionReason' | 'rejectionReasonAr' | 'reviewedBy' | 'reviewedAt'
+      >
     >,
     executor?: Executor,
   ): Promise<IbApplicationRow | undefined> {

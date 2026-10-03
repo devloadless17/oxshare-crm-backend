@@ -457,6 +457,10 @@ describe('R-4.2 every route declares how it is protected', () => {
   ];
 
   const VERIFICATION_EXEMPT: Record<string, string> = {
+    'PUT /profile/locale':
+      'Profile self-management, not a product surface — the portal language. A client still ' +
+      'confirming their address reads the portal in a language too, and the mails that confirm ' +
+      'it should follow the one they chose. No client data.',
     'GET /platforms':
       'Download links for the trading terminal — operator content, identical for every caller, ' +
       'and deliberately readable before verification (see the controller).',

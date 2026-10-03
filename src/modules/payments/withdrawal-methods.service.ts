@@ -22,6 +22,7 @@ import {
   normaliseMethodKey,
   requireInternalLabel,
 } from './method-keys';
+import { arabicText } from '../../common/dto/arabic-text';
 
 type WithdrawalMethodRow = typeof withdrawalPaymentMethods.$inferSelect;
 
@@ -147,6 +148,7 @@ export class WithdrawalMethodsService {
       .values({
         key,
         name: dto.name.trim(),
+        nameAr: arabicText(dto.nameAr),
         internalLabel,
         logoUrl: dto.logoUrl ?? null,
         enabled: dto.enabled ?? true,
@@ -159,6 +161,7 @@ export class WithdrawalMethodsService {
 
     this.audit.record(actor.id, 'withdrawal_method.create', 'withdrawal_method', row.key, {
       name: row.name,
+      nameAr: row.nameAr,
       internalLabel: row.internalLabel,
       enabled: row.enabled,
     });
@@ -182,6 +185,7 @@ export class WithdrawalMethodsService {
       .update(withdrawalPaymentMethods)
       .set({
         ...(dto.name !== undefined ? { name: dto.name.trim() } : {}),
+        ...(dto.nameAr !== undefined ? { nameAr: arabicText(dto.nameAr) } : {}),
         ...(internalLabel !== undefined ? { internalLabel } : {}),
         ...(dto.logoUrl !== undefined ? { logoUrl: dto.logoUrl } : {}),
         ...(dto.enabled !== undefined ? { enabled: dto.enabled } : {}),
@@ -199,7 +203,14 @@ export class WithdrawalMethodsService {
      * compared by hand.
      */
     const changed: Record<string, { before: unknown; after: unknown }> = {};
-    for (const field of ['name', 'internalLabel', 'enabled', 'sortOrder', 'logoUrl'] as const) {
+    for (const field of [
+      'name',
+      'nameAr',
+      'internalLabel',
+      'enabled',
+      'sortOrder',
+      'logoUrl',
+    ] as const) {
       if (current[field] !== row[field]) {
         changed[field] = { before: current[field], after: row[field] };
       }

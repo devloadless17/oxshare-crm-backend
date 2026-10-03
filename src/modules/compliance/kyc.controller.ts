@@ -33,6 +33,7 @@ import { JwtAuthGuard } from '../identity/guards/jwt-auth.guard';
 import { EmailVerifiedGuard } from '../identity/guards/email-verified.guard';
 import { User } from '../../store/users.store';
 import { KycConfigStore } from '../../store/kyc-config.store';
+import { RejectionReasonsStore } from '../../store/rejection-reasons.store';
 import { SaveKycStepDto, UploadKycFileDto } from './dto/kyc.dto';
 import { KycStatusDto, KycStepConfigDto } from './dto/kyc-response.dto';
 
@@ -82,6 +83,8 @@ export class KycController {
     private readonly kyc: KycService,
     private readonly kycConfig: KycConfigStore,
     private readonly files: StoredFilesService,
+    /* The reason's Arabic, resolved on read (0179) — `rejectionReasonAr`. */
+    private readonly reasons: RejectionReasonsStore,
   ) {}
 
   @Get('config')
@@ -97,7 +100,9 @@ export class KycController {
   @ApiOperation({ summary: 'Get current user KYC status and submitted data' })
   @ApiOkResponse({ type: KycStatusDto })
   status(@Req() req: Request & { user: User }) {
-    return this.kyc.getStatus(req.user.id);
+    return this.kyc
+      .getStatus(req.user.id)
+      .then((view) => this.reasons.withReasonArabic('kyc', view));
   }
 
   @Post('step')
@@ -109,7 +114,9 @@ export class KycController {
     description: 'The saved submission with every step state — this step judged as presented.',
   })
   saveStep(@Req() req: Request & { user: User }, @Body() dto: SaveKycStepDto) {
-    return this.kyc.saveStep(req.user.id, dto.step, dto.data);
+    return this.kyc
+      .saveStep(req.user.id, dto.step, dto.data)
+      .then((view) => this.reasons.withReasonArabic('kyc', view));
   }
 
   @Post('upload')

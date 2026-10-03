@@ -35,6 +35,8 @@ export {
   pRich,
   fine,
   panel,
+  ltr,
+  ltrHtml,
   setEmailLogoOrigin,
   type RenderedEmail,
 } from './layout';
@@ -46,7 +48,7 @@ export { kycDecision } from './kyc-decision';
 export { kycDetailsCorrected } from './kyc-details-corrected';
 export { kycReverification } from './kyc-reverification';
 export { partnerDecision } from './partner-decision';
-export { walletCredit } from './wallet-credit';
+export { walletCredit, commissionSummaryReason } from './wallet-credit';
 export { tradingAccountOpened } from './trading-account-opened';
 export { tradingAccountPasswordReset } from './trading-account-password-reset';
 export { depositOutcome } from './deposit-outcome';

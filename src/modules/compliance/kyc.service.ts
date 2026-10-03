@@ -5,6 +5,8 @@ import { filenameFromStored } from '../../common/uploads/storage/storage-key';
 import { AdminsStore } from '../../store/admins.store';
 import { collectsAnswers, isDataBearingStep } from './step-slugs';
 import { documentTypeFor, typedAnswersFor } from './kyc-answers';
+import { localizeMessage } from '../../common/i18n/localize-message';
+import { requestLocale } from '../../common/i18n/locale';
 import { catalogueDocument } from '../../common/kyc/document-catalogue';
 import {
   CANONICAL_FILE_STEP,
@@ -238,9 +240,17 @@ function formSnapshotOf(steps: readonly KycStepConfig[]): KycFormSnapshot {
     .map((step) => ({
       slug: step.slug,
       title: step.title,
+      // The Arabic the client saw beside it (0179), when there was any.
+      ...(step.titleAr ? { titleAr: step.titleAr } : {}),
       fields: step.fields
         .filter((field) => !isPlatformField(step.slug, field))
-        .map(({ name, label, type }) => ({ name, label, type })),
+        .map(({ name, label, type, labelAr, optionsAr }) => ({
+          name,
+          label,
+          type,
+          ...(labelAr ? { labelAr } : {}),
+          ...(optionsAr && Object.keys(optionsAr).length > 0 ? { optionsAr } : {}),
+        })),
     }))
     .filter((step) => step.fields.length > 0);
 }
@@ -835,7 +845,7 @@ export class KycService {
       await this.deleteDocuments(replaced.filter((path) => !archived.has(basename(path))));
     }
 
-    return { message: 'File uploaded.', field };
+    return { message: localizeMessage('File uploaded.', requestLocale()), field };
   }
 
   // ─── Submit KYC ────────────────────────────────────────────────────────────
@@ -973,6 +983,7 @@ export class KycService {
           status: 'submitted',
           submittedAt: new Date(),
           rejectionReason: undefined,
+          rejectionReasonAr: undefined,
           rejectedFields: undefined,
           // What the broker's own steps asked, as the client answered them — the
           // review labels their answers from this, whatever the builder does next.
@@ -1208,7 +1219,15 @@ export class KycService {
     const user = await this.users.findById(userId);
     if (user) {
       // Sent inline per ARCH §8.5 — fire-and-forget, failure is logged by EmailService
-      void this.email.sendKycDecisionEmail(user.email, user.firstName, 'approved');
+      // An ADMIN decision: written in the client's stored language, not the request's.
+      void this.email.sendKycDecisionEmail(
+        user.email,
+        user.firstName,
+        'approved',
+        undefined,
+        undefined,
+        user.locale,
+      );
     }
     this.logger.log(`KYC approved for user ${userId} by admin ${adminId}`);
     return this.getByUserId(userId);
@@ -1478,7 +1497,14 @@ export class KycService {
    * the reason and the items; their resubmission reaches the queue as a
    * resubmission, like any returned one. Approval clears the stamp.
    */
-  async requestReverification(userId: number, adminId: string, reason: string, items: string[]) {
+  async requestReverification(
+    userId: number,
+    adminId: string,
+    reason: string,
+    items: string[],
+    /** The reason as an Arabic reader is shown it (0179); null when there is none. */
+    reasonAr: string | null = null,
+  ) {
     const submission = await this.kycStore.findByUserId(userId);
     if (!submission) throw new NotFoundError('KYC submission not found.');
     if (submission.status !== 'approved') {
@@ -1500,6 +1526,7 @@ export class KycService {
         {
           status: 'rejected',
           rejectionReason: reason,
+          rejectionReasonAr: reasonAr ?? undefined,
           rejectedFields: flags,
           reviewedBy: adminId,
           reviewedAt: new Date(),
@@ -1529,7 +1556,7 @@ export class KycService {
         {
           recipient: { kind: 'client', id: userId },
           kind: 'kyc.reverification_requested',
-          params: { reason },
+          params: { reason, ...(reasonAr ? { reasonAr } : {}) },
         },
         tx,
       );
@@ -1540,7 +1567,10 @@ export class KycService {
         user.email,
         user.firstName,
         reason,
-        flags.map((id) => flagLabel(id, steps, submission)),
+        // Named in the client's own language — the email is written in it.
+        flags.map((id) => flagLabel(id, steps, submission, [], user.locale)),
+        user.locale,
+        reasonAr,
       );
     }
     this.logger.log(`KYC re-verification requested for user ${userId} by admin ${adminId}`);
@@ -1601,6 +1631,8 @@ export class KycService {
     rejectedFields: string[] = [],
     /** The configured reason chosen, when one was — kept on the decision (0151). */
     reasonId?: string,
+    /** The reason as an Arabic reader is shown it (0179); null when there is none. */
+    reasonAr: string | null = null,
   ) {
     const submission = await this.kycStore.findByUserId(userId);
     if (!submission) throw new NotFoundError('KYC submission not found.');
@@ -1636,6 +1668,7 @@ export class KycService {
         {
           status: 'rejected',
           rejectionReason: reason,
+          rejectionReasonAr: reasonAr ?? undefined,
           rejectedFields: flags,
           reviewedBy: adminId,
           reviewedAt: new Date(),
@@ -1700,7 +1733,7 @@ export class KycService {
         {
           recipient: { kind: 'client', id: userId },
           kind: 'kyc.rejected',
-          params: { reason },
+          params: { reason, ...(reasonAr ? { reasonAr } : {}) },
         },
         tx,
       );
@@ -1713,8 +1746,11 @@ export class KycService {
         user.firstName,
         'rejected',
         reason,
-        // Named as every screen names them — "National ID (Back Side)", never `doc_back`.
-        flags.map((id) => flagLabel(id, steps, submission)),
+        // Named as every screen names them — "National ID (Back Side)", never `doc_back` —
+        // and in the client's own language, which the email is written in.
+        flags.map((id) => flagLabel(id, steps, submission, [], user.locale)),
+        user.locale,
+        reasonAr,
       );
     }
 
@@ -1754,7 +1790,8 @@ export class KycService {
    */
   async resetKyc(userId: number) {
     const submission = await this.kycStore.findByUserId(userId);
-    if (!submission) return { message: 'KYC data reset successfully.' };
+    if (!submission)
+      return { message: localizeMessage('KYC data reset successfully.', requestLocale()) };
 
     if (submission.status === 'approved') {
       /*
@@ -1813,7 +1850,7 @@ export class KycService {
     });
     await this.deleteDocuments(deletable);
 
-    return { message: 'KYC data reset successfully.' };
+    return { message: localizeMessage('KYC data reset successfully.', requestLocale()) };
   }
 
   /** A client's decided attempts, oldest first — the admin history view. */

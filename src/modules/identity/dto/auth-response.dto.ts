@@ -51,6 +51,15 @@ export class UserProfileDto {
   @ApiPropertyOptional({ example: '00000' }) postalCode?: string;
   @ApiProperty() createdAt: Date;
 
+  @ApiProperty({
+    enum: ['en', 'ar'],
+    example: 'en',
+    description:
+      'The portal language the client last chose (PUT /profile/locale, or the language they ' +
+      'registered in). Emails sent outside their own requests are written in it.',
+  })
+  locale: 'en' | 'ar';
+
   @ApiPropertyOptional({
     type: String,
     nullable: true,

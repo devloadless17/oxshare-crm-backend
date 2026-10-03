@@ -27,8 +27,9 @@ import { IbWalletTransferDto, IbWalletTransferResultDto } from './dto/ib-wallet.
 import { PublicAgencyDto } from '../products/dto/catalogue.dto';
 import { WalletDto } from '../wallet/dto/wallet-response.dto';
 import { OpenOwnWalletDto } from '../wallet/dto/open-wallet.dto';
-import { ProductsStore } from '../../store/products.store';
+import { ProductsStore, type ProductRow } from '../../store/products.store';
 import { ibApplicationView } from './ib-views';
+import { RejectionReasonsStore } from '../../store/rejection-reasons.store';
 
 /**
  * The client's own view of the partner programme.
@@ -58,6 +59,8 @@ export class IbController {
      * lines and lives below.
      */
     private readonly catalogue: ProductsStore,
+    /* The refusal's reason in Arabic, resolved on read (0179). */
+    private readonly reasons: RejectionReasonsStore,
   ) {}
 
   /** Enabled agencies with their product names, for the applicant to read. */
@@ -66,18 +69,25 @@ export class IbController {
       this.catalogue.listAgencies(),
       this.catalogue.listProducts(),
     ]);
-    const nameOf = new Map(products.map((product) => [product.id, product.name]));
+    const productOf = new Map(products.map((product) => [product.id, product]));
 
     return agencies
       .filter((agency) => agency.enabled)
-      .map((agency) => ({
-        id: agency.id,
-        name: agency.name,
-        description: agency.description,
-        products: agency.productIds
-          .map((id) => nameOf.get(id))
-          .filter((name): name is string => Boolean(name)),
-      }));
+      .map((agency) => {
+        // Index for index: `productsAr[i]` is the Arabic of `products[i]` (0179).
+        const sold = agency.productIds
+          .map((id) => productOf.get(id))
+          .filter((product): product is ProductRow => Boolean(product?.name));
+        return {
+          id: agency.id,
+          name: agency.name,
+          nameAr: agency.nameAr,
+          description: agency.description,
+          descriptionAr: agency.descriptionAr,
+          products: sold.map((product) => product.name),
+          productsAr: sold.map((product) => product.nameAr),
+        };
+      });
   }
 
   @Get('status')
@@ -90,8 +100,14 @@ export class IbController {
       'states and a client shown a blank form after a refusal has been told nothing.',
   })
   @ApiOkResponse({ type: IbStatusDto })
-  status(@Req() req: Request & { user: User }) {
-    return this.applications.statusFor(req.user.id);
+  async status(@Req() req: Request & { user: User }) {
+    const status = await this.applications.statusFor(req.user.id);
+    if (!status.application) return status;
+    // Stored Arabic first, then the catalogue's; a blank one is dropped, not sent.
+    return {
+      ...status,
+      application: await this.reasons.withReasonArabic('partner', status.application),
+    };
   }
 
   @Get('overview')

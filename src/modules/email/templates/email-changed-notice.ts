@@ -1,4 +1,5 @@
-import { fine, layout, p, type RenderedEmail } from './layout';
+import type { Locale } from '../../../common/i18n/locale';
+import { fine, fineAr, layout, layoutAr, ltr, p, pAr, pRichAr, type RenderedEmail } from './layout';
 
 /**
  * "Your sign-in address was changed" — sent to the OLD address, always.
@@ -29,7 +30,12 @@ import { fine, layout, p, type RenderedEmail } from './layout';
  * me" link in a mail sent to an address that may itself be compromised is a
  * phishing lure wearing our brand.
  */
-export function emailChangedNotice(newEmail: string, supportEmail: string): RenderedEmail {
+export function emailChangedNotice(
+  newEmail: string,
+  supportEmail: string,
+  locale: Locale = 'en',
+): RenderedEmail {
+  if (locale === 'ar') return emailChangedNoticeAr(newEmail, supportEmail);
   return {
     subject: 'The sign-in address on your OxShare account was changed',
     html: layout(
@@ -51,6 +57,34 @@ export function emailChangedNotice(newEmail: string, supportEmail: string): Rend
         fine(
           'This notice was sent to your previous address on purpose, so that a change you did not ' +
             'request cannot go unnoticed.',
+        ),
+      ].join('\n'),
+    ),
+  };
+}
+
+function emailChangedNoticeAr(newEmail: string, supportEmail: string): RenderedEmail {
+  return {
+    subject: 'تم تغيير عنوان تسجيل الدخول لحسابك في OXShare',
+    html: layoutAr(
+      'تم تغيير عنوان تسجيل الدخول',
+      [
+        pAr(
+          'قام أحد المسؤولين بتغيير عنوان البريد الإلكتروني المستخدم لتسجيل الدخول إلى حسابك ' +
+            'في OXShare. العنوان الجديد هو:',
+        ),
+        pRichAr(ltr(newEmail)),
+        pAr(
+          'لن تتمكن بعد الآن من تسجيل الدخول باستخدام هذا العنوان، وستُرسَل روابط إعادة تعيين ' +
+            'كلمة المرور إلى العنوان الجديد.',
+        ),
+        pRichAr(
+          'إذا كنت قد طلبت هذا التغيير، فلا حاجة إلى أي إجراء آخر. أما إذا لم تطلبه، فتواصل ' +
+            `فوراً مع ${ltr(supportEmail)} — فقد يكون حسابك قد تعرّض للاختراق.`,
+        ),
+        fineAr(
+          'أرسلنا هذا الإشعار إلى عنوانك السابق عن قصد، حتى لا يمرّ أي تغيير لم تطلبه ' +
+            'دون أن تلاحظه.',
         ),
       ].join('\n'),
     ),

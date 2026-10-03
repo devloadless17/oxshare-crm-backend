@@ -18,6 +18,7 @@ import { CurrenciesService } from '../currencies/currencies.service';
 import { WalletService } from '../wallet/wallet.service';
 import { money, toDecimal } from '../wallet/money';
 import { LEDGER_REFERENCE } from '../../database/ledger-reference';
+import { systemSentenceArabic } from '../../common/i18n/reason-arabic';
 import {
   NOTIFICATION_DISPATCH,
   type NotificationDispatchPort,
@@ -605,7 +606,12 @@ export class TransfersService {
    * Both leave the position identical to before the request, which is what
    * makes a failed transfer safe for the client to simply retry.
    */
-  async fail(transferId: string, reason: string) {
+  async fail(
+    transferId: string,
+    reason: string,
+    /** The reason in Arabic (0179); omitted = the catalogue's Arabic of a system sentence. */
+    reasonAr?: string | null,
+  ) {
     const transfer = await this.findOne(transferId);
     if (!transfer) throw new NotFoundError('Transfer not found.');
     if (transfer.state !== 'pending') {
@@ -623,7 +629,12 @@ export class TransfersService {
       }
       await tx
         .update(transfers)
-        .set({ state: 'failed', failureReason: reason, settledAt: new Date() })
+        .set({
+          state: 'failed',
+          failureReason: reason,
+          failureReasonAr: reasonAr === undefined ? systemSentenceArabic(reason) : reasonAr,
+          settledAt: new Date(),
+        })
         .where(eq(transfers.id, transfer.id));
     });
 

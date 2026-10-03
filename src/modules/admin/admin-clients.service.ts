@@ -851,8 +851,9 @@ export class AdminClientsService {
      * must not leave the account half-changed, and the audit row is the durable
      * record either way.
      */
-    await this.email.sendVerificationEmail(email, token);
-    await this.email.sendEmailChangedNotice(previousEmail, email);
+    // An admin's change: both mails in the client's stored language.
+    await this.email.sendVerificationEmail(email, token, undefined, user.locale);
+    await this.email.sendEmailChangedNotice(previousEmail, email, user.locale);
 
     return this.profileView(updated, actor);
   }

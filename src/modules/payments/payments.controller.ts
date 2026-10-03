@@ -40,9 +40,11 @@ import { JwtAuthGuard } from '../identity/guards/jwt-auth.guard';
 import { EmailVerifiedGuard } from '../identity/guards/email-verified.guard';
 import { KycVerifiedGuard } from '../identity/guards/kyc-verified.guard';
 import { User } from '../../store/users.store';
+import { RejectionReasonsStore } from '../../store/rejection-reasons.store';
 import { HostedDepositsService } from './core/hosted-deposits.service';
 import { TransactionsService } from './transactions.service';
 import { transactionView } from './transaction-view';
+import { withReasonArabicRows } from './reason-arabic-rows';
 import { transferView } from './transfer-view';
 import { RequestWithdrawalDto, TransactionDto, WithdrawalMethodDto } from './dto/withdrawal.dto';
 import {
@@ -105,6 +107,8 @@ export class PaymentsController {
     private readonly files: StoredFilesService,
     /* Every hosted deposit settles through the core's one credit path (0173). */
     private readonly hostedDeposits: HostedDepositsService,
+    /* A refused movement's reason in Arabic, resolved on read (0179). */
+    private readonly reasons: RejectionReasonsStore,
   ) {}
 
   /**
@@ -474,8 +478,17 @@ export class PaymentsController {
       'count of matching rows and a sort covers the entire history rather than one page.',
   })
   @ApiOkResponse({ type: TransactionPageDto })
-  myTransactions(@Req() req: Request & { user: User }, @Query() query: ListTransactionsQueryDto) {
-    return this.transactions.listForUser(req.user.id, query);
+  async myTransactions(
+    @Req() req: Request & { user: User },
+    @Query() query: ListTransactionsQueryDto,
+  ) {
+    const page = await this.transactions.listForUser(req.user.id, query);
+    /*
+     * `rejectionReasonAr` (0179): the Arabic written with the decision, else the
+     * configured reason's, else the catalogue's for a system sentence — ONE
+     * query for the whole page, none when no row on it needs one.
+     */
+    return { ...page, items: await withReasonArabicRows(page.items, this.reasons) };
   }
 
   /**

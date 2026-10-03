@@ -40,6 +40,7 @@ import type { KycStepConfig } from '../../store/kyc-config.store';
 import type { KycFormSnapshot, KycSubmission } from '../../store/kyc.store';
 import { asPageFlags, documentFlagLabel } from './kyc-document-rules';
 import { isStoredFile } from './step-slugs';
+import { pickLocalized, type Locale } from '../../common/i18n/locale';
 
 export interface KycReviewPage {
   /** Where the file is stored: `doc_front`, `doc_back`, `address_proof`, `address_proof_2`. */
@@ -251,15 +252,22 @@ export function flagLabel(
   steps: readonly KycStepConfig[],
   submission: Pick<KycSubmission, 'document' | 'addressProof'>,
   additional: readonly KycReviewSection[] = [],
+  /** The reader's language (0179) — an Arabic client's email names each item in Arabic. */
+  locale: Locale = 'en',
 ): string {
   const identity = identityField(id);
-  if (identity) return identity.label;
+  if (identity) return pickLocalized(identity.label, identity.labelAr, locale);
   const own = additional.flatMap((section) => section.fields).find((field) => field.name === id);
   if (own) return own.label;
-  const label = documentFlagLabel(id, steps, {
-    document: submission.document ?? undefined,
-    addressProof: submission.addressProof ?? undefined,
-  });
+  const label = documentFlagLabel(
+    id,
+    steps,
+    {
+      document: submission.document ?? undefined,
+      addressProof: submission.addressProof ?? undefined,
+    },
+    locale,
+  );
   return label === id ? humanise(id) : label;
 }
 

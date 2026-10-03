@@ -1261,6 +1261,13 @@
       "when": 1789141700750,
       "tag": "0178_country_list_and_method_restrictions",
       "breakpoints": true
+    },
+    {
+      "idx": 181,
+      "version": "7",
+      "when": 1789141701750,
+      "tag": "0179_arabic_portal",
+      "breakpoints": true
     }
   ]
 }

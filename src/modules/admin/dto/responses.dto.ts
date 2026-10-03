@@ -408,6 +408,14 @@ export class KycSubmissionDto {
   @ApiPropertyOptional()
   rejectionReason?: string;
   @NotClientField(
+    'not a client-owned attribute \u2014 the Arabic of rejectionReason describes the record',
+  )
+  @ApiPropertyOptional({
+    type: String,
+    description: 'The reason in Arabic as the client was shown it (0179). Absent when none.',
+  })
+  rejectionReasonAr?: string;
+  @NotClientField(
     'not a client-owned attribute \u2014 rejectedFields describes the record rather than the person',
   )
   @ApiPropertyOptional({ type: [String] })
@@ -547,6 +555,14 @@ export class KycAttemptDto {
   )
   @ApiPropertyOptional()
   rejectionReason?: string;
+  @NotClientField(
+    'not a client-owned attribute \u2014 the Arabic of rejectionReason describes the record',
+  )
+  @ApiPropertyOptional({
+    type: String,
+    description: 'The reason in Arabic as the client was shown it (0179). Absent when none.',
+  })
+  rejectionReasonAr?: string;
   @NotClientField(
     'not a client-owned attribute \u2014 rejectedFields describes the record rather than the person',
   )
@@ -1387,6 +1403,13 @@ export class RejectionReasonResponseDto {
   @ApiProperty({ enum: rejectionContextEnum.enumValues })
   context: RejectionContext;
   @ApiProperty() label: string;
+  @ApiProperty({
+    type: 'string',
+    nullable: true,
+    description:
+      'Arabic shown to clients reading the portal in Arabic (0179); null = not translated.',
+  })
+  labelAr: string | null;
   @ApiProperty() createdAt: Date;
 }
 
@@ -1855,6 +1878,15 @@ export class WithdrawalRowDto {
   )
   @ApiPropertyOptional({ type: String, nullable: true })
   rejectionReason?: string | null;
+  @NotClientField(
+    'not a client-owned attribute \u2014 the Arabic of rejectionReason describes the record',
+  )
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    description: 'The reason in Arabic as the client was shown it (0179). Null when none.',
+  })
+  rejectionReasonAr?: string | null;
   @NotClientField('a timestamp the system recorded, describing the record rather than the client')
   @ApiProperty()
   requestedAt: Date;
@@ -2156,6 +2188,15 @@ export class AdminTransactionRowDto {
   )
   @ApiPropertyOptional({ type: String, nullable: true })
   rejectionReason?: string | null;
+  @NotClientField(
+    'not a client-owned attribute \u2014 the Arabic of rejectionReason describes the record',
+  )
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    description: 'The reason in Arabic as the client was shown it (0179). Null when none.',
+  })
+  rejectionReasonAr?: string | null;
   @ApiPropertyOptional({
     type: String,
     nullable: true,
@@ -3245,6 +3286,16 @@ export class DepositDecisionDto {
   )
   @ApiPropertyOptional({ nullable: true })
   rejectionReason: string | null;
+
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    description: 'The reason in Arabic as the client was shown it (0179). Null when none.',
+  })
+  rejectionReasonAr: string | null;
 
   @NotClientField(
     'a money, paging or configuration value on the RECORD, carrying no client attribute',

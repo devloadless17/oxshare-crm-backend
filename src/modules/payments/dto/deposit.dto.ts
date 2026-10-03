@@ -106,6 +106,16 @@ export class ProofDetailDto {
   @ApiProperty({ example: 'Phone number you sent from', description: 'The question as asked.' })
   label: string;
 
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    example: 'رقم الهاتف الذي أرسلت منه',
+    description:
+      'The question in Arabic as asked (0179), when the field had one at filing. Absent on ' +
+      'answers filed before it, or to an untranslated field — show `label`.',
+  })
+  labelAr?: string | null;
+
   @ApiProperty({ enum: PROOF_FIELD_TYPES, example: 'phone' })
   type: ProofFieldType;
 

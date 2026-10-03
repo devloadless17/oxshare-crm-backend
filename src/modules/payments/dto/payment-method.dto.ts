@@ -23,6 +23,7 @@ import {
   PROOF_FIELD_TYPES,
   type ProofFieldType,
 } from '../../../common/payments/proof-fields';
+import { OptionalArabicText } from '../../../common/dto/arabic-text';
 
 /**
  * One detail an offline method asks the client for — as the CLIENT sees it
@@ -36,6 +37,14 @@ export class AskedProofFieldDto {
   @ApiProperty({ example: 'Phone number you sent from' })
   label: string;
 
+  @ApiProperty({
+    type: 'string',
+    nullable: true,
+    example: 'رقم الهاتف الذي أرسلت منه',
+    description: 'The label in Arabic (0179); null = not translated, show `label`.',
+  })
+  labelAr: string | null;
+
   @ApiProperty({ enum: PROOF_FIELD_TYPES, example: 'phone' })
   type: ProofFieldType;
 
@@ -44,6 +53,13 @@ export class AskedProofFieldDto {
 
   @ApiProperty({ type: 'string', nullable: true, example: 'The number on your OMT slip.' })
   hint: string | null;
+
+  @ApiProperty({
+    type: 'string',
+    nullable: true,
+    description: 'The hint in Arabic (0179); null = not translated, show `hint`.',
+  })
+  hintAr: string | null;
 }
 
 /** The same, as the CONSOLE sees it: hidden fields included, with their switch. */
@@ -86,6 +102,12 @@ export class ProofFieldInputDto {
   @IsString()
   @Length(0, PROOF_FIELD_LIMITS.hint + 20)
   hint?: string | null;
+
+  @OptionalArabicText(PROOF_FIELD_LIMITS.label, 'رقم الهاتف الذي أرسلت منه')
+  labelAr?: string | null;
+
+  @OptionalArabicText(PROOF_FIELD_LIMITS.hint)
+  hintAr?: string | null;
 }
 
 const PROOF_FIELDS_DESCRIPTION =
@@ -128,6 +150,14 @@ export class PaymentMethodDto {
 
   @ApiProperty({ example: 'Whish Money' })
   name: string;
+
+  @ApiProperty({
+    type: 'string',
+    nullable: true,
+    example: 'ويش ماني',
+    description: 'The name in Arabic (0179); null = not translated, show `name`.',
+  })
+  nameAr: string | null;
 
   @ApiProperty({ example: 'USD' })
   currency: string;
@@ -238,6 +268,9 @@ export class CreatePaymentMethodDto {
   @IsString()
   @Length(1, 80)
   name: string;
+
+  @OptionalArabicText(80, 'ويش ماني')
+  nameAr?: string | null;
 
   @ApiPropertyOptional({
     maxLength: 80,
@@ -388,6 +421,10 @@ export class CreatePaymentMethodDto {
  */
 export class UpdatePaymentMethodDto {
   @ApiPropertyOptional() @IsOptional() @IsString() @Length(1, 80) name?: string;
+
+  /** Omitted keeps the stored Arabic; null or blank clears it. */
+  @OptionalArabicText(80, 'ويش ماني')
+  nameAr?: string | null;
 
   @ApiPropertyOptional({
     maxLength: 80,

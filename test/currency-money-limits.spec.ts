@@ -309,3 +309,29 @@ describe('the limits themselves', () => {
     ).rejects.toMatchObject({ cause: { constraint: 'payment_methods_amount_bounds_ck' } });
   });
 });
+
+/* Arabic (0179): the currency's name in Arabic, optional, served to clients. */
+describe('the Arabic name', () => {
+  it('stores it trimmed, serves it on the client list, keeps it on an omitting edit, clears blank', async () => {
+    await currencies.create(
+      {
+        code: 'AED',
+        name: 'UAE Dirham',
+        nameAr: ' درهم إماراتي ',
+        symbol: 'د.إ',
+        decimals: 2,
+        ...LBP_LIMITS,
+      },
+      ADMIN,
+    );
+    expect((await currencies.findOne('AED'))?.nameAr).toBe('درهم إماراتي');
+    const listed = (await currencies.listEnabled()).find((row) => row.code === 'AED');
+    expect(listed?.nameAr).toBe('درهم إماراتي');
+    expect((await currencies.listEnabled()).find((row) => row.code === 'LBP')?.nameAr).toBeNull();
+
+    await currencies.update('AED', { name: 'Dirham' }, ADMIN);
+    expect((await currencies.findOne('AED'))?.nameAr).toBe('درهم إماراتي');
+    await currencies.update('AED', { nameAr: '   ' }, ADMIN);
+    expect((await currencies.findOne('AED'))?.nameAr).toBeNull();
+  });
+});

@@ -4,6 +4,7 @@ import { INestApplication, ValidationPipe } from '@nestjs/common';
 import request from 'supertest';
 import type { Server } from 'http';
 import { KycController } from '../src/modules/compliance/kyc.controller';
+import { RejectionReasonsStore } from '../src/store/rejection-reasons.store';
 import { KycService } from '../src/modules/compliance/kyc.service';
 import { KycConfigStore } from '../src/store/kyc-config.store';
 import { JwtAuthGuard } from '../src/modules/identity/guards/jwt-auth.guard';
@@ -102,6 +103,11 @@ async function makeApp(recorded: Recorded): Promise<INestApplication> {
         },
       },
       { provide: KycConfigStore, useValue: { getSteps: () => Promise.resolve([]) } },
+      // The status read resolves a reason's Arabic (0179); uploads never reach it.
+      {
+        provide: RejectionReasonsStore,
+        useValue: { withReasonArabic: <T>(rows: T) => Promise.resolve(rows) },
+      },
       // In memory: the boundary under test is the upload, not where the bytes land.
       // Nothing here reaches the filesystem or Cloudflare R2.
       { provide: StoredFilesService, useValue: recorded.files },
