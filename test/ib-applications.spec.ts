@@ -1246,11 +1246,40 @@ describe('the cycle guard', () => {
 
   it('terminates on a chain that is ALREADY cyclic', async () => {
     const [a, , c] = await makeChain();
-    // Postgres permits this — the schema spec asserts that gap. `ancestorsOf`
-    // uses UNION rather than UNION ALL precisely so this query still returns.
+    // Postgres permits this — the schema spec asserts that gap. The chain
+    // walk's `path` guard is what makes this query still return.
     await ctx.db.execute(sql`UPDATE ib_accounts SET parent_ib_user_id = ${c} WHERE user_id = ${a}`);
 
     await expect(store.ancestorsOf(c)).resolves.toBeInstanceOf(Array);
+  });
+
+  it('cannot close a ring with two CONCURRENT opposite moves', async () => {
+    /*
+     * Two roots, X and Y. "X under Y" and "Y under X" are each legal against
+     * the tree as it stands; run together, a check read outside the write's
+     * transaction let both pass and commit X→Y→X. Under the tree lock the
+     * second sees the first's write and is refused.
+     */
+    const x = await makeClient('race-x@test.local');
+    const y = await makeClient('race-y@test.local');
+    await store.createAccount({ userId: x, level: 1, referralCode: 'RACEXXXX' });
+    await store.createAccount({ userId: y, level: 1, referralCode: 'RACEYYYY' });
+
+    for (let round = 0; round < 5; round += 1) {
+      await ctx.db.execute(
+        sql`UPDATE ib_accounts SET parent_ib_user_id = NULL WHERE user_id IN (${x}, ${y})`,
+      );
+      const results = await Promise.allSettled([
+        service.reassignParent(x, y, UNRESTRICTED, REVIEWER),
+        service.reassignParent(y, x, UNRESTRICTED, REVIEWER),
+      ]);
+      expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+      const { rows } = await ctx.db.execute<{ n: number }>(sql`
+        SELECT count(*)::int n FROM ib_accounts
+         WHERE user_id IN (${x}, ${y}) AND parent_ib_user_id IS NOT NULL
+      `);
+      expect(rows[0].n).toBe(1);
+    }
   });
 });
 

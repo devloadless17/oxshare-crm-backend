@@ -2,7 +2,7 @@ import { OfferedCountriesStore } from '../src/store/offered-countries.store';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { sql } from 'drizzle-orm';
 import { ConfigService } from '@nestjs/config';
-import { KycService } from '../src/modules/compliance/kyc.service';
+import { KycReviewService } from '../src/modules/compliance/kyc-review.service';
 import { ClientProfileService } from '../src/modules/profile/client-profile.service';
 import { KycIdentityReview } from '../src/modules/compliance/kyc-identity-review';
 import { TransactionsService } from '../src/modules/payments/transactions.service';
@@ -19,7 +19,6 @@ import { AuditLogStore } from '../src/store/audit-log.store';
 import type { EmailService } from '../src/modules/email/email.service';
 import { emailStubAs } from './email-stub';
 import { notificationsStubAs } from './notifications-stub';
-import { storedFilesStub } from './storage-stub';
 import { transferExecutorStubAs, transfersStubAs } from './transfer-chain-stub';
 import { gatewayStubAs } from './gateway-stub';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
@@ -62,7 +61,7 @@ import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './mone
 const KYC_REFUSAL = /verified account \(KYC level 1\)/i;
 
 let ctx: MoneyTestContext;
-let kyc: KycService;
+let kyc: KycReviewService;
 let transactions: TransactionsService;
 let transfers: TransfersService;
 let wallets: WalletService;
@@ -114,9 +113,8 @@ beforeAll(async () => {
     sendKycDecisionEmail: vi.fn().mockResolvedValue(undefined),
   } as unknown as EmailService;
 
-  kyc = new KycService(
+  kyc = new KycReviewService(
     kycEmail,
-    storedFilesStub(),
     new KycStore(db),
     new UsersStore(db),
     new KycConfigStore(db),

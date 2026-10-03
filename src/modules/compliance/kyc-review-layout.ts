@@ -30,6 +30,7 @@
  */
 import { catalogueDocument } from '../../common/kyc/document-catalogue';
 import {
+  DOCUMENT_PAGE_SLOTS,
   IDENTITY_FIELDS,
   identityField,
   isPlatformField,
@@ -87,8 +88,8 @@ export interface KycReviewLayout {
   flags: { id: string; label: string }[];
 }
 
-const IDENTITY_SLOTS = ['doc_front', 'doc_back'] as const;
-const ADDRESS_SLOTS = ['address_proof', 'address_proof_2'] as const;
+const IDENTITY_SLOTS = DOCUMENT_PAGE_SLOTS.document;
+const ADDRESS_SLOTS = DOCUMENT_PAGE_SLOTS.address;
 
 /**
  * The name each key was last given, kept after its question left the form
@@ -306,10 +307,10 @@ export function returnableItems(
     layout.identity.filter((field) => field.asked).map((field) => field.key),
   );
   const onFile: Record<string, string | undefined> = {
-    doc_front: submission.document?.frontFilePath,
-    doc_back: submission.document?.backFilePath,
-    address_proof: submission.addressProof?.filePath,
-    address_proof_2: submission.addressProof?.page2FilePath,
+    [IDENTITY_SLOTS[0]]: submission.document?.frontFilePath,
+    [IDENTITY_SLOTS[1]]: submission.document?.backFilePath,
+    [ADDRESS_SLOTS[0]]: submission.addressProof?.filePath,
+    [ADDRESS_SLOTS[1]]: submission.addressProof?.page2FilePath,
   };
   const documentOnFile = (slug: 'document' | 'address', document: KycReviewDocument) => {
     const pages = document.pages.filter((page) => onFile[page.slot]).map((page) => page.slot);

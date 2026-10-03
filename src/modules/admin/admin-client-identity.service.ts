@@ -6,7 +6,7 @@ import { paymentMethods, transactions } from '../../database/schema';
 import { formatLimit } from '../../common/currency-limits';
 import { NotFoundError } from '../../common/errors/domain-errors';
 import { catalogueDocument } from '../../common/kyc/document-catalogue';
-import { identityField } from '../../common/kyc/identity-core';
+import { EVIDENCE_PAGE_SLOTS, identityField } from '../../common/kyc/identity-core';
 import { actorHasPermission } from '../../common/security/actor';
 import { KycConfigStore } from '../../store/kyc-config.store';
 import { UsersStore } from '../../store/users.store';
@@ -21,12 +21,21 @@ import type {
 import type { AuthenticatedAdmin } from './guards/admin.guard';
 
 /** A returned page, named the way the review names its tiles. */
+const PAGE_ORDINALS = ['first', 'second'] as const;
 const PAGE_LABELS: Readonly<Record<string, string>> = {
-  doc_front: 'Identity document — first page',
-  doc_back: 'Identity document — second page',
-  address_proof: 'Proof of address — first page',
-  address_proof_2: 'Proof of address — second page',
-  selfie: 'Selfie',
+  ...Object.fromEntries(
+    EVIDENCE_PAGE_SLOTS.document.map((slot, i) => [
+      slot,
+      `Identity document — ${PAGE_ORDINALS[i]} page`,
+    ]),
+  ),
+  ...Object.fromEntries(
+    EVIDENCE_PAGE_SLOTS.address.map((slot, i) => [
+      slot,
+      `Proof of address — ${PAGE_ORDINALS[i]} page`,
+    ]),
+  ),
+  [EVIDENCE_PAGE_SLOTS.selfie[0]]: 'Selfie',
 };
 
 const SLOT_LABELS: Readonly<Record<string, string>> = {

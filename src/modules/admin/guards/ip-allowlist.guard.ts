@@ -64,7 +64,17 @@ export class IpAllowlistGuard implements CanActivate {
     // did the same thing to THIS guard. `isAdminSurface` is the one definition
     // both guards share — see common/api-prefix.ts.
     if (!isAdminSurface(req.path)) return true;
+    return this.assertAdmitted(req);
+  }
 
+  /**
+   * RBAC-08 for one request already known to be an ADMIN request — the rule
+   * the guard applies by path, callable by the `/uploads` file routes, which
+   * sit outside `/admin` and only learn after authentication that an admin is
+   * asking. One implementation, so the route and the guard cannot disagree
+   * (fail-open paging included). Resolves `true` or throws 403.
+   */
+  async assertAdmitted(req: Request): Promise<boolean> {
     /*
      * A GUARD MUST NOT BE ABLE TO TAKE THE CONSOLE DOWN.
      *

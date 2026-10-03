@@ -69,7 +69,7 @@ export interface CommissionAccrualPort {
   /**
    * "This trade closed — accrue whatever partners are owed for it."
    *
-   * Same no-throw contract as the deposit hook below: by the time this runs the
+   * No-throw contract: by the time this runs the
    * position is already closed and the client's balance already settled, so a
    * commission failure must not roll that back or report the close as failed.
    */
@@ -88,31 +88,14 @@ export interface CommissionAccrualPort {
   }): Promise<number>;
 
   /**
-   * Accrue partner commissions for one settled deposit. Returns rows CREATED.
-   *
-   * ## Idempotent, and NEVER throws
-   *
-   * Both halves mirror `WalletProvisioningPort`'s no-throw contract: a deposit
-   * that has already credited the client's wallet must not be rolled back — or
-   * reported as failed — because a COMMISSION could not be computed. The
-   * implementation refuses at the door (a deposit is not revenue) and returns 0.
-   */
-  accrueForSettledDeposit(deposit: {
-    transactionId: string;
-    clientUserId: number;
-    amount: string;
-    currency: string;
-  }): Promise<number>;
-
-  /**
    * "This MT5 deal was ingested — accrue whatever partners are owed for it."
    *
    * The live feed's entry point, and the only one that actually fires today:
    * `positions` is written by nothing, and a deposit is not revenue.
    *
-   * ## ⚠️ This one THROWS, unlike the two above
+   * ## ⚠️ This one THROWS, unlike the one above
    *
-   * The no-throw contract on the other two protects a user-facing write that
+   * The no-throw contract on the other one protects a user-facing write that
    * has already completed — a client's deposit, a closed trade — where failing
    * the caller would be strictly worse than losing the accrual.
    *

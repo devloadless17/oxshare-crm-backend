@@ -5,7 +5,7 @@ import { KycNotVerifiedError } from '../../../common/errors/domain-errors';
 /**
  * The verification level a client must hold to move money.
  *
- * 1 is "KYC approved", set in exactly one place — `KycService.approve()` — and
+ * 1 is "KYC approved", set in exactly one place — `KycReviewService.approve()` — and
  * taken back to 0 by `reject()`. Named rather than inlined so the two services
  * that also check it (`IbApplicationsService`, and the money services below)
  * cannot drift to a different number.

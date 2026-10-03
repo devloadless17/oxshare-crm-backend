@@ -155,7 +155,13 @@ async function build(overrides: { admin?: Partial<Admin>; role?: Role | undefine
     providers: [
       AdminRbacService,
       { provide: AdminsStore, useValue: adminsFake },
-      { provide: InvitesStore, useValue: { findPendingByRoleId: vi.fn().mockResolvedValue([]) } },
+      {
+        provide: InvitesStore,
+        useValue: {
+          findPendingByRoleId: vi.fn().mockResolvedValue([]),
+          deletePendingByInviter: vi.fn().mockResolvedValue(0),
+        },
+      },
       { provide: RolesStore, useValue: rolesFake },
       { provide: AdminAuditService, useValue: auditFake },
       {

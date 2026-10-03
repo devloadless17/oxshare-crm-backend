@@ -192,6 +192,33 @@ const REFERRED_CLIENTS_SHOWN = 50;
  * would be an oracle over the client base, which is the same reason
  * `client-scope.ts` returns 404 rather than 403 for an out-of-scope client.
  */
+/**
+ * `?level=` for the client list AND its export — one parser, so the file can
+ * never filter differently from the screen it came from.
+ */
+export function clientLevelFilter(value: string | undefined): number | undefined {
+  if (value === undefined || value === '') return undefined;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 1) {
+    throw new ValidationError('level must be 0 or 1.');
+  }
+  return parsed;
+}
+
+/** An unknown `?tag=` is a 400, never an empty page or file (R-2.5). Shared by list and export. */
+export async function assertClientTagExists(
+  tags: Pick<ClientTagsStore, 'findBySlug'>,
+  slug: string | undefined,
+): Promise<void> {
+  if (!slug) return;
+  const tag = await tags.findBySlug(slug);
+  if (!tag) {
+    throw new ValidationError(
+      `There is no client tag "${slug}". Check the tag list for the current names.`,
+    );
+  }
+}
+
 export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
@@ -264,14 +291,7 @@ export class AdminClientsService {
     const limit = pageSize(query.limit);
 
     // An unparseable ?level= used to become NaN and silently return nothing.
-    let level: number | undefined;
-    if (query.level !== undefined && query.level !== '') {
-      const parsed = Number(query.level);
-      if (!Number.isInteger(parsed) || parsed < 0 || parsed > 1) {
-        throw new ValidationError('level must be 0 or 1.');
-      }
-      level = parsed;
-    }
+    const level = clientLevelFilter(query.level);
 
     /*
      * Cursor first, offset for one more release — R-2.4 / R-8.2.
@@ -302,14 +322,7 @@ export class AdminClientsService {
      * returning zero clients reads as "nobody is in this segment", which is a
      * statement about the client base rather than about the URL.
      */
-    if (query.tag) {
-      const tag = await this.tags.findBySlug(query.tag);
-      if (!tag) {
-        throw new ValidationError(
-          `There is no client tag "${query.tag}". Check the tag list for the current names.`,
-        );
-      }
-    }
+    await assertClientTagExists(this.tags, query.tag);
 
     /*
      * ⚠️ A MALFORMED referredBy is REFUSED, never ignored, and that is the

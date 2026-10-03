@@ -431,7 +431,7 @@ const ADMIN_EXPORT_COLUMNS = [
   { header: 'Admin ID', value: (r: AdminExportRow) => r.id },
   { header: 'Email', value: (r: AdminExportRow) => r.email },
   { header: 'Name', value: (r: AdminExportRow) => r.name },
-  { header: 'Role', value: (r: AdminExportRow) => r.role },
+  { header: 'Role', value: (r: AdminExportRow) => r.roleName ?? '' },
   { header: 'Status', value: (r: AdminExportRow) => r.status },
   { header: 'Permissions', value: (r: AdminExportRow) => r.permissions.join(' ') },
   { header: 'Masked fields', value: (r: AdminExportRow) => r.maskedFields.join(' ') },
@@ -446,7 +446,8 @@ interface AdminExportRow {
   id: string;
   email: string;
   name: string;
-  role: string;
+  /** The RBAC role's name. `admins.role` is a dead column (0044) and is never exported. */
+  roleName?: string;
   status: string;
   permissions: string[];
   maskedFields: string[];

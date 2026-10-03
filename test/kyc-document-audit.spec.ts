@@ -9,6 +9,11 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { UploadsController } from '../src/modules/compliance/uploads.controller';
+import { AdminAuthenticator } from '../src/modules/admin/guards/admin.guard';
+import { IpAllowlistGuard } from '../src/modules/admin/guards/ip-allowlist.guard';
+import { JwtStrategy } from '../src/modules/identity/strategies/jwt.strategy';
+import { KycDocumentAccess } from '../src/modules/compliance/kyc-document-access.service';
+import { DepositReceiptAccess } from '../src/modules/payments/deposit-receipt-access.service';
 import type { AuditEntry } from '../src/store/audit-log.store';
 import { TOKEN_KIND } from '../src/common/security/token-audience';
 import { storageStub } from './storage-stub';
@@ -169,28 +174,55 @@ function makeController(options: {
     sha256: createHash('sha256').update(DOCUMENT).digest('hex'),
   });
 
-  const controller = new UploadsController(
+  /*
+   * The REAL authenticators and policy, over the stubs above: the controller
+   * no longer authenticates by hand, so this exercises the same
+   * `AdminAuthenticator` / `JwtStrategy` / `IpAllowlistGuard` the guards use.
+   */
+  const adminAuth = new AdminAuthenticator(
     jwt as never,
     config as never,
     admins as never,
-    roles as never,
-    identity as never,
+    { ...roles, resolveMaskedFields: () => Promise.resolve([]) } as never,
+    scopes as never,
+    { expand: (m: readonly string[]) => [...m] } as never,
+    refreshTokens as never,
+    {
+      findActiveByHash: () => Promise.resolve(null),
+      touchLastUsed: () => Promise.resolve(),
+    } as never,
+  );
+  // RBAC-08: /uploads/kyc/:file sits outside /admin, so the global guard never
+  // reaches it and the route calls the guard's own `assertAdmitted`. Empty by
+  // default = the allowlist is OFF.
+  const network = new IpAllowlistGuard(ipAllowlist as never);
+  const portalAuth = new JwtStrategy(
+    config as never,
+    users as never,
+    refreshTokens as never,
+    jwt as never,
+  );
+  const kycDocuments = new KycDocumentAccess(identity as never, users as never);
+  /*
+   * The deposit-receipt owner lookup. Null for every case in this file: these
+   * are KYC documents, and a receipt store that answered about them would be
+   * the bucket confusion `DepositProofsStore` exists to prevent.
+   */
+  const depositReceipts = new DepositReceiptAccess(
+    { ownerOfProof: () => Promise.resolve(null) } as never,
+    users as never,
+  );
+
+  const controller = new UploadsController(
+    adminAuth,
+    network,
+    portalAuth,
+    kycDocuments,
+    depositReceipts,
+    admins as never,
     users as never,
     auditLog as never,
     files,
-    scopes as never,
-    // RBAC-08 is back, and this route is the reason it needed a check of its
-    // own: /uploads/kyc/:file sits outside /admin, so the global guard never
-    // reaches it. Empty by default = the allowlist is OFF, which is the state
-    // every case here except the two network ones runs in.
-    ipAllowlist as never,
-    refreshTokens as never,
-    /*
-     * The deposit-receipt owner lookup. Null for every case in this file: these
-     * are KYC documents, and a receipt store that answered about them would be
-     * the bucket confusion `DepositProofsStore` exists to prevent.
-     */
-    { ownerOfProof: () => Promise.resolve(null) } as never,
   );
 
   return { controller, recorded };

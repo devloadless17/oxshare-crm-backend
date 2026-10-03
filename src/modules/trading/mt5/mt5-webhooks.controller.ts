@@ -68,8 +68,10 @@ import { Mt5LiveService } from './mt5-live.service';
  * at the cost of a raw-body middleware in an application that parses JSON
  * globally. What was actually costly was the sentence: a docblock describing a
  * control that does not exist is worse than one describing none, because it is
- * exactly what stops the next reader from checking. `rival-webhook.service.ts`
- * is where this codebase does verify a real signature, if a comparison is wanted.
+ * exactly what stops the next reader from checking. The payments core's
+ * `core/provider-webhook-ingress.service.ts`, with each provider's receiver
+ * (`providers/rival/rival-webhook.receiver.ts`), is where this codebase does
+ * verify a real signature, if a comparison is wanted.
  */
 @ApiTags('mt5')
 @ApiExcludeController()

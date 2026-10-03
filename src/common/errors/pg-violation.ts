@@ -20,3 +20,18 @@ export function violatesConstraint(error: unknown, constraint: string, code = '2
   }
   return false;
 }
+
+/**
+ * Did Postgres refuse this write as a unique violation (23505) on ANY
+ * constraint? Walks the same cause chain as `violatesConstraint`. Prefer that
+ * one wherever the constraint is known.
+ */
+export function isUniqueViolation(error: unknown): boolean {
+  for (let current: unknown = error, depth = 0; current && depth < 5; depth += 1) {
+    if (typeof current !== 'object') return false;
+    const candidate = current as { code?: unknown; cause?: unknown };
+    if (candidate.code === '23505') return true;
+    current = candidate.cause;
+  }
+  return false;
+}

@@ -43,7 +43,7 @@ describe('the import bans, each attempted', () => {
 
   it('keeps a store from importing a feature module (layering)', async () => {
     const code =
-      "import { KycService } from '../modules/compliance/kyc.service';\nexport const x = KycService;\n";
+      "import { KycReviewService } from '../modules/compliance/kyc-review.service';\nexport const x = KycReviewService;\n";
     expect(await firedAt('src/store/kyc.store.ts', code)).toContain('no-restricted-imports');
   });
 
@@ -74,7 +74,7 @@ describe('the import bans, each attempted', () => {
 
   it('keeps the identity CORE from importing the KYC layer — the process that fills it', async () => {
     const service =
-      "import { KycService } from '../compliance/kyc.service';\nexport const x = KycService;\n";
+      "import { KycReviewService } from '../compliance/kyc-review.service';\nexport const x = KycReviewService;\n";
     const store = "import { KycStore } from '../../store/kyc.store';\nexport const x = KycStore;\n";
     expect(await firedAt('src/modules/profile/client-profile.service.ts', service)).toContain(
       'no-restricted-imports',
@@ -89,7 +89,7 @@ describe('the import bans, each attempted', () => {
 
   it('keeps the layering ban on the core’s store file — the core ban must not erase it', async () => {
     const code =
-      "import { KycService } from '../modules/compliance/kyc.service';\nexport const x = KycService;\n";
+      "import { KycReviewService } from '../modules/compliance/kyc-review.service';\nexport const x = KycReviewService;\n";
     const other =
       "import { IbService } from '../modules/ib/ib.service';\nexport const x = IbService;\n";
     expect(await firedAt('src/store/client-identity.store.ts', code)).toContain(

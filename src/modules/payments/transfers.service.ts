@@ -1,3 +1,4 @@
+import Decimal from 'decimal.js';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { and, desc, eq, isNull, lt, or, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
@@ -11,9 +12,11 @@ import {
 import { TRANSFER_STALE_MS } from './transfer-staleness';
 import {
   AuthorizationError,
+  ConflictError,
   NotFoundError,
   ValidationError,
 } from '../../common/errors/domain-errors';
+import { violatesConstraint } from '../../common/errors/pg-violation';
 import { CurrenciesService } from '../currencies/currencies.service';
 import { WalletService } from '../wallet/wallet.service';
 import { money, toDecimal } from '../wallet/money';
@@ -95,7 +98,17 @@ export class TransfersService {
     direction: 'wallet_to_account' | 'account_to_wallet';
     amount: string;
     currency: string;
+    /**
+     * The caller's idempotency reference, for a transfer that is one leg of a
+     * keyed operation. A replay returns the transfer already made for it
+     * (UNIQUE `transfers_request_ref_uq`) instead of moving the money again.
+     */
+    requestRef?: string;
   }) {
+    if (params.requestRef) {
+      const existing = await this.findByRequestRef(params.requestRef);
+      if (existing) return this.assertSameRequest(existing, params);
+    }
     const amount = toDecimal(params.amount);
     /*
      * `lessThanOrEqualTo(0)`, NOT `!isPositive()`.
@@ -126,7 +139,21 @@ export class TransfersService {
     // Refuses an unknown or DISABLED currency. This is the runtime half of what
     // the old `'USD' | 'USDT'` union checked at compile time — see
     // `wallet.service.ts` on why that moved.
-    const currency = await this.currencies.assertUsable(params.currency);
+    const { code: currency, decimals } = await this.currencies.assertUsableDetail(params.currency);
+
+    /*
+     * No more precision than the currency carries — the rule deposits and
+     * withdrawals already apply. A trading account holds the currency's scale
+     * (USD: 2), so a wallet debit of 30.123 against an MT5 credit of 30.12
+     * dropped the difference between the two books (found live, 3 Oct 2026).
+     * The message names the largest amount that would be accepted, rounded DOWN.
+     */
+    if (amount.decimalPlaces() > decimals) {
+      throw new ValidationError(
+        `Transfers in ${currency} go to ${decimals} decimal places. ` +
+          `Use ${amount.toDecimalPlaces(decimals, Decimal.ROUND_DOWN).toFixed(decimals)} instead.`,
+      );
+    }
 
     const [user] = await this.db.select().from(users).where(eq(users.id, params.userId)).limit(1);
     if (!user) throw new NotFoundError('User not found.');
@@ -262,34 +289,75 @@ export class TransfersService {
       }
     }
 
-    return this.db.transaction(async (tx) => {
-      /*
-       * The hold and the transfer row commit together.
-       *
-       * Same reasoning `requestWithdrawal` records: holding first and inserting
-       * second leaves funds reserved against a transfer that does not exist if
-       * the insert fails — invisible to the client and unreleasable without a
-       * manual fix.
-       */
-      const wallet =
-        params.direction === 'wallet_to_account'
-          ? await this.wallets.hold(params.userId, currency, amount, tx)
-          : await this.wallets.getOrCreateWallet(params.userId, currency, 'main', tx);
+    return this.db
+      .transaction(async (tx) => {
+        /*
+         * The hold and the transfer row commit together.
+         *
+         * Same reasoning `requestWithdrawal` records: holding first and inserting
+         * second leaves funds reserved against a transfer that does not exist if
+         * the insert fails — invisible to the client and unreleasable without a
+         * manual fix.
+         */
+        const wallet =
+          params.direction === 'wallet_to_account'
+            ? await this.wallets.hold(params.userId, currency, amount, tx)
+            : await this.wallets.getOrCreateWallet(params.userId, currency, 'main', tx);
 
-      const [row] = await tx
-        .insert(transfers)
-        .values({
-          userId: params.userId,
-          walletId: wallet.id,
-          tradingAccountId: account.id,
-          direction: params.direction,
-          amount: money(amount),
-          currency,
-          state: 'pending',
-        })
-        .returning();
-      return row;
-    });
+        const [row] = await tx
+          .insert(transfers)
+          .values({
+            userId: params.userId,
+            walletId: wallet.id,
+            tradingAccountId: account.id,
+            direction: params.direction,
+            amount: money(amount),
+            currency,
+            state: 'pending',
+            requestRef: params.requestRef ?? null,
+          })
+          .returning();
+        return row;
+      })
+      .catch(async (error: unknown) => {
+        /*
+         * Two replays of one key raced past the lookup above: the loser's insert
+         * hits the UNIQUE index, its transaction (hold included) rolls back, and
+         * it answers with the winner's transfer.
+         */
+        if (params.requestRef && violatesConstraint(error, 'transfers_request_ref_uq')) {
+          const existing = await this.findByRequestRef(params.requestRef);
+          if (existing) return this.assertSameRequest(existing, params);
+        }
+        throw error;
+      });
+  }
+
+  private async findByRequestRef(requestRef: string) {
+    const [row] = await this.db
+      .select()
+      .from(transfers)
+      .where(eq(transfers.requestRef, requestRef))
+      .limit(1);
+    return row;
+  }
+
+  /** A key reused for a DIFFERENT movement is refused, never silently matched. */
+  private assertSameRequest(
+    existing: typeof transfers.$inferSelect,
+    params: { tradingAccountId: string; direction: string; amount: string; userId: number },
+  ) {
+    if (
+      existing.userId !== params.userId ||
+      existing.tradingAccountId !== params.tradingAccountId ||
+      existing.direction !== params.direction ||
+      !toDecimal(existing.amount).equals(toDecimal(params.amount))
+    ) {
+      throw new ConflictError(
+        'That idempotency key was already used for a different transfer. Use a new key.',
+      );
+    }
+    return existing;
   }
 
   /**
@@ -321,8 +389,8 @@ export class TransfersService {
    * commits with both legs. A concurrent second call reads `pending` too, but
    * one of the two transactions loses the row lock on `transfers` and finds the
    * state already moved. THAT IS WEAKER than the ledger's guarantee and is
-   * called out here rather than assumed: when the bridge lands and this leg
-   * becomes a sync rather than a write, it needs its own idempotency key.
+   * called out here rather than assumed. The MT5 leg carries its own
+   * idempotency key (the transfer id, sent by `TransferExecutor` to the bridge).
    */
   /**
    * @param mt5Balance What MT5 holds after the movement, from the executor's own
@@ -612,20 +680,30 @@ export class TransfersService {
     /** The reason in Arabic (0179); omitted = the catalogue's Arabic of a system sentence. */
     reasonAr?: string | null,
   ) {
-    const transfer = await this.findOne(transferId);
-    if (!transfer) throw new NotFoundError('Transfer not found.');
-    if (transfer.state !== 'pending') {
-      throw new ValidationError(`Only a pending transfer can fail; this one is ${transfer.state}.`);
-    }
+    const found = await this.findOne(transferId);
+    if (!found) throw new NotFoundError('Transfer not found.');
 
-    await this.db.transaction(async (tx) => {
-      if (transfer.direction === 'wallet_to_account') {
-        await this.wallets.release(
-          transfer.userId,
-          transfer.currency,
-          toDecimal(transfer.amount),
-          tx,
-        );
+    /*
+     * LOCKED AND RE-READ, exactly as `settle` does. The pre-check above used to
+     * be the only one, outside any transaction, and the UPDATE carried no state
+     * predicate — so an abandon racing a resume-scheduler retry that SETTLED
+     * would wait on settle's row lock, then overwrite 'settled' with 'failed'
+     * and release the hold a second time (release clamps rather than refuses),
+     * freeing some OTHER hold the client had. Under the lock, the state we act
+     * on is the state that commits.
+     */
+    const transfer = await this.db.transaction(async (tx) => {
+      const [row] = await tx
+        .select()
+        .from(transfers)
+        .where(eq(transfers.id, transferId))
+        .for('update');
+      if (!row) throw new NotFoundError('Transfer not found.');
+      if (row.state !== 'pending') {
+        throw new ValidationError(`Only a pending transfer can fail; this one is ${row.state}.`);
+      }
+      if (row.direction === 'wallet_to_account') {
+        await this.wallets.release(row.userId, row.currency, toDecimal(row.amount), tx);
       }
       await tx
         .update(transfers)
@@ -635,7 +713,8 @@ export class TransfersService {
           failureReasonAr: reasonAr === undefined ? systemSentenceArabic(reason) : reasonAr,
           settledAt: new Date(),
         })
-        .where(eq(transfers.id, transfer.id));
+        .where(and(eq(transfers.id, row.id), eq(transfers.state, 'pending')));
+      return row;
     });
 
     this.logger.warn(`Transfer ${transfer.id} failed: ${reason}`);

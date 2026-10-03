@@ -1,5 +1,17 @@
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
-import { and, asc, eq, inArray, isNotNull, isNull, lte, notInArray, or, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  eq,
+  inArray,
+  isNotNull,
+  isNull,
+  lte,
+  notInArray,
+  or,
+  sql,
+  type SQL,
+} from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../../database/database.module';
 import type { Db } from '../../../database/db';
 import {
@@ -356,158 +368,208 @@ export class DealCommissionService {
       };
     }
 
-    const batch = await this.db
-      .select({
-        id: mt5Deals.id,
-        ticket: mt5Deals.mt5DealId,
-        login: mt5Deals.login,
-        action: mt5Deals.action,
-        /* Which end of the position this deal is — see `isClosingEntry`. */
-        entry: mt5Deals.entry,
-        /* Nullable: not every deal MT5 reports carries one. */
-        positionId: mt5Deals.mt5PositionId,
-        volume: mt5Deals.volume,
-        commission: mt5Deals.commission,
-        swap: mt5Deals.swap,
-        /* Needed to decide whether a deal predates `IB_ACCRUAL_START`. */
-        dealtAt: mt5Deals.dealtAt,
-        userId: tradingAccounts.userId,
-        /*
-         * The ACCOUNT's currency, because that is what MT5 denominates a deal
-         * in. The deal itself carries none — the server does not repeat it on
-         * every row — and defaulting to the platform currency would silently
-         * accrue a EUR account's commission as USD, at par.
-         */
-        currency: tradingAccounts.currency,
-        /*
-         * PRACTICE MONEY OR REAL MONEY. The deal carries no such flag — the
-         * account is the only thing that knows, which is why this is selected
-         * rather than inferred from the deal.
-         *
-         * Nullable here only because the join above is LEFT: an unlinked login
-         * has no account and therefore no environment. That case is decided
-         * before this column is ever read.
-         */
-        environment: tradingAccounts.environment,
-        /*
-         * The PRODUCT the account is sold on, and the commission TYPE that
-         * product pays partners on (0140). Both LEFT-joined, and the two nulls
-         * mean different things: a null `productId` is an account linked to no
-         * product — nothing says what its trades pay, so the trade is REFUSED
-         * and retried — while a null `commissionTypeId` on a real product is a
-         * product configured to pay no partner commission, which is done.
-         */
-        productId: tradingAccounts.productId,
-        commissionTypeId: tradingProducts.commissionTypeId,
-        commissionTypeName: ibCommissionTypes.name,
-        commissionTypeEnabled: ibCommissionTypes.enabled,
-        commissionPerLot: ibCommissionTypes.commissionPerLot,
-        rebatePerLot: ibCommissionTypes.rebatePerLot,
-      })
-      .from(mt5Deals)
-      /*
-       * LEFT rather than INNER even though an orphaned TRADE is now excluded
-       * below, because the exclusion is narrower than the join would be.
-       *
-       * A non-trade deal on an unlinked login — a dealer moving a balance on an
-       * account the CRM has not claimed yet — still has to be RETURNED and
-       * marked done. An inner join would hold it back on a rule written about
-       * deals that could pay somebody, and strand it in exactly the way that
-       * rule exists to prevent. The orphan filter says which of the two this
-       * is; the join must not decide it first.
-       */
-      .leftJoin(tradingAccounts, eq(tradingAccounts.login, mt5Deals.login))
-      /*
-       * LEFT for the same reason as the join above it, one step further out: an
-       * account with no product must still be RETURNED so the loop can decide
-       * what that costs — a refusal that defers the deal on the existing
-       * backoff, because nothing says what the trade pays. An inner join would
-       * silently strand every such deal instead, which is the failure the
-       * orphan note above describes and the one this module works hardest to
-       * avoid. The type is one hop further, LEFT for the same reason.
-       */
-      .leftJoin(tradingProducts, eq(tradingProducts.id, tradingAccounts.productId))
-      .leftJoin(ibCommissionTypes, eq(ibCommissionTypes.id, tradingProducts.commissionTypeId))
-      /*
-       * ── OPEN LEGS ARE EXCLUDED HERE, NOT SKIPPED IN THE LOOP ──────────────
-       *
-       * They must stay UNPROCESSED — their revenue is paid by the close that
-       * consumes them — but skipping them inside the loop left them at the
-       * FRONT of an oldest-first queue for as long as their position ran.
-       *
-       * That starves the whole job. A broker holding `limit` positions open at
-       * once fills every batch with legs that can never be completed here, and
-       * no closing deal is ever reached again: commission stops for everybody,
-       * with nothing to show for it but one ordinary log line. The failure gets
-       * WORSE the busier the platform is, which is the worst shape a money job
-       * can have.
-       *
-       * Filtering in SQL means an open leg is not queued at all. It is still
-       * found — `unconsumedLegs` looks it up by position id when its close
-       * arrives — so nothing is lost and nothing is scanned twice.
-       *
-       * Non-trade deals are still fetched: a balance or credit row is DONE
-       * rather than pending, and the loop below is what marks it so. Leaving
-       * them out would strand them in the same way, for the same reason.
-       */
-      .where(
-        and(
-          isNull(mt5Deals.commissionProcessedAt),
+    /*
+     * ── PARK WHAT THIS QUEUE CAN NEVER RETURN, SO IT IS NEVER SCANNED AGAIN ─
+     *
+     * Orphaned trades (no client owns the login) and open legs used to be
+     * dropped by ROW filters only, while still sitting at the oldest end of
+     * the partial index. Every run, every batch, walked and joined all of them
+     * before reaching a payable deal — O(all orphans) and growing, because
+     * the 0166 sync records unowned accounts that trade continuously.
+     *
+     * Parked rows leave `mt5_deals_ready_idx`, and the deferred ones (retry
+     * backoff) are read from their own `mt5_deals_retry_idx`. Nothing is
+     * abandoned: the `mt5_deals_unpark_on_owner` trigger (0184) clears the park
+     * the moment a client comes to own the login, whoever writes that — and an
+     * open leg is still found by `unconsumedLegs` when its close arrives.
+     * Cost here is the size of the READY set, which is what drains.
+     */
+    await this.db.execute(sql`
+      UPDATE mt5_deals d SET commission_parked_at = now()
+       WHERE d.commission_processed_at IS NULL
+         AND d.commission_retry_after IS NULL
+         AND d.commission_parked_at IS NULL
+         AND d.action IN (${sql.join(
+           TRADE_ACTIONS.map((a) => sql`${a}`),
+           sql`, `,
+         )})
+         AND (
+           d.entry NOT IN (${sql.join(
+             CLOSING_ENTRIES.map((e) => sql`${e}`),
+             sql`, `,
+           )})
+           OR NOT EXISTS (
+             SELECT 1 FROM trading_accounts ta
+              WHERE ta.login = d.login AND ta.user_id IS NOT NULL
+           )
+         )`);
+
+    const now = new Date();
+    const fetchLane = (lane: SQL | undefined) =>
+      this.db
+        .select({
+          id: mt5Deals.id,
+          ticket: mt5Deals.mt5DealId,
+          login: mt5Deals.login,
+          action: mt5Deals.action,
+          /* Which end of the position this deal is — see `isClosingEntry`. */
+          entry: mt5Deals.entry,
+          /* Nullable: not every deal MT5 reports carries one. */
+          positionId: mt5Deals.mt5PositionId,
+          volume: mt5Deals.volume,
+          commission: mt5Deals.commission,
+          swap: mt5Deals.swap,
+          /* Needed to decide whether a deal predates `IB_ACCRUAL_START`. */
+          dealtAt: mt5Deals.dealtAt,
+          userId: tradingAccounts.userId,
           /*
-           * ── A DEAL THE ENGINE REFUSED IS NOT DUE YET ────────────────────
-           *
-           * Third door onto the same failure. A refusal is a settings mistake,
-           * so it fails IDENTICALLY on every run until a human changes a rate —
-           * and an unmarked deal is at the front of an oldest-first queue. One
-           * batch's worth of refusals and nothing payable is ever reached, for
-           * as long as the mistake stands.
-           *
-           * A refused deal is still OWED, so this delays rather than abandons:
-           * the backoff makes a permanently-stuck deal cost one batch an hour
-           * instead of the whole queue forever, and the moment the rate is
-           * fixed it pays in full with no backfill.
+           * The ACCOUNT's currency, because that is what MT5 denominates a deal
+           * in. The deal itself carries none — the server does not repeat it on
+           * every row — and defaulting to the platform currency would silently
+           * accrue a EUR account's commission as USD, at par.
            */
-          or(isNull(mt5Deals.commissionRetryAfter), lte(mt5Deals.commissionRetryAfter, new Date())),
-          or(
+          currency: tradingAccounts.currency,
+          /*
+           * PRACTICE MONEY OR REAL MONEY. The deal carries no such flag — the
+           * account is the only thing that knows, which is why this is selected
+           * rather than inferred from the deal.
+           *
+           * Nullable here only because the join above is LEFT: an unlinked login
+           * has no account and therefore no environment. That case is decided
+           * before this column is ever read.
+           */
+          environment: tradingAccounts.environment,
+          /*
+           * The PRODUCT the account is sold on, and the commission TYPE that
+           * product pays partners on (0140). Both LEFT-joined, and the two nulls
+           * mean different things: a null `productId` is an account linked to no
+           * product — nothing says what its trades pay, so the trade is REFUSED
+           * and retried — while a null `commissionTypeId` on a real product is a
+           * product configured to pay no partner commission, which is done.
+           */
+          productId: tradingAccounts.productId,
+          commissionTypeId: tradingProducts.commissionTypeId,
+          commissionTypeName: ibCommissionTypes.name,
+          commissionTypeEnabled: ibCommissionTypes.enabled,
+          commissionPerLot: ibCommissionTypes.commissionPerLot,
+          rebatePerLot: ibCommissionTypes.rebatePerLot,
+        })
+        .from(mt5Deals)
+        /*
+         * LEFT rather than INNER even though an orphaned TRADE is now excluded
+         * below, because the exclusion is narrower than the join would be.
+         *
+         * A non-trade deal on an unlinked login — a dealer moving a balance on an
+         * account the CRM has not claimed yet — still has to be RETURNED and
+         * marked done. An inner join would hold it back on a rule written about
+         * deals that could pay somebody, and strand it in exactly the way that
+         * rule exists to prevent. The orphan filter says which of the two this
+         * is; the join must not decide it first.
+         */
+        .leftJoin(tradingAccounts, eq(tradingAccounts.login, mt5Deals.login))
+        /*
+         * LEFT for the same reason as the join above it, one step further out: an
+         * account with no product must still be RETURNED so the loop can decide
+         * what that costs — a refusal that defers the deal on the existing
+         * backoff, because nothing says what the trade pays. An inner join would
+         * silently strand every such deal instead, which is the failure the
+         * orphan note above describes and the one this module works hardest to
+         * avoid. The type is one hop further, LEFT for the same reason.
+         */
+        .leftJoin(tradingProducts, eq(tradingProducts.id, tradingAccounts.productId))
+        .leftJoin(ibCommissionTypes, eq(ibCommissionTypes.id, tradingProducts.commissionTypeId))
+        /*
+         * ── OPEN LEGS ARE EXCLUDED HERE, NOT SKIPPED IN THE LOOP ──────────────
+         *
+         * They must stay UNPROCESSED — their revenue is paid by the close that
+         * consumes them — but skipping them inside the loop left them at the
+         * FRONT of an oldest-first queue for as long as their position ran.
+         *
+         * That starves the whole job. A broker holding `limit` positions open at
+         * once fills every batch with legs that can never be completed here, and
+         * no closing deal is ever reached again: commission stops for everybody,
+         * with nothing to show for it but one ordinary log line. The failure gets
+         * WORSE the busier the platform is, which is the worst shape a money job
+         * can have.
+         *
+         * Filtering in SQL means an open leg is not queued at all. It is still
+         * found — `unconsumedLegs` looks it up by position id when its close
+         * arrives — so nothing is lost and nothing is scanned twice.
+         *
+         * Non-trade deals are still fetched: a balance or credit row is DONE
+         * rather than pending, and the loop below is what marks it so. Leaving
+         * them out would strand them in the same way, for the same reason.
+         */
+        .where(
+          and(
+            isNull(mt5Deals.commissionProcessedAt),
             /*
-             * Not a trade — a balance, credit or correction. Fetched whatever
-             * its login, because the loop's whole job for one of these is to
-             * mark it DONE. Holding them out on the orphan rule below would
-             * strand them exactly the way it is written to prevent.
+             * ── A DEAL THE ENGINE REFUSED IS NOT DUE YET ────────────────────
+             *
+             * Third door onto the same failure. A refusal is a settings mistake,
+             * so it fails IDENTICALLY on every run until a human changes a rate —
+             * and an unmarked deal is at the front of an oldest-first queue. One
+             * batch's worth of refusals and nothing payable is ever reached, for
+             * as long as the mistake stands.
+             *
+             * A refused deal is still OWED, so this delays rather than abandons:
+             * the backoff makes a permanently-stuck deal cost one batch an hour
+             * instead of the whole queue forever, and the moment the rate is
+             * fixed it pays in full with no backfill.
              */
-            notInArray(mt5Deals.action, [...TRADE_ACTIONS]),
-            and(
-              inArray(mt5Deals.entry, [...CLOSING_ENTRIES]),
+            lane,
+            or(
               /*
-               * ── AN ORPHAN IS EXCLUDED HERE, NOT SKIPPED IN THE LOOP ──────
-               *
-               * Second door onto the failure the open-leg filter above closed.
-               * A deal whose login no `trading_accounts` row claims must stay
-               * unprocessed — it accrues the moment the account is linked —
-               * but skipping it in the loop left it at the FRONT of the queue
-               * for as long as it went unlinked, which for a manager's own
-               * login or a broker-side test account is FOREVER. The scheduler's
-               * own docblock concedes as much.
-               *
-               * Filtering in SQL means an orphan is not queued at all, and the
-               * join is what puts it back: link the account and the next run
-               * returns it, with no backfill and no replay. Same mechanism as
-               * the open leg, which re-enters when its close arrives.
-               *
-               * It is still COUNTED — `stuckCounts` reports the backlog, and
-               * that number is what reaches an operator.
-               *
-               * The CLIENT, not the row (0166): the MT5 sync records accounts
-               * no client owns yet, and their trades are orphans exactly as
-               * before — until the account is assigned, when they accrue.
+               * Not a trade — a balance, credit or correction. Fetched whatever
+               * its login, because the loop's whole job for one of these is to
+               * mark it DONE. Holding them out on the orphan rule below would
+               * strand them exactly the way it is written to prevent.
                */
-              isNotNull(tradingAccounts.userId),
+              notInArray(mt5Deals.action, [...TRADE_ACTIONS]),
+              and(
+                inArray(mt5Deals.entry, [...CLOSING_ENTRIES]),
+                /*
+                 * ── AN ORPHAN IS EXCLUDED HERE, NOT SKIPPED IN THE LOOP ──────
+                 *
+                 * Second door onto the failure the open-leg filter above closed.
+                 * A deal whose login no `trading_accounts` row claims must stay
+                 * unprocessed — it accrues the moment the account is linked —
+                 * but skipping it in the loop left it at the FRONT of the queue
+                 * for as long as it went unlinked, which for a manager's own
+                 * login or a broker-side test account is FOREVER. The scheduler's
+                 * own docblock concedes as much.
+                 *
+                 * Filtering in SQL means an orphan is not queued at all, and the
+                 * join is what puts it back: link the account and the next run
+                 * returns it, with no backfill and no replay. Same mechanism as
+                 * the open leg, which re-enters when its close arrives.
+                 *
+                 * It is still COUNTED — `stuckCounts` reports the backlog, and
+                 * that number is what reaches an operator.
+                 *
+                 * The CLIENT, not the row (0166): the MT5 sync records accounts
+                 * no client owns yet, and their trades are orphans exactly as
+                 * before — until the account is assigned, when they accrue.
+                 */
+                isNotNull(tradingAccounts.userId),
+              ),
             ),
           ),
-        ),
+        )
+        .orderBy(asc(mt5Deals.dealtAt), asc(mt5Deals.id))
+        .limit(limit);
+
+    // Two lanes, each on its own index, merged into the same oldest-first batch.
+    const [ready, due] = await Promise.all([
+      fetchLane(and(isNull(mt5Deals.commissionRetryAfter), isNull(mt5Deals.commissionParkedAt))),
+      fetchLane(lte(mt5Deals.commissionRetryAfter, now)),
+    ]);
+    const batch = [...ready, ...due]
+      .sort(
+        (a, b) =>
+          a.dealtAt.getTime() - b.dealtAt.getTime() || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
       )
-      .orderBy(asc(mt5Deals.dealtAt), asc(mt5Deals.id))
-      .limit(limit);
+      .slice(0, limit);
 
     const run: DealAccrualRun = {
       examined: batch.length,

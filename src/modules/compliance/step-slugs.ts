@@ -25,18 +25,17 @@
  * does exist, which is why there is no longer a slug the API refuses.
  */
 
-/** Slug → the submission column its answers are written to. */
-export const STEP_STORAGE_COLUMN = {
-  personal: 'personalInfo',
-  document: 'document',
-  selfie: 'selfie',
-  address: 'addressProof',
-} as const satisfies Record<string, string>;
+/**
+ * The four built-in steps. Personal answers live on the profile (`users`); the
+ * identity document, selfie and proof of address live in the client's identity
+ * record (0151/0171), never in submission columns.
+ */
+export const BUILT_IN_STEP_SLUGS = ['personal', 'document', 'selfie', 'address'] as const;
 
-export type DataBearingStepSlug = keyof typeof STEP_STORAGE_COLUMN;
+export type DataBearingStepSlug = (typeof BUILT_IN_STEP_SLUGS)[number];
 
 export function isDataBearingStep(slug: string): slug is DataBearingStepSlug {
-  return Object.prototype.hasOwnProperty.call(STEP_STORAGE_COLUMN, slug);
+  return (BUILT_IN_STEP_SLUGS as readonly string[]).includes(slug);
 }
 
 /**
@@ -49,8 +48,9 @@ export const REVIEW_STEP_SLUG = 'review';
 /**
  * Does this step collect answers at all?
  *
- * Only `review` does not. Every other slug stores something: the four canonical
- * ones in their own column, the rest under their slug in `step_data`.
+ * Only `review` does not. Every other slug stores something: the four built-in
+ * ones on the profile or the identity record, the rest under their slug in
+ * `step_data`.
  */
 export function collectsAnswers(slug: string): boolean {
   return slug !== REVIEW_STEP_SLUG;

@@ -1,3 +1,4 @@
+import { IbStore } from '../src/store/ib.store';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { emailStubAs } from './email-stub';
 import { sql } from 'drizzle-orm';
@@ -165,6 +166,7 @@ beforeAll(async () => {
        about WHO is debited and by how much; the gate itself is exercised with
        the real service at the end of this file. */
     { assertVisible: () => Promise.resolve() } as never,
+    new IbStore(ctx.db),
   );
 }, 180_000);
 
@@ -406,6 +408,7 @@ describe('the reversal obeys the reader’s TERRITORY, on the column it actually
       // The REAL gate, against the real users table — a stub here would only
       // assert that a stub was called.
       new ClientVisibilityService(new UsersStore(ctx.db)),
+      new IbStore(ctx.db),
     );
   });
 

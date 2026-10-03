@@ -1,6 +1,6 @@
 import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { timingSafeEqual } from 'crypto';
+import { createHash, timingSafeEqual } from 'crypto';
 import type { Request } from 'express';
 
 /**
@@ -45,11 +45,19 @@ export class BridgeSecretGuard implements CanActivate {
     const request = context.switchToHttp().getRequest<Request>();
     const presented = request.headers['x-bridge-secret'];
 
-    if (typeof presented !== 'string' || presented.length !== expected.length) {
-      throw new UnauthorizedException('Invalid or missing X-Bridge-Secret.');
-    }
-
-    if (!timingSafeEqual(Buffer.from(presented), Buffer.from(expected))) {
+    /*
+     * DIGESTS, so the two buffers are always 32 bytes. Comparing `.length`
+     * (UTF-16 units) and then `timingSafeEqual` on the raw strings let a
+     * multibyte header of the right .length throw RangeError — a 500 to an
+     * unauthenticated caller instead of a 401.
+     */
+    if (
+      typeof presented !== 'string' ||
+      !timingSafeEqual(
+        createHash('sha256').update(presented).digest(),
+        createHash('sha256').update(expected).digest(),
+      )
+    ) {
       throw new UnauthorizedException('Invalid or missing X-Bridge-Secret.');
     }
 

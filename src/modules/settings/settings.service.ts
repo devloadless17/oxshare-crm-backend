@@ -18,7 +18,11 @@ import {
   scheduledJob,
   type ScheduledJobDefinition,
 } from '../../common/scheduling/scheduled-jobs.catalog';
-import { NotFoundError, ValidationError } from '../../common/errors/domain-errors';
+import {
+  FieldValidationError,
+  NotFoundError,
+  ValidationError,
+} from '../../common/errors/domain-errors';
 import type { ScheduledJobDto, ScheduledJobListDto } from './dto/scheduled-jobs.dto';
 
 /**
@@ -102,6 +106,30 @@ export class SettingsService {
   async setSmtp(dto: UpdateSmtpSettingsDto, actor: Actor): Promise<SmtpSettingsDto> {
     const adminId = actor.id;
     const previous = await this.getSmtp();
+
+    /*
+     * A NEW HOST takes the password with it only if the operator types it again.
+     *
+     * The stored password is sealed and write-only — no screen and no response
+     * ever returns it. But "leave the password field blank to keep it" applied
+     * to the host as well: point the relay at a server you control, keep the
+     * stored password, and the next email authenticates to YOUR server with it
+     * (AUTH PLAIN/LOGIN sends it as-is). That reads the one secret this form
+     * promises nobody can read, with no trace beyond an ordinary host change.
+     * Keeping it for a port, a username or a sender change is unaffected: those
+     * still reach the same server the password was entered for.
+     */
+    if (
+      (dto.password === undefined || dto.password === null) &&
+      previous.passwordSet &&
+      dto.host.trim().toLowerCase() !== previous.host.trim().toLowerCase()
+    ) {
+      throw new FieldValidationError('Re-enter the SMTP password when changing the mail host.', {
+        password:
+          'The saved password is only sent to the host it was entered for. Type it again ' +
+          'for the new host, or clear it if the new host needs none.',
+      });
+    }
 
     /*
      * The mail host has to be on the public internet.

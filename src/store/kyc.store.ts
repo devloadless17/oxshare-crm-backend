@@ -773,7 +773,7 @@ export class KycStore {
       reasonId?: string;
       /**
        * A correction of a return decides what the LAST decision covered, never
-       * the drafts the client has uploaded since (`KycService.reject`).
+       * the drafts the client has uploaded since (`KycReviewService.reject`).
        */
       sameEvidenceAsLast?: boolean;
     } = {},

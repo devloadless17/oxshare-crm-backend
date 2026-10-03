@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { EVIDENCE_PAGE_SLOTS } from '../../common/kyc/identity-core';
 import { KYC_BUCKET } from '../../common/uploads/stored-files.service';
 import { filenameFromStored, storedPath } from '../../common/uploads/storage/storage-key';
 import { ClientIdentityStore, type IdentityDecisionRow } from '../../store/client-identity.store';
@@ -92,9 +93,9 @@ export interface IdentityRecord {
 
 /** The returned-item ids a slot's pages answer to, by part. */
 const PAGE_ITEMS: Readonly<Record<string, readonly string[]>> = {
-  identity: ['doc_front', 'doc_back'],
-  address: ['address_proof', 'address_proof_2'],
-  selfie: ['selfie'],
+  identity: EVIDENCE_PAGE_SLOTS.document,
+  address: EVIDENCE_PAGE_SLOTS.address,
+  selfie: EVIDENCE_PAGE_SLOTS.selfie,
 };
 
 /** Which returned items name a page of this slot — a broker's upload answers to its field key. */

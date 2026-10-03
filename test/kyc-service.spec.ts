@@ -1,7 +1,8 @@
 import { OfferedCountriesStore } from '../src/store/offered-countries.store';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { storageStub } from './storage-stub';
-import { KycService } from '../src/modules/compliance/kyc.service';
+import { KycClientService } from '../src/modules/compliance/kyc-client.service';
+import { KycReviewService } from '../src/modules/compliance/kyc-review.service';
 import type { KycStore, KycSubmission } from '../src/store/kyc.store';
 import type { User, UsersStore } from '../src/store/users.store';
 import type { AdminsStore } from '../src/store/admins.store';
@@ -200,38 +201,43 @@ function build(options: { stored?: KycSubmission; user?: User } = {}) {
   // bytes live. `deleteDocuments` goes through it, and the upload cases read
   // back what it was asked to delete.
   const storage = storageStub();
-  const service = new KycService(
-    email as unknown as EmailService,
+  /*
+   * A transaction stub that just runs the callback: these are unit tests over
+   * stubbed stores — the atomicity itself is proven against real Postgres in
+   * test/kyc-gates-money.spec.ts — so here the transaction only has to be
+   * transparent.
+   *
+   * KYC is TWO services since the split: the client's flow and the desk's
+   * review. Both are built over the same stubs, so a case can drive the client
+   * side and then decide it.
+   */
+  const client = new KycClientService(
     storage.files,
     kycStore as unknown as KycStore,
     users as unknown as UsersStore,
     kycConfig as unknown as KycConfigStore,
-    /*
-     * A transaction stub that just runs the callback.
-     *
-     * approve/reject now wrap their writes in `db.transaction(...)` so the
-     * status, the archived attempt and the verification level land together.
-     * These are unit tests over stubbed stores — the atomicity itself is proven
-     * against real Postgres in test/kyc-gates-money.spec.ts — so here the
-     * transaction only has to be transparent.
-     */
+    db as unknown as Db,
+    notifications,
+    profile,
+  );
+  const review = new KycReviewService(
+    email as unknown as EmailService,
+    kycStore as unknown as KycStore,
+    users as unknown as UsersStore,
+    kycConfig as unknown as KycConfigStore,
     db as unknown as Db,
     notifications,
     /*
-     * Appended LAST, matching the constructor.
-     *
      * Read ONLY when a decision is refused because another reviewer holds the
-     * submission, to name them — so `namesByIds` answering with a populated Map
-     * is what lets those cases assert the reviewer's name in the message rather
-     * than the anonymous fallback.
+     * submission, to name them — so `namesByIds` answering with a populated
+     * Map lets those cases assert the reviewer's name in the message.
      */
     admins as unknown as AdminsStore,
-    // Appended LAST, matching the constructor: the one write path for the
-    // client's identity (0139).
     profile,
   );
   return {
-    service,
+    client,
+    review,
     kycStore,
     users,
     email,
@@ -241,6 +247,7 @@ function build(options: { stored?: KycSubmission; user?: User } = {}) {
     profileRow,
     auditLog,
     storage,
+    profile,
   };
 }
 
@@ -249,7 +256,7 @@ beforeEach(() => vi.clearAllMocks());
 describe('saveStep', () => {
   it('refuses to edit an approved submission', async () => {
     const h = build({ stored: submission({ status: 'approved' }) });
-    await expect(h.service.saveStep(1000001, 'personal', {})).rejects.toThrow(AuthorizationError);
+    await expect(h.client.saveStep(1000001, 'personal', {})).rejects.toThrow(AuthorizationError);
     expect(h.kycStore.update).not.toHaveBeenCalled();
   });
 
@@ -258,14 +265,14 @@ describe('saveStep', () => {
     // the approval records a decision about something else.
     for (const status of ['submitted', 'under_review'] as const) {
       const h = build({ stored: submission({ status }) });
-      await expect(h.service.saveStep(1000001, 'personal', {})).rejects.toThrow(AuthorizationError);
+      await expect(h.client.saveStep(1000001, 'personal', {})).rejects.toThrow(AuthorizationError);
       expect(h.kycStore.update).not.toHaveBeenCalled();
     }
   });
 
   it('rejects an unknown step rather than silently dropping the data', async () => {
     const h = build();
-    await expect(h.service.saveStep(1000001, 'nonsense', {})).rejects.toThrow(ValidationError);
+    await expect(h.client.saveStep(1000001, 'nonsense', {})).rejects.toThrow(ValidationError);
     expect(h.kycStore.update).not.toHaveBeenCalled();
   });
 
@@ -273,7 +280,7 @@ describe('saveStep', () => {
     // A client editing one field must not blank the rest of the step — the
     // broker's own questions in `personal_info`, or the rest of the profile.
     const h = build({ stored: submission({ personalInfo: { customField_1: 'Acme' } }) });
-    await h.service.saveStep(1000001, 'personal', { phone: '+971 50 123 4567' });
+    await h.client.saveStep(1000001, 'personal', { phone: '+971 50 123 4567' });
     expect(h.kycStore.update).toHaveBeenCalledWith(
       1000001,
       expect.objectContaining({ personalInfo: { customField_1: 'Acme' } }),
@@ -290,7 +297,7 @@ describe('saveStep', () => {
 
   it('moves a fresh submission to in_progress', async () => {
     const h = build({ stored: submission({ status: 'not_started' }) });
-    await h.service.saveStep(1000001, 'personal', { firstName: 'Jane' });
+    await h.client.saveStep(1000001, 'personal', { firstName: 'Jane' });
     expect(h.kycStore.update).toHaveBeenCalledWith(
       1000001,
       expect.objectContaining({ status: 'in_progress' }),
@@ -306,7 +313,7 @@ describe('saveStep', () => {
      */
     const h = build({ stored: submission({ status: 'in_progress' }) });
     h.kycStore.lockForUpdate.mockResolvedValue(submission({ status: 'submitted' }));
-    await expect(h.service.saveStep(1000001, 'personal', { firstName: 'Janet' })).rejects.toThrow(
+    await expect(h.client.saveStep(1000001, 'personal', { firstName: 'Janet' })).rejects.toThrow(
       /under review/,
     );
     expect(h.kycStore.update).not.toHaveBeenCalled();
@@ -320,7 +327,7 @@ describe('saveStep', () => {
     h.kycStore.lockForUpdate.mockResolvedValue(
       submission({ personalInfo: { customField_1: 'from the other tab' } }),
     );
-    await h.service.saveStep(1000001, 'personal', { lastName: 'Doe' });
+    await h.client.saveStep(1000001, 'personal', { lastName: 'Doe' });
     expect(h.kycStore.update.mock.calls[0][1]).toMatchObject({
       personalInfo: { customField_1: 'from the other tab' },
     });
@@ -345,7 +352,7 @@ describe('documents cannot change once the review has started', () => {
   for (const status of ['submitted', 'under_review'] as const) {
     it(`refuses an upload while ${status}`, async () => {
       const h = build({ stored: submission({ status }) });
-      await expect(h.service.attachFile(1000001, 'doc_front', 'uploads/kyc/x.jpg')).rejects.toThrow(
+      await expect(h.client.attachFile(1000001, 'doc_front', 'uploads/kyc/x.jpg')).rejects.toThrow(
         /under review/i,
       );
       expect(h.kycStore.update).not.toHaveBeenCalled();
@@ -354,7 +361,7 @@ describe('documents cannot change once the review has started', () => {
 
   it('refuses an upload once approved', async () => {
     const h = build({ stored: submission({ status: 'approved' }) });
-    await expect(h.service.attachFile(1000001, 'doc_front', 'uploads/kyc/x.jpg')).rejects.toThrow(
+    await expect(h.client.attachFile(1000001, 'doc_front', 'uploads/kyc/x.jpg')).rejects.toThrow(
       /already approved/i,
     );
     expect(h.kycStore.update).not.toHaveBeenCalled();
@@ -362,7 +369,7 @@ describe('documents cannot change once the review has started', () => {
 
   it('ALLOWS an upload after rejection, which is the point of that state', async () => {
     const h = build({ stored: submission({ status: 'rejected' }) });
-    await h.service.attachFile(1000001, 'doc_front', 'uploads/kyc/x.jpg');
+    await h.client.attachFile(1000001, 'doc_front', 'uploads/kyc/x.jpg');
     expect(h.kycStore.update).toHaveBeenCalled();
   });
 });
@@ -390,14 +397,14 @@ describe('submit', () => {
       defaultSteps().map((step) => (step.slug === 'address' ? { ...step, enabled: false } : step)),
     );
 
-    await expect(h.service.submit(1000001)).resolves.toBeDefined();
+    await expect(h.client.submit(1000001)).resolves.toBeDefined();
   });
 
   it('still demands it when the step IS enabled', async () => {
     const h = build({
       stored: completeSubmission({ status: 'in_progress', addressProof: undefined }),
     });
-    await expect(h.service.submit(1000001)).rejects.toThrow(/proof of address/i);
+    await expect(h.client.submit(1000001)).rejects.toThrow(/proof of address/i);
   });
 
   describe('a CUSTOM step', () => {
@@ -428,7 +435,7 @@ describe('submit', () => {
       // is still refused, so an arbitrary one cannot write into `step_data` —
       // and so is a FIELD it does not name (see "only what the step asks for").
       withCustomStep(h, [textField('sourceOfFunds')]);
-      await h.service.saveStep(1000001, 'compliance-questions', { sourceOfFunds: 'salary' });
+      await h.client.saveStep(1000001, 'compliance-questions', { sourceOfFunds: 'salary' });
 
       expect(h.kycStore.update).toHaveBeenCalledWith(
         1000001,
@@ -448,7 +455,7 @@ describe('submit', () => {
         }),
       });
       withCustomStep(h, [textField('sourceOfFunds'), textField('employer')]);
-      await h.service.saveStep(1000001, 'compliance-questions', { employer: 'Acme' });
+      await h.client.saveStep(1000001, 'compliance-questions', { employer: 'Acme' });
 
       expect(h.kycStore.update).toHaveBeenCalledWith(
         1000001,
@@ -464,7 +471,7 @@ describe('submit', () => {
         stored: submission({ status: 'in_progress', stepData: { other: { a: '1' } } }),
       });
       withCustomStep(h, [textField('b')]);
-      await h.service.saveStep(1000001, 'compliance-questions', { b: '2' });
+      await h.client.saveStep(1000001, 'compliance-questions', { b: '2' });
 
       expect(h.kycStore.update).toHaveBeenCalledWith(
         1000001,
@@ -493,7 +500,7 @@ describe('submit', () => {
         },
       ]);
 
-      await expect(h.service.submit(1000001)).rejects.toThrow(/Source of Funds/);
+      await expect(h.client.submit(1000001)).rejects.toThrow(/Source of Funds/);
     });
 
     it('accepts the submission once they are answered', async () => {
@@ -513,7 +520,7 @@ describe('submit', () => {
         },
       ]);
 
-      await expect(h.service.submit(1000001)).resolves.toBeDefined();
+      await expect(h.client.submit(1000001)).resolves.toBeDefined();
     });
 
     /** Whitespace is not an answer — the same rule the personal fields use. */
@@ -534,7 +541,7 @@ describe('submit', () => {
         },
       ]);
 
-      await expect(h.service.submit(1000001)).rejects.toThrow(/Source of Funds/);
+      await expect(h.client.submit(1000001)).rejects.toThrow(/Source of Funds/);
     });
 
     it('leaves OPTIONAL custom fields optional', async () => {
@@ -543,7 +550,7 @@ describe('submit', () => {
         { id: 'f-9', name: 'note', label: 'Note', type: 'text', required: false },
       ]);
 
-      await expect(h.service.submit(1000001)).resolves.toBeDefined();
+      await expect(h.client.submit(1000001)).resolves.toBeDefined();
     });
 
     it('ignores a DISABLED custom step entirely', async () => {
@@ -568,7 +575,7 @@ describe('submit', () => {
         },
       ]);
 
-      await expect(h.service.submit(1000001)).resolves.toBeDefined();
+      await expect(h.client.submit(1000001)).resolves.toBeDefined();
     });
 
     /*
@@ -579,7 +586,7 @@ describe('submit', () => {
      */
     it('refuses a slug the configuration does not name', async () => {
       const h = build({ stored: submission({ status: 'in_progress' }) });
-      await expect(h.service.saveStep(1000001, 'not-configured', { x: '1' })).rejects.toThrow(
+      await expect(h.client.saveStep(1000001, 'not-configured', { x: '1' })).rejects.toThrow(
         /unknown step/i,
       );
       expect(h.kycStore.update).not.toHaveBeenCalled();
@@ -598,7 +605,7 @@ describe('submit', () => {
           fields: [],
         },
       ]);
-      await expect(h.service.saveStep(1000001, 'compliance-questions', { x: '1' })).rejects.toThrow(
+      await expect(h.client.saveStep(1000001, 'compliance-questions', { x: '1' })).rejects.toThrow(
         /unknown step/i,
       );
     });
@@ -606,7 +613,7 @@ describe('submit', () => {
     /** `review` renders answers already given; it collects nothing. */
     it('refuses to save answers against the review step', async () => {
       const h = build({ stored: submission({ status: 'in_progress' }) });
-      await expect(h.service.saveStep(1000001, 'review', { x: '1' })).rejects.toThrow(
+      await expect(h.client.saveStep(1000001, 'review', { x: '1' })).rejects.toThrow(
         /does not collect answers/i,
       );
     });
@@ -623,13 +630,13 @@ describe('submit', () => {
     ];
     for (const [missing, message, user] of cases) {
       const h = build({ stored: completeSubmission(missing), user });
-      await expect(h.service.submit(1000001)).rejects.toThrow(message);
+      await expect(h.client.submit(1000001)).rejects.toThrow(message);
     }
   });
 
   it('accepts a complete submission and stamps submittedAt', async () => {
     const h = build({ stored: completeSubmission() });
-    await h.service.submit(1000001);
+    await h.client.submit(1000001);
     // `transition`, not `update`: the states a submission may legitimately be
     // sent FROM go into the WHERE clause, so an approved client calling submit
     // again matches no row instead of demoting themselves to the queue.
@@ -654,7 +661,7 @@ describe('submit', () => {
       user: { ...USER, firstName: '', lastName: '', dateOfBirth: undefined },
     });
     // Every missing field named as the client reads it, and each under its own box.
-    const refusal = h.service.submit(1000001);
+    const refusal = h.client.submit(1000001);
     await expect(refusal).rejects.toThrow(
       /Personal Information is incomplete: First Name, Last Name, Date of Birth/,
     );
@@ -683,7 +690,7 @@ describe('submit', () => {
       stored: completeSubmission(),
       user: { ...USER, dateOfBirth: under18.toISOString().slice(0, 10) },
     });
-    await expect(h.service.submit(1000001)).rejects.toThrow(/at least 18 years old/i);
+    await expect(h.client.submit(1000001)).rejects.toThrow(/at least 18 years old/i);
   });
 
   it('names which profile fields are missing, so the client can fix them', async () => {
@@ -693,7 +700,7 @@ describe('submit', () => {
     });
     // Naming them is the difference between a form the client can complete and
     // one that just says no — by the label they see, under the field it is about.
-    const refusal = h.service.submit(1000001);
+    const refusal = h.client.submit(1000001);
     await expect(refusal).rejects.toThrow('Last Name is required.');
     await expect(refusal).rejects.toMatchObject({ fields: { lastName: 'Last Name is required.' } });
   });
@@ -707,14 +714,14 @@ describe('submit', () => {
      * level back to prevent, reached by a route it does not cover.
      */
     const h = build({ stored: completeSubmission({ status: 'approved' }) });
-    await expect(h.service.submit(1000001)).rejects.toThrow(/already approved/i);
+    await expect(h.client.submit(1000001)).rejects.toThrow(/already approved/i);
   });
 
   it('refuses a re-submit while already in the queue', async () => {
     // Also stops a client bouncing a claimed row out of `under_review` from
     // under the reviewer holding it.
     const h = build({ stored: completeSubmission({ status: 'under_review' }) });
-    await expect(h.service.submit(1000001)).rejects.toThrow(/already been submitted/i);
+    await expect(h.client.submit(1000001)).rejects.toThrow(/already been submitted/i);
   });
 
   it('CLEARS the previous rejection when resubmitting', async () => {
@@ -729,7 +736,7 @@ describe('submit', () => {
         rejectedFields: ['dateOfBirth'],
       }),
     });
-    await h.service.submit(1000001);
+    await h.client.submit(1000001);
     expect(h.kycStore.transition).toHaveBeenCalledWith(
       1000001,
       // `rejected` is in the allowed set precisely so this resubmission works.
@@ -749,7 +756,7 @@ describe('saveStep stores only what the step asks for', () => {
    */
   it('drops the review screen’s whole form from the personal step', async () => {
     const h = build({ stored: submission({ status: 'in_progress' }) });
-    await h.service.saveStep(1000001, 'personal', {
+    await h.client.saveStep(1000001, 'personal', {
       firstName: 'Jane',
       __docChoice__document: 'passport',
       customField_1790263652846: '[object Object]',
@@ -772,7 +779,7 @@ describe('saveStep stores only what the step asks for', () => {
         document: { docType: 'passport', frontFilePath: 'uploads/kyc/mine.jpg' },
       }),
     });
-    await h.service.saveStep(1000001, 'document', {
+    await h.client.saveStep(1000001, 'document', {
       docType: 'passport',
       frontFilePath: 'uploads/kyc/someone-else.jpg',
       backFilePath: 'uploads/kyc/someone-else-2.jpg',
@@ -786,19 +793,19 @@ describe('saveStep stores only what the step asks for', () => {
 
   it('does not let a blank choice erase the document already chosen', async () => {
     const h = build({ stored: submission({ document: { docType: 'national_id' } }) });
-    await h.service.saveStep(1000001, 'document', { docType: '' });
+    await h.client.saveStep(1000001, 'document', { docType: '' });
     expect(h.kycStore.update.mock.calls[0][1]).not.toHaveProperty('document');
   });
 
   it('refuses a document of the other category', async () => {
     const h = build({ stored: submission({ document: { docType: 'national_id' } }) });
-    await h.service.saveStep(1000001, 'document', { docType: 'utility_bill' });
+    await h.client.saveStep(1000001, 'document', { docType: 'utility_bill' });
     expect(h.kycStore.update.mock.calls[0][1]).not.toHaveProperty('document');
   });
 
   it('refuses an incomplete phone number, naming the field', async () => {
     const h = build();
-    await expect(h.service.saveStep(1000001, 'personal', { phone: '+961 70 12' })).rejects.toThrow(
+    await expect(h.client.saveStep(1000001, 'personal', { phone: '+961 70 12' })).rejects.toThrow(
       /Phone Number is incomplete/,
     );
     expect(h.kycStore.update).not.toHaveBeenCalled();
@@ -810,14 +817,14 @@ describe('saveStep stores only what the step asks for', () => {
     // OLD number the screen no longer shows. The accidental case (a prefix
     // emitted while picking a country) is the portal's to never autosave.
     const h = build({ user: { ...USER, phone: '+96170123456' } });
-    await h.service.saveStep(1000001, 'personal', { phone: '+961' });
+    await h.client.saveStep(1000001, 'personal', { phone: '+961' });
     expect(h.profileRow.phone).toBeNull();
   });
 
   it('sends only what CHANGED to the profile — an untouched value is never re-judged', async () => {
     // A value stored before today's rules must not block a client who did not touch it.
     const h = build({ user: { ...USER, city: 'beirut 1!' } });
-    await h.service.saveStep(1000001, 'personal', { city: 'beirut 1!', lastName: 'Smith' });
+    await h.client.saveStep(1000001, 'personal', { city: 'beirut 1!', lastName: 'Smith' });
     expect(h.profileRow.lastName).toBe('Smith');
     expect(h.profileRow.city).toBe('beirut 1!');
   });
@@ -840,7 +847,7 @@ describe('saveStep stores only what the step asks for', () => {
         ],
       },
     ]);
-    await h.service.saveStep(1000001, 'source-of-funds', {
+    await h.client.saveStep(1000001, 'source-of-funds', {
       payslip: { filePath: 'uploads/kyc/someone-else.jpg' },
       employer: 'Acme',
     });
@@ -860,7 +867,7 @@ describe('a returned answer is settled by changing it', () => {
         rejectedFields: ['dateOfBirth', 'firstName', 'doc_front'],
       }),
     });
-    await h.service.saveStep(1000001, 'personal', {
+    await h.client.saveStep(1000001, 'personal', {
       firstName: 'Jane',
       dateOfBirth: '1991-02-02',
     });
@@ -875,7 +882,7 @@ describe('a returned answer is settled by changing it', () => {
     const h = build({
       stored: submission({ status: 'rejected', rejectedFields: ['dateOfBirth'] }),
     });
-    await h.service.saveStep(1000001, 'personal', { dateOfBirth: '1990-01-01' });
+    await h.client.saveStep(1000001, 'personal', { dateOfBirth: '1990-01-01' });
     expect(h.kycStore.update.mock.calls[0][1]).not.toHaveProperty('rejectedFields');
   });
 });
@@ -887,7 +894,7 @@ describe('an upload says which document its page belongs to', () => {
    * was GUESSED as passport on upload, and only Continue corrected it.
    */
   const upload = (h: ReturnType<typeof build>, field: string, name: string, docType?: string) =>
-    h.service.attachFile(1000001, field, `uploads/kyc/${name}`, docType);
+    h.client.attachFile(1000001, field, `uploads/kyc/${name}`, docType);
 
   it('starts the document afresh when the page is of a DIFFERENT document', async () => {
     const h = build({
@@ -1064,7 +1071,7 @@ describe('a built-in step holds extra fields, and ONE judge decides every step',
   it('saves an extra answer under the step’s slug, and answers with every step’s state', async () => {
     const h = build({ stored: completeSubmission() });
     withExtras(h);
-    const saved = await h.service.saveStep(1000001, 'address', {
+    const saved = await h.client.saveStep(1000001, 'address', {
       docType: 'utility_bill',
       note: ' Mr Haddad ',
     });
@@ -1080,7 +1087,7 @@ describe('a built-in step holds extra fields, and ONE judge decides every step',
   it('accepts an upload into an extra File field on a built-in step', async () => {
     const h = build({ stored: completeSubmission() });
     withExtras(h);
-    await h.service.attachFile(1000001, 'prooof3', 'uploads/kyc/lease.png');
+    await h.client.attachFile(1000001, 'prooof3', 'uploads/kyc/lease.png');
     expect(h.kycStore.update).toHaveBeenCalledWith(
       1000001,
       expect.objectContaining({
@@ -1095,7 +1102,7 @@ describe('a built-in step holds extra fields, and ONE judge decides every step',
   it('will not submit without a required extra — named by its label, on its step', async () => {
     const h = build({ stored: completeSubmission() });
     withExtras(h);
-    await expect(h.service.submit(1000001)).rejects.toThrow(
+    await expect(h.client.submit(1000001)).rejects.toThrow(
       /Address is incomplete: Lease, Landlord\./,
     );
   });
@@ -1112,13 +1119,13 @@ describe('a built-in step holds extra fields, and ONE judge decides every step',
       }),
     });
     withExtras(h);
-    await expect(h.service.submit(1000001)).resolves.toBeDefined();
+    await expect(h.client.submit(1000001)).resolves.toBeDefined();
   });
 
   it('NEVER relabels the pages on file when the client picks another document — it judges the choice', async () => {
     // A passport on file; the client clicked National ID and pressed Continue.
     const h = build({ stored: completeSubmission() });
-    const saved = await h.service.saveStep(1000001, 'document', { docType: 'national_id' });
+    const saved = await h.client.saveStep(1000001, 'document', { docType: 'national_id' });
     const patch = h.kycStore.update.mock.calls[0][1] as Record<string, unknown>;
     expect(patch).not.toHaveProperty('document');
     expect(
@@ -1128,7 +1135,7 @@ describe('a built-in step holds extra fields, and ONE judge decides every step',
 
   it('records a document chosen before anything is on file', async () => {
     const h = build({ stored: completeSubmission({ document: undefined }) });
-    await h.service.saveStep(1000001, 'document', { docType: 'national_id' });
+    await h.client.saveStep(1000001, 'document', { docType: 'national_id' });
     expect(h.kycStore.update).toHaveBeenCalledWith(
       1000001,
       expect.objectContaining({ document: { docType: 'national_id' } }),
@@ -1138,7 +1145,7 @@ describe('a built-in step holds extra fields, and ONE judge decides every step',
 
   it('serves every step’s state with the status', async () => {
     const h = build({ stored: completeSubmission({ selfie: undefined }) });
-    const status = await h.service.getStatus(1000001);
+    const status = await h.client.getStatus(1000001);
     expect(status.steps.map((state) => [state.slug, state.complete])).toEqual([
       ['personal', true],
       ['document', true],
@@ -1155,7 +1162,7 @@ describe('submit asks for every page and every returned document', () => {
         document: { docType: 'national_id', frontFilePath: 'uploads/kyc/front.png' },
       }),
     });
-    await expect(h.service.submit(1000001)).rejects.toThrow(/National ID: Back Side is required/);
+    await expect(h.client.submit(1000001)).rejects.toThrow(/National ID: Back Side is required/);
   });
 
   it('refuses while a RETURNED document has not been replaced, naming it', async () => {
@@ -1166,7 +1173,7 @@ describe('submit asks for every page and every returned document', () => {
         rejectedFields: ['doc_front'],
       }),
     });
-    await expect(h.service.submit(1000001)).rejects.toThrow(
+    await expect(h.client.submit(1000001)).rejects.toThrow(
       /replace the documents the reviewer returned: Passport\./,
     );
     expect(h.kycStore.transition).not.toHaveBeenCalled();
@@ -1180,7 +1187,7 @@ describe('submit asks for every page and every returned document', () => {
         rejectedFields: [],
       }),
     });
-    await expect(h.service.submit(1000001)).resolves.toBeDefined();
+    await expect(h.client.submit(1000001)).resolves.toBeDefined();
   });
 
   it('forgives a returned document on a step the broker has since disabled', async () => {
@@ -1190,14 +1197,14 @@ describe('submit asks for every page and every returned document', () => {
     h.kycConfig.getSteps.mockResolvedValue(
       defaultSteps().map((step) => (step.slug === 'selfie' ? { ...step, enabled: false } : step)),
     );
-    await expect(h.service.submit(1000001)).resolves.toBeDefined();
+    await expect(h.client.submit(1000001)).resolves.toBeDefined();
   });
 
   it('refuses a phone the form REQUIRES and the profile does not hold — and not an optional one', async () => {
     // "+961" can no longer be stored at all (the profile keeps a dialable number
     // or none), so what reaches submission is the absence.
     const h = build({ stored: completeSubmission(), user: { ...USER, phone: undefined } });
-    await expect(h.service.submit(1000001)).rejects.toThrow(/Phone Number is required/);
+    await expect(h.client.submit(1000001)).rejects.toThrow(/Phone Number is required/);
 
     // Phase 2: the broker made it optional — the absence is no longer owed.
     const optional = build({ stored: completeSubmission(), user: { ...USER, phone: undefined } });
@@ -1211,7 +1218,7 @@ describe('submit asks for every page and every returned document', () => {
           : step,
       ),
     );
-    await expect(optional.service.submit(1000001)).resolves.toBeDefined();
+    await expect(optional.client.submit(1000001)).resolves.toBeDefined();
   });
 
   it('announces a correction as a RESUBMISSION even after a step was saved', async () => {
@@ -1223,7 +1230,7 @@ describe('submit asks for every page and every returned document', () => {
     const h = build({
       stored: completeSubmission({ status: 'in_progress', rejectionReason: 'Blurred passport' }),
     });
-    await h.service.submit(1000001);
+    await h.client.submit(1000001);
     expect(h.notifications.notifyAdmins).toHaveBeenCalledWith(
       expect.objectContaining({
         kind: 'admin.kyc.resubmitted',
@@ -1236,18 +1243,18 @@ describe('submit asks for every page and every returned document', () => {
 describe('claim', () => {
   it('refuses a submission that is not submitted', async () => {
     const h = build({ stored: submission({ status: 'in_progress' }) });
-    await expect(h.service.claim(1000001, 'admin-1')).rejects.toThrow(ValidationError);
+    await expect(h.review.claim(1000001, 'admin-1')).rejects.toThrow(ValidationError);
   });
 
   it('refuses one already under review, and says so', async () => {
     // Two reviewers working the same submission is the thing claiming prevents.
     const h = build({ stored: submission({ status: 'under_review' }) });
-    await expect(h.service.claim(1000001, 'admin-1')).rejects.toThrow(/already being reviewed/i);
+    await expect(h.review.claim(1000001, 'admin-1')).rejects.toThrow(/already being reviewed/i);
   });
 
   it('claims a submitted one for the reviewing admin', async () => {
     const h = build({ stored: submission({ status: 'submitted' }) });
-    await h.service.claim(1000001, 'admin-1');
+    await h.review.claim(1000001, 'admin-1');
     // Conditional on still being `submitted`, so two admins clicking Review at
     // once cannot both take the row.
     expect(h.kycStore.transition).toHaveBeenCalledWith(1000001, ['submitted'], {
@@ -1264,13 +1271,13 @@ describe('claim', () => {
      * moved to `under_review` matches nothing.
      */
     const h = build({ stored: submission({ status: 'under_review' }) });
-    await expect(h.service.claim(1000001, 'admin-2')).rejects.toThrow(/already being reviewed/i);
+    await expect(h.review.claim(1000001, 'admin-2')).rejects.toThrow(/already being reviewed/i);
   });
 
   it('refuses when there is no submission at all', async () => {
     const h = build();
     h.kycStore.findByUserId.mockResolvedValue(undefined);
-    await expect(h.service.claim(1000001, 'admin-1')).rejects.toThrow(NotFoundError);
+    await expect(h.review.claim(1000001, 'admin-1')).rejects.toThrow(NotFoundError);
   });
 });
 
@@ -1295,19 +1302,19 @@ describe('a submission another reviewer is holding', () => {
     const h = build({ stored: heldByAnother() });
     // Named, not "someone else": a refusal without a name leaves the reader one
     // option, which is to interrupt the whole desk to find out who.
-    await expect(h.service.approve(1000001, 'admin-1')).rejects.toThrow(/Sarah Chen/);
+    await expect(h.review.approve(1000001, 'admin-1')).rejects.toThrow(/Sarah Chen/);
     expect(h.kycStore.transition).not.toHaveBeenCalled();
   });
 
   it('refuses a REJECT by a different admin too', async () => {
     const h = build({ stored: heldByAnother() });
-    await expect(h.service.reject(1000001, 'admin-1', 'Blurry')).rejects.toThrow(/Sarah Chen/);
+    await expect(h.review.reject(1000001, 'admin-1', 'Blurry')).rejects.toThrow(/Sarah Chen/);
     expect(h.kycStore.transition).not.toHaveBeenCalled();
   });
 
   it('lets the HOLDER decide their own claim', async () => {
     const h = build({ stored: heldByAnother() });
-    await expect(h.service.approve(1000001, 'admin-2')).resolves.toBeDefined();
+    await expect(h.review.approve(1000001, 'admin-2')).resolves.toBeDefined();
   });
 
   /*
@@ -1317,7 +1324,7 @@ describe('a submission another reviewer is holding', () => {
    */
   it('leaves an UNCLAIMED submission decidable by anyone', async () => {
     const h = build({ stored: completeSubmission({ status: 'submitted' }) });
-    await expect(h.service.approve(1000001, 'admin-1')).resolves.toBeDefined();
+    await expect(h.review.approve(1000001, 'admin-1')).resolves.toBeDefined();
   });
 
   /*
@@ -1334,7 +1341,7 @@ describe('a submission another reviewer is holding', () => {
    */
   it('puts the holder into the WHERE clause, not only into the read', async () => {
     const h = build({ stored: completeSubmission({ status: 'submitted' }) });
-    await h.service.approve(1000001, 'admin-1');
+    await h.review.approve(1000001, 'admin-1');
 
     const call = h.kycStore.transition.mock.calls[0];
     expect(call[1]).toEqual(['submitted', 'under_review']);
@@ -1345,7 +1352,7 @@ describe('a submission another reviewer is holding', () => {
   it('falls back to an anonymous refusal when the holder has been deleted', async () => {
     const h = build({ stored: heldByAnother() });
     h.admins.namesByIds.mockResolvedValueOnce(new Map());
-    await expect(h.service.approve(1000001, 'admin-1')).rejects.toThrow(/Another reviewer/);
+    await expect(h.review.approve(1000001, 'admin-1')).rejects.toThrow(/Another reviewer/);
   });
 });
 
@@ -1357,7 +1364,7 @@ describe('approve', () => {
       stored: completeSubmission({ status: 'submitted', document: undefined }),
       user: { ...USER, city: undefined },
     });
-    const refusal = h.service.approve(1000001, 'admin-1');
+    const refusal = h.review.approve(1000001, 'admin-1');
     await expect(refusal).rejects.toThrow(ConflictError);
     await expect(refusal).rejects.toThrow(/City/);
     expect(h.users.update).not.toHaveBeenCalled();
@@ -1384,7 +1391,7 @@ describe('approve', () => {
         ],
       },
     ]);
-    await expect(h.service.approve(1000001, 'admin-1')).resolves.toBeDefined();
+    await expect(h.review.approve(1000001, 'admin-1')).resolves.toBeDefined();
     expect(h.users.update).toHaveBeenCalledWith(
       1000001,
       { verificationLevel: 1 },
@@ -1395,7 +1402,7 @@ describe('approve', () => {
   it('raises the client to verification level 1', async () => {
     // This is the line that unlocks withdrawals.
     const h = build({ stored: completeSubmission({ status: 'submitted' }) });
-    await h.service.approve(1000001, 'admin-1');
+    await h.review.approve(1000001, 'admin-1');
     // The third argument is the transaction the decision runs in — the level and
     // the status land together or not at all.
     expect(h.users.update).toHaveBeenCalledWith(
@@ -1407,7 +1414,7 @@ describe('approve', () => {
 
   it('records who approved it and when', async () => {
     const h = build({ stored: completeSubmission({ status: 'submitted' }) });
-    await h.service.approve(1000001, 'admin-1');
+    await h.review.approve(1000001, 'admin-1');
     // `transition`, not `update`: the expected status goes into the WHERE, so
     // two reviewers racing cannot both write.
     expect(h.kycStore.transition).toHaveBeenCalledWith(
@@ -1428,7 +1435,7 @@ describe('approve', () => {
 
   it('emails the client the decision', async () => {
     const h = build({ stored: completeSubmission({ status: 'submitted' }) });
-    await h.service.approve(1000001, 'admin-1');
+    await h.review.approve(1000001, 'admin-1');
     expect(h.email.sendKycDecisionEmail).toHaveBeenCalledWith(
       USER.email,
       USER.firstName,
@@ -1448,7 +1455,7 @@ describe('approve', () => {
       stored: completeSubmission({ status: 'submitted' }),
       user: { ...USER, locale: 'ar' },
     });
-    await h.service.approve(1000001, 'admin-1');
+    await h.review.approve(1000001, 'admin-1');
     expect(h.email.sendKycDecisionEmail).toHaveBeenCalledWith(
       USER.email,
       USER.firstName,
@@ -1462,7 +1469,7 @@ describe('approve', () => {
   it('refuses when there is no submission', async () => {
     const h = build();
     h.kycStore.findByUserId.mockResolvedValue(undefined);
-    await expect(h.service.approve(1000001, 'admin-1')).rejects.toThrow(NotFoundError);
+    await expect(h.review.approve(1000001, 'admin-1')).rejects.toThrow(NotFoundError);
     expect(h.users.update).not.toHaveBeenCalled();
   });
 
@@ -1472,7 +1479,7 @@ describe('approve', () => {
     // decision about evidence, and there is none in `not_started`.
     for (const status of ['not_started', 'in_progress'] as const) {
       const h = build({ stored: submission({ status }) });
-      await expect(h.service.approve(1000001, 'admin-1')).rejects.toThrow();
+      await expect(h.review.approve(1000001, 'admin-1')).rejects.toThrow();
       expect(h.users.update).not.toHaveBeenCalled();
     }
   });
@@ -1487,7 +1494,7 @@ describe('approve', () => {
     // this asserts the observable consequence either way.
     const h = build({ stored: completeSubmission({ status: 'submitted' }) });
     h.kycStore.transition.mockRejectedValue(new Error('db down'));
-    await expect(h.service.approve(1000001, 'admin-1')).rejects.toThrow();
+    await expect(h.review.approve(1000001, 'admin-1')).rejects.toThrow();
     expect(h.users.update).not.toHaveBeenCalled();
   });
 
@@ -1506,7 +1513,7 @@ describe('approve', () => {
     const h = build({ stored: completeSubmission({ status: 'submitted' }) });
     h.kycStore.transition.mockResolvedValue(undefined);
 
-    await expect(h.service.approve(1000001, 'admin-1')).rejects.toThrow(/another reviewer/i);
+    await expect(h.review.approve(1000001, 'admin-1')).rejects.toThrow(/another reviewer/i);
     expect(h.users.update).not.toHaveBeenCalled();
     expect(h.kycStore.archiveAttempt).not.toHaveBeenCalled();
   });
@@ -1515,7 +1522,7 @@ describe('approve', () => {
 describe('reject', () => {
   it('records the reason and the flagged fields', async () => {
     const h = build({ stored: completeSubmission({ status: 'under_review' }) });
-    await h.service.reject(1000001, 'admin-1', 'Blurry document', ['doc_front']);
+    await h.review.reject(1000001, 'admin-1', 'Blurry document', ['doc_front']);
     expect(h.kycStore.transition).toHaveBeenCalledWith(
       1000001,
       expect.arrayContaining(['submitted', 'under_review']),
@@ -1531,7 +1538,7 @@ describe('reject', () => {
 
   it('emails the client the reason so they can correct and resubmit', async () => {
     const h = build({ stored: completeSubmission({ status: 'under_review' }) });
-    await h.service.reject(1000001, 'admin-1', 'Blurry document', ['doc_front', 'lastName']);
+    await h.review.reject(1000001, 'admin-1', 'Blurry document', ['doc_front', 'lastName']);
     // Named as every screen names them — never `doc_front`.
     expect(h.email.sendKycDecisionEmail).toHaveBeenCalledWith(
       USER.email,
@@ -1554,7 +1561,7 @@ describe('reject', () => {
       stored: completeSubmission({ status: 'approved' }),
       user: { ...USER, verificationLevel: 1 },
     });
-    await h.service.reject(1000001, 'admin-1', 'Approved in error', []);
+    await h.review.reject(1000001, 'admin-1', 'Approved in error', []);
     expect(h.users.update).toHaveBeenCalledWith(
       1000001,
       { verificationLevel: 0 },
@@ -1565,7 +1572,7 @@ describe('reject', () => {
   it('refuses when there is no submission', async () => {
     const h = build();
     h.kycStore.findByUserId.mockResolvedValue(undefined);
-    await expect(h.service.reject(1000001, 'admin-1', 'x')).rejects.toThrow(NotFoundError);
+    await expect(h.review.reject(1000001, 'admin-1', 'x')).rejects.toThrow(NotFoundError);
   });
 });
 
@@ -1588,7 +1595,7 @@ describe('getByUserId — what a reviewer may see', () => {
 
   it('returns none of the client credentials', async () => {
     const h = build({ stored: completeSubmission(), user: LEAKY });
-    const serialised = JSON.stringify(await h.service.getByUserId(1000001));
+    const serialised = JSON.stringify(await h.review.getByUserId(1000001));
     for (const secret of ['argon2-hash-here', 'refresh-hash', 'reset-hash']) {
       expect(serialised).not.toContain(secret);
     }
@@ -1599,7 +1606,7 @@ describe('getByUserId — what a reviewer may see', () => {
     // An allow-list that is too tight breaks the review screen instead of
     // leaking — the better failure, but still one.
     const h = build({ stored: completeSubmission(), user: LEAKY });
-    const result = (await h.service.getByUserId(1000001)) as { user?: Record<string, unknown> };
+    const result = (await h.review.getByUserId(1000001)) as { user?: Record<string, unknown> };
     for (const field of ['id', 'email', 'firstName', 'lastName', 'verificationLevel']) {
       expect(result.user?.[field]).toBeDefined();
     }
@@ -1609,7 +1616,7 @@ describe('getByUserId — what a reviewer may see', () => {
 describe('listAll', () => {
   it('clamps the page size, so one request cannot ask for the whole table', async () => {
     const h = build();
-    await h.service.listAll({ limit: 100_000 });
+    await h.review.listAll({ limit: 100_000 });
     expect(h.kycStore.findPageWithUsers).toHaveBeenCalledWith(
       expect.objectContaining({ limit: 100 }),
     );
@@ -1617,7 +1624,42 @@ describe('listAll', () => {
 
   it('never accepts a page below 1', async () => {
     const h = build();
-    await h.service.listAll({ page: -5 });
+    await h.review.listAll({ page: -5 });
     expect(h.kycStore.findPageWithUsers).toHaveBeenCalledWith(expect.objectContaining({ page: 1 }));
+  });
+});
+
+describe('reset judges the LOCKED row', () => {
+  it('refuses when a submit committed after an unlocked read said in_progress', async () => {
+    const { client, kycStore } = build({ stored: submission({ status: 'in_progress' }) });
+    // A submit from another tab won the row lock: the locked row is in review.
+    kycStore.lockForUpdate.mockResolvedValueOnce(submission({ status: 'submitted' }));
+    await expect(client.resetKyc(1000001)).rejects.toBeInstanceOf(AuthorizationError);
+    expect(kycStore.resetUser).not.toHaveBeenCalled();
+  });
+});
+
+describe('decisions and corrections re-judge under the locks', () => {
+  it('approve refuses when the profile changed after the blocker check', async () => {
+    const h = build({ stored: completeSubmission({ status: 'submitted' }) });
+    // A desk edit cleared the phone between the pre-check and the locked re-read.
+    h.users.findByIdForUpdate.mockResolvedValueOnce({ ...USER, phone: null } as unknown as User);
+    await expect(h.review.approve(1000001, 'admin-1')).rejects.toBeInstanceOf(ConflictError);
+    expect(h.kycStore.archiveAttempt).not.toHaveBeenCalled();
+  });
+
+  it('a correction refuses when an approval landed after its standing was read', async () => {
+    const h = build({ stored: completeSubmission({ status: 'under_review' }) });
+    // Under the lock the verification is now approved.
+    h.kycStore.lockForUpdate.mockResolvedValueOnce(completeSubmission({ status: 'approved' }));
+    await expect(
+      h.profile.editAsAdmin(
+        1000001,
+        { address: '' },
+        { id: 'admin-1', email: 'a@x.com', kind: 'admin' },
+        { mayCorrect: true, reason: 'typo', via: 'admin_edit' },
+      ),
+    ).rejects.toBeInstanceOf(ConflictError);
+    expect(h.profileRow.address).toBe('Hamra Street 12');
   });
 });

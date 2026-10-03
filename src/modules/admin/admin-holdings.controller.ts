@@ -65,7 +65,7 @@ import { Audited } from './guards/audited.decorator';
  *
  * The `balance` column is the awkward part of that reasoning and is worth
  * stating rather than glossing: it is money, and it is served under a non-money
- * key. It is a CRM-owned placeholder until the MT5 bridge lands (see the schema
+ * key. It is a MIRROR of the MT5 balance kept by the bridge (see the schema
  * comment on the column), it is already exposed on the client profile under this
  * same key, and it is not a claim the platform will pay out — unlike a wallet
  * balance. If it ever becomes authoritative, this route should move to a money
@@ -347,7 +347,8 @@ export class AdminHoldingsController {
   @ApiOperation({
     summary: 'Every client trading account, with its owner (balances are strings)',
     description:
-      '`balance` is CRM-owned until the MT5 bridge lands and crosses this boundary as a STRING. ' +
+      '`balance` is the CRM mirror of MT5 (kept by the bridge) and crosses this boundary as a ' +
+      'STRING. ' +
       '`login` is NULL until MT5 issues one, and is a string rather than a number because ' +
       'leading zeros are significant to the bridge.',
   })
@@ -474,8 +475,8 @@ export class AdminHoldingsController {
   ) {
     return this.holdings.listClientClosedPositions({
       userId: id,
-      page: page ? Number(page) : undefined,
-      limit: limit ? Number(limit) : undefined,
+      page,
+      limit,
       scope: req.admin.clientScope,
     });
   }
@@ -510,8 +511,8 @@ export class AdminHoldingsController {
   ) {
     return this.holdings.listClientTransactions({
       userId: id,
-      page: page ? Number(page) : undefined,
-      limit: limit ? Number(limit) : undefined,
+      page,
+      limit,
       scope: req.admin.clientScope,
     });
   }

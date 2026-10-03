@@ -145,13 +145,17 @@ export class StatementService {
         FROM ledger_entries le
         -- split_part: a refused withdrawal's REFUND is keyed '<id>:refund' so it
         -- does not collide with the debit it reverses; it names the same row.
+        -- The reference is cast only when it IS a uuid (a cast that could throw
+        -- is guarded), so the join probes the primary key instead of scanning.
         LEFT JOIN transactions t
-          ON le.reference_type = 'transaction'
-         AND t.id::text = split_part(le.reference_id, ':', 1)
+          ON t.id = CASE WHEN le.reference_type = 'transaction'
+                          AND split_part(le.reference_id, ':', 1) ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+                         THEN split_part(le.reference_id, ':', 1)::uuid END
         LEFT JOIN payment_methods pm ON pm.key = t.method_key
         LEFT JOIN withdrawal_payment_methods wpm ON wpm.key = t.withdrawal_method_key
         LEFT JOIN transfers tr
-          ON le.reference_type = 'transfer' AND tr.id::text = le.reference_id
+          ON tr.id = CASE WHEN le.reference_type = 'transfer' AND le.reference_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+                          THEN le.reference_id::uuid END
         LEFT JOIN trading_accounts ta ON ta.id = tr.trading_account_id
         WHERE le.wallet_id = ${walletId}
           AND le.created_at >= ${from}::date

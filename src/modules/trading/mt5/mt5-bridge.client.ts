@@ -263,7 +263,7 @@ export class Mt5BridgeClient {
     try {
       return await this.request<Mt5ResetPasswords>('POST', `/accounts/${login}/password`);
     } catch (error) {
-      if (error instanceof ExternalServiceError && error.message.includes('404')) {
+      if (error instanceof ExternalServiceError && error.upstreamStatus === 404) {
         return null;
       }
       throw error;
@@ -281,7 +281,7 @@ export class Mt5BridgeClient {
       await this.request<{ login: number; name: string }>('PATCH', `/accounts/${login}`, { name });
       return true;
     } catch (error) {
-      if (error instanceof ExternalServiceError && error.message.includes('404')) {
+      if (error instanceof ExternalServiceError && error.upstreamStatus === 404) {
         return false;
       }
       throw error;
@@ -300,7 +300,7 @@ export class Mt5BridgeClient {
     try {
       return await this.request<Mt5AccountHolder>('GET', `/accounts/${login}/holder`);
     } catch (error) {
-      if (error instanceof ExternalServiceError && error.message.includes('404')) {
+      if (error instanceof ExternalServiceError && error.upstreamStatus === 404) {
         return null;
       }
       throw error;
@@ -330,7 +330,7 @@ export class Mt5BridgeClient {
       return await this.request<Mt5AccountSnapshot>('GET', `/accounts/${login}`);
     } catch (error) {
       // "No such account" is an ordinary answer to a lookup, not a failure.
-      if (error instanceof ExternalServiceError && error.message.includes('404')) {
+      if (error instanceof ExternalServiceError && error.upstreamStatus === 404) {
         return null;
       }
       throw error;
@@ -581,6 +581,8 @@ export class Mt5BridgeClient {
         );
         throw new ExternalServiceError(
           `MT5 bridge returned ${response.status} for ${method} ${path}: ${text.slice(0, 200)}`,
+          undefined,
+          response.status,
         );
       }
 
@@ -630,4 +632,20 @@ export class Mt5BridgeClient {
       clearTimeout(timer);
     }
   }
+}
+
+/**
+ * THE one refusal for "no bridge on this deployment": an `ExternalServiceError`,
+ * whoever asks. It used to be a 400 `ValidationError` on the admin side and an
+ * `ExternalServiceError` on the client side — two classes for one fault.
+ * Callers choose only the sentence, because a client must not be told about
+ * env vars. A free function over `isConfigured`, so a test double needs nothing
+ * more than that flag.
+ */
+export function assertBridgeConfigured(
+  bridge: Pick<Mt5BridgeClient, 'isConfigured'>,
+  message = 'The MT5 bridge is not configured on this deployment. Set MT5_BRIDGE_URL and ' +
+    'MT5_BRIDGE_API_KEY.',
+): void {
+  if (!bridge.isConfigured) throw new ExternalServiceError(message);
 }

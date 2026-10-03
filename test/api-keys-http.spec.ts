@@ -11,6 +11,7 @@ import {
 import { PasswordService } from '../src/common/security/password.service';
 import {
   adminClientTagScopes,
+  adminInvites,
   admins,
   apiKeys,
   auditLog,
@@ -19,7 +20,7 @@ import {
   roles,
   users,
 } from '../src/database/schema';
-import { hashApiKey } from '../src/common/security/api-key';
+import { apiKeyActorLabel, hashApiKey } from '../src/common/security/api-key';
 
 /**
  * API keys, over HTTP, through the real guard chain.
@@ -584,5 +585,109 @@ describe('suspending the administrator who minted a key', () => {
       details?.apiKeysRevoked,
       'the suspension row does not say what it ended',
     ).toBeGreaterThan(0);
+  });
+});
+
+describe('suspension also revokes the invites the administrator sent', () => {
+  it('deletes their pending invites and counts them on the audit row', async () => {
+    // An invite creates an account carrying the inviter's grants and outlives
+    // their session by up to 48 hours — a third credential left behind.
+    await reactivateKeyOwner();
+    const [invite] = await ctx.db.db
+      .insert(adminInvites)
+      .values({
+        email: 'apikey-pending-invitee@oxshare.com',
+        name: 'Pending Invitee',
+        tokenHash: 'f'.repeat(64),
+        invitedBy: keyOwnerId,
+        expiresAt: new Date(Date.now() + 86_400_000),
+      })
+      .returning();
+
+    const master = await actingAs(ctx, 'admin', MASTER);
+    await master.patch(`/v1/admin/users/${keyOwnerId}/status`, { status: 'suspended' }).expect(200);
+
+    const left = await ctx.db.db.select().from(adminInvites).where(eq(adminInvites.id, invite.id));
+    expect(left).toHaveLength(0);
+
+    const [row] = await ctx.db.db
+      .select()
+      .from(auditLog)
+      .where(and(eq(auditLog.subjectId, keyOwnerId), eq(auditLog.action, 'admin.suspend')))
+      .orderBy(desc(auditLog.createdAt))
+      .limit(1);
+    expect((row?.details as { invitesRevoked?: number }).invitesRevoked).toBe(1);
+  });
+});
+
+describe('a key follows its creator DOWN', () => {
+  const CLAMPED = { email: 'apikey-clamped@oxshare.com', password: 'admin-password-123' };
+  let clampRoleId: string;
+
+  beforeAll(async () => {
+    const [role] = await ctx.db.db
+      .insert(roles)
+      .values({
+        name: 'API Key Clamp',
+        description: 'Reads clients and the audit log, mints keys.',
+        permissions: ['clients.view', 'audit.view', 'apikeys.create'],
+        isSystem: false,
+      })
+      .returning();
+    clampRoleId = role.id;
+    await ctx.db.db.insert(admins).values({
+      email: CLAMPED.email,
+      passwordHash: await new PasswordService().hash(CLAMPED.password),
+      name: 'API Key Clamped',
+      role: 'sub_admin',
+      roleId: role.id,
+      permissions: ['clients.view', 'audit.view', 'apikeys.create'],
+    });
+  });
+
+  it('loses a permission the moment the role its creator stands on is edited down', async () => {
+    const owner = await actingAs(ctx, 'admin', CLAMPED);
+    const issued = await owner
+      .post('/v1/admin/api-keys', {
+        name: 'Clamped key',
+        permissions: ['clients.view', 'audit.view'],
+      })
+      .expect(201);
+    const key = issued.body.plaintext as string;
+    await anonymous(ctx).get('/v1/admin/audit-log?limit=1').set('X-API-Key', key).expect(200);
+
+    const master = await actingAs(ctx, 'admin', MASTER);
+    await master
+      .put(`/v1/admin/roles/${clampRoleId}`, { permissions: ['clients.view', 'apikeys.create'] })
+      .expect(200);
+
+    // The removed permission is gone from the key; the kept one still works.
+    await anonymous(ctx).get('/v1/admin/audit-log?limit=1').set('X-API-Key', key).expect(403);
+    await anonymous(ctx).get('/v1/admin/clients?limit=1').set('X-API-Key', key).expect(200);
+
+    const [row] = await ctx.db.db
+      .select({ permissions: apiKeys.permissions })
+      .from(apiKeys)
+      .where(eq(apiKeys.id, issued.body.key.id as string));
+    expect(row.permissions).toEqual(['clients.view']);
+  });
+});
+
+describe("a key's audited actions name the key", () => {
+  it('writes the key label as actor_email, never "unknown"', async () => {
+    const { plaintext, id } = await issueKey({ name: 'Exporter', permissions: ['clients.view'] });
+    await anonymous(ctx)
+      .get('/v1/admin/clients/export?format=csv&q=no-such-client-anywhere')
+      .set('X-API-Key', plaintext)
+      .expect(200);
+
+    const [key] = await ctx.db.db.select().from(apiKeys).where(eq(apiKeys.id, id));
+    const [row] = await ctx.db.db
+      .select()
+      .from(auditLog)
+      .where(and(eq(auditLog.actorId, id), eq(auditLog.action, 'export.clients')))
+      .orderBy(desc(auditLog.createdAt))
+      .limit(1);
+    expect(row?.actorEmail).toBe(apiKeyActorLabel(key));
   });
 });
