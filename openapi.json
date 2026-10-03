@@ -7838,6 +7838,165 @@
         ]
       }
     },
+    "/v1/admin/auth/google/status": {
+      "get": {
+        "operationId": "AdminGoogleAuthController_status",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GoogleSignInStatusDto"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Whether the admin sign-in screen offers \"Sign in with Google\"",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/auth/google/start": {
+      "get": {
+        "description": "Sets a signed, httpOnly flow cookie (state, nonce, PKCE verifier) and redirects to Google's authorization endpoint. `next` must be a relative console path; anything else lands on /dashboard. `invite` (the emailed invite token) is kept in the cookie only.",
+        "operationId": "AdminGoogleAuthController_start",
+        "parameters": [
+          {
+            "name": "invite",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "next",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Redirect to Google, or back to the console when disabled."
+          }
+        },
+        "summary": "Begin Google sign-in (browser navigation; 302 to Google)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/auth/google/callback": {
+      "get": {
+        "description": "Verifies state against the signed flow cookie, exchanges the code with the PKCE verifier, verifies the ID token and starts an admin session. Every failure redirects to the console with `?google_error=<code>` — never Google text, never the address.",
+        "operationId": "AdminGoogleAuthController_callback",
+        "parameters": [
+          {
+            "name": "error",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "code",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Redirect to the console."
+          }
+        },
+        "summary": "Google redirects here (browser navigation; 302 back to the console)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/auth/me/google": {
+      "delete": {
+        "operationId": "AdminGoogleAuthController_unlinkOwn",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Unlink your own Google account",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/users/{id}/google": {
+      "delete": {
+        "operationId": "AdminGoogleAuthController_unlinkFor",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Unlink another administrator's Google account (admins.reset)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/clients": {
       "get": {
         "operationId": "AdminClientsController_listClients",
@@ -21086,6 +21245,16 @@
             "format": "date-time",
             "nullable": true
           },
+          "googleEmail": {
+            "type": "string",
+            "nullable": true,
+            "example": "ada@bbcorp.trade"
+          },
+          "googleLinkedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
           "createdAt": {
             "format": "date-time",
             "type": "string"
@@ -21102,6 +21271,8 @@
           "scopedTags",
           "seesUntriaged",
           "seesAllClients",
+          "googleEmail",
+          "googleLinkedAt",
           "createdAt"
         ]
       },
@@ -21396,6 +21567,18 @@
             "example": "/uploads/avatars/6f1c...c2.png"
           }
         }
+      },
+      "GoogleSignInStatusDto": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "description": "True when GOOGLE_OAUTH_CLIENT_ID and _SECRET are both configured."
+          }
+        },
+        "required": [
+          "enabled"
+        ]
       },
       "ClientTagDto": {
         "type": "object",

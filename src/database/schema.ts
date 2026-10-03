@@ -512,6 +512,18 @@ export const admins = pgTable('admins', {
    * place to get the magic-byte check wrong.
    */
   avatarFilename: varchar('avatar_filename', { length: 128 }),
+  /*
+   * "Sign in with Google" (0180) — the ADMIN console only.
+   *
+   * `google_sub` is Google's stable subject id and the only thing a Google
+   * sign-in is matched on once linked; UNIQUE so one Google account can never
+   * reach two administrators. `google_email` is display ("linked as …"), never
+   * authenticated on. All three NULL = not linked. A trigger in 0180 clears
+   * them when `email` changes: the link was made against the old identity.
+   */
+  googleSub: varchar('google_sub', { length: 255 }).unique('admins_google_sub_unique'),
+  googleEmail: varchar('google_email', { length: 255 }),
+  googleLinkedAt: timestamp('google_linked_at', { withTimezone: true }),
   // `refresh_token` removed here for the same reason as on `users` — superseded
   // by the refresh_tokens family table, written by nothing, read by nothing.
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

@@ -146,6 +146,19 @@ export class AdminProfileDto {
   @NotClientField('a timestamp the system recorded, describing the record rather than the client')
   passwordChangedAt?: Date | null;
 
+  /**
+   * The Google account linked for "Sign in with Google" (0180), or `null`.
+   * Display only — the link is keyed on Google's subject id, never on this.
+   */
+  @ApiProperty({ type: String, nullable: true, example: 'ada@bbcorp.trade' })
+  @NotClientField('an ADMINISTRATOR attribute — this describes the operator, never a client')
+  googleEmail: string | null;
+
+  /** When the Google account was linked, or `null` when none is. */
+  @ApiProperty({ type: String, format: 'date-time', nullable: true })
+  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
+  googleLinkedAt: Date | null;
+
   @NotClientField('a timestamp the system recorded, describing the record rather than the client')
   @ApiProperty()
   createdAt: Date;
@@ -3357,4 +3370,11 @@ export class AttentionResolvedDto {
 
   @ApiProperty({ description: 'Always false after a successful resolve.' })
   needsAttention: boolean;
+}
+
+/** `GET /admin/auth/google/status` — whether the sign-in screen offers Google. */
+@NoClientFields('an administrative or configuration shape - no client-owned field on it')
+export class GoogleSignInStatusDto {
+  @ApiProperty({ description: 'True when GOOGLE_OAUTH_CLIENT_ID and _SECRET are both configured.' })
+  enabled: boolean;
 }

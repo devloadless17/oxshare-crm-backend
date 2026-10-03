@@ -1,4 +1,16 @@
-import { and, count, desc, eq, gt, notExists, sql, type SQLWrapper, inArray } from 'drizzle-orm';
+import {
+  and,
+  count,
+  desc,
+  eq,
+  gt,
+  isNotNull,
+  isNull,
+  notExists,
+  sql,
+  type SQLWrapper,
+  inArray,
+} from 'drizzle-orm';
 import { createHash } from 'crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
@@ -88,6 +100,15 @@ export interface Admin {
   passwordChangedAt?: Date;
   /** Stored FILENAME of the profile photo, never a URL. See the schema. */
   avatarFilename?: string;
+  /**
+   * The linked Google account's stable subject id (0180) — what a Google
+   * sign-in matches on. `undefined` = not linked. Written ONLY through
+   * `linkGoogle` / `unlinkGoogle`, never through `update`.
+   */
+  googleSub?: string;
+  /** The Google address shown as "linked as …". Display only. */
+  googleEmail?: string;
+  googleLinkedAt?: Date;
   createdAt: Date;
 }
 
@@ -136,6 +157,9 @@ const toAdmin = (r: AdminRow): Admin => ({
   // handle and one of them eventually gets missed.
   passwordChangedAt: r.passwordChangedAt ?? undefined,
   avatarFilename: r.avatarFilename ?? undefined,
+  googleSub: r.googleSub ?? undefined,
+  googleEmail: r.googleEmail ?? undefined,
+  googleLinkedAt: r.googleLinkedAt ?? undefined,
 });
 
 const toInvite = (r: InviteRow): AdminInvite => ({
@@ -250,8 +274,70 @@ export class AdminsStore {
     return row ? toAdmin(row) : undefined;
   }
 
+  /** The administrator a Google account is linked to, if any (0180). */
+  async findByGoogleSub(sub: string): Promise<Admin | undefined> {
+    const [row] = await this.db.select().from(admins).where(eq(admins.googleSub, sub)).limit(1);
+    return row ? toAdmin(row) : undefined;
+  }
+
+  /**
+   * Link a Google account — ONLY if none is linked yet.
+   *
+   * The `google_sub IS NULL` condition is the whole guarantee, as with the
+   * invite claim: two first sign-ins racing each other cannot both link, and a
+   * link to a DIFFERENT Google account can never be overwritten by this call.
+   * Returns the updated admin, or `undefined` when the row already carried a
+   * link (the caller re-reads and decides). A second admin holding the same
+   * `sub` is refused by the UNIQUE constraint, which the caller also handles.
+   */
+  async linkGoogle(
+    id: string,
+    google: { sub: string; email: string },
+    tx?: Executor,
+  ): Promise<Admin | undefined> {
+    const [row] = await (tx ?? this.db)
+      .update(admins)
+      .set({ googleSub: google.sub, googleEmail: google.email, googleLinkedAt: new Date() })
+      .where(and(eq(admins.id, id), isNull(admins.googleSub)))
+      .returning();
+    return row ? toAdmin(row) : undefined;
+  }
+
+  /** Keep the "linked as" address current on a sign-in by `sub`. Display only. */
+  async refreshGoogleEmail(id: string, email: string, tx?: Executor): Promise<void> {
+    await (tx ?? this.db).update(admins).set({ googleEmail: email }).where(eq(admins.id, id));
+  }
+
+  /**
+   * Remove the link. Returns the admin as it was BEFORE (so the caller can audit
+   * which Google address was removed), or `undefined` when nothing was linked.
+   */
+  async unlinkGoogle(id: string, tx?: Executor): Promise<Admin | undefined> {
+    const executor = tx ?? this.db;
+    const [before] = await executor
+      .select()
+      .from(admins)
+      .where(and(eq(admins.id, id), isNotNull(admins.googleSub)))
+      .for('update');
+    if (!before) return undefined;
+    await executor
+      .update(admins)
+      .set({ googleSub: null, googleEmail: null, googleLinkedAt: null })
+      .where(eq(admins.id, id));
+    return toAdmin(before);
+  }
+
   async update(id: string, patch: Partial<Admin>, tx?: Executor): Promise<Admin | undefined> {
-    const { id: _ignored, createdAt: _also, ...rest } = patch;
+    const {
+      id: _ignored,
+      createdAt: _also,
+      // The Google link has its own conditional writers above; a general patch
+      // must never be able to set or move it.
+      googleSub: _sub,
+      googleEmail: _gEmail,
+      googleLinkedAt: _gAt,
+      ...rest
+    } = patch;
     // Explicit nulls clear optional columns (e.g. logout clears refreshToken)
     const set = {
       ...rest,
