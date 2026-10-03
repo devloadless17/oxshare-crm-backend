@@ -37,6 +37,13 @@ interface FakeAdmin {
   permissions: string[];
 }
 
+/** The fan-out reads territories in one batch; derive it from the per-admin fake. */
+function withBatchScopes(fake: AdminClientScopesStore): AdminClientScopesStore {
+  const scopesFor = async (admins: readonly { id: string }[]) =>
+    new Map(await Promise.all(admins.map(async (a) => [a.id, await fake.scopeFor(a)] as const)));
+  return Object.assign(fake, { scopesFor });
+}
+
 function build(opts: {
   admins: FakeAdmin[];
   /** roleId → live permission list. Missing id falls back to the snapshot. */
@@ -59,7 +66,7 @@ function build(opts: {
           Promise.resolve((roleId && opts.rolePermissions?.[roleId]) || snapshot),
         ),
     } as unknown as RolesStore,
-    {
+    withBatchScopes({
       scopeFor: vi
         .fn()
         .mockImplementation(({ id: adminId }: { id: string }) =>
@@ -73,7 +80,7 @@ function build(opts: {
               : UNRESTRICTED,
           ),
         ),
-    } as unknown as AdminClientScopesStore,
+    } as unknown as AdminClientScopesStore),
     {
       assertVisible: vi.fn().mockImplementation((clientId: number, scope) => {
         void clientId;
@@ -157,7 +164,7 @@ describe('notifyAdmins', () => {
             Promise.resolve(snapshot),
           ),
       } as unknown as RolesStore,
-      {
+      withBatchScopes({
         // Takes the admin ROW since 0154 — matching on an id string made every admin
         // unrestricted here, and the refusal this case proves went unobserved.
         scopeFor: vi.fn().mockImplementation(({ id: adminId }: { id: string }) => {
@@ -166,7 +173,7 @@ describe('notifyAdmins', () => {
             return Promise.resolve(scopeOf(['south'], false, false));
           return Promise.resolve(UNRESTRICTED);
         }),
-      } as unknown as AdminClientScopesStore,
+      } as unknown as AdminClientScopesStore),
       visibility as unknown as ClientVisibilityService,
       alwaysLeads(),
     );
@@ -199,9 +206,9 @@ describe('notifyAdmins', () => {
             Promise.resolve(snapshot),
           ),
       } as unknown as RolesStore,
-      {
+      withBatchScopes({
         scopeFor: vi.fn().mockResolvedValue(scopeOf(['south'], false, false)),
-      } as unknown as AdminClientScopesStore,
+      } as unknown as AdminClientScopesStore),
       { assertVisible } as unknown as ClientVisibilityService,
       alwaysLeads(),
     );
@@ -233,9 +240,9 @@ describe('notifyAdmins', () => {
             Promise.resolve(snapshot),
           ),
       } as unknown as RolesStore,
-      {
+      withBatchScopes({
         scopeFor: vi.fn().mockResolvedValue(scopeOf(['north'], false, false)),
-      } as unknown as AdminClientScopesStore,
+      } as unknown as AdminClientScopesStore),
       {
         // NOT a NotFoundError: the database blipped. Swallowing this as
         // "not visible" would silently drop the admin with no log anywhere.
@@ -263,7 +270,7 @@ describe('notifyAdmins', () => {
         findAll: vi.fn().mockRejectedValue(new Error('database gone')),
       } as unknown as AdminsStore,
       {} as unknown as RolesStore,
-      {} as unknown as AdminClientScopesStore,
+      withBatchScopes({} as unknown as AdminClientScopesStore),
       {} as unknown as ClientVisibilityService,
       alwaysLeads(),
     );
@@ -285,7 +292,7 @@ describe('notifyAdmins', () => {
       failingStore,
       {} as unknown as AdminsStore,
       {} as unknown as RolesStore,
-      {} as unknown as AdminClientScopesStore,
+      withBatchScopes({} as unknown as AdminClientScopesStore),
       {} as unknown as ClientVisibilityService,
       alwaysLeads(),
     );

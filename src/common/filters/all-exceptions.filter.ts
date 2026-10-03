@@ -160,6 +160,41 @@ function isPayloadTooLarge(exception: unknown): boolean {
  * Walking the chain is version-proof: it finds the code whether the driver error
  * is thrown bare or wrapped any number of times.
  */
+/*
+ * The DATABASE is unreachable, not the request wrong: a restart, a failover, a
+ * full pool. Postgres class 08 (connection exception) and 57P0x (shutting down /
+ * cannot connect now), the socket errors underneath, and node-postgres's pool
+ * timeout, which carries no code. Answered 503 so clients and the proxy retry,
+ * and so a log reader is not sent hunting a bug. Found live, 3 Oct 2026: a
+ * Postgres restart answered every request 500 "An unexpected error occurred".
+ */
+const DB_UNAVAILABLE_CODES = new Set([
+  '57P01',
+  '57P02',
+  '57P03',
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'ETIMEDOUT',
+  'EPIPE',
+]);
+
+function isDatabaseUnavailable(exception: unknown): boolean {
+  for (let error: unknown = exception, depth = 0; error && depth < 5; depth++) {
+    const { code, message } = error as { code?: unknown; message?: unknown };
+    if (typeof code === 'string' && (DB_UNAVAILABLE_CODES.has(code) || code.startsWith('08'))) {
+      return true;
+    }
+    if (
+      typeof message === 'string' &&
+      /timeout exceeded when trying to connect|Connection terminated/i.test(message)
+    ) {
+      return true;
+    }
+    error = (error as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
 function pgErrorCode(exception: unknown): string | undefined {
   for (let error: unknown = exception, depth = 0; error && depth < 5; depth++) {
     const code = (error as { code?: unknown }).code;
@@ -493,6 +528,14 @@ export class AllExceptionsFilter implements ExceptionFilter {
     }
 
     // 3. Database constraint violations — meaningful, not internal errors.
+    if (isDatabaseUnavailable(exception)) {
+      return {
+        status: HttpStatus.SERVICE_UNAVAILABLE,
+        message: 'The service is briefly unavailable. Please try again in a moment.',
+        code: 'SERVICE_UNAVAILABLE',
+      };
+    }
+
     const pgCode = pgErrorCode(exception);
     if (pgCode === PG_CONFLICT) {
       return {

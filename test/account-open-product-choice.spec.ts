@@ -8,6 +8,7 @@ import {
   PRODUCT_NAME,
 } from '../src/common/account-product';
 import { Mt5AccountsService } from '../src/modules/trading/mt5/mt5-accounts.service';
+import { Mt5OwnAccountsService } from '../src/modules/trading/mt5/mt5-own-accounts.service';
 import type { Mt5BridgeClient } from '../src/modules/trading/mt5/mt5-bridge.client';
 import type { Mt5AccountSyncService } from '../src/modules/trading/mt5/mt5-account-sync.service';
 import type { EmailService } from '../src/modules/email/email.service';
@@ -31,6 +32,7 @@ import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './mone
  */
 let ctx: MoneyTestContext;
 let accounts: Mt5AccountsService;
+let ownAccounts: Mt5OwnAccountsService;
 let createOnMt5: ReturnType<typeof vi.fn>;
 let clientId: number;
 let standardId: string;
@@ -109,7 +111,15 @@ beforeAll(async () => {
     } as unknown as EmailService,
     new AppSettingsStore(ctx.db),
     new ProductsStore(ctx.db),
+  );
+  ownAccounts = new Mt5OwnAccountsService(
+    ctx.db,
+    { isConfigured: true, createAccount: createOnMt5 } as unknown as Mt5BridgeClient,
+    {
+      sendTradingAccountOpenedEmail: vi.fn().mockResolvedValue(undefined),
+    } as unknown as EmailService,
     {} as Mt5AccountSyncService,
+    accounts,
   );
 }, 180_000);
 
@@ -231,7 +241,7 @@ describe('the name an opened account is given', () => {
   }
 
   const open = () =>
-    accounts.createOwnAccount({
+    ownAccounts.createOwnAccount({
       userId: holderId,
       environment: 'live',
       group: 'real\\ECN',

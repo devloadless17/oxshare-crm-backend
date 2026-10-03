@@ -2,6 +2,8 @@ import { Injectable, Logger } from '@nestjs/common';
 import { maskAuditRow } from '../../common/security/audit-detail-fields';
 import { maskedFieldsFor } from '../../common/security/field-mask';
 import { AdminsStore } from '../../store/admins.store';
+import { ApiKeysStore } from '../../store/api-keys.store';
+import { apiKeyActorLabel } from '../../common/security/api-key';
 import type { AuthenticatedAdmin } from './guards/admin.guard';
 import { AuthorizationError } from '../../common/errors/domain-errors';
 import {
@@ -29,7 +31,26 @@ export class AdminAuditService {
   constructor(
     private readonly admins: AdminsStore,
     private readonly auditLog: AuditLogStore,
+    private readonly apiKeys: ApiKeysStore,
   ) {}
+
+  /**
+   * The name an audit row carries for whoever acted.
+   *
+   * An administrator is named by their email. A request authenticated by an API
+   * KEY reaches every service with the key's id as `actor.id` (see
+   * `AdminAuthenticator.authenticateApiKey`), and that id is not an admin — so
+   * this used to fall through to `'unknown'` for every action a key performed:
+   * the one record that must say who did something said nobody, and a key's
+   * actions could not be told from a deleted admin's. The key is named exactly
+   * as the guard named it for the request.
+   */
+  private async actorEmailOf(actorId: string, executor?: Executor): Promise<string> {
+    const admin = await this.admins.findById(actorId, executor);
+    if (admin) return admin.email;
+    const key = await this.apiKeys.findById(actorId, executor);
+    return key ? apiKeyActorLabel(key) : 'unknown';
+  }
 
   /**
    * Record an admin action INSIDE the caller's transaction — R-6.5.
@@ -59,11 +80,16 @@ export class AdminAuditService {
     subjectId: string | number,
     details?: Record<string, unknown>,
   ): Promise<void> {
-    const actor = await this.admins.findById(actorId);
     await this.auditLog.record(
       {
         actorId,
-        actorEmail: actor?.email ?? 'unknown',
+        /*
+         * On the caller's connection. A second pool connection here, taken while
+         * the transaction holds a wallet lock, starves the pool under load: every
+         * connection waits on that lock while the lock holder waits for a
+         * connection. Found live, 3 Oct 2026: 20 concurrent credits → 9 × 500.
+         */
+        actorEmail: await this.actorEmailOf(actorId, executor),
         action,
         subjectType,
         subjectId,
@@ -88,10 +114,9 @@ export class AdminAuditService {
     // Fire-and-forget: an audit-write failure must never fail the admin action,
     // but it must be loud in the logs.
     void (async () => {
-      const actor = await this.admins.findById(actorId);
       await this.auditLog.record({
         actorId,
-        actorEmail: actor?.email ?? 'unknown',
+        actorEmail: await this.actorEmailOf(actorId),
         action,
         subjectType,
         subjectId,

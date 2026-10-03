@@ -1275,6 +1275,48 @@
       "when": 1789141702750,
       "tag": "0180_admin_google_sign_in",
       "breakpoints": true
+    },
+    {
+      "idx": 183,
+      "version": "7",
+      "when": 1789141703750,
+      "tag": "0181_money_lookup_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 184,
+      "version": "7",
+      "when": 1789141704750,
+      "tag": "0182_ib_confirm_queue_and_client_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 185,
+      "version": "7",
+      "when": 1789141705750,
+      "tag": "0183_client_verification_documents_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 186,
+      "version": "7",
+      "when": 1789141706750,
+      "tag": "0184_transfer_request_ref_and_accrual_lanes",
+      "breakpoints": true
+    },
+    {
+      "idx": 187,
+      "version": "7",
+      "when": 1789141707750,
+      "tag": "0185_foreign_key_indexes",
+      "breakpoints": true
+    },
+    {
+      "idx": 188,
+      "version": "7",
+      "when": 1789141708750,
+      "tag": "0186_restore_positions",
+      "breakpoints": true
     }
   ]
 }

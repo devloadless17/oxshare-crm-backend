@@ -121,6 +121,8 @@ async function buildRbacService(
           update: vi.fn(),
           create: vi.fn(),
           findAll: vi.fn(),
+          // A role edit clamps its holders' API keys; none hold this role here.
+          findByRoleId: vi.fn().mockResolvedValue([]),
           ...overrides.admins,
         },
       },

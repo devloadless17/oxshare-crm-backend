@@ -260,8 +260,8 @@ export class AdminsStore {
     return new Map(rows.map((r) => [r.id, r.name]));
   }
 
-  async findById(id: string): Promise<Admin | undefined> {
-    const [row] = await this.db.select().from(admins).where(eq(admins.id, id)).limit(1);
+  async findById(id: string, executor: Executor = this.db): Promise<Admin | undefined> {
+    const [row] = await executor.select().from(admins).where(eq(admins.id, id)).limit(1);
     return row ? toAdmin(row) : undefined;
   }
 
@@ -533,13 +533,6 @@ export class InvitesStore {
     return row ? toInvite(row) : undefined;
   }
 
-  async markAccepted(token: string): Promise<void> {
-    await this.db
-      .update(adminInvites)
-      .set({ accepted: true })
-      .where(eq(adminInvites.tokenHash, hashInviteToken(token)));
-  }
-
   /**
    * CLAIM the invite — conditional single-use, §8.7's shape.
    *
@@ -660,5 +653,25 @@ export class InvitesStore {
    */
   async deleteById(id: string): Promise<void> {
     await this.db.delete(adminInvites).where(eq(adminInvites.id, id));
+  }
+
+  /**
+   * Revoke every UNACCEPTED invite an administrator sent — on their suspension.
+   *
+   * An invite is a credential that creates an account carrying the inviter's
+   * grants, and it outlives the inviter's session by up to 48 hours. Suspending
+   * somebody ended their sessions and their API keys but left their invites
+   * live, so an administrator suspended for cause could still put a new account
+   * — with their access — into the system through a link already sent. Deleted,
+   * like a single revocation (see `deleteById`): it never produced an account.
+   *
+   * @returns how many were revoked.
+   */
+  async deletePendingByInviter(adminId: string): Promise<number> {
+    const rows = await this.db
+      .delete(adminInvites)
+      .where(and(eq(adminInvites.invitedBy, adminId), eq(adminInvites.accepted, false)))
+      .returning({ id: adminInvites.id });
+    return rows.length;
   }
 }

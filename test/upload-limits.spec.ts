@@ -5,7 +5,7 @@ import request from 'supertest';
 import type { Server } from 'http';
 import { KycController } from '../src/modules/compliance/kyc.controller';
 import { RejectionReasonsStore } from '../src/store/rejection-reasons.store';
-import { KycService } from '../src/modules/compliance/kyc.service';
+import { KycClientService } from '../src/modules/compliance/kyc-client.service';
 import { KycConfigStore } from '../src/store/kyc-config.store';
 import { JwtAuthGuard } from '../src/modules/identity/guards/jwt-auth.guard';
 import { EmailVerifiedGuard } from '../src/modules/identity/guards/email-verified.guard';
@@ -90,7 +90,7 @@ async function makeApp(recorded: Recorded): Promise<INestApplication> {
     controllers: [KycController],
     providers: [
       {
-        provide: KycService,
+        provide: KycClientService,
         useValue: {
           attachFile: (userId: number, field: string, path: string) => {
             if (recorded.failNext) {

@@ -63,7 +63,7 @@ describe('AllExceptionsFilter speaks the request language', () => {
     expect(body?.message).toBe('حقل الاسم الأول مطلوب.');
     expect(body?.fields).toEqual({
       firstName: 'حقل الاسم الأول مطلوب.',
-      phone: 'رقم الهاتف هذا قصير جداً. أدخل جميع الأرقام بعد ‎+961.',
+      phone: 'رقم الهاتف هذا قصير جداً. أدخل جميع الأرقام بعد ‎\u2066+961\u2069.',
     });
     expect(body?.requestId).toBe('req-1');
   });
@@ -179,7 +179,7 @@ describe('AllExceptionsFilter speaks the request language', () => {
       'x-oxshare-locale': 'ar',
     });
     // The pattern translated; the label stays as the broker wrote it.
-    expect(body?.message).toBe('حقل Favourite colour مطلوب.');
+    expect(body?.message).toBe('حقل \u2066Favourite colour\u2069 مطلوب.');
     expect(body).not.toHaveProperty('detail');
   });
 });

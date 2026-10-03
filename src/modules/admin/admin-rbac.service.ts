@@ -594,7 +594,23 @@ export class AdminRbacService {
       }
       return this.roles.update(id, patch, tx);
     });
+
+    /*
+     * A role IS its holders' access, so editing it narrows every one of them —
+     * and each holder's API keys must follow, exactly as `updateAdmin` clamps
+     * them when one administrator is narrowed directly. Without this, editing a
+     * role down left every key its holders had minted with the old permissions
+     * and the old mask, for as long as the key lived.
+     */
+    let apiKeysClamped = 0;
+    if (patch.permissions || patch.maskedFields) {
+      for (const holder of await this.admins.findByRoleId(id)) {
+        apiKeysClamped += await this.clampKeysOf(holder);
+      }
+    }
+
     this.audit.record(actor.id, 'role.update', 'role', id, {
+      ...(apiKeysClamped > 0 ? { apiKeysClamped } : {}),
       before: role.permissions,
       after: updated?.permissions,
       // Recorded separately because a mask change and a permission change are
@@ -869,13 +885,7 @@ export class AdminRbacService {
      * is a snapshot, so an administrator narrowed after minting one would
      * otherwise keep their old sight through it. Clamped, never widened.
      */
-    const keysClamped = touchesAccess
-      ? await this.apiKeys.clampToCreator(
-          id,
-          await this.scopes.scopeFor(updated),
-          await this.roles.resolveMaskedFields(updated.roleId, updated.maskedFields),
-        )
-      : 0;
+    const keysClamped = touchesAccess ? await this.clampKeysOf(updated) : 0;
 
     this.audit.record(actor.id, 'admin.update', 'admin', id, {
       before: { permissions: admin.permissions, roleId: admin.roleId, mask: admin.maskedFields },
@@ -893,6 +903,20 @@ export class AdminRbacService {
       ...(keysClamped > 0 ? { apiKeysClamped: keysClamped } : {}),
     });
     return await this.sanitize(updated);
+  }
+
+  /**
+   * Clamp every live API key this administrator minted to their access NOW —
+   * territory, mask and permissions, all read live (the role's, when they
+   * stand on one). See `ApiKeysStore.clampToCreator`.
+   */
+  private async clampKeysOf(admin: Admin): Promise<number> {
+    const [scope, mask, permissions] = await Promise.all([
+      this.scopes.scopeFor(admin),
+      this.roles.resolveMaskedFields(admin.roleId, admin.maskedFields),
+      this.roles.resolvePermissions(admin.roleId, admin.permissions),
+    ]);
+    return this.apiKeys.clampToCreator(admin.id, scope, mask, permissions);
   }
 
   /**
@@ -1011,6 +1035,10 @@ export class AdminRbacService {
      * Suspension is the case that reasoning never covered.
      */
     const apiKeysRevoked = status === 'suspended' ? await this.apiKeys.revokeAllCreatedBy(id) : 0;
+    // The third credential a person leaves behind: invites they sent and nobody
+    // has accepted yet. Each would create an account with their grants.
+    const invitesRevoked =
+      status === 'suspended' ? await this.invites.deletePendingByInviter(id) : 0;
     this.audit.record(
       actor.id,
       status === 'suspended' ? 'admin.suspend' : 'admin.activate',
@@ -1020,7 +1048,7 @@ export class AdminRbacService {
         email: admin.email,
         before: admin.status,
         after: status,
-        ...(status === 'suspended' ? { sessionsRevoked, apiKeysRevoked } : {}),
+        ...(status === 'suspended' ? { sessionsRevoked, apiKeysRevoked, invitesRevoked } : {}),
       },
     );
     return await this.sanitize(updated);

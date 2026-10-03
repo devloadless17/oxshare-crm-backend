@@ -51,7 +51,6 @@ const commissions = () =>
   ({
     accrueForDeal: vi.fn().mockResolvedValue(0),
     accrueForClosedPosition: vi.fn(),
-    accrueForSettledDeposit: vi.fn(),
   }) as never;
 
 beforeAll(async () => {

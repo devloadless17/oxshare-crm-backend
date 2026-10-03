@@ -286,7 +286,12 @@ export class CommissionScheduler implements OnApplicationBootstrap, OnModuleDest
     let batches = 0;
 
     for (;;) {
-      const run = await this.commissions.confirmPending(CONFIRM_BATCH);
+      /*
+       * Rows that already failed in THIS run are skipped, so a queue of
+       * nothing but failures empties into a short batch and stops, rather than
+       * re-trying the same rows until the budget runs out (0182).
+       */
+      const run = await this.commissions.confirmPending(CONFIRM_BATCH, new Date(startedAt));
       confirmed += run.confirmed;
       failed += run.failed;
       /* The LAST reading wins: "still maturing" is a live count, not a total to

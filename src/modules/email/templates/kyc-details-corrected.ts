@@ -12,7 +12,7 @@ import {
 
 /**
  * "We corrected details on your verified profile" — sent when a reviewer
- * corrects an APPROVED client's identity (`KycService.correctIdentity`).
+ * corrects an APPROVED client's identity (`KycReviewService.correctIdentity`).
  *
  * A verified identity changed by somebody other than its owner must never be
  * silent: the client is the one person who can say "that is not my name". It

@@ -10,7 +10,7 @@ import { DEFAULT_KYC_SORT, KYC_SORT_COLUMNS } from '../../store/kyc.store';
 import { sortKey, sortOrder } from '../../common/sorting';
 import { RejectionContext, RejectionReasonsStore } from '../../store/rejection-reasons.store';
 import { composeReasonArabic } from '../../common/i18n/reason-arabic';
-import { KycService } from '../compliance/kyc.service';
+import { KycReviewService } from '../compliance/kyc-review.service';
 import {
   FieldValidationError,
   KycBuilderOutdatedError,
@@ -47,7 +47,7 @@ export const KYC_BUILDER_FORMAT = 2;
 @Injectable()
 export class AdminComplianceService {
   constructor(
-    private readonly kycService: KycService,
+    private readonly kycService: KycReviewService,
     private readonly kycConfig: KycConfigStore,
     private readonly rejectionReasons: RejectionReasonsStore,
     private readonly audit: AdminAuditService,
@@ -295,7 +295,7 @@ export class AdminComplianceService {
   // ─── KYC: correct an identity field on an approved submission (CORE-18) ────
   /**
    * The authorization, visibility and audit half. The state machine, the
-   * merge and the re-validation are `KycService.correctIdentity`, which
+   * merge and the re-validation are `KycReviewService.correctIdentity`, which
    * carries the reasoning.
    *
    * ITS OWN PERMISSION, not `clients.edit` and not `kyc.review`. Changing an
@@ -403,7 +403,7 @@ export class AdminComplianceService {
    * Hand a claimed submission back to the queue.
    *
    * Gated exactly like a DECISION — `kyc.review` plus the client being in this
-   * actor's territory — and for the same reason `KycService.release` gives:
+   * actor's territory — and for the same reason `KycReviewService.release` gives:
    * approve and reject already accept an `under_review` row from any reviewer
    * who can see it, so a claim has never been a lock. Anyone who could decide
    * it may put it back instead; a stricter rule here would make "stuck" the
@@ -535,7 +535,7 @@ export class AdminComplianceService {
   }
   /**
    * Return an APPROVED verification to the client to update — the reviewer's
-   * answer to a detail that changed materially (`KycService.requestReverification`).
+   * answer to a detail that changed materially (`KycReviewService.requestReverification`).
    * The same power as a rejection (`kyc.review`, in scope), audited with the
    * reason and the items asked for.
    */

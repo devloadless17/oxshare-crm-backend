@@ -479,6 +479,19 @@ export class PaymentIndeterminateError extends DomainError {
  */
 export class ExternalServiceError extends DomainError {
   readonly code = 'EXTERNAL_SERVICE_ERROR';
+
+  constructor(
+    message: string,
+    details?: Record<string, unknown>,
+    /**
+     * The upstream HTTP status, when the service ANSWERED. Absent for a
+     * timeout or an unreachable host. Money paths classify on this, never on
+     * the message text: a body echoing "400.00" is not a 400.
+     */
+    readonly upstreamStatus?: number,
+  ) {
+    super(message, details);
+  }
 }
 
 /**

@@ -236,7 +236,8 @@ describe('SMTP settings — what the audit row does and does not carry', () => {
 
   it('records the host change with the address it used to point at', async () => {
     await service.setSmtp({ ...baseSmtp, password: 'hunter2' }, ACTOR);
-    await service.setSmtp({ ...baseSmtp, host: 'smtp.attacker.test' }, ACTOR);
+    // A new host needs the password typed again — see the block below.
+    await service.setSmtp({ ...baseSmtp, host: 'smtp.attacker.test', password: 'other' }, ACTOR);
 
     const changed = detailsOfLastRecord()['changed'] as Record<
       string,
@@ -248,6 +249,50 @@ describe('SMTP settings — what the audit row does and does not carry', () => {
       before: 'smtp.saved.test',
       after: 'smtp.attacker.test',
     });
+  });
+});
+
+/**
+ * The stored password is write-only, so it must not be steerable to a server
+ * the editor controls: a host change without the password typed again would
+ * send the saved credential to the new host on the next email.
+ */
+describe('SMTP settings — a new host does not inherit the saved password', () => {
+  it('refuses a host change that keeps the stored password, and writes nothing', async () => {
+    await service.setSmtp({ ...baseSmtp, password: 'hunter2' }, ACTOR);
+    const before = store.smtp;
+    audit.record.mockClear();
+
+    await expect(
+      service.setSmtp({ ...baseSmtp, host: 'smtp.attacker.test' }, ACTOR),
+    ).rejects.toMatchObject({ fields: { password: expect.any(String) } });
+    await expect(
+      service.setSmtp({ ...baseSmtp, host: 'smtp.attacker.test', password: null }, ACTOR),
+    ).rejects.toMatchObject({ fields: { password: expect.any(String) } });
+
+    expect(store.smtp).toBe(before);
+    expect(audit.record).not.toHaveBeenCalled();
+  });
+
+  it('accepts the host change once the password is typed again, or cleared', async () => {
+    await service.setSmtp({ ...baseSmtp, password: 'hunter2' }, ACTOR);
+    await service.setSmtp({ ...baseSmtp, host: 'smtp.next.test', password: 'fresh' }, ACTOR);
+    expect(openSecret(store.smtp?.passwordCiphertext as string, KEY)).toBe('fresh');
+
+    await service.setSmtp({ ...baseSmtp, host: 'smtp.third.test', password: '' }, ACTOR);
+    expect(store.smtp?.passwordCiphertext).toBeNull();
+  });
+
+  it('still keeps the password for a change that stays on the same host', async () => {
+    await service.setSmtp({ ...baseSmtp, password: 'hunter2' }, ACTOR);
+    await service.setSmtp({ ...baseSmtp, host: 'SMTP.saved.test ', username: 'other' }, ACTOR);
+    expect(openSecret(store.smtp?.passwordCiphertext as string, KEY)).toBe('hunter2');
+  });
+
+  it('lets a host change through when no password was ever stored', async () => {
+    await service.setSmtp(baseSmtp, ACTOR);
+    await service.setSmtp({ ...baseSmtp, host: 'smtp.next.test' }, ACTOR);
+    expect(store.smtp?.host).toBe('smtp.next.test');
   });
 });
 

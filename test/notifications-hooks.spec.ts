@@ -1,3 +1,4 @@
+import { IbStore } from '../src/store/ib.store';
 import type { ResourceChangedPublisher } from '../src/common/realtime/resource-changed';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { sql } from 'drizzle-orm';
@@ -146,6 +147,7 @@ beforeAll(async () => {
        about the money, not about who may see whom — the scoping itself is
        covered by `ib-accrual-reversal.spec.ts`. */
     { assertVisible: () => Promise.resolve() } as never,
+    new IbStore(ctx.db),
   );
 }, 120_000);
 

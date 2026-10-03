@@ -57,6 +57,7 @@ import { PasswordService } from '../../common/security/password.service';
 import { AVATAR_BUCKET, StoredFilesService } from '../../common/uploads/stored-files.service';
 import { LoginAttemptsService } from '../../common/security/login-attempts.service';
 import { localizeMessage } from '../../common/i18n/localize-message';
+import { isUniqueViolation } from '../../common/errors/pg-violation';
 import {
   isTokenKind,
   TOKEN_ALGORITHM,
@@ -114,18 +115,6 @@ const EMAIL_TAKEN =
 
 function emailAlreadyRegistered(): EmailAlreadyRegisteredError {
   return new EmailAlreadyRegisteredError(EMAIL_TAKEN, { email: EMAIL_TAKEN });
-}
-
-/**
- * A Postgres unique violation (23505), wherever Drizzle wrapped it — the same
- * walk down `cause` that `AllExceptionsFilter`'s `pgErrorCode` makes.
- */
-function isUniqueViolation(error: unknown): boolean {
-  for (let e: unknown = error, depth = 0; e && depth < 5; depth++) {
-    if ((e as { code?: unknown }).code === '23505') return true;
-    e = (e as { cause?: unknown }).cause;
-  }
-  return false;
 }
 
 @Injectable()

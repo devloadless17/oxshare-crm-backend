@@ -150,8 +150,8 @@ export class NotificationsService implements NotificationDispatchPort {
   ): Promise<string[]> {
     const wanted = new Set(permissionKeys.map(normalizePermissionKey));
     const { rows } = await this.admins.findAll();
-    const recipients: string[] = [];
     const heldByRole = new Map<string, string[]>();
+    const candidates: typeof rows = [];
 
     for (const admin of rows) {
       if (admin.status !== 'active') continue;
@@ -174,29 +174,57 @@ export class NotificationsService implements NotificationDispatchPort {
          */
         if (admin.roleId && held !== admin.permissions) heldByRole.set(admin.roleId, held);
       }
-      if (!held.some((key) => wanted.has(normalizePermissionKey(key)))) continue;
+      if (held.some((key) => wanted.has(normalizePermissionKey(key)))) candidates.push(admin);
+    }
+    if (candidates.length === 0) return [];
 
-      // Pass the admin's OWN intake grant (D-60) — omitting it treated an
-      // intake-granted admin as restricted and dropped their bell for an
-      // untagged client's event.
-      const scope = await this.scopes.scopeFor(admin);
-      if (!scope.unrestricted) {
+    /*
+     * Every candidate's territory in ONE query, then ONE visibility check per
+     * DISTINCT territory, concurrently. This used to await two queries per
+     * admin, serially, on the request path of every deposit and KYC submit.
+     *
+     * Each admin's OWN intake grant (D-60) rides on the row — omitting it
+     * treated an intake-granted admin as restricted and dropped their bell
+     * for an untagged client's event.
+     */
+    const scopes = await this.scopes.scopesFor(candidates);
+    const keyOf = (scope: ClientScope) =>
+      scope.unrestricted
+        ? '*'
+        : `${scope.includesUntriaged ? 'u' : '-'}:${[...scope.tagIds].sort().join(',')}`;
+    const verdicts = new Map<string, Promise<boolean>>();
+    const sees = (scope: ClientScope): Promise<boolean> => {
+      if (scope.unrestricted) return Promise.resolve(true);
+      const key = keyOf(scope);
+      let verdict = verdicts.get(key);
+      if (!verdict) {
         /*
          * Only the DOMAIN answer ("not visible") skips the recipient — an
          * infrastructure error must reach the outer catch and be LOGGED, or a
          * scoped admin's silently missing row reads as a scoping decision.
          */
-        try {
-          await this.visibility.assertVisible(subjectClientId, scope);
-        } catch (error) {
-          if (error instanceof NotFoundError || error instanceof ClientNotFoundError) continue;
-          throw error;
-        }
+        verdict = this.visibility.assertVisible(subjectClientId, scope).then(
+          () => true,
+          (error: unknown) => {
+            if (error instanceof NotFoundError || error instanceof ClientNotFoundError) {
+              return false;
+            }
+            throw error;
+          },
+        );
+        verdicts.set(key, verdict);
       }
+      return verdict;
+    };
 
-      recipients.push(admin.id);
-    }
-    return recipients;
+    const visible = await Promise.all(
+      candidates.map((admin) => {
+        // Fail CLOSED: an admin the batch did not answer for is not rung.
+        const scope = scopes.get(admin.id);
+        return scope ? sees(scope) : Promise.resolve(false);
+      }),
+    );
+    return candidates.filter((_, i) => visible[i]).map((admin) => admin.id);
   }
 
   // ── The client read API ───────────────────────────────────────────────────

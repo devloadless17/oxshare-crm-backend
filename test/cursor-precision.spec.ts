@@ -138,7 +138,7 @@ describe('no paging call site mints its cursor from a Date', () => {
   const CALLERS = [
     'src/modules/admin/admin-clients.service.ts',
     'src/modules/admin/admin-holdings.service.ts',
-    'src/modules/payments/transactions.service.ts',
+    'src/modules/payments/queries/transaction-queries.ts',
     'src/modules/wallet/wallet.service.ts',
     'src/store/audit-log.store.ts',
     'src/store/notifications.store.ts',
