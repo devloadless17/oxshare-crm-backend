@@ -39,6 +39,8 @@ const SENSITIVE_FIELDS = [
   'csrf',
   'otp',
   'apikey',
+  // A PKCE code_verifier (Google sign-in, 0180).
+  'verifier',
   'api_key',
   // Identity documents and the PII around them (§8.5, R-6.3).
   'documentnumber',
@@ -144,6 +146,16 @@ export function redactSecretsInText(text: string): string {
  * makes a 500 diagnosable, and a log that omits it trades one problem for
  * another — the next person just adds the URL back.
  */
+/**
+ * Query parameters that are credentials on the Google sign-in routes ONLY —
+ * matched exactly and only there, because elsewhere they are ordinary filters
+ * (`?state=pending` on the transaction list) worth keeping in a log. The
+ * callback carries an authorization `code` and its `state`; the start carries
+ * an `invite` token.
+ */
+const GOOGLE_FLOW_PATH = /\/admin\/auth\/google\//i;
+const GOOGLE_FLOW_PARAMS = new Set(['code', 'state', 'invite']);
+
 export function safeLogPath(url: string): string {
   const split = url.indexOf('?');
   if (split === -1) return url;
@@ -156,9 +168,11 @@ export function safeLogPath(url: string): string {
    * would percent-encode the marker into `%5BREDACTED%5D`. This string is read
    * by a human in a log, not parsed, so it should look like what it means.
    */
+  const googleFlow = GOOGLE_FLOW_PATH.test(path);
   const parts: string[] = [];
   for (const [key, value] of params) {
-    parts.push(`${key}=${isSensitive(key) ? REDACTED : value}`);
+    const hidden = isSensitive(key) || (googleFlow && GOOGLE_FLOW_PARAMS.has(key.toLowerCase()));
+    parts.push(`${key}=${hidden ? REDACTED : value}`);
   }
 
   return parts.length > 0 ? `${path}?${parts.join('&')}` : path;

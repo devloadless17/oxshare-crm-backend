@@ -168,6 +168,20 @@ const PUBLIC_ROUTES: Record<string, string> = {
   'GET /admin/invite/validate': 'Pre-fills the accept form from an emailed token. Rate limited.',
   'POST /admin/invite/accept': 'The emailed invite token is the credential; no session exists yet.',
 
+  /*
+   * "Sign in with Google" (admin only). Establishing a session cannot require
+   * one. `start`/`callback` are top-level browser navigations answered with a
+   * 302; the flow's signed cookie, `state`, nonce and PKCE verifier bind the
+   * callback to the browser that started it, and the ID token Google signs IS
+   * the credential. All three are throttled and behind RBAC-08's allowlist.
+   */
+  'GET /admin/auth/google/status':
+    'Tells the signed-out sign-in screen whether to offer Google. A configuration flag, nothing more.',
+  'GET /admin/auth/google/start':
+    'Begins Google sign-in for a signed-out administrator; sets only a signed flow cookie. Throttled 20/min.',
+  'GET /admin/auth/google/callback':
+    'Google returns here; the verified ID token plus the signed flow cookie are the credential. Throttled 20/min.',
+
   // Infrastructure.
   'GET /health': 'Liveness. A load balancer cannot authenticate, and it reveals nothing.',
   'GET /health/ready': 'Readiness. Dependency status only, never connection detail.',

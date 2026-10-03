@@ -91,6 +91,9 @@ const NO_JSON_BODY: readonly string[] = [
   'DELETE /admin/products/:id',
   'DELETE /admin/tags/:id',
   'DELETE /admin/wallets/:id',
+  // A 302 to Google or back to the console — a browser navigation, no body.
+  'GET /admin/auth/google/callback',
+  'GET /admin/auth/google/start',
   // A byte stream — a CSV or a stored file. A response interceptor cannot mask
   // a stream, which is exactly why every export masks its ROWS before they are
   // serialised (`AdminExportService`), and why that is not an inconsistency.

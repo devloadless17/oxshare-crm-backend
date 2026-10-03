@@ -1092,6 +1092,9 @@ export class AdminRbacService {
        * changed", and the console words it as unknown rather than guessing.
        */
       passwordChangedAt: admin.passwordChangedAt ?? null,
+      // 0180 — the linked Google account, for "linked as …". Never the `sub`.
+      googleEmail: admin.googleSub ? (admin.googleEmail ?? null) : null,
+      googleLinkedAt: admin.googleSub ? (admin.googleLinkedAt ?? null) : null,
       permissions,
       maskedFields,
       /*

@@ -2,7 +2,7 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { createHash, randomUUID } from 'crypto';
 import { and, desc, eq, gt, isNull, lt } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
-import type { Db } from '../../database/db';
+import type { Db, Executor } from '../../database/db';
 import { refreshTokens } from '../../database/schema';
 import { ALERT_KINDS, raiseAlert } from '../logging/alerts';
 
@@ -124,9 +124,11 @@ export class RefreshTokensService {
      * in their tokens keep the old behaviour of having one generated here.
      */
     familyId?: string;
+    /** Join the caller's transaction — a Google first sign-in links and starts the session in one. */
+    executor?: Executor;
   }): Promise<{ familyId: string }> {
     const familyId = params.familyId ?? randomUUID();
-    await this.db.insert(refreshTokens).values({
+    await (params.executor ?? this.db).insert(refreshTokens).values({
       id: params.jti,
       familyId,
       surface: params.surface,

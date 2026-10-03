@@ -4,7 +4,13 @@ import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { v4 as uuidv4 } from 'uuid';
 import { Request, Response } from 'express';
-import { Admin, AdminsStore, hashInviteToken, InvitesStore } from '../../store/admins.store';
+import {
+  Admin,
+  AdminInvite,
+  AdminsStore,
+  hashInviteToken,
+  InvitesStore,
+} from '../../store/admins.store';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db, Executor } from '../../database/db';
 import { RolesStore } from '../../store/roles.store';
@@ -27,7 +33,9 @@ import type { AuthenticatedAdmin } from './guards/admin.guard';
 import { AdminRbacService } from './admin-rbac.service';
 import { deviceOf } from '../../common/security/device-fingerprint';
 import type { DeviceFingerprint } from '../../common/security/refresh-tokens.service';
-import { randomUUID } from 'crypto';
+import { randomBytes, randomUUID } from 'crypto';
+import { violatesConstraint } from '../../common/errors/pg-violation';
+import { GoogleSignInError } from './google/google-sign-in.error';
 import { refuseReset, RESET_TOKEN_TTL_MS } from './admin-reset';
 import { CsrfService } from '../../common/security/csrf.service';
 import { RefreshTokensService } from '../../common/security/refresh-tokens.service';
@@ -157,25 +165,7 @@ export class AdminAuthService {
       this.logger.log(`Upgraded password hash to argon2id for admin ${admin.id}`);
     }
 
-    /*
-     * The family id is minted HERE, before anything is signed, because the
-     * access token has to carry it as `fam` — see `generateAdminTokens`.
-     */
-    const familyId = randomUUID();
-    const { accessToken, refreshToken, jti } = this.generateAdminTokens(admin, familyId);
-    await this.refreshTokens.record({
-      surface: 'admin',
-      subjectId: admin.id,
-      jti,
-      token: refreshToken,
-      expiresAt: new Date(Date.now() + REFRESH_TTL_MS),
-      familyId,
-      // Recorded so `GET /admin/auth/sessions` can show WHERE this login is —
-      // it answered null/null for every row while this was omitted.
-      device,
-    });
-
-    this.setAdminCookies(res, accessToken, refreshToken, admin.id);
+    await this.startSession(admin, res, device);
     /*
      * The tokens are NOT in the body, deliberately.
      *
@@ -576,117 +566,359 @@ export class AdminAuthService {
     const admin = await this.db.transaction(async (tx: Executor) => {
       const claimed = await this.invites.claim(token, tx);
       if (!claimed) throw new ValidationError('This invite has already been used.');
-      const created = await this.admins.create(
-        {
-          email: invite.email,
-          passwordHash,
-          name: invite.name,
-          role: 'sub_admin',
-          roleId: invite.roleId,
-          permissions: invite.permissions ?? ['kyc.review', 'admins.view'],
-          // Carried from the invite. Without it the mask was always the role's
-          // default and the inviter's choice was silently discarded.
-          maskedFields: invite.maskedFields,
-          // D-60 — same carry, same reason: the intake grant is part of the
-          // visibility the inviter chose.
-          seesUntriaged: invite.seesUntriaged,
-          // 0154 — the explicit all-clients grant, carried like the rest.
-          seesAllClients: invite.seesAllClients ?? false,
-          status: 'active',
-        },
-        tx,
-      );
-      /*
-       * The territory the inviter chose, applied BEFORE the session below is
-       * minted — a scope written after sign-in would leave a real window. An
-       * empty or absent list means unrestricted (the store's own convention);
-       * writing nothing keeps "no restriction" as the absence of rows.
-       */
-      if (invite.scopedTagIds?.length) {
-        await this.scopes.replace(created.id, invite.scopedTagIds, created.id, tx);
-      }
-      return created;
+      return this.createAdminFromInvite(invite, passwordHash, tx);
     });
 
     /*
      * The moment an ADMINISTRATOR ACCOUNT COMES INTO EXISTENCE, and it was the
-     * one privileged event with no audit row at all.
-     *
-     * `admin.invite` recorded that somebody was asked; nothing recorded that
-     * they arrived. So "when did this administrator get access, and with what"
-     * was answerable only from `admins.created_at`, which says nothing about
-     * the permissions they were granted or who invited them.
+     * one privileged event with no audit row at all. See `inviteAcceptDetails`.
      *
      * The actor is the NEW ADMIN — they performed this action, from their own
      * address — and `invitedBy` names who authorised it. Recording the inviter
      * as the actor would put somebody else's name and IP on an action they were
      * not present for.
      */
-    this.audit.record(admin.id, 'admin.invite_accept', 'admin', admin.id, {
+    this.audit.record(
+      admin.id,
+      'admin.invite_accept',
+      'admin',
+      admin.id,
+      this.inviteAcceptDetails(invite, admin),
+    );
+
+    if (req) await this.endDisplacedSession(req, invite.email);
+
+    await this.startSession(admin, res, device);
+
+    return { message: 'Account created. Welcome aboard!', admin: await this.rbac.sanitize(admin) };
+  }
+
+  /**
+   * The administrator an invite describes, created inside the caller's
+   * transaction AFTER the caller has claimed the invite.
+   *
+   * Shared by the password accept and the Google accept, so the permissions,
+   * role, mask, intake and all-clients grants and territory an invitee arrives
+   * with are decided by one piece of code whichever way they accept.
+   */
+  private async createAdminFromInvite(
+    invite: AdminInvite,
+    passwordHash: string,
+    tx: Executor,
+  ): Promise<Admin> {
+    const created = await this.admins.create(
+      {
+        email: invite.email,
+        passwordHash,
+        name: invite.name,
+        role: 'sub_admin',
+        roleId: invite.roleId,
+        permissions: invite.permissions ?? ['kyc.review', 'admins.view'],
+        // Carried from the invite. Without it the mask was always the role's
+        // default and the inviter's choice was silently discarded.
+        maskedFields: invite.maskedFields,
+        // D-60 — same carry, same reason: the intake grant is part of the
+        // visibility the inviter chose.
+        seesUntriaged: invite.seesUntriaged,
+        // 0154 — the explicit all-clients grant, carried like the rest.
+        seesAllClients: invite.seesAllClients ?? false,
+        status: 'active',
+      },
+      tx,
+    );
+    /*
+     * The territory the inviter chose, applied BEFORE the session below is
+     * minted — a scope written after sign-in would leave a real window. An
+     * empty or absent list means unrestricted (the store's own convention);
+     * writing nothing keeps "no restriction" as the absence of rows.
+     */
+    if (invite.scopedTagIds?.length) {
+      await this.scopes.replace(created.id, invite.scopedTagIds, created.id, tx);
+    }
+    return created;
+  }
+
+  /**
+   * The `admin.invite_accept` details — "when did this administrator get
+   * access, and with what". `admin.invite` recorded that somebody was asked;
+   * this records that they arrived, keyed on the ADMIN (where a compliance
+   * query about one administrator starts). The other half of "with what" is
+   * what they can SEE: `null` means UNRESTRICTED for the scope and "inherits
+   * the role's mask" for the mask — the columns' own conventions, stated here
+   * because an auditor reading this row has no reason to know them.
+   */
+  private inviteAcceptDetails(
+    invite: AdminInvite,
+    admin: Admin,
+    extra: Record<string, unknown> = {},
+  ): Record<string, unknown> {
+    return {
       email: admin.email,
       invitedBy: invite.invitedBy,
       roleId: invite.roleId,
       permissions: admin.permissions,
-      /*
-       * "…and with what" — this docblock's own question, which a permission
-       * list only half answers. The other half is what they can SEE.
-       *
-       * Repeated here rather than left on `admin.invite` because the two rows
-       * are keyed differently: this one is keyed on the ADMIN, which is where
-       * a compliance query about one administrator starts, while the invite
-       * row is keyed on the invite and reachable only by joining through an
-       * email address. `null` means UNRESTRICTED for the scope and "inherits
-       * the role's mask" for the mask — the same conventions the columns
-       * carry, stated here because an auditor reading this row has no reason
-       * to know them.
-       */
       maskedFields: admin.maskedFields ?? null,
       scopedTagIds: invite.scopedTagIds ?? null,
       seesUntriaged: admin.seesUntriaged,
       seesAllClients: admin.seesAllClients ?? false,
-    });
+      ...extra,
+    };
+  }
 
-    /*
-     * Whoever was signed in on THIS browser is being replaced, so their
-     * session ends — not merely their cookies. `/invite/accept` deliberately
-     * works with a session (the invitee may be signed in as somebody else on a
-     * shared machine, D-44's sibling case), and overwriting the cookies alone
-     * left the displaced admin's refresh family live and resumable from any
-     * other tab or a pre-accept storage snapshot. Identity comes from the
-     * fully-verified refresh cookie, exactly as logout takes it — never from
-     * an unverified claim.
-     */
-    if (req) {
-      const displacedId = this.subjectFromRefreshCookie(req);
-      if (displacedId) {
-        const ended = await this.refreshTokens.revokeAllForSubject('admin', displacedId);
-        if (ended > 0) {
-          this.audit.record(displacedId, 'admin.session_displaced', 'admin', displacedId, {
-            by: 'invite_accept',
-            invitedEmail: invite.email,
-            sessionsRevoked: ended,
-          });
-        }
-      }
+  /**
+   * Whoever was signed in on THIS browser is being replaced by an invitee, so
+   * their session ends — not merely their cookies. `/invite/accept`
+   * deliberately works with a session (a shared machine), and overwriting the
+   * cookies alone left the displaced admin's refresh family live. Identity
+   * comes from the fully-verified refresh cookie, exactly as logout takes it.
+   */
+  private async endDisplacedSession(req: Request, invitedEmail: string): Promise<void> {
+    const displacedId = this.subjectFromRefreshCookie(req);
+    if (!displacedId) return;
+    const ended = await this.refreshTokens.revokeAllForSubject('admin', displacedId);
+    if (ended > 0) {
+      this.audit.record(displacedId, 'admin.session_displaced', 'admin', displacedId, {
+        by: 'invite_accept',
+        invitedEmail,
+        sessionsRevoked: ended,
+      });
+    }
+  }
+  // ─── Sign in with Google (admin console only) ─────────────────────────────
+  /**
+   * Turn a VERIFIED Google identity into an admin session, or refuse with a
+   * fixed `GoogleSignInError` code. The protocol half — state, PKCE, the ID
+   * token's signature and claims — is `AdminGoogleAuthService`'s and has
+   * already passed by the time this runs; this half decides WHO it is.
+   *
+   * Resolution, in order:
+   *  1. `google_sub` already linked → that administrator.
+   *  2. else an administrator whose email equals the Google address → link it
+   *     (only if they have no OTHER Google account linked: `account_mismatch`).
+   *  3. else, in invite mode, the invite → create the administrator exactly
+   *     as a password accept would, linked to Google.
+   *  4. else `no_account`. A pending invite is NOT auto-accepted without its
+   *     link: the emailed token is the inviter's authorisation, not the address.
+   *
+   * ── login_attempts, and why Google failures use their own counter ────────
+   * Success is recorded exactly as a password success (`admin`, the admin's
+   * email), which also clears that address's failure counter — the person has
+   * just proved control of it. Failures (`no_account`, `account_mismatch`) are
+   * recorded too, but under `google:<address>`, NOT the bare address. The
+   * password lockout keys on the bare address and locks after five failures,
+   * and anybody can sign in to Google as an address they own with a different
+   * sub, or simply replay the callback: counting those against the password
+   * counter would let an outsider lock a named administrator out of the
+   * password form at will. A separate key keeps the forensic row (and its
+   * page-level alert) without handing out that lever. Conversely the password
+   * lockout is not checked here: a locked password form is exactly when a
+   * legitimate admin should still be able to come in through Google, and
+   * Google — not a guessable secret — is the proof on this path.
+   */
+  async signInWithGoogle(params: {
+    identity: { sub: string; email: string };
+    mode: 'login' | 'invite';
+    invite?: string;
+    res: Response;
+    req: Request;
+    device?: DeviceFingerprint;
+  }): Promise<void> {
+    const { identity, res, req, device } = params;
+    const email = identity.email.trim().toLowerCase();
+    const google = { sub: identity.sub, email };
+
+    const bySub = await this.admins.findByGoogleSub(identity.sub);
+    if (bySub) {
+      this.refuseSuspended(bySub);
+      const minted = await this.db.transaction(async (tx: Executor) => {
+        if (bySub.googleEmail !== email) await this.admins.refreshGoogleEmail(bySub.id, email, tx);
+        return this.mintSession(bySub, device, tx);
+      });
+      this.setAdminCookies(res, minted.accessToken, minted.refreshToken, bySub.id);
+      await this.loginAttempts.recordSuccess('admin', bySub.email);
+      return;
     }
 
-    // Minted before signing, so the access token can carry it as `fam` — the
-    // same reason as `login`.
-    const familyId = randomUUID();
-    const { accessToken, refreshToken, jti } = this.generateAdminTokens(admin, familyId);
-    await this.refreshTokens.record({
-      surface: 'admin',
-      subjectId: admin.id,
-      jti,
-      token: refreshToken,
-      expiresAt: new Date(Date.now() + REFRESH_TTL_MS),
-      familyId,
-      device,
-    });
-    this.setAdminCookies(res, accessToken, refreshToken, admin.id);
+    const byEmail = await this.admins.findByEmail(email);
+    if (byEmail) {
+      if (byEmail.googleSub && byEmail.googleSub !== identity.sub) {
+        await this.recordGoogleFailure(email);
+        throw new GoogleSignInError('account_mismatch');
+      }
+      this.refuseSuspended(byEmail);
+      await this.linkAndStart(byEmail, google, res, device);
+      await this.loginAttempts.recordSuccess('admin', byEmail.email);
+      return;
+    }
 
-    return { message: 'Account created. Welcome aboard!', admin: await this.rbac.sanitize(admin) };
+    if (params.mode === 'invite' && params.invite) {
+      const admin = await this.acceptInviteWithGoogle(params.invite, google, res, req, device);
+      await this.loginAttempts.recordSuccess('admin', admin.email);
+      return;
+    }
+
+    await this.recordGoogleFailure(email);
+    throw new GoogleSignInError('no_account');
   }
+
+  private refuseSuspended(admin: Admin): void {
+    if (admin.status === 'suspended') throw new GoogleSignInError('suspended');
+  }
+
+  /** See `signInWithGoogle` on why this is not the password counter. */
+  private async recordGoogleFailure(email: string): Promise<void> {
+    await this.loginAttempts.recordFailure('admin', `google:${email}`.slice(0, 255));
+  }
+
+  /**
+   * Link + audit + session, as ONE transaction: a session never exists for a
+   * link that did not commit, and a link never commits without its audit row.
+   */
+  private async linkAndStart(
+    admin: Admin,
+    google: { sub: string; email: string },
+    res: Response,
+    device: DeviceFingerprint | undefined,
+  ): Promise<void> {
+    let minted: { accessToken: string; refreshToken: string };
+    try {
+      minted = await this.db.transaction(async (tx: Executor) => {
+        const linked = await this.admins.linkGoogle(admin.id, google, tx);
+        // Lost a race to a concurrent first sign-in: the row now carries a link.
+        if (!linked) throw new GoogleSignInError('account_mismatch');
+        await this.audit.recordWithin(tx, admin.id, 'admin.google_link', 'admin', admin.id, {
+          googleEmail: google.email,
+          method: 'first_sign_in',
+        });
+        return this.mintSession(linked, device, tx);
+      });
+    } catch (error) {
+      // The same Google account already linked to ANOTHER administrator.
+      if (violatesConstraint(error, 'admins_google_sub_unique')) {
+        throw new GoogleSignInError('account_mismatch');
+      }
+      throw error;
+    }
+    this.setAdminCookies(res, minted.accessToken, minted.refreshToken, admin.id);
+  }
+
+  /**
+   * Accept an invite with Google: the same validity rules, the same claim, the
+   * same `createAdminFromInvite` and the same audit row as the password path,
+   * with a password nobody knows (argon2 of 32 random bytes — they can set one
+   * later through the ordinary reset flow) and the Google account linked.
+   */
+  private async acceptInviteWithGoogle(
+    token: string,
+    google: { sub: string; email: string },
+    res: Response,
+    req: Request,
+    device: DeviceFingerprint | undefined,
+  ): Promise<Admin> {
+    const invite = await this.invites.findByToken(token);
+    if (!invite || invite.accepted || invite.expiresAt < new Date()) {
+      throw new GoogleSignInError('invite_invalid');
+    }
+    if (invite.email.trim().toLowerCase() !== google.email) {
+      throw new GoogleSignInError('invite_email_mismatch');
+    }
+    const unusablePassword = await this.passwords.hash(randomBytes(32).toString('base64url'));
+
+    let admin: Admin;
+    try {
+      admin = await this.db.transaction(async (tx: Executor) => {
+        const claimed = await this.invites.claim(token, tx);
+        if (!claimed) throw new GoogleSignInError('invite_invalid');
+        const created = await this.createAdminFromInvite(invite, unusablePassword, tx);
+        const linked = await this.admins.linkGoogle(created.id, google, tx);
+        if (!linked) throw new GoogleSignInError('server');
+        return linked;
+      });
+    } catch (error) {
+      if (violatesConstraint(error, 'admins_google_sub_unique')) {
+        throw new GoogleSignInError('account_mismatch');
+      }
+      throw error;
+    }
+
+    /*
+     * Recorded AFTER commit, exactly as the password accept does: the actor is
+     * the new administrator, whose row (and so whose email on the audit row)
+     * does not exist outside the transaction until it commits.
+     */
+    this.audit.record(
+      admin.id,
+      'admin.invite_accept',
+      'admin',
+      admin.id,
+      this.inviteAcceptDetails(invite, admin, { method: 'google' }),
+    );
+    this.audit.record(admin.id, 'admin.google_link', 'admin', admin.id, {
+      googleEmail: google.email,
+      method: 'invite_accept',
+    });
+
+    await this.endDisplacedSession(req, invite.email);
+    await this.startSession(admin, res, device);
+    return admin;
+  }
+
+  /** `DELETE /admin/auth/me/google` — the caller removes their own link. */
+  async unlinkOwnGoogle(adminId: string) {
+    const before = await this.admins.unlinkGoogle(adminId);
+    if (!before) throw new ValidationError('No Google account is linked to your account.');
+    this.audit.record(adminId, 'admin.google_unlink', 'admin', adminId, {
+      googleEmail: before.googleEmail ?? null,
+      by: 'self',
+    });
+    return { message: 'Google account unlinked.' };
+  }
+
+  /**
+   * `DELETE /admin/users/:id/google` — remove ANOTHER administrator's link.
+   *
+   * Gated like a password reset (`admins.reset` + `refuseReset`), because it
+   * is the same class of act: it changes how somebody else proves who they
+   * are. A sub-admin must not be able to strip a higher-privileged admin's
+   * sign-in method, and the refusal says nothing about why (see the reset).
+   * Sessions are left alone: removing a sign-in method is not a sign-out;
+   * suspension is the tool for that.
+   */
+  async unlinkGoogleFor(actorId: string, targetId: string) {
+    const [actor, target] = await Promise.all([
+      this.admins.findById(actorId),
+      this.admins.findById(targetId),
+    ]);
+    if (!actor) throw new AuthenticationError('Your session is no longer valid.');
+    if (!target) throw new NotFoundError('That administrator does not exist.');
+
+    const normalize = (keys: string[]) => keys.map((k) => AdminRbacService.normalizeKey(k));
+    const [actorPermissions, targetPermissions] = await Promise.all([
+      this.roles.resolvePermissions(actor.roleId, actor.permissions),
+      this.roles.resolvePermissions(target.roleId, target.permissions),
+    ]);
+    const refusal = refuseReset(
+      { id: actor.id, permissions: normalize(actorPermissions) },
+      { id: target.id, permissions: normalize(targetPermissions) },
+    );
+    if (refusal === 'self') {
+      throw new ValidationError('Unlink your own Google account from your profile.');
+    }
+    if (refusal) {
+      this.logger.warn(`Google unlink refused (${refusal}): ${actor.email} → ${target.email}`);
+      throw new AuthorizationError('You may not change that administrator’s sign-in methods.');
+    }
+
+    const before = await this.admins.unlinkGoogle(target.id);
+    if (!before) throw new ValidationError('That administrator has no Google account linked.');
+    this.audit.record(actor.id, 'admin.google_unlink', 'admin', target.id, {
+      googleEmail: before.googleEmail ?? null,
+      targetEmail: target.email,
+      by: 'administrator',
+    });
+    return { message: `Google account unlinked from ${target.email}.` };
+  }
+
   // ─── Validate invite token (for UI pre-fill) ───────────────────────────────
   async validateInviteToken(token: string) {
     const invite = await this.invites.findByToken(token);
@@ -934,7 +1166,41 @@ export class AdminAuthService {
   async reissueSession(adminId: string, res: Response, device?: DeviceFingerprint): Promise<void> {
     const admin = await this.admins.findById(adminId);
     if (!admin) throw new AuthenticationError('Your session is no longer valid. Please sign in.');
+    // The rotated cookies ride back on this response and the browser installs
+    // them, exactly as at login. Nothing is returned in the body — same reason.
+    await this.startSession(admin, res, device);
+  }
 
+  /**
+   * THE one way a new admin session begins — password login, invite
+   * acceptance, the password-change reissue and Google sign-in all call it, so
+   * a session started by Google is indistinguishable from any other: same
+   * refresh-token family table, same device fingerprint, same cookies.
+   *
+   * The family id is minted BEFORE anything is signed, because the access token
+   * has to carry it as `fam` — see `generateAdminTokens`.
+   *
+   * A caller that must start the session inside its own transaction (the
+   * Google first sign-in links the account and records the session as one
+   * unit) calls `mintSession` in it and `setAdminCookies` after COMMIT, so a
+   * rolled-back transaction can never leave cookies for a session that does
+   * not exist.
+   */
+  private async startSession(
+    admin: Admin,
+    res: Response,
+    device?: DeviceFingerprint,
+  ): Promise<void> {
+    const minted = await this.mintSession(admin, device);
+    this.setAdminCookies(res, minted.accessToken, minted.refreshToken, admin.id);
+  }
+
+  /** The session's tokens and family row, without the cookies — for use inside a transaction. */
+  private async mintSession(
+    admin: Admin,
+    device?: DeviceFingerprint,
+    executor?: Executor,
+  ): Promise<{ accessToken: string; refreshToken: string }> {
     const familyId = randomUUID();
     const { accessToken, refreshToken, jti } = this.generateAdminTokens(admin, familyId);
     await this.refreshTokens.record({
@@ -944,11 +1210,11 @@ export class AdminAuthService {
       token: refreshToken,
       expiresAt: new Date(Date.now() + REFRESH_TTL_MS),
       familyId,
+      // Recorded so `GET /admin/auth/sessions` can show WHERE this login is.
       device,
+      executor,
     });
-    // The rotated cookies ride back on this response and the browser installs
-    // them, exactly as at login. Nothing is returned in the body — same reason.
-    this.setAdminCookies(res, accessToken, refreshToken, admin.id);
+    return { accessToken, refreshToken };
   }
 
   /**
