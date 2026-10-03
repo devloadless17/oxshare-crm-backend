@@ -817,6 +817,14 @@ export class KycClientService {
           submittedAt: new Date(),
           rejectionReason: undefined,
           rejectedFields: undefined,
+          /*
+           * A new submission has not been reviewed. The previous decision is
+           * archived in the attempt history; left here, the review screen read
+           * "Reviewed · <last reviewer> · <time>" over a submission awaiting
+           * review (found live, 3 Oct 2026).
+           */
+          reviewedBy: null,
+          reviewedAt: undefined,
           // What the broker's own steps asked, as the client answered them — the
           // review labels their answers from this, whatever the builder does next.
           formSnapshot: formSnapshotOf(steps),
