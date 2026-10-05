@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, type BeforeApplicationShutdown } from '@nestjs/common';
 import type { Locale } from '../../common/i18n/locale';
 import { AssistantStore, type AssistantAnswerOutcome } from '../../store/assistant.store';
 import { FollowupSplitter } from './followups';
@@ -53,6 +53,8 @@ const MAX_ROUNDS = 4;
 const ANSWER_DEADLINE_MS = 90_000;
 /** Moderation is a gate, but a slow one must not hold every answer: past this it fails open. */
 const MODERATION_TIMEOUT_MS = 4_000;
+/** The most shutdown waits for stopped answers to record themselves before the pool closes. */
+const SHUTDOWN_WAIT_MS = 10_000;
 
 /** For a flagged question: a polite no, without explaining the rules behind it. */
 const REFUSAL: Record<Locale, string> = {
@@ -70,10 +72,17 @@ class Refused extends Error {}
  * stream, so every failure becomes an `error` event plus a closed row. The
  * one thing guaranteed is that the `streaming` row is always closed: an open
  * one is what blocks the client's next question.
+ *
+ * On shutdown (every deploy) answers still being written are stopped and
+ * recorded as FAILED, which is free. An answer may run 90 s and the container
+ * gets 30: left alone, the open streams held the old API up past its grace
+ * period, and the killed rows were charged as `interrupted`.
  */
 @Injectable()
-export class AnswerRunner {
+export class AnswerRunner implements BeforeApplicationShutdown {
   private readonly logger = new Logger('Assistant');
+  private readonly stopping = new AbortController();
+  private readonly inFlight = new Set<Promise<void>>();
 
   constructor(
     @Inject(LLM_PROVIDER) private readonly llm: LlmProvider,
@@ -81,22 +90,51 @@ export class AnswerRunner {
     private readonly store: AssistantStore,
   ) {}
 
+  /** Nest calls this before it closes the HTTP server, so each stopped stream ends cleanly. */
+  async beforeApplicationShutdown(): Promise<void> {
+    this.stopping.abort();
+    if (this.inFlight.size === 0) return;
+    this.logger.log(`Shutting down: stopping ${this.inFlight.size} answer(s) being written.`);
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([
+      Promise.allSettled([...this.inFlight]),
+      new Promise((resolve) => (timer = setTimeout(resolve, SHUTDOWN_WAIT_MS))),
+    ]);
+    clearTimeout(timer);
+  }
+
   async run(prepared: PreparedAnswer, sink: AnswerSink, clientGone: AbortSignal): Promise<void> {
+    const running = this.answer(prepared, sink, clientGone);
+    this.inFlight.add(running);
+    try {
+      await running;
+    } finally {
+      this.inFlight.delete(running);
+    }
+  }
+
+  private async answer(
+    prepared: PreparedAnswer,
+    sink: AnswerSink,
+    clientGone: AbortSignal,
+  ): Promise<void> {
     /*
      * The client left while the question was being prepared: close the row, call
      * nothing. FAILED, not aborted: nothing was asked and nothing given, so it
      * uses up none of their questions (an answer stopped part-way does).
      */
-    if (clientGone.aborted) {
+    if (clientGone.aborted || this.stopping.signal.aborted) {
       await this.store
         .finishAnswer(prepared.assistantMessageId, { content: '', status: 'failed' })
         .catch(() => undefined);
+      if (!clientGone.aborted) sink.error('UPSTREAM');
       return;
     }
     const startedAt = Date.now();
     const answerLanguage = languageOf(prepared.question, prepared.locale);
     const timedOut = AbortSignal.timeout(ANSWER_DEADLINE_MS);
-    const signal = AbortSignal.any([clientGone, timedOut]);
+    const stopping = this.stopping.signal;
+    const signal = AbortSignal.any([clientGone, timedOut, stopping]);
     const splitter = new FollowupSplitter();
     const usage = { inputTokens: 0, cachedTokens: 0, outputTokens: 0 };
 
@@ -191,6 +229,14 @@ export class AnswerRunner {
       await emit(tail.text);
       // Moderation gates EVERY answer, even one that showed no text at all.
       await ensureAllowed();
+      /*
+       * An answer with no visible text gave the client nothing: hidden reasoning
+       * spent the output budget, or the stream carried nothing we show. It is a
+       * failure (free, with Try again), never a blank answer charged as complete.
+       */
+      if (text.trim().length === 0) {
+        throw new LlmUpstreamError(`The model returned no text (finish: ${finish}).`, false);
+      }
       followups = tail.followups;
       if (followups.length > 0) sink.followups(followups);
       sink.done({
@@ -212,6 +258,10 @@ export class AnswerRunner {
       } else if (clientGone.aborted) {
         // The client closed the panel or pressed Stop: keep what they saw.
         outcome = 'aborted';
+      } else if (stopping.aborted) {
+        // A deploy, not the client: free, and the portal offers Try again.
+        outcome = 'failed';
+        sink.error('UPSTREAM');
       } else if (timedOut.aborted) {
         outcome = text ? 'aborted' : 'failed';
         sink.error('TIMEOUT');

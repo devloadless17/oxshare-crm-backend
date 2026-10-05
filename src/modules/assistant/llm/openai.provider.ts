@@ -79,7 +79,7 @@ export class OpenAiProvider implements LlmProvider {
         { signal: request.signal },
       );
     } catch (error) {
-      throw upstream(error);
+      throw upstream(error, request.signal);
     }
 
     /*
@@ -93,7 +93,9 @@ export class OpenAiProvider implements LlmProvider {
     try {
       for await (const event of events) {
         switch (event.type) {
+          // The model's own refusal is text for the client too; dropped, it left a blank answer.
           case 'response.output_text.delta':
+          case 'response.refusal.delta':
             yield { type: 'text', delta: event.delta };
             break;
           case 'response.output_item.done':
@@ -139,7 +141,7 @@ export class OpenAiProvider implements LlmProvider {
         }
       }
     } catch (error) {
-      throw upstream(error);
+      throw upstream(error, request.signal);
     }
     if (finished) return;
     if (request.signal.aborted) {
@@ -159,7 +161,7 @@ export class OpenAiProvider implements LlmProvider {
       );
       return result.results.some((r) => r.flagged);
     } catch (error) {
-      throw upstream(error);
+      throw upstream(error, signal);
     }
   }
 
@@ -186,7 +188,7 @@ function toInput(item: LlmItem): ResponseInputItem {
 }
 
 /** Every SDK failure becomes one error type, marked retryable where asking again makes sense. */
-function upstream(error: unknown): Error {
+function upstream(error: unknown, signal: AbortSignal): Error {
   if (error instanceof LlmUpstreamError) return error;
   // An abort is the client leaving, not a vendor failure: pass it through as is.
   if (error instanceof APIUserAbortError) return error;
@@ -195,5 +197,11 @@ function upstream(error: unknown): Error {
     const { status = 0 } = error as { status?: number };
     return new LlmUpstreamError(error.message, status === 429 || status >= 500);
   }
-  return error instanceof Error ? error : new LlmUpstreamError(String(error), false);
+  if (signal.aborted) return error instanceof Error ? error : new APIUserAbortError();
+  /*
+   * Anything else is the transport failing beneath the SDK (undici's
+   * `terminated` when the connection resets mid-stream). A vendor failure
+   * worth one retry, not an internal error.
+   */
+  return new LlmUpstreamError(error instanceof Error ? error.message : String(error), true);
 }

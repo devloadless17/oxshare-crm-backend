@@ -460,7 +460,9 @@ const envSchema = z
     // Empty is "not configured", like absent: the test config pins it empty so
     // no suite can ever reach OpenAI with a developer's real key.
     OPENAI_API_KEY: z.string().optional(),
-    OPENAI_MODEL: z.string().min(1).optional(),
+    // At most 64: every answer records it in `assistant_messages.model` (varchar(64)),
+    // and a longer id would fail every answer's closing write.
+    OPENAI_MODEL: z.string().min(1).max(64).optional(),
 
     /*
      * ── Object storage (ARCHITECTURE §8.5, PLATFORM-CONVENTIONS R-7.3) ────────

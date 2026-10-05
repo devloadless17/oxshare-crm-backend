@@ -5510,6 +5510,11 @@ export const assistantConversations = pgTable(
     title: varchar('title', { length: 120 }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     lastMessageAt: timestamp('last_message_at', { withTimezone: true }).notNull().defaultNow(),
+    /**
+     * Set when the client deleted the chat (0188). Its words are erased, its rows
+     * kept: every allowance counts them. Retention removes it two days later.
+     */
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
   },
   (t) => [
     index('assistant_conversations_user_recent_idx').on(t.userId, t.lastMessageAt.desc()),

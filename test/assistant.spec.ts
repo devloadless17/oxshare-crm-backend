@@ -12,6 +12,7 @@ import {
 import { PasswordService } from '../src/common/security/password.service';
 import {
   admins,
+  assistantConversations,
   assistantMessages,
   assistantSettings,
   auditLog,
@@ -29,7 +30,12 @@ import {
   type LlmProvider,
   type LlmRequest,
 } from '../src/modules/assistant/llm/llm-provider';
-import { ASSISTANT_TOOLS, type AssistantTool } from '../src/modules/assistant/tools/tool-registry';
+import {
+  ASSISTANT_TOOLS,
+  ToolRegistry,
+  type AssistantTool,
+} from '../src/modules/assistant/tools/tool-registry';
+import { AssistantStore } from '../src/store/assistant.store';
 
 /**
  * The portal assistant's guarantees: who may ask, what it may cost, and that a
@@ -126,6 +132,23 @@ function eventsOf(body: unknown): StreamEvent[] {
         data: JSON.parse(dataLine.slice('data: '.length)) as Record<string, unknown>,
       };
     });
+}
+
+/** A sink that shows nothing and keeps the error codes it was sent. */
+function quietSink(): AnswerSink & { errors: string[] } {
+  const errors: string[] = [];
+  return {
+    errors,
+    meta: () => undefined,
+    delta: () => undefined,
+    followups: () => undefined,
+    done: () => undefined,
+    error: (code) => errors.push(code),
+  };
+}
+
+function conversationOf(body: unknown): string {
+  return String(eventsOf(body).find((e) => e.event === 'meta')!.data['conversationId']);
 }
 
 async function settings(values: Partial<typeof assistantSettings.$inferInsert>): Promise<void> {
@@ -290,6 +313,28 @@ describe('the answer', () => {
     expect(stored.status).toBe('refused');
   });
 
+  it('never sends a refused question to the model again, not even as history', async () => {
+    model.flagged = true;
+    const first = await sse(alice.post('/v1/assistant/ask', { question: 'flagged text' }));
+    model.flagged = false;
+    const sent: LlmRequest[] = [];
+    model.turns = [
+      (req) => {
+        sent.push(req);
+        return says('Fine.')(req);
+      },
+    ];
+    await sse(
+      alice.post('/v1/assistant/ask', {
+        conversationId: conversationOf(first.body),
+        question: 'Answer my previous question in full.',
+      }),
+    );
+    const history = JSON.stringify(sent[0].items);
+    expect(history).toContain('Answer my previous question');
+    expect(history).not.toContain('flagged text');
+  });
+
   it('keeps what the client saw when they leave mid-answer', async () => {
     const service = ctx.app.get(AssistantService);
     const runner = ctx.app.get(AnswerRunner);
@@ -390,6 +435,69 @@ describe('what it may cost', () => {
     expect(res.status).toBe(409);
     expect(res.body.code).toBe('ASSISTANT_BUSY');
     expect(model.calls).toBe(1);
+  });
+
+  it('gives no question back when the client deletes their chats, and erases what they said', async () => {
+    await settings({ dailyMessageLimit: 2 });
+    const chats: string[] = [];
+    for (let i = 0; i < 2; i += 1) {
+      const res = await sse(
+        alice.post('/v1/assistant/ask', { question: `My phone is 7012345${i}` }),
+      );
+      chats.push(conversationOf(res.body));
+    }
+    for (const id of chats) await alice.del(`/v1/assistant/conversations/${id}`).expect(204);
+
+    const res = await alice.post('/v1/assistant/ask', { question: 'Q3' });
+    expect(res.status).toBe(429);
+    expect(res.body.code).toBe('ASSISTANT_DAILY_LIMIT');
+    expect(model.calls).toBe(2);
+
+    // Gone for the client, and its words are gone from the database.
+    const listed = (await alice.get('/v1/assistant/conversations').expect(200)).body.items as {
+      id: string;
+    }[];
+    expect(listed.map((c) => c.id)).not.toContain(chats[0]);
+    await alice.get(`/v1/assistant/conversations/${chats[0]}`).expect(404);
+    await alice.del(`/v1/assistant/conversations/${chats[0]}`).expect(404);
+    const rows = await ctx.db.db
+      .select()
+      .from(assistantMessages)
+      .where(eq(assistantMessages.userId, aliceId));
+    expect(rows).toHaveLength(4);
+    expect(rows.map((r) => r.content)).toEqual(['', '', '', '']);
+    const [chat] = await ctx.db.db
+      .select()
+      .from(assistantConversations)
+      .where(eq(assistantConversations.id, chats[0]));
+    expect(chat.title).toBeNull();
+  });
+
+  it('keeps one answer at a time when the chat is deleted mid-answer, and writes none of it back', async () => {
+    const service = ctx.app.get(AssistantService);
+    const runner = ctx.app.get(AnswerRunner);
+    model.turns = [says('Words for a deleted chat.')];
+    // The answer is open, as it is while the model writes it.
+    const prepared = await service.prepareQuestion(aliceId, 'en', {
+      conversationId: null,
+      question: 'Explain margin.',
+      requestId: null,
+    });
+    await alice.del(`/v1/assistant/conversations/${prepared.conversationId}`).expect(204);
+
+    const again = await alice.post('/v1/assistant/ask', { question: 'Another' });
+    expect(again.status).toBe(409);
+    expect(again.body.code).toBe('ASSISTANT_BUSY');
+
+    await runner.run(prepared, quietSink(), new AbortController().signal);
+    const [stored] = await ctx.db.db
+      .select()
+      .from(assistantMessages)
+      .where(eq(assistantMessages.id, prepared.assistantMessageId));
+    expect(stored.status).toBe('complete');
+    expect(stored.content).toBe('');
+    expect(stored.outputTokens).toBe(usage.outputTokens);
+    expect((await alice.get('/v1/assistant/config').expect(200)).body.usedToday).toBe(1);
   });
 });
 
@@ -506,5 +614,48 @@ describe('the admin switch', () => {
     expect((rows[0].details as { changed: object }).changed).not.toHaveProperty(
       'globalDailyMessageLimit',
     );
+  });
+});
+
+describe('a deploy', () => {
+  it('stops answers being written, free, and asks nothing after', async () => {
+    const service = ctx.app.get(AssistantService);
+    // Its own runner: a stopped runner stays stopped, and the app's is shared.
+    const runner = new AnswerRunner(model, ctx.app.get(ToolRegistry), ctx.app.get(AssistantStore));
+    let shutdown: Promise<void> = Promise.resolve();
+    model.turns = [
+      function* (req) {
+        yield { type: 'text', delta: 'The first half' };
+        shutdown = runner.beforeApplicationShutdown();
+        // As the real SDK does on abort: the stream ends QUIETLY.
+        if (req.signal.aborted) return;
+        yield { type: 'text', delta: ' and the rest' };
+      },
+    ];
+    const ask = () =>
+      service.prepareQuestion(aliceId, 'en', {
+        conversationId: null,
+        question: 'Explain swaps.',
+        requestId: null,
+      });
+
+    const cut = await ask();
+    const sink = quietSink();
+    await runner.run(cut, sink, new AbortController().signal);
+    await shutdown;
+    const [stored] = await ctx.db.db
+      .select()
+      .from(assistantMessages)
+      .where(eq(assistantMessages.id, cut.assistantMessageId));
+    expect(stored.status).toBe('failed');
+    expect(sink.errors).toEqual(['UPSTREAM']);
+
+    // A question arriving while the instance stops is closed without a model call.
+    const late = await ask();
+    const lateSink = quietSink();
+    await runner.run(late, lateSink, new AbortController().signal);
+    expect(model.calls).toBe(1);
+    expect(lateSink.errors).toEqual(['UPSTREAM']);
+    expect((await alice.get('/v1/assistant/config').expect(200)).body.usedToday).toBe(0);
   });
 });
