@@ -526,3 +526,50 @@ export class MailNotConfiguredError extends DomainError {
     super(message);
   }
 }
+
+/*
+ * ── The portal assistant's refusals (0187) ──────────────────────────────────
+ *
+ * Each has its own code because the portal answers each differently: switched
+ * off hides the launcher, the daily allowance names when it resets, busy waits
+ * for the answer already being written. None is a failure of the request
+ * itself, so none is a 400.
+ */
+
+/** Switched off by an administrator, or no model is configured. → 503 */
+export class AssistantUnavailableError extends DomainError {
+  readonly code = 'ASSISTANT_UNAVAILABLE';
+}
+
+/** The platform-wide daily ceiling is reached — the spend bound, not the client's fault. → 503 */
+export class AssistantCapacityError extends DomainError {
+  readonly code = 'ASSISTANT_CAPACITY';
+}
+
+/** This client has had today's answers. → 429 */
+export class AssistantDailyLimitError extends DomainError {
+  readonly code = 'ASSISTANT_DAILY_LIMIT';
+}
+
+/** Too many questions inside a minute. → 429 */
+export class AssistantRateLimitError extends DomainError {
+  readonly code = 'ASSISTANT_RATE_LIMITED';
+}
+
+/** An answer for this client is already being written (one at a time). → 409 */
+export class AssistantBusyError extends DomainError {
+  readonly code = 'ASSISTANT_BUSY';
+}
+
+/** The conversation reached its length cap; the client starts a new chat. → 409 */
+export class AssistantConversationFullError extends DomainError {
+  readonly code = 'ASSISTANT_CONVERSATION_FULL';
+}
+
+/**
+ * This question was already received (same request id): a retry after the
+ * response was lost on the way back. Refused so it is never asked twice. → 409
+ */
+export class AssistantDuplicateError extends DomainError {
+  readonly code = 'ASSISTANT_DUPLICATE';
+}

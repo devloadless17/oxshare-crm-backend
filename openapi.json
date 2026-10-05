@@ -13048,6 +13048,287 @@
           "admin"
         ]
       }
+    },
+    "/v1/assistant/config": {
+      "get": {
+        "description": "Never refuses: an unverified client gets `available: false, reason: \"kyc_required\"`, so the portal can show a locked launcher instead of an error.",
+        "operationId": "AssistantController_config",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssistantConfigDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Whether the assistant is available to this client, and their allowance",
+        "tags": [
+          "assistant"
+        ]
+      }
+    },
+    "/v1/assistant/conversations": {
+      "get": {
+        "operationId": "AssistantController_list",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssistantConversationListDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "The client's recent conversations, newest first",
+        "tags": [
+          "assistant"
+        ]
+      }
+    },
+    "/v1/assistant/conversations/{id}": {
+      "get": {
+        "operationId": "AssistantController_thread",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssistantThreadDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "One conversation with its messages, oldest first",
+        "tags": [
+          "assistant"
+        ]
+      },
+      "delete": {
+        "operationId": "AssistantController_remove",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted."
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Delete a conversation and its messages, for good",
+        "tags": [
+          "assistant"
+        ]
+      }
+    },
+    "/v1/assistant/ask": {
+      "post": {
+        "description": "A `text/event-stream`: `meta`, then `delta` events, then `followups` and `done`, or `error`. Every refusal (switched off, not verified, a limit, busy) is an ordinary JSON error BEFORE the stream opens.",
+        "operationId": "AssistantController_ask",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssistantAskDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The answer, as Server-Sent Events."
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Ask a question; the answer streams back",
+        "tags": [
+          "assistant"
+        ]
+      }
+    },
+    "/v1/assistant/conversations/{id}/regenerate": {
+      "post": {
+        "description": "Counts against the daily allowance like a question. A `text/event-stream`: `meta`, then `delta` events, then `followups` and `done`, or `error`. Every refusal (switched off, not verified, a limit, busy) is an ordinary JSON error BEFORE the stream opens.",
+        "operationId": "AssistantController_regenerate",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The new answer, as Server-Sent Events."
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Answer the last question again, replacing the previous answer",
+        "tags": [
+          "assistant"
+        ]
+      }
+    },
+    "/v1/assistant/messages/{id}/feedback": {
+      "put": {
+        "operationId": "AssistantController_feedback",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssistantFeedbackDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Recorded."
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Rate an answer as helpful or not (null clears the rating)",
+        "tags": [
+          "assistant"
+        ]
+      }
+    },
+    "/v1/admin/settings/assistant": {
+      "get": {
+        "description": "Usage counts answers and tokens since midnight UTC, across every client.",
+        "operationId": "AdminAssistantController_get",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminAssistantSettingsDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "The portal assistant: switch, limits and usage today",
+        "tags": [
+          "admin"
+        ]
+      },
+      "put": {
+        "operationId": "AdminAssistantController_set",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateAssistantSettingsDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminAssistantSettingsDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Switch the assistant on or off, and set its daily limits",
+        "tags": [
+          "admin"
+        ]
+      }
     }
   },
   "info": {
@@ -26485,6 +26766,302 @@
           "file",
           "exists",
           "lines"
+        ]
+      },
+      "AssistantConfigDto": {
+        "type": "object",
+        "properties": {
+          "available": {
+            "type": "boolean"
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "not_configured",
+              "disabled",
+              "kyc_required"
+            ],
+            "nullable": true,
+            "description": "Why it is unavailable. `kyc_required` shows a locked launcher; the others hide it."
+          },
+          "dailyLimit": {
+            "type": "number"
+          },
+          "usedToday": {
+            "type": "number"
+          },
+          "resetsAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "maxQuestionLength": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "available",
+          "reason",
+          "dailyLimit",
+          "usedToday",
+          "resetsAt",
+          "maxQuestionLength"
+        ]
+      },
+      "AssistantConversationDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "title": {
+            "type": "string",
+            "nullable": true
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lastMessageAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "createdAt",
+          "lastMessageAt"
+        ]
+      },
+      "AssistantConversationListDto": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AssistantConversationDto"
+            }
+          }
+        },
+        "required": [
+          "items"
+        ]
+      },
+      "AssistantMessageDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "user",
+              "assistant"
+            ]
+          },
+          "content": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "streaming",
+              "complete",
+              "aborted",
+              "failed",
+              "refused",
+              "interrupted"
+            ]
+          },
+          "followups": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "feedback": {
+            "type": "number",
+            "enum": [
+              1,
+              -1
+            ],
+            "nullable": true
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "id",
+          "role",
+          "content",
+          "status",
+          "followups",
+          "feedback",
+          "createdAt"
+        ]
+      },
+      "AssistantThreadDto": {
+        "type": "object",
+        "properties": {
+          "conversation": {
+            "$ref": "#/components/schemas/AssistantConversationDto"
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AssistantMessageDto"
+            }
+          }
+        },
+        "required": [
+          "conversation",
+          "messages"
+        ]
+      },
+      "AssistantAskDto": {
+        "type": "object",
+        "properties": {
+          "conversationId": {
+            "type": "string",
+            "description": "Continue this conversation; omit to start a new one.",
+            "format": "uuid"
+          },
+          "question": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          },
+          "requestId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The client's id for this question, reused by its retries: a question already received is refused (409 ASSISTANT_DUPLICATE), never asked twice."
+          }
+        },
+        "required": [
+          "question"
+        ]
+      },
+      "AssistantFeedbackDto": {
+        "type": "object",
+        "properties": {
+          "rating": {
+            "type": "number",
+            "enum": [
+              1,
+              -1
+            ],
+            "nullable": true,
+            "description": "1 helpful, -1 not helpful, null clears it."
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "wrong",
+              "not_helpful",
+              "off_topic",
+              "other"
+            ],
+            "description": "Why it was not helpful."
+          }
+        },
+        "required": [
+          "rating"
+        ]
+      },
+      "AssistantUsageDto": {
+        "type": "object",
+        "properties": {
+          "answers": {
+            "type": "number"
+          },
+          "inputTokens": {
+            "type": "number"
+          },
+          "cachedTokens": {
+            "type": "number"
+          },
+          "outputTokens": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "answers",
+          "inputTokens",
+          "cachedTokens",
+          "outputTokens"
+        ]
+      },
+      "AdminAssistantSettingsDto": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "dailyMessageLimit": {
+            "type": "number"
+          },
+          "globalDailyMessageLimit": {
+            "type": "number"
+          },
+          "keyConfigured": {
+            "type": "boolean",
+            "description": "False when OPENAI_API_KEY is not set: the assistant stays off."
+          },
+          "model": {
+            "type": "string"
+          },
+          "today": {
+            "description": "Since midnight UTC.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AssistantUsageDto"
+              }
+            ]
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          }
+        },
+        "required": [
+          "enabled",
+          "dailyMessageLimit",
+          "globalDailyMessageLimit",
+          "keyConfigured",
+          "model",
+          "today",
+          "updatedAt"
+        ]
+      },
+      "UpdateAssistantSettingsDto": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "dailyMessageLimit": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 1000,
+            "description": "Answers one client may get per UTC day."
+          },
+          "globalDailyMessageLimit": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 10000000,
+            "description": "Answers the whole platform may give per UTC day: the spend ceiling."
+          }
+        },
+        "required": [
+          "enabled",
+          "dailyMessageLimit",
+          "globalDailyMessageLimit"
         ]
       },
       "ErrorResponseDto": {

@@ -23,7 +23,7 @@ export function isLocale(value: unknown): value is Locale {
 
 /** A header value as a locale — anything unrecognised is English. */
 export function parseLocale(value: unknown): Locale {
-  const raw = Array.isArray(value) ? value[0] : value;
+  const raw: unknown = Array.isArray(value) ? (value as unknown[])[0] : value;
   const normalised = typeof raw === 'string' ? raw.trim().toLowerCase().slice(0, 2) : '';
   return isLocale(normalised) ? normalised : DEFAULT_LOCALE;
 }

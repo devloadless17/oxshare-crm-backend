@@ -5467,3 +5467,118 @@ export const scheduledJobs = pgTable('scheduled_jobs', {
   updatedBy: uuid('updated_by'),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
+
+/* ── The client portal's AI assistant (0187, 4 Oct 2026) ─────────────────────── */
+
+/**
+ * The switch and the limits, one row. `enabled` defaults to FALSE: an assistant
+ * nobody turned on costs nothing, and a deployment without `OPENAI_API_KEY`
+ * reads as off whatever this says.
+ */
+export const assistantSettings = pgTable(
+  'assistant_settings',
+  {
+    id: boolean('id')
+      .primaryKey()
+      .$default(() => true),
+    enabled: boolean('enabled').notNull().default(false),
+    /** Answers one client may be given per UTC day. */
+    dailyMessageLimit: integer('daily_message_limit').notNull().default(30),
+    /** Answers the whole platform may give per UTC day — the spend ceiling sign-up cannot route around. */
+    globalDailyMessageLimit: integer('global_daily_message_limit').notNull().default(5000),
+    updatedBy: uuid('updated_by'),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    check('assistant_settings_singleton', sql`${t.id}`),
+    check('assistant_settings_daily_limit_ck', sql`${t.dailyMessageLimit} BETWEEN 1 AND 1000`),
+    check(
+      'assistant_settings_global_limit_ck',
+      sql`${t.globalDailyMessageLimit} BETWEEN 1 AND 10000000`,
+    ),
+  ],
+);
+
+export const assistantConversations = pgTable(
+  'assistant_conversations',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    userId: integer('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    /** The first question, shortened. No model call names a conversation. */
+    title: varchar('title', { length: 120 }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    lastMessageAt: timestamp('last_message_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('assistant_conversations_user_recent_idx').on(t.userId, t.lastMessageAt.desc()),
+    index('assistant_conversations_last_message_idx').on(t.lastMessageAt),
+  ],
+);
+
+export type AssistantMessageRole = 'user' | 'assistant';
+/**
+ * `streaming` is the in-flight state, and at most one row per client may hold
+ * it (`assistant_messages_one_streaming_uq`). `interrupted` is a stream whose
+ * instance died. A regenerated answer keeps its outcome and gets
+ * `superseded_at`, so a failed answer stays failed (and free) after it is replaced.
+ */
+export type AssistantMessageStatus =
+  'streaming' | 'complete' | 'aborted' | 'failed' | 'refused' | 'interrupted';
+
+export const assistantMessages = pgTable(
+  'assistant_messages',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    conversationId: uuid('conversation_id')
+      .notNull()
+      .references(() => assistantConversations.id, { onDelete: 'cascade' }),
+    userId: integer('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    role: varchar('role', { length: 16 }).$type<AssistantMessageRole>().notNull(),
+    content: text('content').notNull().default(''),
+    status: varchar('status', { length: 16 })
+      .$type<AssistantMessageStatus>()
+      .notNull()
+      .default('complete'),
+    followups: jsonb('followups').$type<string[]>(),
+    model: varchar('model', { length: 64 }),
+    inputTokens: integer('input_tokens'),
+    cachedTokens: integer('cached_tokens'),
+    outputTokens: integer('output_tokens'),
+    ttftMs: integer('ttft_ms'),
+    latencyMs: integer('latency_ms'),
+    feedback: smallint('feedback'),
+    feedbackReason: varchar('feedback_reason', { length: 32 }),
+    feedbackAt: timestamp('feedback_at', { withTimezone: true }),
+    /** The portal's id for the question, reused by its retries: a question is recorded once. */
+    requestId: uuid('request_id'),
+    /** Set when the client regenerated this answer; its status is left as it was. */
+    supersededAt: timestamp('superseded_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    completedAt: timestamp('completed_at', { withTimezone: true }),
+  },
+  (t) => [
+    check('assistant_messages_role_ck', sql`${t.role} IN ('user', 'assistant')`),
+    check(
+      'assistant_messages_status_ck',
+      sql`${t.status} IN ('streaming', 'complete', 'aborted', 'failed', 'refused', 'interrupted')`,
+    ),
+    check('assistant_messages_feedback_ck', sql`${t.feedback} IS NULL OR ${t.feedback} IN (-1, 1)`),
+    index('assistant_messages_conversation_idx').on(t.conversationId, t.createdAt),
+    index('assistant_messages_user_answers_idx')
+      .on(t.userId, t.createdAt)
+      .where(sql`${t.role} = 'assistant'`),
+    index('assistant_messages_answers_idx')
+      .on(t.createdAt)
+      .where(sql`${t.role} = 'assistant'`),
+    uniqueIndex('assistant_messages_one_streaming_uq')
+      .on(t.userId)
+      .where(sql`${t.status} = 'streaming'`),
+    uniqueIndex('assistant_messages_request_uq')
+      .on(t.userId, t.requestId)
+      .where(sql`${t.requestId} IS NOT NULL`),
+  ],
+);

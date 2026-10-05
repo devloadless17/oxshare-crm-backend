@@ -60,6 +60,7 @@ import { ProductsModule } from './modules/products/products.module';
 import { ComplianceModule } from './modules/compliance/compliance.module';
 import { AdminModule } from './modules/admin/admin.module';
 import { ProfileModule } from './modules/profile/profile.module';
+import { AssistantModule } from './modules/assistant/assistant.module';
 import { ClientIdentityModule } from './modules/client-identity/client-identity.module';
 import { KycIdentityReviewModule } from './modules/compliance/kyc-identity-review';
 import { HealthModule } from './modules/health/health.module';
@@ -181,6 +182,8 @@ import { RedisThrottlerStorage } from './common/security/redis-throttler.storage
     SettingsModule,
     ProductsModule,
     AdminModule,
+    // The portal assistant (0187). Last, so its routes append to the API document.
+    AssistantModule,
   ],
   providers: [
     // The one place domain errors become HTTP responses, and where an

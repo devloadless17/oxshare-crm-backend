@@ -3,6 +3,7 @@ import { Global, Module } from '@nestjs/common';
 import { AdminClientScopesStore } from './admin-client-scopes.store';
 import { ApiKeysStore } from './api-keys.store';
 import { AppSettingsStore } from './app-settings.store';
+import { AssistantStore } from './assistant.store';
 import { PaymentProvidersStore } from './payment-providers.store';
 import { PaymentProviderEventsStore } from './payment-provider-events.store';
 import { OfferedCountriesStore } from './offered-countries.store';
@@ -32,6 +33,7 @@ const STORES = [
   AdminsStore,
   ApiKeysStore,
   AppSettingsStore,
+  AssistantStore,
   PaymentProvidersStore,
   PaymentProviderEventsStore,
   PaymentProviderExchangesStore,
