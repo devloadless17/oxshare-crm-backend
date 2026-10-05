@@ -20,8 +20,12 @@ import {
   type CursorPage,
   type CursorPosition,
 } from '../common/pagination';
-import { NotFoundError } from '../common/errors/domain-errors';
-import type { TaskStillOpen } from '../common/notifications/admin-notification-catalogue';
+import { NotFoundError, ValidationError } from '../common/errors/domain-errors';
+import {
+  ADMIN_NOTIFICATION_KINDS,
+  isAdminNotificationKind,
+  type TaskStillOpen,
+} from '../common/notifications/admin-notification-catalogue';
 import { clientScopePredicate, type ClientScope } from '../common/security/client-scope';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db, Executor } from '../database/db';
@@ -90,10 +94,11 @@ export interface AdminFeedReader {
 }
 
 export interface AdminFeedFilter {
-  /** `inbox`: still somebody's work — unread AND unresolved. `history`: everything. */
+  /**
+   * `inbox`: still somebody's work — not yet handled by anybody, read or not.
+   * `history`: handled, with how it ended. A task is in exactly one of the two.
+   */
   view: 'inbox' | 'history';
-  /** History only: `open` = not yet handled (read or not), `handled` = resolved. */
-  status?: 'open' | 'handled';
   /** A category's kinds, when the reader narrowed to one. */
   kinds?: readonly string[];
   /** Portal ID (exact) or name/email — `clientIdentitySearch`, as every client search. */
@@ -465,13 +470,13 @@ export class NotificationsStore {
     const limit = pageSize(filter.limit);
     const conditions = this.adminVisibility(reader);
 
-    if (filter.view === 'inbox') {
-      conditions.push(isNull(notifications.readAt), isNull(notifications.resolvedAt));
-    } else if (filter.status === 'open') {
-      conditions.push(isNull(notifications.resolvedAt));
-    } else if (filter.status === 'handled') {
-      conditions.push(isNotNull(notifications.resolvedAt));
-    }
+    // Reading a task never moves it: only handling it does (the owner's rule,
+    // 5 Oct 2026 — clicking a deposit must not file it away unapproved).
+    conditions.push(
+      filter.view === 'inbox'
+        ? isNull(notifications.resolvedAt)
+        : isNotNull(notifications.resolvedAt),
+    );
     if (filter.kinds) conditions.push(kindIn(filter.kinds));
     const q = filter.q?.trim();
     if (q) conditions.push(clientIdentitySearch(q, users));
@@ -530,9 +535,9 @@ export class NotificationsStore {
 
   /**
    * The badge: how many tasks are waiting on this reader, in total and per
-   * category. One scan of the inbox index — the rows that are still somebody's
-   * work — with a FILTER per category, so the chips and the badge are the same
-   * count cut two ways and cannot drift apart.
+   * category — every unhandled one, seen or not, so it equals the Inbox. One
+   * scan of the inbox index with a FILTER per category, so the total and the
+   * categories are the same count cut two ways and cannot drift apart.
    */
   async adminInboxSummary(
     reader: AdminFeedReader,
@@ -545,48 +550,30 @@ export class NotificationsStore {
     const [row] = await this.db
       .select(fields)
       .from(notifications)
-      .where(
-        and(
-          ...this.adminVisibility(reader),
-          isNull(notifications.readAt),
-          isNull(notifications.resolvedAt),
-        ),
-      );
+      .where(and(...this.adminVisibility(reader), isNull(notifications.resolvedAt)));
     const byCategory: Record<string, number> = {};
     for (const category of Object.keys(categories)) byCategory[category] = row?.[category] ?? 0;
     return { count: row?.total ?? 0, byCategory };
   }
 
-  /** Mark one of the reader's rows read. Idempotent; invisible reads as absent. */
+  /**
+   * Mark one of the reader's rows SEEN — it stops reading as new. It does not
+   * leave the Inbox: only handling the item does that. Idempotent; a row
+   * outside the reader's visibility reads as absent.
+   *
+   * There is no unread or read-all for an admin any more (5 Oct 2026): both
+   * existed to take tasks OUT of the Inbox unhandled, which is what the owner
+   * ruled a task must never do.
+   */
   async markAdminRead(
     reader: AdminFeedReader,
     id: string,
   ): Promise<{ id: string; readAt: Date | null }> {
-    return this.setAdminRead(reader, id, true);
-  }
-
-  /**
-   * The undo of a mark-read — "I cleared that by mistake". Idempotent. It does
-   * not reopen a HANDLED task: the inbox excludes resolved rows whatever their
-   * read marker says, so the row stays where History shows it.
-   */
-  async markAdminUnread(
-    reader: AdminFeedReader,
-    id: string,
-  ): Promise<{ id: string; readAt: Date | null }> {
-    return this.setAdminRead(reader, id, false);
-  }
-
-  private async setAdminRead(
-    reader: AdminFeedReader,
-    id: string,
-    read: boolean,
-  ): Promise<{ id: string; readAt: Date | null }> {
     const target = and(eq(notifications.id, id), ...this.adminVisibility(reader));
     const [updated] = await this.db
       .update(notifications)
-      .set({ readAt: read ? sql`now()` : null })
-      .where(and(target, read ? isNull(notifications.readAt) : isNotNull(notifications.readAt)))
+      .set({ readAt: sql`now()` })
+      .where(and(target, isNull(notifications.readAt)))
       .returning({ id: notifications.id, readAt: notifications.readAt });
     if (updated) return updated;
 
@@ -599,32 +586,97 @@ export class NotificationsStore {
   }
 
   /**
-   * Clear the reader's unread markers — all of them, or one category's —
-   * never past `upTo`, the newest row they were shown. Only rows they can see:
-   * a task outside their territory is not theirs to clear.
+   * END a task by a decision that leaves its item as it is — the clawback's
+   * "the partner keeps it" — for EVERY admin who holds it, exactly as handling
+   * the item would. One transaction:
+   *
+   *  1. the reader's own row, through `adminVisibility` (out of scope or of a
+   *     kind they cannot act on reads as absent);
+   *  2. the ITEM locked `FOR SHARE` and re-checked open — the fan-out's lock, so
+   *     a reversal racing this either lands first (then this finds it handled
+   *     and writes nothing) or waits for this decision to commit;
+   *  3. every still-open row of that kind about that item resolved with the
+   *     catalogue's outcome, credited to the reader;
+   *  4. `withinTx` — the caller's audit row — so the decision and its record
+   *     commit together or not at all.
+   *
+   * Returns `null` when somebody handled it first. The caller has already
+   * checked the kind declares such a decision.
    */
-  async markAllAdminRead(
+  async closeAdminTask(
     reader: AdminFeedReader,
-    options: { kinds?: readonly string[]; upTo?: Date } = {},
-  ): Promise<number> {
-    const updated = await this.db
-      .update(notifications)
-      .set({ readAt: sql`now()` })
-      .where(
-        and(
-          ...this.adminVisibility(reader),
-          isNull(notifications.readAt),
-          options.kinds ? kindIn(options.kinds) : undefined,
-          options.upTo ? lte(notifications.createdAt, options.upTo) : undefined,
-        ),
-      )
-      .returning({ id: notifications.id });
-    return updated.length;
+    id: string,
+    withinTx: (
+      tx: Executor,
+      task: {
+        kind: string;
+        subjectKind: NotificationSubjectKind;
+        subjectId: string;
+        clientId: number;
+      },
+    ) => Promise<void>,
+  ): Promise<{ kind: string; outcome: string } | null> {
+    return this.db.transaction(async (tx) => {
+      const [task] = await tx
+        .select({
+          kind: notifications.kind,
+          subjectKind: notifications.subjectKind,
+          subjectId: notifications.subjectId,
+          subjectUserId: notifications.subjectUserId,
+          resolvedAt: notifications.resolvedAt,
+        })
+        .from(notifications)
+        .where(and(eq(notifications.id, id), ...this.adminVisibility(reader)));
+      if (!task) throw new NotFoundError('Notification not found.');
+      if (task.resolvedAt || !isAdminNotificationKind(task.kind)) return null;
+      const spec: { stillOpen: TaskStillOpen; closeOutcome?: string } =
+        ADMIN_NOTIFICATION_KINDS[task.kind];
+      const outcome = spec.closeOutcome;
+      // The CHECK makes all three present on an admin row.
+      const subjectKind = task.subjectKind as NotificationSubjectKind;
+      const subjectId = task.subjectId as string;
+      if (!outcome) {
+        throw new ValidationError(
+          'This task ends only when its item is handled — open it and decide it there.',
+        );
+      }
+
+      const open = await this.lockIfStillOpen(tx, {
+        subjectKind,
+        subjectId,
+        stillOpen: spec.stillOpen,
+      });
+      if (!open) return null;
+
+      const closed = await tx
+        .update(notifications)
+        .set({ resolvedAt: sql`now()`, resolution: outcome, resolvedBy: reader.adminId })
+        .where(
+          and(
+            eq(notifications.recipientKind, 'admin'),
+            eq(notifications.kind, task.kind),
+            eq(notifications.subjectKind, subjectKind),
+            eq(notifications.subjectId, subjectId),
+            isNull(notifications.resolvedAt),
+          ),
+        )
+        .returning({ id: notifications.id });
+      if (closed.length === 0) return null;
+
+      await withinTx(tx, {
+        kind: task.kind,
+        subjectKind,
+        subjectId,
+        clientId: task.subjectUserId as number,
+      });
+      return { kind: task.kind, outcome };
+    });
   }
 
   /**
    * The reader opened the ITEM itself — a KYC review page — so the task about
-   * it has been seen, whichever door they came through. Returns rows touched.
+   * it has been seen, whichever door they came through. It stays in the Inbox
+   * until the item is handled. Returns rows touched.
    */
   async markAdminSubjectRead(
     reader: AdminFeedReader,

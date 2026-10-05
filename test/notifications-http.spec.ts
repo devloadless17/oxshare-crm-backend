@@ -180,35 +180,37 @@ describe('the admin feed', () => {
     await seedRow('admin', adminAId, 'admin.withdrawal.requested');
 
     const a = await actingAs(ctx, 'admin', ADMIN_A);
-    const listA = await a.get('/v1/admin/notifications');
+    const listA = await a.get('/v1/admin/notifications?view=inbox');
     expect(listA.status).toBe(200);
     expect(items(listA.body).map((n) => n.kind)).toContain('admin.withdrawal.requested');
 
     const b = await actingAs(ctx, 'admin', ADMIN_B);
-    const listB = await b.get('/v1/admin/notifications');
+    const listB = await b.get('/v1/admin/notifications?view=inbox');
     expect(listB.status).toBe(200);
     expect(items(listB.body).map((n) => n.kind)).not.toContain('admin.withdrawal.requested');
   });
 
-  it('paginates with a cursor, and the inbox holds only what is still waiting', async () => {
+  it('paginates with a cursor, and history holds only what was handled', async () => {
     const session = await actingAs(ctx, 'admin', ADMIN_A);
     for (let i = 0; i < 3; i++) await seedRow('admin', adminAId, 'admin.kyc.submitted');
 
-    const first = await session.get('/v1/admin/notifications?limit=2');
+    const first = await session.get('/v1/admin/notifications?view=inbox&limit=2');
     expect(items(first.body)).toHaveLength(2);
     const nextCursor = (first.body as { nextCursor: string | null }).nextCursor;
     expect(nextCursor).not.toBeNull();
 
     const second = await session.get(
-      `/v1/admin/notifications?limit=2&cursor=${encodeURIComponent(nextCursor as string)}`,
+      `/v1/admin/notifications?view=inbox&limit=2&cursor=${encodeURIComponent(nextCursor as string)}`,
     );
     expect(second.status).toBe(200);
     const firstIds = new Set(items(first.body).map((n) => n.id));
     for (const row of items(second.body)) expect(firstIds.has(row.id)).toBe(false);
 
-    const inbox = await session.get('/v1/admin/notifications?view=inbox');
-    expect(inbox.status).toBe(200);
-    expect(items(inbox.body).every((n) => n.readAt === null)).toBe(true);
+    // Nobody handled these: they are in the inbox and not in history (0189).
+    const history = await session.get('/v1/admin/notifications?view=history&limit=100');
+    expect(history.status).toBe(200);
+    const historyIds = new Set(items(history.body).map((n) => n.id));
+    for (const row of items(first.body)) expect(historyIds.has(row.id)).toBe(false);
   });
 
   it('refuses a query parameter it does not know — the retired `unread` filter included', async () => {
@@ -221,7 +223,7 @@ describe('the admin feed', () => {
     // hand. The feed admits only catalogue kinds the reader can act on.
     await seedRow('admin', adminAId, 'admin.client.registered');
     const session = await actingAs(ctx, 'admin', ADMIN_A);
-    const list = await session.get('/v1/admin/notifications?limit=100');
+    const list = await session.get('/v1/admin/notifications?view=inbox&limit=100');
     expect(items(list.body).map((n) => n.kind)).not.toContain('admin.client.registered');
   });
 });

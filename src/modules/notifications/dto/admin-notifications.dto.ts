@@ -3,9 +3,9 @@ import { Type } from 'class-transformer';
 import {
   IsIn,
   IsInt,
-  IsISO8601,
   IsOptional,
   IsString,
+  Length,
   Matches,
   Max,
   MaxLength,
@@ -35,26 +35,17 @@ import { NOTIFICATION_SUBJECT_KINDS, type NotificationSubjectKind } from '../../
 // ── Requests ────────────────────────────────────────────────────────────────
 
 const VIEWS = ['inbox', 'history'] as const;
-const STATUSES = ['open', 'handled'] as const;
 
 export class AdminNotificationsQueryDto {
   @ApiPropertyOptional({
     enum: VIEWS,
     description:
-      "'inbox': still waiting on you — unread AND not yet handled by anyone. " +
-      "'history' (default): everything, handled or not.",
+      "'inbox': still waiting — not yet handled by anyone, whether you have opened it or not. " +
+      "'history' (default): handled, with how it ended. A task is in exactly one of the two.",
   })
   @IsOptional()
   @IsIn(VIEWS)
   view?: (typeof VIEWS)[number];
-
-  @ApiPropertyOptional({
-    enum: STATUSES,
-    description: "History only. 'open': nobody has handled it yet. 'handled': resolved.",
-  })
-  @IsOptional()
-  @IsIn(STATUSES)
-  status?: (typeof STATUSES)[number];
 
   @ApiPropertyOptional({ enum: ADMIN_NOTIFICATION_CATEGORIES })
   @IsOptional()
@@ -84,24 +75,17 @@ export class AdminNotificationsQueryDto {
   limit?: number;
 }
 
-export class AdminNotificationsReadAllDto {
-  @ApiPropertyOptional({
-    enum: ADMIN_NOTIFICATION_CATEGORIES,
-    description: 'Only this category. Omitted: every category the reader can see.',
+/** Ending a task by the decision its kind declares for leaving the item as it is. */
+export class AdminNotificationCloseDto {
+  @ApiProperty({
+    minLength: 3,
+    maxLength: 500,
+    example: 'Trade re-opened by the dealer; the partner keeps the commission.',
+    description: 'Why the item is left as it is. Recorded on the audit row.',
   })
-  @IsOptional()
-  @IsIn(ADMIN_NOTIFICATION_CATEGORIES)
-  category?: AdminNotificationCategory;
-
-  @ApiPropertyOptional({
-    description:
-      'The `createdAt` of the newest row the reader was shown. Nothing newer is marked — a ' +
-      'task that arrived after the list rendered stays unread.',
-    example: '2026-09-25T10:15:00.000Z',
-  })
-  @IsOptional()
-  @IsISO8601({ strict: true })
-  upTo?: string;
+  @IsString()
+  @Length(3, 500)
+  reason!: string;
 }
 
 export class AdminNotificationsReadSubjectDto {
@@ -260,6 +244,14 @@ export class AdminNotificationSummaryDto {
 
   @ApiProperty({ type: AdminNotificationCategoryCountsDto })
   byCategory: AdminNotificationCategoryCountsDto;
+}
+
+@NoClientFields('a task id and the outcome word it was closed with')
+export class AdminNotificationCloseResponseDto {
+  @ApiProperty() id: string;
+
+  @ApiProperty({ description: "The outcome recorded, e.g. 'kept' — History shows it." })
+  outcome: string;
 }
 
 @NoClientFields('the reader’s own marker on one of their rows')

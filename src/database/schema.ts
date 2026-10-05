@@ -5290,10 +5290,11 @@ export const notifications = pgTable(
     uniqueIndex('notifications_recipient_dedupe_uq')
       .on(t.recipientKind, t.recipientId, t.dedupeKey)
       .where(sql`${t.dedupeKey} IS NOT NULL`),
-    /* The admin Inbox: still somebody's work — unread AND unresolved. */
+    /* The admin Inbox and badge: still somebody's work — unresolved, read or
+       not. Reading never takes a task out (0189). */
     index('notifications_admin_inbox_idx')
       .on(t.recipientId, t.createdAt.desc(), t.id.desc())
-      .where(sql`${t.recipientKind} = 'admin' AND ${t.readAt} IS NULL AND ${t.resolvedAt} IS NULL`),
+      .where(sql`${t.recipientKind} = 'admin' AND ${t.resolvedAt} IS NULL`),
     /* What the resolution triggers look up: the open rows about one item. */
     index('notifications_subject_open_idx')
       .on(t.subjectKind, t.subjectId)

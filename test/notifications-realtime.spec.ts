@@ -1,7 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Client } from 'pg';
 import { sql } from 'drizzle-orm';
-import { UNRESTRICTED } from '../src/common/security/client-scope';
 import { MoneyTestContext, startMoneyTestDb, stopMoneyTestDb } from './money-setup';
 import { NotificationsStore } from '../src/store/notifications.store';
 import type { NotificationEvent } from '../src/modules/notifications/realtime.gateway';
@@ -29,7 +28,6 @@ const CLIENT_A = { kind: 'client' as const, id: 1000001 };
 const CLIENT_B = { kind: 'client' as const, id: 1000002 };
 const ADMIN_1 = 'a1111111-1111-4111-8111-111111111111';
 const ADMIN_2 = 'a2222222-2222-4222-8222-222222222222';
-const ADMIN_3 = 'a3333333-3333-4333-8333-333333333333';
 
 /** A client whose KYC waits for review — a real item for a task to be about. */
 async function kycSubject(email: string): Promise<{ userId: number; portalId: number }> {
@@ -269,23 +267,5 @@ describe('a row read or resolved tells its reader’s open tabs — on commit on
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
     expect(changed.map((c) => c.recipientId).sort()).toEqual([ADMIN_1, ADMIN_2].sort());
-  });
-
-  it('folds "mark all as read" on many rows into ONE event for that reader', async () => {
-    for (const n of [1, 2, 3]) {
-      const { userId } = await kycSubject(`rt-bulk-${n}@oxshare-e2e.test`);
-      await store.insertAdminTask([ADMIN_3], kycTask(userId));
-    }
-    await new Promise((resolve) => setTimeout(resolve, 300));
-
-    changed = [];
-    const updated = await store.markAllAdminRead({
-      adminId: ADMIN_3,
-      kinds: ['admin.kyc.submitted'],
-      scope: UNRESTRICTED,
-    });
-    expect(updated).toBe(3);
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    expect(changed).toEqual([{ recipientKind: 'admin', recipientId: ADMIN_3 }]);
   });
 });

@@ -66,6 +66,7 @@ beforeAll(async () => {
     {} as unknown as AdminClientScopesStore,
     {} as unknown as ClientVisibilityService,
     alwaysLeads(),
+    {} as unknown as AuditLogStore,
   );
 
   const currencies = new CurrenciesService(ctx.db, auditStubAs());

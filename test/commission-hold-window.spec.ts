@@ -1,3 +1,4 @@
+import type { AuditLogStore } from '../src/store/audit-log.store';
 import { IbStore } from '../src/store/ib.store';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { emailStubAs } from './email-stub';
@@ -129,6 +130,7 @@ beforeAll(async () => {
     {} as unknown as AdminClientScopesStore,
     {} as unknown as ClientVisibilityService,
     alwaysLeads(),
+    {} as unknown as AuditLogStore,
   );
 }, 180_000);
 

@@ -1,6 +1,18 @@
 # Deploying the backend
 
-> ## ⚠️ THE AUTOMATED DEPLOY IS OFF (21 Aug 2026)
+> ## A push to `production` DEPLOYS (Oct 2026)
+>
+> The Contabo server rebuilds and restarts the backend when `production` moves
+> (the owner, 5 Oct 2026). The mechanism lives on that server, not in this repo.
+> It migrates as well: 0188 was applied by the restart that followed its push.
+> So a push to `production` IS a deploy, and a change to the server's `.env`
+> takes effect on the next one (the process reads `.env` only at boot).
+> Confirm with `/health`: uptime must reset.
+>
+> The section below describes the manual steps that this replaced, and the
+> GitHub Actions pipeline that is still switched off.
+
+> ## ⚠️ THE GITHUB ACTIONS DEPLOY IS OFF (21 Aug 2026)
 >
 > The backend no longer runs on the Hostinger VPS. It was moved to the **Contabo
 > Windows server** beside the MT5 bridge, where it runs as a **bare Node process**
