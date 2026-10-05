@@ -287,13 +287,12 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
    */
   { action: 'admin.profile_update', label: 'Own details changed', group: 'Administrators' },
   /*
-   * "Sign in with Google" (0180). A link is a new way into an account, so
-   * both directions are recorded: linking happens on a first Google sign-in
-   * (the admin is the actor), unlinking by the admin themselves or by another
-   * holding `admins.reset` (that admin is the actor, the target the subject).
+   * The authenticator app (0191) — required at every admin sign-in. Enrolment
+   * is recorded with the admin as the actor; a reset by the admin holding
+   * `admins.reset` who did it, the target the subject.
    */
-  { action: 'admin.google_link', label: 'Google account linked', group: 'Administrators' },
-  { action: 'admin.google_unlink', label: 'Google account unlinked', group: 'Administrators' },
+  { action: 'admin.totp_enroll', label: 'Authenticator app set up', group: 'Administrators' },
+  { action: 'admin.totp_reset', label: 'Authenticator app reset', group: 'Administrators' },
   { action: 'admin.update', label: 'Administrator changed', group: 'Administrators' },
   { action: 'admin.suspend', label: 'Administrator suspended', group: 'Administrators' },
   { action: 'admin.activate', label: 'Administrator reactivated', group: 'Administrators' },

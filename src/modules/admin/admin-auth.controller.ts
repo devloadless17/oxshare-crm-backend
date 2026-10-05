@@ -44,12 +44,16 @@ import {
   CompleteAdminResetDto,
   AcceptInviteDto,
   AdminLoginDto,
+  AdminTotpChallengeDto,
+  AdminTotpVerifyDto,
   InviteDto,
   ValidateInviteQueryDto,
 } from './dto/requests/auth.dto';
 import {
   AdminAvatarResponseDto,
   AdminLoginResponseDto,
+  AdminSignInChallengeDto,
+  AdminTotpSetupDto,
   AcceptInviteResponseDto,
   AdminProfileDto,
   AdminProfileNameDto,
@@ -90,18 +94,70 @@ export class AdminAuthController {
   // Master-admin credentials: 5 attempts per minute per IP. Unprotected before.
   @Throttle({ default: { ttl: 60_000, limit: 5 } })
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Admin login' })
-  @ApiOkResponse({ type: AdminLoginResponseDto })
+  @ApiOperation({
+    summary: 'Admin login, step one: the password (then the authenticator code)',
+    description:
+      'A right password sets NO session. It answers with a short-lived challenge: ' +
+      '`step: "totp"` → send the 6-digit code to `auth/totp/verify`; `step: "totp_setup"` → ' +
+      'no authenticator yet, call `auth/totp/setup` for the QR code first.',
+  })
+  @ApiOkResponse({ type: AdminSignInChallengeDto })
   @NotClientScoped('Public credential exchange. No client rows are read.')
   @NotAudited(
     'Success and failure both land in `login_attempts`, which is the table built for credential events and carries the lockout counter. Duplicating them here would flood the action log with the one event that already has a home.',
   )
-  login(
-    @Body() dto: AdminLoginDto,
+  login(@Body() dto: AdminLoginDto) {
+    return this.auth.login(dto.email, dto.password);
+  }
+
+  @NoCsrf(
+    'Half-way through signing in there is no session yet, so there is no anti-forgery ' +
+      'token to send. The challenge token in the body is what proves the password step.',
+  )
+  @Post('auth/totp/setup')
+  // Each call mints a new secret; ten a minute is far above a person reloading.
+  @Throttle({ default: { ttl: 60_000, limit: 10 } })
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Admin login, enrolment: a new authenticator secret as a QR code',
+    description:
+      'Only while the account has no authenticator. Each call replaces the previous ' +
+      'secret, so only the newest QR code can finish enrolment.',
+  })
+  @ApiOkResponse({ type: AdminTotpSetupDto })
+  @NotClientScoped(
+    'Writes the calling administrator their own pending secret; reads no client rows.',
+  )
+  @NotAudited(
+    'Shows a secret that does nothing until a code from it is confirmed; the confirmation is the event, recorded as `admin.totp_enroll` by `auth/totp/verify`.',
+  )
+  beginTotpSetup(@Body() dto: AdminTotpChallengeDto) {
+    return this.auth.beginTotpSetup(dto.challengeToken);
+  }
+
+  @NoCsrf(
+    'Establishing a session cannot be a forgery of one: there is nothing yet to ' +
+      'protect. The challenge token in the body is what proves the password step.',
+  )
+  @Post('auth/totp/verify')
+  // A credential guess, exactly like the password: 5 a minute per IP, and the
+  // per-account lockout behind it.
+  @Throttle({ default: { ttl: 60_000, limit: 5 } })
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Admin login, step two: the 6-digit authenticator code — starts the session',
+  })
+  @ApiOkResponse({ type: AdminLoginResponseDto })
+  @NotClientScoped('Public credential exchange. No client rows are read.')
+  @NotAudited(
+    'A sign-in: success and failure land in `login_attempts`, like the password. The one lasting change — an authenticator confirmed for the first time — the service records as `admin.totp_enroll`.',
+  )
+  verifyTotp(
+    @Body() dto: AdminTotpVerifyDto,
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
-    return this.auth.login(dto.email, dto.password, res, deviceOf(req));
+    return this.auth.verifyTotp(dto.challengeToken, dto.code, res, deviceOf(req));
   }
 
   @NoCsrf(
@@ -271,17 +327,16 @@ export class AdminAuthController {
   @Throttle({ default: { ttl: 60_000, limit: 5 } })
   @HttpCode(HttpStatus.OK)
   @ApiOperation({
-    summary: 'Accept invite and set password — logs admin in immediately',
+    summary: 'Accept invite and set password — then set up the authenticator to sign in',
+    description:
+      'Creates the account and answers with the same challenge a correct password buys at ' +
+      'login (`step: "totp_setup"`). No session until the authenticator code checks.',
   })
   @ApiOkResponse({ type: AcceptInviteResponseDto })
   @NotClientScoped('Creates an administrator from an invite; reads no client rows.')
   @Audited('admin.invite_accept')
-  acceptInvite(
-    @Body() dto: AcceptInviteDto,
-    @Req() req: Request,
-    @Res({ passthrough: true }) res: Response,
-  ) {
-    return this.auth.acceptInvite(dto.token, dto.password, res, deviceOf(req), req);
+  acceptInvite(@Body() dto: AcceptInviteDto, @Req() req: Request) {
+    return this.auth.acceptInvite(dto.token, dto.password, req);
   }
 
   /**
@@ -315,6 +370,28 @@ export class AdminAuthController {
     @Req() req: Request & { admin: Admin },
   ) {
     return this.auth.initiatePasswordReset(req.admin.id, id);
+  }
+
+  /**
+   * Forget another administrator's authenticator app — a lost or replaced
+   * phone. Same grant and the same escalation guard as a password reset
+   * (`refuseReset`): it removes half of how somebody proves who they are.
+   */
+  @Post('users/:id/totp/reset')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('admins.reset')
+  @Throttle({ default: { ttl: 60_000, limit: 10 } })
+  @HttpCode(HttpStatus.OK)
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: "Reset another administrator's authenticator app (admins.reset)",
+    description: 'Their next sign-in shows a new QR code to scan. Their password is unchanged.',
+  })
+  @ApiOkResponse({ type: MessageResponseDto })
+  @NotClientScoped('Acts on an administrator account; reads no client rows.')
+  @Audited('admin.totp_reset')
+  resetTotp(@Param('id', ParseUUIDPipe) id: string, @Req() req: Request & { admin: Admin }) {
+    return this.auth.resetTotpFor(req.admin.id, id);
   }
 
   @NoCsrf(

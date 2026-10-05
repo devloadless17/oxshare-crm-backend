@@ -515,17 +515,21 @@ export const admins = pgTable(
      */
     avatarFilename: varchar('avatar_filename', { length: 128 }),
     /*
-     * "Sign in with Google" (0180) — the ADMIN console only.
+     * Google Authenticator (TOTP, RFC 6238) — the second step of every admin
+     * sign-in (0191). REQUIRED: an administrator with no `totp_secret` cannot
+     * reach a session, only the enrolment screen.
      *
-     * `google_sub` is Google's stable subject id and the only thing a Google
-     * sign-in is matched on once linked; UNIQUE so one Google account can never
-     * reach two administrators. `google_email` is display ("linked as …"), never
-     * authenticated on. All three NULL = not linked. A trigger in 0180 clears
-     * them when `email` changes: the link was made against the old identity.
+     * Both secrets are sealed with `secret-box` (APP_ENCRYPTION_KEY), never
+     * stored readable: the secret IS the second factor, so a database read must
+     * not hand it out. `totp_pending_secret` is the one shown as a QR code during
+     * enrolment and becomes `totp_secret` only once a code from it is confirmed.
+     * `totp_last_step` is the 30-second step of the last code accepted — a code
+     * at or below it is refused, so an observed code cannot be replayed.
      */
-    googleSub: varchar('google_sub', { length: 255 }).unique('admins_google_sub_unique'),
-    googleEmail: varchar('google_email', { length: 255 }),
-    googleLinkedAt: timestamp('google_linked_at', { withTimezone: true }),
+    totpSecret: text('totp_secret'),
+    totpPendingSecret: text('totp_pending_secret'),
+    totpEnabledAt: timestamp('totp_enabled_at', { withTimezone: true }),
+    totpLastStep: bigint('totp_last_step', { mode: 'number' }),
     // `refresh_token` removed here for the same reason as on `users` — superseded
     // by the refresh_tokens family table, written by nothing, read by nothing.
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

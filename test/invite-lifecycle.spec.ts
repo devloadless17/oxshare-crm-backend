@@ -4,7 +4,6 @@ import type { AuthenticatedAdmin } from '../src/modules/admin/guards/admin.guard
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
-import type { Response } from 'express';
 import { AdminAuthService } from '../src/modules/admin/admin-auth.service';
 import { ClientFieldsService } from '../src/modules/admin/client-fields.service';
 import { AdminRbacService } from '../src/modules/admin/admin-rbac.service';
@@ -101,14 +100,6 @@ function invite(overrides: Partial<AdminInvite> = {}): AdminInvite {
   };
 }
 
-function fakeResponse() {
-  // setHeader: issueCsrfToken now ECHOES the anti-forgery token as a response
-  // header as well as a cookie (9d9cb92 — a page on another host cannot read
-  // the cookie), so any Response a session lands on must accept a header.
-  const res = { cookie: () => res, clearCookie: () => res, setHeader: () => res };
-  return res as unknown as Response;
-}
-
 function build(
   options: {
     existingAdmin?: Admin;
@@ -123,6 +114,8 @@ function build(
     findById: vi.fn().mockResolvedValue(options.existingAdmin),
     create: vi.fn((data: Partial<Admin>) => Promise.resolve({ id: 'admin-new', ...data } as Admin)),
     update: vi.fn(),
+    // 0191 — a freshly accepted admin has no authenticator yet.
+    totpState: vi.fn().mockResolvedValue({ secret: null, pendingSecret: null, lastStep: null }),
   };
   const invites = {
     create: vi.fn((data: Partial<AdminInvite>) =>
@@ -431,32 +424,26 @@ describe('acceptInvite', () => {
 
   it('refuses an unknown token', async () => {
     const h = build({ stored: undefined });
-    await expect(h.service.acceptInvite('nope', PASSWORD, fakeResponse())).rejects.toThrow(
-      NotFoundError,
-    );
+    await expect(h.service.acceptInvite('nope', PASSWORD)).rejects.toThrow(NotFoundError);
     expect(h.admins.create).not.toHaveBeenCalled();
   });
 
   it('SINGLE USE: refuses a token that has already been accepted', async () => {
     // Otherwise one emailed link creates admin accounts without limit.
     const h = build({ stored: invite({ accepted: true }) });
-    await expect(h.service.acceptInvite('token-abc', PASSWORD, fakeResponse())).rejects.toThrow(
-      ValidationError,
-    );
+    await expect(h.service.acceptInvite('token-abc', PASSWORD)).rejects.toThrow(ValidationError);
     expect(h.admins.create).not.toHaveBeenCalled();
   });
 
   it('refuses an expired token', async () => {
     const h = build({ stored: invite({ expiresAt: new Date(Date.now() - 1000) }) });
-    await expect(h.service.acceptInvite('token-abc', PASSWORD, fakeResponse())).rejects.toThrow(
-      /expired/i,
-    );
+    await expect(h.service.acceptInvite('token-abc', PASSWORD)).rejects.toThrow(/expired/i);
     expect(h.admins.create).not.toHaveBeenCalled();
   });
 
   it('creates a sub_admin holding exactly the invited permissions', async () => {
     const h = build({ stored: invite({ permissions: ['kyc.review', 'clients.view'] }) });
-    await h.service.acceptInvite('token-abc', PASSWORD, fakeResponse());
+    await h.service.acceptInvite('token-abc', PASSWORD);
     expect(h.admins.create).toHaveBeenCalledWith(
       expect.objectContaining({
         email: 'newcomer@oxshare.com',
@@ -472,7 +459,7 @@ describe('acceptInvite', () => {
     // caller-supplied, a leaked token would create an account under an attacker's
     // own email.
     const h = build({ stored: invite({ email: 'invited@oxshare.com' }) });
-    await h.service.acceptInvite('token-abc', PASSWORD, fakeResponse());
+    await h.service.acceptInvite('token-abc', PASSWORD);
     expect(h.admins.create).toHaveBeenCalledWith(
       expect.objectContaining({ email: 'invited@oxshare.com' }),
       expect.anything(), // the accept transaction's executor
@@ -481,7 +468,7 @@ describe('acceptInvite', () => {
 
   it('hashes the chosen password', async () => {
     const h = build({ stored: invite() });
-    await h.service.acceptInvite('token-abc', PASSWORD, fakeResponse());
+    await h.service.acceptInvite('token-abc', PASSWORD);
     const created = h.admins.create.mock.calls[0][0] as { passwordHash: string };
     expect(created.passwordHash).not.toBe(PASSWORD);
     expect(created.passwordHash).not.toContain(PASSWORD);
@@ -489,7 +476,7 @@ describe('acceptInvite', () => {
 
   it('marks the invite spent, so the link dies on first use', async () => {
     const h = build({ stored: invite() });
-    await h.service.acceptInvite('token-abc', PASSWORD, fakeResponse());
+    await h.service.acceptInvite('token-abc', PASSWORD);
     // The CLAIM is the spend now — conditional on `accepted = false`, inside
     // the accept transaction, so two racing accepts cannot both pass.
     expect(h.invites.claim).toHaveBeenCalledWith('token-abc', expect.anything());
@@ -497,23 +484,24 @@ describe('acceptInvite', () => {
 
   it('falls back to a minimal permission set when the invite carries none', async () => {
     const h = build({ stored: invite({ permissions: undefined }) });
-    await h.service.acceptInvite('token-abc', PASSWORD, fakeResponse());
+    await h.service.acceptInvite('token-abc', PASSWORD);
     const created = h.admins.create.mock.calls[0][0] as { permissions: string[] };
     expect(created.permissions).not.toContain('*');
     expect(created.permissions.length).toBeGreaterThan(0);
   });
 
-  it('signs the new admin in, recording the refresh family', async () => {
+  it('does NOT sign the new admin in: the authenticator is set up first (0191)', async () => {
     const h = build({ stored: invite() });
-    await h.service.acceptInvite('token-abc', PASSWORD, fakeResponse());
-    expect(h.refreshTokens.record).toHaveBeenCalledWith(
-      expect.objectContaining({ surface: 'admin' }),
-    );
+    const result = await h.service.acceptInvite('token-abc', PASSWORD);
+    // Required for every administrator, the newcomer included: no session
+    // family exists until a code from their app has checked.
+    expect(h.refreshTokens.record).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ step: 'totp_setup', challengeToken: expect.any(String) });
   });
 
   it('never returns the password hash of the account it just made', async () => {
     const h = build({ stored: invite() });
-    const result = await h.service.acceptInvite('token-abc', PASSWORD, fakeResponse());
+    const result = await h.service.acceptInvite('token-abc', PASSWORD);
     expect(JSON.stringify(result)).not.toMatch(/passwordHash|\$argon2|\$2[aby]\$/);
   });
 });

@@ -13,6 +13,7 @@ import { applyApiPrefix, createHttpAdapter } from '../src/common/api-prefix';
 import { CSRF_HEADER } from '../src/common/security/csrf.guard';
 import { COOKIE_BASES } from '../src/common/security/session-cookies';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
+import { totpCode, totpStepAt } from '../src/common/security/totp';
 
 /**
  * An authenticated request, through the whole real stack.
@@ -293,7 +294,62 @@ export async function actingAs(
     );
   }
 
+  if (surfaceName === 'admin') {
+    return buildSession(
+      ctx.server,
+      surface,
+      await completeAdminTotp(ctx, credentials.email, res.body as { challengeToken: string }),
+    );
+  }
+
   return buildSession(ctx.server, surface, parseSetCookies(res));
+}
+
+/**
+ * The admin sign-in's second half (0191): every admin session is password AND
+ * authenticator code, so the harness does both through the real routes.
+ *
+ * The admin's authenticator is FORGOTTEN first and enrolled afresh: a code is
+ * single-use per 30-second step, and a spec signing the same admin in twice
+ * inside one step would otherwise be refused as a replay — correctly. Specs
+ * about the authenticator itself (admin-totp-http.spec.ts) drive the routes by
+ * hand instead of through this.
+ */
+export async function completeAdminTotp(
+  ctx: HttpTestContext,
+  email: string,
+  challenge: { challengeToken: string },
+): Promise<Record<string, string>> {
+  await ctx.db.pool.query(
+    `UPDATE admins SET totp_secret = NULL, totp_pending_secret = NULL,
+       totp_enabled_at = NULL, totp_last_step = NULL WHERE email = $1`,
+    [email.toLowerCase()],
+  );
+  const origin = SURFACES.admin.origin;
+  const setup = await request(ctx.server)
+    .post('/v1/admin/auth/totp/setup')
+    .set('Origin', origin)
+    .send({ challengeToken: challenge.challengeToken });
+  if (setup.status !== 200) {
+    throw new Error(
+      `authenticator setup failed for ${email}: ${setup.status} ${JSON.stringify(setup.body)}`,
+    );
+  }
+  const { secret } = setup.body as { secret: string };
+  const verify = await request(ctx.server)
+    .post('/v1/admin/auth/totp/verify')
+    .set('Origin', origin)
+    .set('User-Agent', TEST_USER_AGENT)
+    .send({
+      challengeToken: challenge.challengeToken,
+      code: totpCode(secret, totpStepAt(new Date())),
+    });
+  if (verify.status !== 200) {
+    throw new Error(
+      `authenticator code refused for ${email}: ${verify.status} ${JSON.stringify(verify.body)}`,
+    );
+  }
+  return parseSetCookies(verify);
 }
 
 /** A Session built from cookies you already hold — for asserting on rotation. */
