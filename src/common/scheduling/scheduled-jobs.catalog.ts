@@ -113,6 +113,14 @@ export const SCHEDULED_JOBS = [
     min: 3600,
     max: 604_800,
   },
+  {
+    key: 'assistant.prune',
+    group: 'system',
+    runsOn: 'crm',
+    defaultSeconds: 86_400,
+    min: 3600,
+    max: 604_800,
+  },
 ] as const satisfies readonly ScheduledJobDefinition[];
 
 export interface ScheduledJobDefinition {

@@ -371,6 +371,15 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
    */
   { action: 'settings.trading.update', label: 'Trading terms changed', group: 'Configuration' },
   /*
+   * The portal assistant's switch and daily limits (0187). Turning it on starts
+   * spending on the model; turning it off hides it from every client at once.
+   */
+  {
+    action: 'settings.assistant.update',
+    label: 'Portal assistant settings changed',
+    group: 'Configuration',
+  },
+  /*
    * Currencies. Grouped as Configuration rather than Money, deliberately: these
    * change what the platform OFFERS, not what any client holds — no balance
    * moves. What they do change is platform-wide and quiet: disabling a currency

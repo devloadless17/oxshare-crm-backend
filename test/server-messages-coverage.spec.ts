@@ -37,6 +37,7 @@ const DIRS = [
   'src/modules/platforms',
   'src/modules/products',
   'src/modules/leverages',
+  'src/modules/assistant',
   'src/common',
   'src/store',
 ];

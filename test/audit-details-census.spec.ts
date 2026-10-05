@@ -227,6 +227,7 @@ const WRITES_DETAILS: readonly string[] = [
   'role.delete',
   'role.update',
   'security.denied',
+  'settings.assistant.update',
   'settings.jobs.run',
   'settings.jobs.update',
   'settings.smtp.update',

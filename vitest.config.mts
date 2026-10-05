@@ -54,6 +54,13 @@ export default defineConfig({
        */
       SCHEDULED_JOBS: 'off',
       /*
+       * No suite ever calls OpenAI. Specs load the developer's `.env`, which may
+       * hold a real key, and a test that reached the real model would spend money
+       * on every run. The assistant's spec uses a scripted model; the real one is
+       * exercised only by `npm run assistant:eval`, run by hand.
+       */
+      OPENAI_API_KEY: '',
+      /*
        * THE TWO ORIGINS THE ANTI-FORGERY GUARD COMPARES AGAINST.
        *
        * Same divergence as the secrets below, and it bites harder because it

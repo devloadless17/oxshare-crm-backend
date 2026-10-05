@@ -715,7 +715,7 @@ export class AdminAuthService {
    * legitimate admin should still be able to come in through Google, and
    * Google — not a guessable secret — is the proof on this path.
    */
-  async signInWithGoogle(params: {
+  async signInWithGoogle(input: {
     identity: { sub: string; email: string };
     mode: 'login' | 'invite';
     invite?: string;
@@ -723,7 +723,7 @@ export class AdminAuthService {
     req: Request;
     device?: DeviceFingerprint;
   }): Promise<void> {
-    const { identity, res, req, device } = params;
+    const { identity, res, req, device } = input;
     const email = identity.email.trim().toLowerCase();
     const google = { sub: identity.sub, email };
 
@@ -751,8 +751,8 @@ export class AdminAuthService {
       return;
     }
 
-    if (params.mode === 'invite' && params.invite) {
-      const admin = await this.acceptInviteWithGoogle(params.invite, google, res, req, device);
+    if (input.mode === 'invite' && input.invite) {
+      const admin = await this.acceptInviteWithGoogle(input.invite, google, res, req, device);
       await this.loginAttempts.recordSuccess('admin', admin.email);
       return;
     }

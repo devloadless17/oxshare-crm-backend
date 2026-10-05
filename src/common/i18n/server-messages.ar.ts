@@ -1028,4 +1028,21 @@ export const SERVER_MESSAGES_AR: Readonly<Record<string, string>> = {
   'The payment could not be started.': 'تعذّر بدء عملية الدفع.',
   'The trading account has no MT5 login.': 'لا يملك حساب التداول رقم دخول إلى MT5.',
   'The trading platform refused this transfer.': 'رفضت منصة التداول هذا التحويل.',
+  // ── The portal assistant (0187) ──────────────────────────────────────────────
+  'The assistant is not available right now.': 'المساعد غير متاح حالياً.',
+  'Verify your identity to use the assistant.': 'تحقّق من هويتك لاستخدام المساعد.',
+  'You are asking too quickly. Wait a moment and try again.':
+    'أنت ترسل الأسئلة بسرعة كبيرة. انتظر قليلاً ثم حاول مجدداً.',
+  'You have reached your daily question limit. It resets at midnight UTC.':
+    'لقد بلغت الحد اليومي للأسئلة. يُعاد ضبطه عند منتصف الليل بتوقيت UTC.',
+  'The assistant has reached its limit for today. Please try again tomorrow.':
+    'بلغ المساعد حدّه لهذا اليوم. يُرجى المحاولة مجدداً غداً.',
+  'An answer is already being written. Wait for it to finish.':
+    'هناك إجابة قيد الكتابة. انتظر حتى تكتمل.',
+  'Conversation not found.': 'لم يتم العثور على المحادثة.',
+  'Message not found.': 'لم يتم العثور على الرسالة.',
+  'There is no answer to regenerate.': 'لا توجد إجابة لإعادة إنشائها.',
+  'This conversation is full. Start a new chat.': 'هذه المحادثة ممتلئة. ابدأ محادثة جديدة.',
+  'This question was already received.': 'تم استلام هذا السؤال مسبقاً.',
+  'Write a question of up to 2000 characters.': 'اكتب سؤالاً لا يتجاوز 2000 حرف.',
 };

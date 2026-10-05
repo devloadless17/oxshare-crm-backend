@@ -445,6 +445,24 @@ const envSchema = z
     RIVAL_WEBHOOK_KEY: z.string().min(1).optional(),
 
     /*
+     * ── The portal assistant (0187) ──────────────────────────────────────────
+     *
+     * Optional: without a key the assistant reads as unavailable everywhere,
+     * whatever its admin switch says, and nothing else is affected. Use a key
+     * from a DEDICATED OpenAI project with a monthly budget set in OpenAI's
+     * dashboard. That budget is the backstop that holds even if every limit in
+     * this codebase failed.
+     *
+     * `OPENAI_MODEL` defaults to `gpt-5.4-mini` (assistant/llm/openai.provider.ts).
+     * Changing it changes what every answer costs and how it reads, so re-run
+     * `npm run assistant:eval` after changing it.
+     */
+    // Empty is "not configured", like absent: the test config pins it empty so
+    // no suite can ever reach OpenAI with a developer's real key.
+    OPENAI_API_KEY: z.string().optional(),
+    OPENAI_MODEL: z.string().min(1).optional(),
+
+    /*
      * ── Object storage (ARCHITECTURE §8.5, PLATFORM-CONVENTIONS R-7.3) ────────
      *
      * Which backend holds uploaded files. Cloudflare R2 is the only production

@@ -28,6 +28,13 @@ import {
   ProfileLockedError,
   EmailAlreadyRegisteredError,
   MailNotConfiguredError,
+  AssistantBusyError,
+  AssistantCapacityError,
+  AssistantConversationFullError,
+  AssistantDuplicateError,
+  AssistantDailyLimitError,
+  AssistantRateLimitError,
+  AssistantUnavailableError,
   MoneyRuleError,
   QuotaExceededError,
   ClientNotFoundError,
@@ -103,6 +110,14 @@ const DOMAIN_STATUS = new Map<new (...args: never[]) => DomainError, HttpStatus>
   // 503: nothing is broken and there is no upstream to have failed — mail has
   // simply not been configured yet. See MailNotConfiguredError.
   [MailNotConfiguredError, HttpStatus.SERVICE_UNAVAILABLE],
+  // The portal assistant (0187): each code drives a different state in the widget.
+  [AssistantUnavailableError, HttpStatus.SERVICE_UNAVAILABLE],
+  [AssistantCapacityError, HttpStatus.SERVICE_UNAVAILABLE],
+  [AssistantDailyLimitError, HttpStatus.TOO_MANY_REQUESTS],
+  [AssistantRateLimitError, HttpStatus.TOO_MANY_REQUESTS],
+  [AssistantBusyError, HttpStatus.CONFLICT],
+  [AssistantConversationFullError, HttpStatus.CONFLICT],
+  [AssistantDuplicateError, HttpStatus.CONFLICT],
 ]);
 
 /**
@@ -344,9 +359,14 @@ export class AllExceptionsFilter implements ExceptionFilter {
      *
      * Told in SECONDS under a minute and in minutes above it. "Wait 900 seconds"
      * is a number a person has to do arithmetic on while annoyed.
+     *
+     * The THROTTLER's 429 only. A domain refusal that is also a 429 (the
+     * assistant's daily allowance, its per-minute limit) already carries its
+     * own sentence and sets no `Retry-After`; replacing it told a client "wait a
+     * moment" about a limit that renews at midnight.
      */
     const message =
-      status === HttpStatus.TOO_MANY_REQUESTS
+      status === HttpStatus.TOO_MANY_REQUESTS && !(exception instanceof DomainError)
         ? rateLimitMessage(response.getHeader('Retry-After'))
         : classified.message;
     /*

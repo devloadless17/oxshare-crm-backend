@@ -1317,6 +1317,13 @@
       "when": 1789141708750,
       "tag": "0186_restore_positions",
       "breakpoints": true
+    },
+    {
+      "idx": 189,
+      "version": "7",
+      "when": 1789141808750,
+      "tag": "0187_assistant",
+      "breakpoints": true
     }
   ]
 }
