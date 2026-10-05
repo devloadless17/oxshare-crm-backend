@@ -561,11 +561,6 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   },
 
   // ── Security controls ─────────────────────────────────────────────────────
-  // `ip_allowlist.add|remove` are GONE: the feature was deleted whole
-  // (migration 0034 dropped the table, the guard no longer exists), so the two
-  // entries offered filters over rows nothing can ever write again. Historical
-  // rows, if any exist, remain readable — the filter is a varchar match, not
-  // an enum — but the vocabulary should not advertise dead actions.
   /*
    * `security.control.set` is GONE, same rule: `SecuritySettingsStore` has no
    * consumer at all — its own header says "DEAD UNTIL A SWITCH HAS A READER" —
@@ -587,6 +582,17 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   { action: 'security.denied', label: 'Action refused (permission)', group: 'Security' },
   { action: 'ip_allowlist.add', label: 'Network rule added', group: 'Security' },
   { action: 'ip_allowlist.remove', label: 'Network rule removed', group: 'Security' },
+  // 0192: an administrator allowed to reach the console from ANY network.
+  {
+    action: 'ip_allowlist.exempt_add',
+    label: 'Admin allowed from any network',
+    group: 'Security',
+  },
+  {
+    action: 'ip_allowlist.exempt_remove',
+    label: 'Admin any-network access removed',
+    group: 'Security',
+  },
   /*
    * Grouped under Security rather than Configuration, unlike the other settings
    * writes. Repointing SMTP redirects every password-reset and admin-invite link

@@ -31,6 +31,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
 import { ApiConsumes, ApiCookieAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
+import { clientIp } from '../../common/security/client-ip';
 import { Request, Response } from 'express';
 import { AdminAuthService } from './admin-auth.service';
 import { deviceOf } from '../../common/security/device-fingerprint';
@@ -106,8 +107,9 @@ export class AdminAuthController {
   @NotAudited(
     'Success and failure both land in `login_attempts`, which is the table built for credential events and carries the lockout counter. Duplicating them here would flood the action log with the one event that already has a home.',
   )
-  login(@Body() dto: AdminLoginDto) {
-    return this.auth.login(dto.email, dto.password);
+  login(@Body() dto: AdminLoginDto, @Req() req: Request) {
+    // The caller's address — RBAC-08 decides which door answers (0192).
+    return this.auth.login(dto.email, dto.password, clientIp(req));
   }
 
   @NoCsrf(
@@ -131,8 +133,8 @@ export class AdminAuthController {
   @NotAudited(
     'Shows a secret that does nothing until a code from it is confirmed; the confirmation is the event, recorded as `admin.totp_enroll` by `auth/totp/verify`.',
   )
-  beginTotpSetup(@Body() dto: AdminTotpChallengeDto) {
-    return this.auth.beginTotpSetup(dto.challengeToken);
+  beginTotpSetup(@Body() dto: AdminTotpChallengeDto, @Req() req: Request) {
+    return this.auth.beginTotpSetup(dto.challengeToken, clientIp(req));
   }
 
   @NoCsrf(
@@ -157,7 +159,7 @@ export class AdminAuthController {
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
   ) {
-    return this.auth.verifyTotp(dto.challengeToken, dto.code, res, deviceOf(req));
+    return this.auth.verifyTotp(dto.challengeToken, dto.code, res, deviceOf(req), clientIp(req));
   }
 
   @NoCsrf(
@@ -411,8 +413,10 @@ export class AdminAuthController {
   @ApiOkResponse({ type: MessageResponseDto })
   @NotClientScoped('Sets an administrator password from a token; reads no client rows.')
   @Audited('admin.password_reset_complete')
-  completePasswordReset(@Body() dto: CompleteAdminResetDto) {
-    return this.auth.completePasswordReset(dto.token, dto.password);
+  completePasswordReset(@Body() dto: CompleteAdminResetDto, @Req() req: Request) {
+    // The caller's address: from outside the listed networks only an exempt
+    // administrator's link may be spent (RBAC-08, 0192).
+    return this.auth.completePasswordReset(dto.token, dto.password, clientIp(req));
   }
 
   /*

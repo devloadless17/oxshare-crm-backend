@@ -432,8 +432,12 @@ export class AdminsStore {
    * apart, and must not: distinguishing them tells an attacker which guess was
    * closest.
    */
-  async consumeResetToken(tokenHash: string, passwordHash: string): Promise<Admin | undefined> {
-    const [row] = await this.db
+  async consumeResetToken(
+    tokenHash: string,
+    passwordHash: string,
+    executor: Executor = this.db,
+  ): Promise<Admin | undefined> {
+    const [row] = await executor
       .update(admins)
       .set({
         passwordHash,

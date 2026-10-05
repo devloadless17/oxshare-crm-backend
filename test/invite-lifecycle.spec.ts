@@ -215,6 +215,11 @@ function build(
     // transaction. The mock hands the callback a pass-through executor: the
     // store mocks above ignore it, which is exactly what a unit test wants.
     { transaction: (fn: (tx: unknown) => Promise<unknown>) => fn({}) } as never,
+    // IpAllowlistGuard — RBAC-08 on sign-in and refresh; no list configured here.
+    {
+      admitsAddress: () => Promise.resolve(true),
+      admitsAdmin: () => Promise.resolve(true),
+    } as never,
   );
 
   return { service, admins, invites, roles, email, audit, refreshTokens, scopes, users };

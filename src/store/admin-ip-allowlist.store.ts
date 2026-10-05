@@ -1,8 +1,8 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { asc, eq } from 'drizzle-orm';
+import { asc, eq, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db } from '../database/db';
-import { adminIpAllowlist } from '../database/schema';
+import { adminIpAllowlist, adminIpAllowlistExemptions, admins } from '../database/schema';
 import { canonicaliseRule, ipMatchesAny } from '../common/security/ip-range';
 
 export interface AllowlistRule {
@@ -10,6 +10,18 @@ export interface AllowlistRule {
   cidr: string;
   label: string;
   createdBy: string;
+  createdAt: Date;
+}
+
+/** An administrator who may reach the console from any network (0192). */
+export interface AllowlistExemption {
+  adminId: string;
+  name: string;
+  email: string;
+  reason: string;
+  createdBy: string;
+  /** Null when the granting administrator has since been deleted. */
+  createdByName: string | null;
   createdAt: Date;
 }
 
@@ -58,6 +70,8 @@ export class AdminIpAllowlistStore {
   async removeUnlessLockedOut(
     id: string,
     callerIp: string | undefined,
+    /** An exempt caller reaches the console from anywhere, so nothing can lock them out. */
+    callerExempt = false,
   ): Promise<
     | { outcome: 'deleted'; rule: AllowlistRule; remaining: number }
     | { outcome: 'would-lock-out'; rule: AllowlistRule }
@@ -68,7 +82,7 @@ export class AdminIpAllowlistStore {
       const target = rules.find((r) => r.id === id);
       if (!target) return { outcome: 'not-found' as const };
       const remaining = rules.filter((r) => r.id !== id).map((r) => r.cidr);
-      if (remaining.length > 0 && !ipMatchesAny(callerIp, remaining)) {
+      if (!callerExempt && remaining.length > 0 && !ipMatchesAny(callerIp, remaining)) {
         return { outcome: 'would-lock-out' as const, rule: target };
       }
       await tx.delete(adminIpAllowlist).where(eq(adminIpAllowlist.id, id));
@@ -81,6 +95,58 @@ export class AdminIpAllowlistStore {
       .delete(adminIpAllowlist)
       .where(eq(adminIpAllowlist.id, id))
       .returning();
+    return row;
+  }
+
+  // ── Exemptions: administrators who bypass the network check (0192) ─────────
+
+  async listExemptions(): Promise<AllowlistExemption[]> {
+    return this.db
+      .select({
+        adminId: adminIpAllowlistExemptions.adminId,
+        name: admins.name,
+        email: admins.email,
+        reason: adminIpAllowlistExemptions.reason,
+        createdBy: adminIpAllowlistExemptions.createdBy,
+        createdByName: sql<
+          string | null
+        >`(SELECT g.name FROM admins g WHERE g.id = ${adminIpAllowlistExemptions.createdBy})`,
+        createdAt: adminIpAllowlistExemptions.createdAt,
+      })
+      .from(adminIpAllowlistExemptions)
+      .innerJoin(admins, eq(admins.id, adminIpAllowlistExemptions.adminId))
+      .orderBy(asc(adminIpAllowlistExemptions.createdAt));
+  }
+
+  /** The guard's question on a refused address — one primary-key probe. */
+  async isExempt(adminId: string): Promise<boolean> {
+    const [row] = await this.db
+      .select({ adminId: adminIpAllowlistExemptions.adminId })
+      .from(adminIpAllowlistExemptions)
+      .where(eq(adminIpAllowlistExemptions.adminId, adminId))
+      .limit(1);
+    return row !== undefined;
+  }
+
+  /** False when the administrator is already exempt — decided by the primary key. */
+  async addExemption(input: {
+    adminId: string;
+    reason: string;
+    createdBy: string;
+  }): Promise<boolean> {
+    const rows = await this.db
+      .insert(adminIpAllowlistExemptions)
+      .values(input)
+      .onConflictDoNothing()
+      .returning({ adminId: adminIpAllowlistExemptions.adminId });
+    return rows.length > 0;
+  }
+
+  async removeExemption(adminId: string): Promise<{ reason: string } | undefined> {
+    const [row] = await this.db
+      .delete(adminIpAllowlistExemptions)
+      .where(eq(adminIpAllowlistExemptions.adminId, adminId))
+      .returning({ reason: adminIpAllowlistExemptions.reason });
     return row;
   }
 }

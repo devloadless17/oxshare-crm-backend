@@ -8,9 +8,48 @@ import {
 import type { Request } from 'express';
 import { AdminIpAllowlistStore } from '../../../store/admin-ip-allowlist.store';
 import { clientIp } from '../../../common/security/client-ip';
-import { adminNetworkAdmits } from '../../../common/security/admin-network';
-import { isAdminSurface } from '../../../common/api-prefix';
+import { adminNetworkAdmits, NETWORK_REFUSED } from '../../../common/security/admin-network';
+import { isAdminSurface, stripApiPrefix } from '../../../common/api-prefix';
 import { ALERT_KINDS, raiseAlert } from '../../../common/logging/alerts';
+import { readApiKeyHeader } from '../../../common/security/api-key';
+import { COOKIE_BASES, readSessionCookie } from '../../../common/security/session-cookies';
+import { AdminAuthenticator } from './admin.guard';
+
+/**
+ * The sign-in doors, open from ANY network once the list is enforcing.
+ *
+ * An exempt administrator (0192) must be able to sign in from anywhere, and who
+ * is signing in is only known once their credentials are checked — so these
+ * pass the guard and the SERVICE decides (`AdminAuthService.login`, the
+ * authenticator steps, `refresh`), telling an outside caller nothing but the
+ * next sign-in step or the one network refusal. Exact, lower-cased paths: a spelling not listed here
+ * gets the stricter answer, which is the safe direction to be wrong in.
+ * Completing a password reset is here too, so the exempt owner abroad can
+ * spend a reset link; the service admits only an exempt administrator's.
+ */
+const OUTSIDE_SIGN_IN_PATHS: ReadonlySet<string> = new Set([
+  '/admin/auth/login',
+  // The authenticator steps carry a challenge, not a session; each re-judges
+  // the network once it knows whose challenge it is (0191's sign-in).
+  '/admin/auth/totp/setup',
+  '/admin/auth/totp/verify',
+  '/admin/auth/refresh',
+  '/admin/password-reset/complete',
+  // Ending a session grants nothing, and identifies by the refresh cookie — so
+  // an administrator who carried a laptop home can still sign out of it.
+  '/admin/auth/logout',
+]);
+
+/**
+ * Token routes that stay INSIDE the listed networks whatever cookies come
+ * with them. They act on an invite token, never on a session — so an exempt
+ * administrator's session cookie in the same browser must not vouch for them.
+ * A new administrator's first sign-in happens on an office network.
+ */
+const INSIDE_ONLY_TOKEN_PATHS: ReadonlySet<string> = new Set([
+  '/admin/invite/validate',
+  '/admin/invite/accept',
+]);
 
 /**
  * RBAC-08 — the admin surface answers only from allowlisted addresses.
@@ -51,7 +90,11 @@ export class IpAllowlistGuard implements CanActivate {
    */
   private lastAlertedAt = 0;
 
-  constructor(private readonly allowlist: AdminIpAllowlistStore) {}
+  constructor(
+    private readonly allowlist: AdminIpAllowlistStore,
+    /** Identifies the session on a refused address, to ask whether it is exempt. */
+    private readonly authenticator: AdminAuthenticator,
+  ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     if (context.getType() !== 'http') return true;
@@ -64,7 +107,31 @@ export class IpAllowlistGuard implements CanActivate {
     // did the same thing to THIS guard. `isAdminSurface` is the one definition
     // both guards share — see common/api-prefix.ts.
     if (!isAdminSurface(req.path)) return true;
-    return this.assertAdmitted(req);
+    if (await this.admitsAddress(clientIp(req))) return true;
+
+    /*
+     * OUTSIDE the listed networks. Before 0192 that was the end of it; now an
+     * EXEMPT administrator's session passes. Four cases, in this order:
+     */
+    const path = stripApiPrefix(req.path).toLowerCase();
+    // 1. A sign-in door — judged by the service, once it knows who is asking.
+    //    An invite route is never admitted from outside, by any credential.
+    if (OUTSIDE_SIGN_IN_PATHS.has(path)) return true;
+    if (INSIDE_ONLY_TOKEN_PATHS.has(path)) return this.refuse(req);
+    // 2. An API key is never exempt. Refused even beside an exempt admin's
+    //    cookie: `AdminGuard` prefers the key, so admitting the cookie here
+    //    would carry the KEY past the network check.
+    if (readApiKeyHeader(req)) return this.refuse(req);
+    // 3. No session at all — today's answer, so a scanner sees nothing new.
+    const cookies = req.cookies as Record<string, string | undefined> | undefined;
+    if (!readSessionCookie(cookies, COOKIE_BASES.adminAccess)) return this.refuse(req);
+    // 4. A session. An invalid or expired one throws its own 401 here, on
+    //    purpose: the console then refreshes, and the refresh door judges the
+    //    network. A 403 instead would strand an exempt admin whose 15-minute
+    //    token lapsed.
+    const admin = await this.authenticator.authenticateSession(req);
+    if (await this.isExempt(admin.id)) return true;
+    return this.refuse(req);
   }
 
   /**
@@ -73,8 +140,61 @@ export class IpAllowlistGuard implements CanActivate {
    * sit outside `/admin` and only learn after authentication that an admin is
    * asking. One implementation, so the route and the guard cannot disagree
    * (fail-open paging included). Resolves `true` or throws 403.
+   *
+   * @param adminId the authenticated SESSION's administrator, when there is
+   *   one — an exempt administrator (0192) is admitted from any address.
    */
-  async assertAdmitted(req: Request): Promise<boolean> {
+  async assertAdmitted(req: Request, adminId?: string): Promise<boolean> {
+    if (await this.admitsAddress(clientIp(req))) return true;
+    if (adminId !== undefined && (await this.isExempt(adminId))) return true;
+    return this.refuse(req);
+  }
+
+  /**
+   * Whether `adminId`, calling from `ip`, may use the console: the address is
+   * admitted, or the administrator is exempt. The sign-in services' question.
+   */
+  async admitsAdmin(ip: string | undefined, adminId: string): Promise<boolean> {
+    return (await this.admitsAddress(ip)) || this.isExempt(adminId);
+  }
+
+  /**
+   * Is this administrator exempt from the network check (0192)?
+   *
+   * FAILS CLOSED, the opposite of the rules read below, and both are right: an
+   * unreadable LIST is no configured restriction, so the console stays
+   * reachable; an unreadable EXEMPTION is no grant, so the administrator is
+   * treated as everyone else is. Neither can lock the console: inside the
+   * listed networks this question is never asked.
+   */
+  async isExempt(adminId: string): Promise<boolean> {
+    try {
+      return await this.allowlist.isExempt(adminId);
+    } catch (error) {
+      this.logger.error(
+        `RBAC-08 could not read the exemptions; treating admin ${adminId} as not exempt. ` +
+          `Cause: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return false;
+    }
+  }
+
+  private refuse(req: Request): never {
+    // Logged because a legitimate admin locked out by a bad rule needs to be
+    // diagnosable, and because repeated denials are worth seeing. The address is
+    // the whole point of the record, so it is not redacted here.
+    const ip = clientIp(req);
+    this.logger.warn(
+      `Admin request from ${ip ?? 'an unknown address'} refused: not in the IP allowlist.`,
+    );
+    throw new ForbiddenException(NETWORK_REFUSED);
+  }
+
+  /**
+   * Does the configured list admit `ip`? `true` when it is empty, switched off,
+   * or cannot be read (see below).
+   */
+  async admitsAddress(ip: string | undefined): Promise<boolean> {
     /*
      * A GUARD MUST NOT BE ABLE TO TAKE THE CONSOLE DOWN.
      *
@@ -146,20 +266,10 @@ export class IpAllowlistGuard implements CanActivate {
       return true;
     }
 
-    const ip = clientIp(req);
     // The decision itself lives in `common/security/admin-network.ts`, because
     // this guard is not the only caller: `GET /uploads/kyc/:file` serves client
     // PII to admins from outside the `/admin` path and has to ask the same
     // question after it knows which principal is acting.
-    if (adminNetworkAdmits(rules, ip)) return true;
-
-    // Logged because a legitimate admin locked out by a bad rule needs to be
-    // diagnosable, and because repeated denials are worth seeing. The address is
-    // the whole point of the record, so it is not redacted here.
-    this.logger.warn(
-      `Admin request from ${ip ?? 'an unknown address'} refused: not in the IP allowlist ` +
-        `(${rules.length} rule(s) configured).`,
-    );
-    throw new ForbiddenException('Your network is not permitted to reach the administration API.');
+    return adminNetworkAdmits(rules, ip);
   }
 }

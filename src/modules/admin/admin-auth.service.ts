@@ -21,6 +21,7 @@ import {
   AuthenticationError,
   AuthorizationError,
   ConflictError,
+  NetworkNotPermittedError,
   NotFoundError,
   SessionReplayedError,
   SessionRevokedError,
@@ -31,6 +32,9 @@ import { AdminAuditService } from './admin-audit.service';
 import { assertActorCan } from '../../common/security/actor';
 import type { AuthenticatedAdmin } from './guards/admin.guard';
 import { AdminRbacService } from './admin-rbac.service';
+import { IpAllowlistGuard } from './guards/ip-allowlist.guard';
+import { NETWORK_REFUSED, OUTSIDE_SIGN_IN_REFUSED } from '../../common/security/admin-network';
+import { clientIp } from '../../common/security/client-ip';
 import { deviceOf } from '../../common/security/device-fingerprint';
 import type { DeviceFingerprint } from '../../common/security/refresh-tokens.service';
 import { randomUUID } from 'crypto';
@@ -125,10 +129,23 @@ export class AdminAuthService {
     private readonly users: UsersStore,
     /** The db handle — acceptInvite's claim + create + scope run in ONE transaction. */
     @Inject(DRIZZLE_DB) private readonly db: Db,
+    /** RBAC-08 — who may sign in or refresh from outside the listed networks (0192). */
+    private readonly network: IpAllowlistGuard,
   ) {}
 
   // ─── Admin Login ───────────────────────────────────────────────────────────
-  async login(email: string, password: string) {
+  async login(
+    email: string,
+    password: string,
+    /** The caller's address — RBAC-08 decides which door below answers. */
+    callerIp?: string,
+  ) {
+    // Outside the listed networks only an EXEMPT administrator may sign in (0192),
+    // and the answer must say nothing else. Inside, nothing below changed.
+    if (!(await this.network.admitsAddress(callerIp))) {
+      return this.loginFromOutside(email, password);
+    }
+
     /*
      * Per-ACCOUNT lockout, checked before anything else — R-3.5.
      *
@@ -175,6 +192,51 @@ export class AdminAuthService {
       throw new AuthorizationError('This administrator account has been suspended.');
     }
 
+    return this.passwordAccepted(admin, password, needsRehash);
+  }
+
+  /**
+   * RBAC-08 (0192): the password step from OUTSIDE the listed networks.
+   *
+   * The door has to open — an exempt administrator must be able to sign in from
+   * anywhere, and who is signing in is only known from the credentials — but
+   * it may tell an outside caller exactly ONE thing: the authenticator
+   * challenge, for an exempt administrator with the right password. Every other
+   * outcome is the same `NetworkNotPermittedError`, so nobody outside can learn
+   * whether a password was right, whether an address is an administrator's, or
+   * which administrators are exempt.
+   *
+   *  - The argon2 work is spent on every attempt, as inside, so timing does not
+   *    tell an exempt account from the rest.
+   *  - A failure is recorded ONLY against an exempt account. Before 0192 the
+   *    internet could not reach this door at all; recording failures for
+   *    everyone would hand it a way to lock out every office administrator.
+   *    An exempt account is reachable from anywhere by its owner's choice, so
+   *    its lockout is what protects it.
+   *
+   * The authenticator steps (`beginTotpSetup`, `verifyTotp`) re-judge the
+   * network, so a challenge minted inside cannot be finished outside.
+   */
+  private async loginFromOutside(email: string, password: string) {
+    const refused = new NetworkNotPermittedError(OUTSIDE_SIGN_IN_REFUSED);
+    const found = await this.admins.findByEmail(email);
+    const admin = found && (await this.network.isExempt(found.id)) ? found : undefined;
+    const { valid, needsRehash } = await this.passwords.verify(password, admin?.passwordHash);
+    if (!admin) throw refused;
+    if ((await this.loginAttempts.lockedFor('admin', email)) !== null) throw refused;
+    if (!valid) {
+      await this.loginAttempts.recordFailure('admin', email);
+      throw refused;
+    }
+    if (admin.status === 'suspended') throw refused;
+    return this.passwordAccepted(admin, password, needsRehash);
+  }
+
+  /**
+   * What both doors do once the password has checked: upgrade a bcrypt hash,
+   * then hand out the authenticator challenge — never a session.
+   */
+  private async passwordAccepted(admin: Admin, password: string, needsRehash: boolean) {
     if (needsRehash) {
       const upgraded = await this.passwords.hash(password);
       await this.admins.update(admin.id, { passwordHash: upgraded });
@@ -240,6 +302,16 @@ export class AdminAuthService {
     return admin;
   }
 
+  /**
+   * RBAC-08 (0192) at a step that already knows WHO is signing in: outside the
+   * listed networks only an exempt administrator continues.
+   */
+  private async assertNetworkAdmits(callerIp: string | undefined, adminId: string) {
+    if (!(await this.network.admitsAdmin(callerIp, adminId))) {
+      throw new NetworkNotPermittedError(NETWORK_REFUSED);
+    }
+  }
+
   private encryptionKey(): string | undefined {
     return this.config.get<string>('APP_ENCRYPTION_KEY');
   }
@@ -257,8 +329,9 @@ export class AdminAuthService {
    * Each call replaces the pending secret, so reloading the page shows a new
    * code and only the last one shown can complete enrolment.
    */
-  async beginTotpSetup(challengeToken: string) {
+  async beginTotpSetup(challengeToken: string, callerIp?: string) {
     const admin = await this.adminForChallenge(challengeToken);
+    await this.assertNetworkAdmits(callerIp, admin.id);
     const state = await this.admins.totpState(admin.id);
     if (state?.secret) {
       throw new ConflictError(
@@ -286,8 +359,13 @@ export class AdminAuthService {
     code: string,
     res: Response,
     device?: DeviceFingerprint,
+    /** The caller's address — this step starts the session, so RBAC-08 judges it. */
+    callerIp?: string,
   ) {
     const admin = await this.adminForChallenge(challengeToken);
+    // Before the code is checked: a refused attempt spends no code and counts
+    // no failure. A challenge minted inside is not a session to finish outside.
+    await this.assertNetworkAdmits(callerIp, admin.id);
 
     const lockedFor = await this.loginAttempts.lockedFor('admin', admin.email);
     if (lockedFor !== null) {
@@ -1040,9 +1118,25 @@ export class AdminAuthService {
    * sign in. The token is the only credential, which is why it is single-use,
    * short-lived, stored only as a hash, and consumed in one statement.
    */
-  async completePasswordReset(token: string, newPassword: string) {
+  async completePasswordReset(token: string, newPassword: string, callerIp?: string) {
     const passwordHash = await this.passwords.hash(newPassword);
-    const admin = await this.admins.consumeResetToken(hashInviteToken(token), passwordHash);
+    const outside = !(await this.network.admitsAddress(callerIp));
+
+    /*
+     * RBAC-08 (0192): from outside the listed networks only an EXEMPT
+     * administrator may spend a reset link — the owner abroad who forgot their
+     * password. Decided INSIDE the transaction that spends the token, so a
+     * refusal rolls the spend back and the same link still works from a listed
+     * network.
+     */
+    const admin = await this.db.transaction(async (tx: Executor) => {
+      const spent = await this.admins.consumeResetToken(hashInviteToken(token), passwordHash, tx);
+      if (spent && outside && !(await this.network.isExempt(spent.id))) {
+        this.logger.warn(`Reset link for admin ${spent.id} refused: not an allowed network.`);
+        throw new NetworkNotPermittedError(NETWORK_REFUSED);
+      }
+      return spent;
+    });
 
     /*
      * One message for expired, spent and never-existed alike. Distinguishing
@@ -1336,6 +1430,15 @@ export class AdminAuthService {
       await this.refreshTokens.revokeAllForSubject('admin', admin.id);
       throw new SessionRevokedError('This administrator account has been suspended.');
     }
+
+    /*
+     * RBAC-08 (0192): outside the listed networks only an EXEMPT administrator
+     * renews. Decided before the rotation, so a refusal consumes nothing and
+     * revokes nothing — back on a listed network the same session renews as
+     * ever. Without this, a session started in the office would keep renewing
+     * from anywhere for thirty days.
+     */
+    await this.assertNetworkAdmits(clientIp(req), admin.id);
 
     /*
      * Which row this rotation consumes — see the portal's twin of this comment.

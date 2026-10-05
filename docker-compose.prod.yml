@@ -31,6 +31,32 @@ services:
     image: postgres:16-alpine
     container_name: oxshare_postgres
     restart: unless-stopped
+    # Docker gives a container 64MB of /dev/shm, and Postgres puts parallel-query
+    # workers and parallel index builds there. Running out answers a 500 under load
+    # or, during a `pg_restore -j`, silently skips indexes ("errors ignored on
+    # restore") while every row looks fine. A ceiling, not a reservation: tmpfs uses
+    # RAM only as it is written. Keep it above maintenance_work_mem × parallel
+    # maintenance workers (256MB × 2 below). SERVER-CONCEPTS §7a.
+    shm_size: 1g
+    # Sized for the 8 GB backend server (Hostinger KVM 2), shared with the API and
+    # Redis; the image's defaults (128MB shared_buffers) are sized for a laptop.
+    # NVMe disk, hence the low random_page_cost and high effective_io_concurrency.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=2GB
+      - -c
+      - effective_cache_size=5GB
+      - -c
+      - work_mem=16MB
+      - -c
+      - maintenance_work_mem=256MB
+      - -c
+      - random_page_cost=1.1
+      - -c
+      - effective_io_concurrency=200
+      - -c
+      - max_wal_size=2GB
     environment:
       POSTGRES_USER: oxshare
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}

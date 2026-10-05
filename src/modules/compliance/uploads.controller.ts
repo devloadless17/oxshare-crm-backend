@@ -517,7 +517,9 @@ export class UploadsController {
     fileName: string,
     policy: FileReadPolicy,
   ): Promise<Reader> {
-    await this.adminNetwork.assertAdmitted(req);
+    // The admin is a SESSION here (`authenticateSession`, never a key), so an
+    // exempt administrator (0192) is admitted from any network, as on `/admin`.
+    await this.adminNetwork.assertAdmitted(req, admin.id);
     if (!policy.mayRead(admin.permissions.map(normalizePermissionKey))) {
       throw new ForbiddenException(policy.adminForbidden);
     }

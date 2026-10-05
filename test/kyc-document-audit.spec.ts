@@ -195,7 +195,7 @@ function makeController(options: {
   // RBAC-08: /uploads/kyc/:file sits outside /admin, so the global guard never
   // reaches it and the route calls the guard's own `assertAdmitted`. Empty by
   // default = the allowlist is OFF.
-  const network = new IpAllowlistGuard(ipAllowlist as never);
+  const network = new IpAllowlistGuard(ipAllowlist as never, {} as never);
   const portalAuth = new JwtStrategy(
     config as never,
     users as never,
