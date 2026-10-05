@@ -1044,5 +1044,9 @@ export const SERVER_MESSAGES_AR: Readonly<Record<string, string>> = {
   'There is no answer to regenerate.': 'لا توجد إجابة لإعادة إنشائها.',
   'This conversation is full. Start a new chat.': 'هذه المحادثة ممتلئة. ابدأ محادثة جديدة.',
   'This question was already received.': 'تم استلام هذا السؤال مسبقاً.',
+  'Somebody handled this task already — it is in History.':
+    'تولّى أحد الزملاء هذه المهمة بالفعل، وهي الآن في السجل.',
+  'This task ends only when its item is handled — open it and decide it there.':
+    'لا تنتهي هذه المهمة إلا بمعالجة عنصرها. افتحه واتخذ القرار هناك.',
   'Write a question of up to 2000 characters.': 'اكتب سؤالاً لا يتجاوز 2000 حرف.',
 };

@@ -32,13 +32,26 @@ export interface LlmRequest {
    * the whole platform. It never carries the Portal ID itself.
    */
   endUserKey: string;
+  /**
+   * Let the model search the web for current prices and news. The vendor runs
+   * the search itself, so it needs no tool loop here.
+   */
+  webSearch: boolean;
   signal: AbortSignal;
+}
+
+/** A page the answer drew on, shown to the client under it. */
+export interface LlmSource {
+  title: string;
+  url: string;
 }
 
 export interface LlmUsage {
   inputTokens: number;
   cachedTokens: number;
   outputTokens: number;
+  /** Web searches the vendor ran for this turn (billed per search). */
+  webSearches: number;
 }
 
 export type LlmFinish = 'stop' | 'length' | 'content_filter';
@@ -46,6 +59,9 @@ export type LlmFinish = 'stop' | 'length' | 'content_filter';
 export type LlmEvent =
   | { type: 'text'; delta: string }
   | { type: 'tool_call'; callId: string; name: string; arguments: string }
+  /** The model is searching the web: nothing to show yet, but the client should know why. */
+  | { type: 'searching' }
+  | ({ type: 'source' } & LlmSource)
   | { type: 'done'; finish: LlmFinish; usage: LlmUsage };
 
 export interface LlmProvider {

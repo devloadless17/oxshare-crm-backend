@@ -45,7 +45,7 @@ import { AssistantStore } from '../src/store/assistant.store';
 
 type Turn = (request: LlmRequest) => Iterable<LlmEvent>;
 
-const usage = { inputTokens: 100, cachedTokens: 0, outputTokens: 20 };
+const usage = { inputTokens: 100, cachedTokens: 0, outputTokens: 20, webSearches: 0 };
 
 /** A model that says `text` and stops. */
 const says = (text: string): Turn =>
@@ -58,6 +58,7 @@ class ScriptedModel implements LlmProvider {
   readonly model = 'scripted';
   turns: Turn[] = [];
   calls = 0;
+  requests: LlmRequest[] = [];
   flagged = false;
 
   isConfigured(): boolean {
@@ -66,6 +67,7 @@ class ScriptedModel implements LlmProvider {
 
   async *stream(request: LlmRequest): AsyncIterable<LlmEvent> {
     this.calls += 1;
+    this.requests.push(request);
     const turn = this.turns.shift() ?? says('Fine.');
     for (const event of turn(request)) {
       // A real stream yields between events; so does this one.
@@ -140,6 +142,8 @@ function quietSink(): AnswerSink & { errors: string[] } {
   return {
     errors,
     meta: () => undefined,
+    status: () => undefined,
+    sources: () => undefined,
     delta: () => undefined,
     followups: () => undefined,
     done: () => undefined,
@@ -203,6 +207,7 @@ afterAll(async () => {
 beforeEach(async () => {
   model.turns = [];
   model.calls = 0;
+  model.requests = [];
   model.flagged = false;
   seenBy.length = 0;
   await ctx.db.db.delete(assistantMessages);
@@ -297,6 +302,40 @@ describe('the answer', () => {
     expect(stored.followups).toEqual(['What is margin?', 'What is a stop-out?']);
   });
 
+  it('searches the web, cites its sources once each, and keeps them with the answer', async () => {
+    const reuters = { title: 'Gold steadies', url: 'https://www.reuters.com/markets/gold' };
+    model.turns = [
+      function* () {
+        yield { type: 'searching' };
+        yield { type: 'text', delta: 'Gold trades near **4,160**.' };
+        yield { type: 'source', ...reuters };
+        yield { type: 'source', ...reuters };
+        yield { type: 'done', finish: 'stop', usage: { ...usage, webSearches: 2 } };
+      },
+    ];
+    const res = await sse(alice.post('/v1/assistant/ask', { question: 'Gold analysis today' }));
+    const events = eventsOf(res.body);
+    const names = events.map((e) => e.event);
+
+    expect(model.requests.at(-1)?.webSearch).toBe(true);
+    // Why nothing is showing comes first; the pages come once, before the end.
+    expect(names.indexOf('status')).toBeLessThan(names.indexOf('delta'));
+    expect(events.find((e) => e.event === 'sources')?.data['items']).toEqual([reuters]);
+    expect(names.indexOf('sources')).toBeLessThan(names.indexOf('done'));
+
+    const conversationId = String(events.find((e) => e.event === 'meta')!.data['conversationId']);
+    const thread = await alice.get(`/v1/assistant/conversations/${conversationId}`).expect(200);
+    expect(thread.body.messages[1].sources).toEqual([reuters]);
+    const [stored] = await ctx.db.db
+      .select()
+      .from(assistantMessages)
+      .where(eq(assistantMessages.role, 'assistant'));
+    expect(stored.webSearches).toBe(2);
+    // A searched answer is still one answer against the allowance.
+    const config = await alice.get('/v1/assistant/config').expect(200);
+    expect(config.body.usedToday).toBe(1);
+  });
+
   it('answers a flagged question with the refusal alone', async () => {
     model.flagged = true;
     model.turns = [says('Something the client must not see.')];
@@ -354,6 +393,8 @@ describe('the answer', () => {
     });
     const sink: AnswerSink = {
       meta: () => undefined,
+      status: () => undefined,
+      sources: () => undefined,
       delta: () => undefined,
       followups: () => undefined,
       done: () => undefined,
@@ -381,6 +422,8 @@ describe('the answer', () => {
     gone.abort();
     const sink: AnswerSink = {
       meta: () => undefined,
+      status: () => undefined,
+      sources: () => undefined,
       delta: () => undefined,
       followups: () => undefined,
       done: () => undefined,

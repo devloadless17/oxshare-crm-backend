@@ -26,7 +26,7 @@ const MODERATION_MODEL = 'omni-moderation-latest';
  * prefix, so OpenAI serves it from cache, at a tenth of the input price. Bump
  * the suffix when the knowledge pack changes shape.
  */
-const PROMPT_CACHE_KEY = 'oxshare-assistant-v2';
+const PROMPT_CACHE_KEY = 'oxshare-assistant-v3';
 
 /**
  * The OpenAI adapter — the only file that imports the SDK.
@@ -63,13 +63,19 @@ export class OpenAiProvider implements LlmProvider {
           model: this.model,
           instructions: request.instructions,
           input: request.items.map(toInput),
-          tools: request.tools.map((tool): Tool => ({
-            type: 'function',
-            name: tool.name,
-            description: tool.description,
-            parameters: tool.parameters,
-            strict: false,
-          })),
+          tools: [
+            ...request.tools.map((tool): Tool => ({
+              type: 'function',
+              name: tool.name,
+              description: tool.description,
+              parameters: tool.parameters,
+              strict: false,
+            })),
+            // OpenAI runs the search and cites what it read; the model decides when to search.
+            ...(request.webSearch
+              ? [{ type: 'web_search', search_context_size: 'medium' } satisfies Tool]
+              : []),
+          ],
           max_output_tokens: request.maxOutputTokens,
           store: false,
           stream: true,
@@ -90,6 +96,7 @@ export class OpenAiProvider implements LlmProvider {
      * never a success.
      */
     let finished = false;
+    let webSearches = 0;
     try {
       for await (const event of events) {
         switch (event.type) {
@@ -98,7 +105,16 @@ export class OpenAiProvider implements LlmProvider {
           case 'response.refusal.delta':
             yield { type: 'text', delta: event.delta };
             break;
+          case 'response.web_search_call.in_progress':
+            yield { type: 'searching' };
+            break;
+          case 'response.output_text.annotation.added': {
+            const source = citedSource(event.annotation);
+            if (source) yield { type: 'source', ...source };
+            break;
+          }
           case 'response.output_item.done':
+            if (event.item.type === 'web_search_call') webSearches += 1;
             if (event.item.type === 'function_call') {
               yield {
                 type: 'tool_call',
@@ -125,6 +141,7 @@ export class OpenAiProvider implements LlmProvider {
                 inputTokens: usage?.input_tokens ?? 0,
                 cachedTokens: usage?.input_tokens_details?.cached_tokens ?? 0,
                 outputTokens: usage?.output_tokens ?? 0,
+                webSearches,
               },
             };
             return;
@@ -185,6 +202,29 @@ function toInput(item: LlmItem): ResponseInputItem {
     case 'tool_result':
       return { type: 'function_call_output', call_id: item.callId, output: item.output };
   }
+}
+
+/**
+ * A web page the answer cites, from a `url_citation` annotation. Only http(s)
+ * pages, with OpenAI's tracking parameter removed; anything else is dropped.
+ */
+function citedSource(annotation: unknown): { title: string; url: string } | null {
+  if (!annotation || typeof annotation !== 'object') return null;
+  const { type, url, title } = annotation as { type?: unknown; url?: unknown; title?: unknown };
+  if (type !== 'url_citation' || typeof url !== 'string') return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return null;
+  for (const key of [...parsed.searchParams.keys()]) {
+    if (key.startsWith('utm_')) parsed.searchParams.delete(key);
+  }
+  const host = parsed.hostname.replace(/^www\./, '');
+  const name = typeof title === 'string' && title.trim() ? title.trim() : host;
+  return { title: name.slice(0, 200), url: parsed.toString().slice(0, 2000) };
 }
 
 /** Every SDK failure becomes one error type, marked retryable where asking again makes sense. */

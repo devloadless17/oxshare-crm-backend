@@ -112,6 +112,12 @@ export class AssistantConversationListDto {
   @ApiProperty({ type: [AssistantConversationDto] }) items!: AssistantConversationDto[];
 }
 
+/** A web page an answer cited. Shown under the answer; opened in a new tab. */
+export class AssistantSourceDto {
+  @ApiProperty() title!: string;
+  @ApiProperty({ format: 'uri' }) url!: string;
+}
+
 export class AssistantMessageDto {
   @ApiProperty({ format: 'uuid' }) id!: string;
   @ApiProperty({ enum: ['user', 'assistant'] }) role!: 'user' | 'assistant';
@@ -123,6 +129,11 @@ export class AssistantMessageDto {
   status!: 'streaming' | 'complete' | 'aborted' | 'failed' | 'refused' | 'interrupted';
 
   @ApiProperty({ type: [String] }) followups!: string[];
+  @ApiProperty({
+    type: [AssistantSourceDto],
+    description: 'Pages the answer cited; empty if none.',
+  })
+  sources!: AssistantSourceDto[];
   @ApiProperty({ enum: [1, -1], nullable: true }) feedback!: 1 | -1 | null;
   @ApiProperty({ format: 'date-time' }) createdAt!: string;
 }
@@ -138,6 +149,8 @@ export class AssistantUsageDto {
   @ApiProperty() inputTokens!: number;
   @ApiProperty() cachedTokens!: number;
   @ApiProperty() outputTokens!: number;
+  @ApiProperty({ description: 'Web searches run (each is billed by OpenAI).' })
+  webSearches!: number;
 }
 
 @NoClientFields("the assistant's platform switch and limits, about no client")

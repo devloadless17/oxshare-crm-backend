@@ -52,8 +52,15 @@ export interface AssistantMessageRow {
   content: string;
   status: AssistantMessageStatus;
   followups: string[] | null;
+  sources: AssistantSource[] | null;
   feedback: number | null;
   createdAt: Date;
+}
+
+/** A web page an answer cited. */
+export interface AssistantSource {
+  title: string;
+  url: string;
 }
 
 /** What a finished (or failed) answer records. */
@@ -61,6 +68,8 @@ export interface AssistantAnswerOutcome {
   content: string;
   status: Exclude<AssistantMessageStatus, 'streaming'>;
   followups?: string[] | null;
+  sources?: AssistantSource[] | null;
+  webSearches?: number | null;
   model?: string | null;
   inputTokens?: number | null;
   cachedTokens?: number | null;
@@ -87,6 +96,7 @@ export interface AssistantUsage {
   inputTokens: number;
   cachedTokens: number;
   outputTokens: number;
+  webSearches: number;
 }
 
 /**
@@ -190,10 +200,12 @@ export class AssistantStore {
           sql<number>`coalesce(sum(${assistantMessages.cachedTokens}), 0)::bigint`.mapWith(Number),
         outputTokens:
           sql<number>`coalesce(sum(${assistantMessages.outputTokens}), 0)::bigint`.mapWith(Number),
+        webSearches:
+          sql<number>`coalesce(sum(${assistantMessages.webSearches}), 0)::bigint`.mapWith(Number),
       })
       .from(assistantMessages)
       .where(and(eq(assistantMessages.role, 'assistant'), gte(assistantMessages.createdAt, since)));
-    return row ?? { answers: 0, inputTokens: 0, cachedTokens: 0, outputTokens: 0 };
+    return row ?? { answers: 0, inputTokens: 0, cachedTokens: 0, outputTokens: 0, webSearches: 0 };
   }
 
   /* ── Conversations ─────────────────────────────────────────────────────── */
@@ -246,6 +258,7 @@ export class AssistantStore {
         content: assistantMessages.content,
         status: assistantMessages.status,
         followups: assistantMessages.followups,
+        sources: assistantMessages.sources,
         feedback: assistantMessages.feedback,
         createdAt: assistantMessages.createdAt,
       })
@@ -285,7 +298,7 @@ export class AssistantStore {
       if (!deleted) return false;
       await tx
         .update(assistantMessages)
-        .set({ content: '', followups: null, feedbackReason: null })
+        .set({ content: '', followups: null, sources: null, feedbackReason: null })
         .where(eq(assistantMessages.conversationId, conversationId));
       return true;
     });
@@ -480,7 +493,7 @@ export class AssistantStore {
         .update(assistantMessages)
         .set({
           ...outcome,
-          ...(erased ? { content: '', followups: null } : {}),
+          ...(erased ? { content: '', followups: null, sources: null } : {}),
           completedAt: new Date(),
         })
         .where(and(eq(assistantMessages.id, messageId), eq(assistantMessages.status, 'streaming')));
