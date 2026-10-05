@@ -1,5 +1,8 @@
 # Deploying the backend
 
+> The whole production setup on one page (servers, network, every setting, how to change it):
+> [INFRASTRUCTURE.md](INFRASTRUCTURE.md). This file is the backend's procedures.
+
 > ## A push to `production` deploys to the Linux backend server
 >
 > |            |                                                                                                                                                                                                                                                                                                             |
