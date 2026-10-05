@@ -89,6 +89,12 @@ function verify(challengeToken: string, code: string) {
 }
 const codeNow = (secret: string, offset = 0) => totpCode(secret, totpStepAt(new Date()) + offset);
 
+// supertest types every body as `any`. These name the two fields this file feeds
+// back into the next request, so a renamed field fails to compile here instead of
+// sending `undefined` as a challenge token or computing a code from it.
+const tokenOf = (res: { body: unknown }) => (res.body as { challengeToken: string }).challengeToken;
+const secretOf = (res: { body: unknown }) => (res.body as { secret: string }).secret;
+
 /**
  * Codes are good for the CURRENT 30-second step only, so a request sent in a
  * step's last moments can land in the next one. Wait those out first, so no
@@ -126,10 +132,10 @@ async function enrol(who: { email: string; password: string }) {
   await awayFromBoundary();
   const first = await login(who).expect(200);
   expect(first.body.step).toBe('totp_setup');
-  const qr = await setup(first.body.challengeToken).expect(200);
-  await verify(first.body.challengeToken, codeNow(qr.body.secret)).expect(200);
+  const qr = await setup(tokenOf(first)).expect(200);
+  await verify(tokenOf(first), codeNow(secretOf(qr))).expect(200);
   await nextPeriod(who.email);
-  return qr.body.secret as string;
+  return secretOf(qr);
 }
 
 describe('a password alone is not a session', () => {
@@ -169,7 +175,7 @@ describe('a password alone is not a session', () => {
 describe('enrolment — scan the QR code, confirm one code', () => {
   it('shows a QR code (SVG) and the otpauth URI the app reads', async () => {
     await forget(MASTER.email);
-    const { challengeToken } = (await login(MASTER).expect(200)).body;
+    const challengeToken = tokenOf(await login(MASTER).expect(200));
     const res = await setup(challengeToken).expect(200);
     expect(res.body.secret).toMatch(/^[A-Z2-7]{32}$/);
     expect(res.body.qrSvg).toMatch(/^<svg[\s\S]*<\/svg>\s*$/);
@@ -182,8 +188,8 @@ describe('enrolment — scan the QR code, confirm one code', () => {
 
   it('stores the secret SEALED, never readable', async () => {
     await forget(MASTER.email);
-    const { challengeToken } = (await login(MASTER).expect(200)).body;
-    const { secret } = (await setup(challengeToken).expect(200)).body;
+    const challengeToken = tokenOf(await login(MASTER).expect(200));
+    const secret = secretOf(await setup(challengeToken).expect(200));
     const { rows } = await ctx.db.pool.query(
       'SELECT totp_pending_secret, totp_secret FROM admins WHERE email = $1',
       [MASTER.email],
@@ -195,14 +201,14 @@ describe('enrolment — scan the QR code, confirm one code', () => {
 
   it('refuses a code before any QR code was shown', async () => {
     await forget(MASTER.email);
-    const { challengeToken } = (await login(MASTER).expect(200)).body;
+    const challengeToken = tokenOf(await login(MASTER).expect(200));
     await verify(challengeToken, '123456').expect(400);
   });
 
   it('a wrong code does not enrol and does not sign in', async () => {
     await forget(MASTER.email);
-    const { challengeToken } = (await login(MASTER).expect(200)).body;
-    const { secret } = (await setup(challengeToken).expect(200)).body;
+    const challengeToken = tokenOf(await login(MASTER).expect(200));
+    const secret = secretOf(await setup(challengeToken).expect(200));
     const wrong = codeNow(secret) === '000000' ? '111111' : '000000';
     const res = await verify(challengeToken, wrong).expect(401);
     expect(res.body.message).toMatch(/code is not correct/i);
@@ -213,9 +219,9 @@ describe('enrolment — scan the QR code, confirm one code', () => {
 
   it('only the NEWEST QR code finishes enrolment', async () => {
     await forget(MASTER.email);
-    const { challengeToken } = (await login(MASTER).expect(200)).body;
-    const old = (await setup(challengeToken).expect(200)).body.secret as string;
-    const fresh = (await setup(challengeToken).expect(200)).body.secret as string;
+    const challengeToken = tokenOf(await login(MASTER).expect(200));
+    const old = secretOf(await setup(challengeToken).expect(200));
+    const fresh = secretOf(await setup(challengeToken).expect(200));
     expect(fresh).not.toBe(old);
     await verify(challengeToken, codeNow(old)).expect(401);
     await verify(challengeToken, codeNow(fresh)).expect(200);
@@ -223,8 +229,8 @@ describe('enrolment — scan the QR code, confirm one code', () => {
 
   it('a right code confirms the app, starts the session and is audited', async () => {
     await forget(MASTER.email);
-    const { challengeToken } = (await login(MASTER).expect(200)).body;
-    const { secret } = (await setup(challengeToken).expect(200)).body;
+    const challengeToken = tokenOf(await login(MASTER).expect(200));
+    const secret = secretOf(await setup(challengeToken).expect(200));
     const res = await verify(challengeToken, codeNow(secret)).expect(200);
     expect(res.body.admin.email).toBe(MASTER.email);
     expect(res.body.admin.totpEnabledAt).toEqual(expect.any(String));
@@ -249,7 +255,7 @@ describe('every sign-in after enrolment — the code from the app', () => {
     const next = await login(MASTER).expect(200);
     expect(next.body.step).toBe('totp');
     // A stolen password must not be enough to swap in the thief's phone.
-    await setup(next.body.challengeToken).expect(409);
+    await setup(tokenOf(next)).expect(409);
   });
 
   it('signs in with the current code, and refuses the SAME code twice', async () => {
@@ -258,9 +264,9 @@ describe('every sign-in after enrolment — the code from the app', () => {
     // The enrolment spent the current step; the next one is inside the window.
     await awayFromBoundary();
     const code = codeNow(secret);
-    const a = (await login(MASTER).expect(200)).body.challengeToken;
+    const a = tokenOf(await login(MASTER).expect(200));
     await verify(a, code).expect(200);
-    const b = (await login(MASTER).expect(200)).body.challengeToken;
+    const b = tokenOf(await login(MASTER).expect(200));
     const replay = await verify(b, code).expect(401);
     expect(parseSetCookies(replay)).toEqual({});
   });
@@ -269,14 +275,14 @@ describe('every sign-in after enrolment — the code from the app', () => {
     await forget(MASTER.email);
     const secret = await enrol(MASTER);
     const code = codeNow(secret);
-    const challenge = (await login(MASTER).expect(200)).body.challengeToken;
+    const challenge = tokenOf(await login(MASTER).expect(200));
     await verify(challenge, `${code.slice(0, 3)} ${code.slice(3)}`).expect(200);
   });
 
   it('NO grace window: the previous and the next code are both refused', async () => {
     await forget(MASTER.email);
     const secret = await enrol(MASTER);
-    const challenge = (await login(MASTER).expect(200)).body.challengeToken;
+    const challenge = tokenOf(await login(MASTER).expect(200));
     // The code the app showed a moment ago stops working when it changes.
     await verify(challenge, codeNow(secret, -1)).expect(401);
     await verify(challenge, codeNow(secret, 1)).expect(401);
@@ -286,7 +292,7 @@ describe('every sign-in after enrolment — the code from the app', () => {
   });
 
   it('rejects a malformed code at the DTO', async () => {
-    const challenge = (await login(MASTER).expect(200)).body.challengeToken;
+    const challenge = tokenOf(await login(MASTER).expect(200));
     await verify(challenge, 'abcdef').expect(400);
     await verify(challenge, '1234567').expect(400);
   });
@@ -294,7 +300,7 @@ describe('every sign-in after enrolment — the code from the app', () => {
   it('five wrong codes lock the account, like five wrong passwords', async () => {
     await forget(PEER.email);
     const secret = await enrol(PEER);
-    const challenge = (await login(PEER).expect(200)).body.challengeToken;
+    const challenge = tokenOf(await login(PEER).expect(200));
     const wrong = codeNow(secret) === '000000' ? '111111' : '000000';
     for (let i = 0; i < 5; i++) await verify(challenge, wrong).expect(401);
     // Locked: even the RIGHT code is refused, and so is the password.
@@ -309,7 +315,7 @@ describe('every sign-in after enrolment — the code from the app', () => {
     const secret = await enrol(PEER);
     const wrong = codeNow(secret) === '000000' ? '111111' : '000000';
     for (let round = 0; round < 2; round++) {
-      const challenge = (await login(PEER).expect(200)).body.challengeToken;
+      const challenge = tokenOf(await login(PEER).expect(200));
       for (let i = 0; i < 3; i++) await verify(challenge, wrong);
     }
     // 6 wrong codes across two password sign-ins — locked, not reset.
@@ -321,7 +327,7 @@ describe('every sign-in after enrolment — the code from the app', () => {
   it('a suspension between the password and the code is honoured', async () => {
     await forget(PEER.email);
     const secret = await enrol(PEER);
-    const challenge = (await login(PEER).expect(200)).body.challengeToken;
+    const challenge = tokenOf(await login(PEER).expect(200));
     await ctx.db.db.update(admins).set({ status: 'suspended' }).where(eq(admins.id, ids.peer));
     await verify(challenge, codeNow(secret)).expect(403);
     await ctx.db.db.update(admins).set({ status: 'active' }).where(eq(admins.id, ids.peer));
@@ -338,8 +344,8 @@ describe("resetting another administrator's authenticator (lost phone)", () => {
 
     const next = await login(PEER).expect(200);
     expect(next.body.step).toBe('totp_setup');
-    const qr = await setup(next.body.challengeToken).expect(200);
-    await verify(next.body.challengeToken, codeNow(qr.body.secret)).expect(200);
+    const qr = await setup(tokenOf(next)).expect(200);
+    await verify(tokenOf(next), codeNow(secretOf(qr))).expect(200);
 
     const rows = await ctx.db.db
       .select()
@@ -394,10 +400,8 @@ describe('an invited administrator sets up the app before their first session', 
       Object.keys(parseSetCookies(accepted)).some((n) => n.includes(COOKIE_BASES.adminAccess)),
     ).toBe(false);
 
-    const qr = await setup(accepted.body.challengeToken).expect(200);
-    const signedIn = await verify(accepted.body.challengeToken, codeNow(qr.body.secret)).expect(
-      200,
-    );
+    const qr = await setup(tokenOf(accepted)).expect(200);
+    const signedIn = await verify(tokenOf(accepted), codeNow(secretOf(qr))).expect(200);
     const session = sessionFrom(ctx, 'admin', parseSetCookies(signedIn));
     const me = await session.get('/v1/admin/auth/me').expect(200);
     expect(me.body.email).toBe('totp-invitee@oxshare.com');
