@@ -86,7 +86,10 @@ if [ "$ROLE" = api ]; then
     echo "[Interface]"
     echo "Address = 10.8.0.1/24"
     echo "ListenPort = 51820"
-    echo "PostUp = wg set %i private-key /etc/wireguard/wg0.key"
+    # Inline (the file is root-only, 0600), never via PostUp: `wg syncconf` rebuilds the
+    # interface from this file, and a key loaded by a hook is silently DROPPED by it.
+    # That took the tunnel down for 41 minutes on 6 Oct 2026.
+    echo "PrivateKey = $(cat /etc/wireguard/wg0.key)"
     if [ -n "${BRIDGE_PUBKEY:-}" ]; then
       echo ""
       echo "# The Windows bridge server. BOTH sides can open the tunnel: it dials in"
