@@ -268,6 +268,11 @@ jobs:
         env:
           DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
           DOCKER_SECRET: ${{ secrets.DOCKER_SECRET }}
+          # The owner's explicit, temporary override (a repository VARIABLE, so it is
+          # visible): while it is `true` a public or missing repository is a WARNING on
+          # every build instead of a refusal. Delete the variable once the repository
+          # is private, and the guard is back.
+          ALLOW_PUBLIC: ${{ vars.DOCKER_HUB_ALLOW_PUBLIC }}
           REPOSITORY: oxshare-crm-backend
         run: |
           set -euo pipefail
@@ -282,9 +287,16 @@ jobs:
           [ -n "$jwt" ] || { echo "::error::Could not sign in to Docker Hub's API to check that $repo is private."; exit 1; }
           private=$(curl -sS -H "Authorization: Bearer $jwt" "https://hub.docker.com/v2/repositories/$repo/" | jq -r '.is_private // "missing"')
           case "$private" in
-            true)  echo "$repo is private." ;;
-            false) echo "::error::$repo is PUBLIC on Docker Hub, so anyone can pull this image. Make it private (Repository → Settings → Visibility), then re-run."; exit 1 ;;
-            *)     echo "::error::$repo does not exist on Docker Hub. Create it as PRIVATE first: a push would create it with the account's default visibility."; exit 1 ;;
+            true) echo "$repo is private." ;;
+            *)
+              what=$([ "$private" = false ] && echo "is PUBLIC on Docker Hub: anyone can pull this image" || echo "does not exist yet, and a push creates it with the account's default visibility")
+              if [ "$ALLOW_PUBLIC" = true ]; then
+                echo "::warning::$repo $what. Allowed by the DOCKER_HUB_ALLOW_PUBLIC variable; make it private and delete that variable."
+              else
+                echo "::error::$repo $what. Create it PRIVATE (Repository -> Settings -> Visibility), then re-run."
+                exit 1
+              fi
+              ;;
           esac
 
       # Two tags: `latest` for a human, and the commit SHA for the machine. The
