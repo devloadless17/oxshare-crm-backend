@@ -7,6 +7,14 @@
 	# wrong with a certificate.
 	email {$ACME_EMAIL}
 
+# ── Which API version receives traffic ──────────────────────────────────────────
+#
+# deploy/release.sh writes active-api.caddy (one `reverse_proxy` to the live colour,
+# api_blue or api_green; the port is the import's argument), validates it, then
+# reloads Caddy gracefully. A release therefore switches traffic without
+# dropping a connection, and the old version drains only after the new one serves.
+
+
 	# HTTP/3 is on (Caddy's default: h1 h2 h3). UDP/443 delivery was measured on
 	# 17 Aug 2026 — a listener in a container publishing 443/udp received probes
 	# from the public internet — so advertising `alt-svc: h3=":443"` is safe. If
@@ -35,7 +43,7 @@
 		# Caddy v2 upgrades WebSockets with no extra configuration, and passes
 		# Origin through untouched — which the gateway compares by exact string
 		# equality against PORTAL_URL / ADMIN_URL.
-		reverse_proxy api:3003
+		import /etc/caddy/active-api.caddy 3003
 	}
 
 	# The bridge's endpoints are NOT on the public site. The bridge reaches them
@@ -46,7 +54,7 @@
 	}
 
 	handle {
-		reverse_proxy api:3001
+		import /etc/caddy/active-api.caddy 3001
 	}
 
 	# Caddy appends the client address to X-Forwarded-For, one hop. That is what
@@ -74,7 +82,7 @@
 # reach it, and only the bridge's paths are served.
 http://10.8.0.1:8080 {
 	handle /v1/webhooks/mt5/* {
-		reverse_proxy api:3001
+		import /etc/caddy/active-api.caddy 3001
 	}
 	respond 404
 }

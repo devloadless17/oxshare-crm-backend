@@ -54,9 +54,10 @@ on:
       - '.gitignore'
       - 'LICENSE'
       - '.vscode/**'
-  # A redeploy or a rollback without an empty commit. Rolling back is: set
-  # IMAGE_TAG to the previous SHA in .env on the VPS and `up -d`, or re-run this
-  # workflow from the older commit.
+  # A redeploy without an empty commit. Rolling back is `bash release.sh rollback`
+  # in ~/oxshare-crm-backend on the server (the previous version is kept, and the
+  # switch is the same zero-downtime one), or re-running this workflow on an
+  # older commit.
   workflow_dispatch:
 
 # Nothing here uses GITHUB_TOKEN — the registry and the VPS have their own
@@ -474,7 +475,8 @@ jobs:
           {
             # Compose interpolation (docker-compose.prod.yml), not application config.
             put IMAGE_REPO "$IMAGE_REPO"
-            put IMAGE_TAG "$GITHUB_SHA"
+            # No IMAGE_TAG: each API colour's tag lives in release.env on the server,
+            # written by deploy/release.sh, so re-rendering .env never moves the live version.
             put POSTGRES_PASSWORD "$POSTGRES_PASSWORD"
             put API_DOMAIN "$API_DOMAIN"
             put ACME_EMAIL "$ACME_EMAIL"
@@ -572,7 +574,7 @@ jobs:
           ssh -i "$KEY" -p "$PORT" $COMMON "$SSH_USER@$HOST" "mkdir -p $DEPLOY_DIR"
 
           scp -i "$KEY" -P "$PORT" $COMMON \
-            docker-compose.prod.yml Caddyfile .env.rendered \
+            docker-compose.prod.yml Caddyfile deploy/release.sh .env.rendered \
             "$SSH_USER@$HOST:$DEPLOY_DIR/"
 
           # DOCKER_SECRET goes over STDIN, not the ssh argv — argv is world-readable
@@ -582,103 +584,16 @@ jobs:
           cd "$DEPLOY_DIR"
           mv -f .env.rendered .env
           chmod 600 .env
-          COMPOSE="docker compose -f docker-compose.prod.yml"
 
           echo "$DOCKER_SECRET" | docker login -u "$DOCKER_USERNAME" --password-stdin
-
-          echo "==> Pulling images"
-          $COMPOSE pull
-
-          # Data services first, so the migration below has something to talk to.
-          echo "==> Starting postgres and redis"
-          $COMPOSE up -d postgres redis
-
-          echo "==> Waiting for postgres"
-          for i in $(seq 1 30); do
-            [ "$(docker inspect --format='{{.State.Health.Status}}' oxshare_postgres 2>/dev/null || echo starting)" = "healthy" ] && break
-            sleep 2
-          done
-
-          # Runs BEFORE the new code starts, so the schema is never behind the
-          # application that expects it. drizzle-orm wraps all pending migrations
-          # in one transaction — an interruption rolls back whole.
-          echo "==> Applying migrations"
-          $COMPOSE run --rm api node scripts/migrate.mjs </dev/null
-
-          # ── The first administrator, without a manual step ──────────────────
-          #
-          # NODE_ENV=production skips runSeeds(), and rightly: that function
-          # plants the whole e2e cohort — e2e@, e2e-kyc@, e2e-restricted@ and a
-          # batch of @oxshare-e2e.test clients — into whatever database it is
-          # pointed at. What is unsafe there is THAT function, not the idea of
-          # bootstrapping, so this runs the narrow script instead: one role, one
-          # admin, nothing else.
-          #
-          # Runs on EVERY deploy because it is idempotent by database constraint
-          # (unique role name, unique admin email). On an existing database it
-          # prints "already exists; password left unchanged" and touches nothing
-          # — it will NOT resurrect a deleted admin's password or undo a
-          # narrowing. That is what makes a rebuilt VPS a pure `git push`: new
-          # server, empty volume, and the admin exists when the deploy finishes.
-          #
-          # Skipped rather than failed when the secrets are absent, so a project
-          # that prefers creating its first admin by hand is not forced into it.
-          if [ -n "${BOOTSTRAP_ADMIN_EMAIL:-}" ] && [ -n "${BOOTSTRAP_ADMIN_PASSWORD:-}" ]; then
-            echo "==> Ensuring the bootstrap administrator exists"
-            $COMPOSE run --rm \
-              -e BOOTSTRAP_ADMIN_EMAIL="$BOOTSTRAP_ADMIN_EMAIL" \
-              -e BOOTSTRAP_ADMIN_PASSWORD="$BOOTSTRAP_ADMIN_PASSWORD" \
-              api node scripts/bootstrap-admin.mjs </dev/null
-          else
-            echo "==> No BOOTSTRAP_ADMIN_* secrets; skipping administrator bootstrap"
-          fi
-
-          echo "==> Recreating the stack"
-          $COMPOSE up -d --remove-orphans
-
-          # Caddy's compose definition rarely changes, so `up -d` does not recreate
-          # it and a freshly shipped Caddyfile would never load. `</dev/null` is
-          # load-bearing: this script is piped into `bash -s`, and `compose exec`
-          # drains stdin even with -T, swallowing everything below it.
-          echo "==> Applying Caddyfile"
-          if $COMPOSE exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile </dev/null; then
-            echo "  caddy reloaded"
-          else
-            echo "  reload failed (or listener protocols changed) — recreating caddy"
-            $COMPOSE up -d --force-recreate caddy </dev/null
-          fi
-
-          echo "==> Waiting for the API to become healthy"
-          RETRIES=0; MAX=45
-          until [ "$RETRIES" -ge "$MAX" ]; do
-            STATUS=$(docker inspect --format='{{.State.Health.Status}}' oxshare_api 2>/dev/null || echo "starting")
-            [ "$STATUS" = "healthy" ] && { echo "API is healthy"; break; }
-            RETRIES=$((RETRIES + 1)); echo "  ...($RETRIES/$MAX) status=$STATUS"; sleep 4
-          done
-          if [ "$RETRIES" -ge "$MAX" ]; then
-            $COMPOSE logs --tail 80 api
-            echo "::error::New release did not become healthy."
-            exit 1
-          fi
-
-          # uWebSockets.js loads a PREBUILT binary and realtime-io.adapter.ts
-          # catches a load failure, logs a warning and falls back to the Node
-          # engine — which leaves nothing listening on :3003 while /health stays
-          # green and Caddy 502s every WebSocket handshake. The health gate above
-          # cannot see that, so assert it directly.
-          echo "==> Asserting the realtime engine"
-          $COMPOSE exec -T api node -e "require('uWebSockets.js')" </dev/null \
-            || { echo "::error::uWebSockets.js failed to load — realtime would silently fall back to :3001."; exit 1; }
-
+          # Zero downtime: the new version starts BESIDE the live one, Caddy switches
+          # only once it is healthy, and the old one drains. A release that never
+          # becomes healthy is stopped and the live version carries on. Rollback:
+          # `bash release.sh rollback` on the server. See deploy/release.sh.
+          export BOOTSTRAP_ADMIN_EMAIL BOOTSTRAP_ADMIN_PASSWORD
+          bash release.sh deploy "$IMAGE_TAG"
           docker logout >/dev/null 2>&1 || true
-          # SHA-tagged images are never "dangling", so `prune` alone lets one
-          # accumulate per deploy until the disk fills. Keep the two newest —
-          # the one now running and the previous one, which is the rollback
-          # target — and remove the rest. `docker images` lists newest first.
-          docker images --format '{{.Repository}}:{{.Tag}}' "$DOCKER_USERNAME/oxshare-crm-backend" \
-            | grep -v ':latest$' | tail -n +3 | xargs -r docker rmi >/dev/null 2>&1 || true
-          docker image prune -f >/dev/null 2>&1 || true
-          $COMPOSE ps
+          bash release.sh status
           REMOTE
           )"
           # Secrets go over STDIN with %q quoting, never the ssh argv — argv is
@@ -687,6 +602,7 @@ jobs:
           # for exactly that reason.
           {
             printf 'DOCKER_SECRET=%q\n' "$DOCKER_SECRET"
+            printf 'IMAGE_TAG=%q\n' "$GITHUB_SHA"
             printf 'BOOTSTRAP_ADMIN_EMAIL=%q\n' "${BOOTSTRAP_ADMIN_EMAIL:-}"
             printf 'BOOTSTRAP_ADMIN_PASSWORD=%q\n' "${BOOTSTRAP_ADMIN_PASSWORD:-}"
             printf '%s\n' "$REMOTE_SCRIPT"

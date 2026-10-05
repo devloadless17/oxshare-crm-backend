@@ -19,6 +19,23 @@ x-logging: &logging
       max-size: '10m'
       max-file: '5'
 
+# The API, shared by its two colours below.
+x-api: &api
+  restart: unless-stopped
+  init: true
+  # SIGTERM drains (main.ts enableShutdownHooks): in-flight requests finish.
+  stop_grace_period: 30s
+  env_file:
+    - .env
+  volumes:
+    - oxshare_uploads:/app/uploads
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  <<: *logging
+
 services:
   # THE SERVICE NAME `postgres` IS LOad-BEARING — do not rename it.
   # src/database/db.ts treats /@(localhost|127\.0\.0\.1|postgres)[:/]/ as a local
@@ -89,33 +106,25 @@ services:
       retries: 10
     <<: *logging
 
-  api:
-    # Pinned to the commit SHA by the deploy, not :latest — so `up -d` reliably
-    # recreates the container, and the tag doubles as the rollback target.
-    image: ${IMAGE_REPO:?IMAGE_REPO is required}:${IMAGE_TAG:-latest}
-    container_name: oxshare_api
-    restart: unless-stopped
-    # tini as PID 1: node is not designed to reap orphans, and without an init the
-    # SIGTERM below would also have nothing forwarding it.
-    init: true
-    # Long enough for in-flight requests to finish. Only does anything because
-    # main.ts calls enableShutdownHooks() — a process that dies on the signal
-    # ignores this entirely.
-    stop_grace_period: 30s
-    env_file:
-      - .env
-    volumes:
-      # Needed even under STORAGE_DRIVER=r2: main.ts mkdirSyncs uploads/kyc at
-      # boot, and a legacy disk driver still READS from here for documents that
-      # predate the R2 move (there is no backfill migration).
-      - oxshare_uploads:/app/uploads
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    # No ports. Caddy reaches :3001 and :3003 over the compose network.
-    <<: *logging
+  # ── The API, as TWO services: zero-downtime releases (deploy/release.sh) ───
+  #
+  # A release starts the new version in the idle colour BESIDE the live one,
+  # waits for its health check, switches Caddy to it (graceful reload), and only
+  # then stops the old one, which finishes its in-flight requests. Which colour is
+  # live, and each colour's image tag, live in release.env (release.sh writes it).
+  # The profiles keep a bare `docker compose up -d` from starting either colour:
+  # only release.sh starts the API.
+  api_blue:
+    <<: *api
+    image: ${IMAGE_REPO:?IMAGE_REPO is required}:${BLUE_TAG:-unreleased}
+    container_name: oxshare_api_blue
+    profiles: [blue]
+
+  api_green:
+    <<: *api
+    image: ${IMAGE_REPO:?IMAGE_REPO is required}:${GREEN_TAG:-unreleased}
+    container_name: oxshare_api_green
+    profiles: [green]
 
   caddy:
     image: caddy:2
@@ -139,13 +148,14 @@ services:
       ACME_EMAIL: ${ACME_EMAIL:?ACME_EMAIL is required}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Which API colour is live; written by release.sh before Caddy first starts.
+      - ./active-api.caddy:/etc/caddy/active-api.caddy:ro
       # caddy_data HOLDS THE CERTIFICATES AND THE ACME ACCOUNT KEY. Deleting it
       # forces re-issuance, and Let's Encrypt rate-limits that per registered
       # domain per week — losing it twice in a week means no TLS until it resets.
       - caddy_data:/data
       - caddy_config:/config
-    depends_on:
-      - api
+    # No depends_on: Caddy must never wait for, or restart with, an API colour.
     <<: *logging
 
 volumes:
