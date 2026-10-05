@@ -336,6 +336,10 @@ export async function completeAdminTotp(
     );
   }
   const { secret } = setup.body as { secret: string };
+  // Only the current 30-second step's code is accepted: wait out a step's
+  // last moments so the code cannot expire between computing and checking.
+  const intoStep = (Date.now() / 1000) % 30;
+  if (intoStep > 26) await new Promise((r) => setTimeout(r, (30 - intoStep + 0.2) * 1000));
   const verify = await request(ctx.server)
     .post('/v1/admin/auth/totp/verify')
     .set('Origin', origin)

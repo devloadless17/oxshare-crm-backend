@@ -89,6 +89,29 @@ function verify(challengeToken: string, code: string) {
 }
 const codeNow = (secret: string, offset = 0) => totpCode(secret, totpStepAt(new Date()) + offset);
 
+/**
+ * Codes are good for the CURRENT 30-second step only, so a request sent in a
+ * step's last moments can land in the next one. Wait those out first, so no
+ * test depends on which side of a boundary it happened to run.
+ */
+async function awayFromBoundary() {
+  const intoStep = (Date.now() / 1000) % 30;
+  if (intoStep > 26) await new Promise((r) => setTimeout(r, (30 - intoStep + 0.2) * 1000));
+}
+
+/**
+ * "Thirty seconds later": pull the replay floor back one step, as the clock
+ * moving on would. Enrolment spends the current step, and only the current
+ * step's code is accepted, so without this a second sign-in inside the same
+ * step would (correctly) be refused as a replay.
+ */
+async function nextPeriod(email: string) {
+  await ctx.db.pool.query(
+    'UPDATE admins SET totp_last_step = totp_last_step - 1 WHERE email = $1',
+    [email],
+  );
+}
+
 async function forget(email: string) {
   await ctx.db.pool.query(
     `UPDATE admins SET totp_secret = NULL, totp_pending_secret = NULL,
@@ -100,10 +123,12 @@ async function forget(email: string) {
 
 /** Password → setup → confirm; returns the secret the "phone" now holds. */
 async function enrol(who: { email: string; password: string }) {
+  await awayFromBoundary();
   const first = await login(who).expect(200);
   expect(first.body.step).toBe('totp_setup');
   const qr = await setup(first.body.challengeToken).expect(200);
   await verify(first.body.challengeToken, codeNow(qr.body.secret)).expect(200);
+  await nextPeriod(who.email);
   return qr.body.secret as string;
 }
 
@@ -231,7 +256,8 @@ describe('every sign-in after enrolment — the code from the app', () => {
     await forget(MASTER.email);
     const secret = await enrol(MASTER);
     // The enrolment spent the current step; the next one is inside the window.
-    const code = codeNow(secret, 1);
+    await awayFromBoundary();
+    const code = codeNow(secret);
     const a = (await login(MASTER).expect(200)).body.challengeToken;
     await verify(a, code).expect(200);
     const b = (await login(MASTER).expect(200)).body.challengeToken;
@@ -242,17 +268,21 @@ describe('every sign-in after enrolment — the code from the app', () => {
   it('accepts a code with a space in the middle, as the apps display it', async () => {
     await forget(MASTER.email);
     const secret = await enrol(MASTER);
-    const code = codeNow(secret, 1);
+    const code = codeNow(secret);
     const challenge = (await login(MASTER).expect(200)).body.challengeToken;
     await verify(challenge, `${code.slice(0, 3)} ${code.slice(3)}`).expect(200);
   });
 
-  it('refuses a code from well outside the window', async () => {
+  it('NO grace window: the previous and the next code are both refused', async () => {
     await forget(MASTER.email);
     const secret = await enrol(MASTER);
     const challenge = (await login(MASTER).expect(200)).body.challengeToken;
-    await verify(challenge, codeNow(secret, 10)).expect(401);
+    // The code the app showed a moment ago stops working when it changes.
+    await verify(challenge, codeNow(secret, -1)).expect(401);
+    await verify(challenge, codeNow(secret, 1)).expect(401);
     await verify(challenge, codeNow(secret, -10)).expect(401);
+    await ctx.db.db.delete(loginAttempts);
+    await verify(challenge, codeNow(secret)).expect(200);
   });
 
   it('rejects a malformed code at the DTO', async () => {
@@ -265,10 +295,10 @@ describe('every sign-in after enrolment — the code from the app', () => {
     await forget(PEER.email);
     const secret = await enrol(PEER);
     const challenge = (await login(PEER).expect(200)).body.challengeToken;
-    const wrong = codeNow(secret, 1) === '000000' ? '111111' : '000000';
+    const wrong = codeNow(secret) === '000000' ? '111111' : '000000';
     for (let i = 0; i < 5; i++) await verify(challenge, wrong).expect(401);
     // Locked: even the RIGHT code is refused, and so is the password.
-    const locked = await verify(challenge, codeNow(secret, 1)).expect(401);
+    const locked = await verify(challenge, codeNow(secret)).expect(401);
     expect(locked.body.message).toMatch(/too many/i);
     await login(PEER).expect(401);
     await ctx.db.db.delete(loginAttempts);
@@ -277,7 +307,7 @@ describe('every sign-in after enrolment — the code from the app', () => {
   it('a password success does NOT reset the code-failure counter', async () => {
     await forget(PEER.email);
     const secret = await enrol(PEER);
-    const wrong = codeNow(secret, 1) === '000000' ? '111111' : '000000';
+    const wrong = codeNow(secret) === '000000' ? '111111' : '000000';
     for (let round = 0; round < 2; round++) {
       const challenge = (await login(PEER).expect(200)).body.challengeToken;
       for (let i = 0; i < 3; i++) await verify(challenge, wrong);
@@ -293,7 +323,7 @@ describe('every sign-in after enrolment — the code from the app', () => {
     const secret = await enrol(PEER);
     const challenge = (await login(PEER).expect(200)).body.challengeToken;
     await ctx.db.db.update(admins).set({ status: 'suspended' }).where(eq(admins.id, ids.peer));
-    await verify(challenge, codeNow(secret, 1)).expect(403);
+    await verify(challenge, codeNow(secret)).expect(403);
     await ctx.db.db.update(admins).set({ status: 'active' }).where(eq(admins.id, ids.peer));
   });
 });

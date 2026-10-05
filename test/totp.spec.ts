@@ -46,22 +46,30 @@ describe('verifyTotp', () => {
   const step = totpStepAt(now);
   const secret = generateTotpSecret();
 
-  it('accepts the current code and one step either side, and says which step', () => {
+  it('accepts the current code, and says which step', () => {
     expect(verifyTotp(secret, totpCode(secret, step), now)).toBe(step);
-    expect(verifyTotp(secret, totpCode(secret, step - 1), now)).toBe(step - 1);
-    expect(verifyTotp(secret, totpCode(secret, step + 1), now)).toBe(step + 1);
   });
 
-  it('refuses codes two steps away', () => {
+  it('NO grace window: the previous and next codes are refused', () => {
+    expect(verifyTotp(secret, totpCode(secret, step - 1), now)).toBeNull();
+    expect(verifyTotp(secret, totpCode(secret, step + 1), now)).toBeNull();
     expect(verifyTotp(secret, totpCode(secret, step - 2), now)).toBeNull();
-    expect(verifyTotp(secret, totpCode(secret, step + 2), now)).toBeNull();
+  });
+
+  it('a code dies the instant its 30 seconds end', () => {
+    const start = new Date(step * 30_000);
+    const code = totpCode(secret, step);
+    expect(verifyTotp(secret, code, new Date(start.getTime() + 29_999))).toBe(step);
+    expect(verifyTotp(secret, code, new Date(start.getTime() + 30_000))).toBeNull();
   });
 
   it('refuses anything at or below the last accepted step — no replay', () => {
     const code = totpCode(secret, step);
     expect(verifyTotp(secret, code, now, step)).toBeNull();
     expect(verifyTotp(secret, code, now, step + 1)).toBeNull();
-    expect(verifyTotp(secret, totpCode(secret, step + 1), now, step)).toBe(step + 1);
+    expect(
+      verifyTotp(secret, totpCode(secret, step + 1), new Date(now.getTime() + 30_000), step),
+    ).toBe(step + 1);
   });
 
   it('refuses another secret’s code and malformed input', () => {

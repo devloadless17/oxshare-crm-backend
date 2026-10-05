@@ -299,7 +299,9 @@ export class AdminAuthService {
     const now = new Date();
     const wrong = async () => {
       await this.loginAttempts.recordFailure('admin', admin.email);
-      return new AuthenticationError('That code is not correct. Check the app and try again.');
+      return new AuthenticationError(
+        'That code is not correct. Enter the code your app shows right now — each one works only until it changes.',
+      );
     };
 
     if (state?.secret) {
