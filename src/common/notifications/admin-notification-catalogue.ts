@@ -54,6 +54,14 @@ interface AdminNotificationSpec {
   /** Holding ANY one of these makes the admin somebody who could act on it. */
   readonly permissions: readonly string[];
   readonly stillOpen: TaskStillOpen;
+  /**
+   * A task whose item may rightly be LEFT as it is declares the decision that
+   * says so, and this is the outcome recorded when somebody takes it. Since 0189
+   * a task leaves the Inbox only when handled, so a kind with a legitimate
+   * "no action" answer and no way to give it would sit there for ever.
+   * Taken through `POST /admin/notifications/:id/close`, with a reason, audited.
+   */
+  readonly closeOutcome?: string;
 }
 
 export const ADMIN_NOTIFICATION_KINDS = {
@@ -132,13 +140,16 @@ export const ADMIN_NOTIFICATION_KINDS = {
   },
   /**
    * A dealer cancelled a trade that had already paid an introducer. One task
-   * per standing accrual, done when THAT accrual is reversed.
+   * per standing accrual, done when THAT accrual is reversed — or when the desk
+   * decides the partner KEEPS it (a goodwill call, a trade re-opened), which is
+   * as much a decision as a reversal and ends the task the same way.
    */
   'admin.commission.clawback': {
     category: 'ib',
     subjectKind: 'ib_accrual',
     permissions: ['ib.commissions.reverse'],
     stillOpen: 'not-reversed',
+    closeOutcome: 'kept',
   },
   /** A wallet ⇄ trading-account transfer pending past the stale threshold. */
   'admin.transfer.stuck': {
@@ -196,6 +207,13 @@ export function kindsIn(category: AdminNotificationCategory): AdminNotificationK
   return ADMIN_NOTIFICATION_KIND_LIST.filter(
     (kind) => ADMIN_NOTIFICATION_KINDS[kind].category === category,
   );
+}
+
+/** The decision that ends this kind's task without the item moving, if it has one. */
+export function closeOutcomeOf(kind: string): string | undefined {
+  if (!isAdminNotificationKind(kind)) return undefined;
+  const spec: AdminNotificationSpec = ADMIN_NOTIFICATION_KINDS[kind];
+  return spec.closeOutcome;
 }
 
 export function categoryOf(kind: AdminNotificationKind): AdminNotificationCategory {

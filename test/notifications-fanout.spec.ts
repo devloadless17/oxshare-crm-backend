@@ -1,3 +1,4 @@
+import type { AuditLogStore } from '../src/store/audit-log.store';
 import { describe, expect, it, vi } from 'vitest';
 import { NotificationsService } from '../src/modules/notifications/notifications.service';
 import { ClientNotFoundError } from '../src/common/errors/domain-errors';
@@ -89,6 +90,7 @@ function build(opts: {
       }),
     } as unknown as ClientVisibilityService,
     alwaysLeads(),
+    {} as unknown as AuditLogStore,
   );
   return { service, insertAdminTask };
 }
@@ -176,6 +178,7 @@ describe('notifyAdmins', () => {
       } as unknown as AdminClientScopesStore),
       visibility as unknown as ClientVisibilityService,
       alwaysLeads(),
+      {} as unknown as AuditLogStore,
     );
 
     await service.notifyAdmins({
@@ -211,6 +214,7 @@ describe('notifyAdmins', () => {
       } as unknown as AdminClientScopesStore),
       { assertVisible } as unknown as ClientVisibilityService,
       alwaysLeads(),
+      {} as unknown as AuditLogStore,
     );
 
     await service.notifyAdmins({
@@ -249,6 +253,7 @@ describe('notifyAdmins', () => {
         assertVisible: vi.fn().mockRejectedValue(new Error('connection reset')),
       } as unknown as ClientVisibilityService,
       alwaysLeads(),
+      {} as unknown as AuditLogStore,
     );
 
     await expect(
@@ -273,6 +278,7 @@ describe('notifyAdmins', () => {
       withBatchScopes({} as unknown as AdminClientScopesStore),
       {} as unknown as ClientVisibilityService,
       alwaysLeads(),
+      {} as unknown as AuditLogStore,
     );
 
     await expect(
@@ -295,6 +301,7 @@ describe('notifyAdmins', () => {
       withBatchScopes({} as unknown as AdminClientScopesStore),
       {} as unknown as ClientVisibilityService,
       alwaysLeads(),
+      {} as unknown as AuditLogStore,
     );
 
     const input = {

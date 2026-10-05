@@ -494,7 +494,7 @@ describe('by-id routes answer 404 for an out-of-scope client, never 403', () => 
       'a transaction id, resolved to its owner — attention-resolve.spec.ts',
     'POST /admin/notifications/:id/read':
       'a notification id; scope is the row’s subject client — notifications-admin-tasks.spec.ts',
-    'POST /admin/notifications/:id/unread':
+    'POST /admin/notifications/:id/close':
       'a notification id; scope is the row’s subject client — notifications-admin-tasks.spec.ts',
     'PATCH /admin/withdrawals/:id/cancel': 'a transaction id — withdrawal-desk-scope.spec.ts',
     'POST /admin/withdrawals/:id/provider-submit':

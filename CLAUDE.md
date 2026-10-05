@@ -976,8 +976,10 @@ point. Sockets close at token expiry (15-minute ceiling) so the reconnect re-aut
 ## Admin notifications are TASKS (migration 0140, D-78)
 
 The owner's rule, from the broker buying the platform: an admin notification means "you must
-HANDLE something", it is scoped to the reader's clients always, and it disappears when the reader
-opens it — and for EVERY admin the moment anybody handles the item. Read these before touching
+HANDLE something", it is scoped to the reader's clients always, and it stays in every holder's Inbox
+until somebody handles the item — then it leaves for EVERY admin at once. Opening it only marks it
+seen (0189, 5 Oct 2026: until then opening hid it, and the buyer reported a clicked deposit filed
+under History although nobody had approved it). Read these before touching
 `modules/notifications`, the dispatch port, or any item table's status column:
 
 - **`common/notifications/admin-notification-catalogue.ts` is the one list** of what may ring an
@@ -1002,9 +1004,19 @@ opens it — and for EVERY admin the moment anybody handles the item. Read these
   badge summary and every marker; out of scope reads as not found. The client's name is joined at
   read time and masked by the RBAC-03 interceptor; `params` still carries no identity
   (`notification-params-no-pii.spec.ts`), because the socket and the client feed are unmasked.
-- **Inbox** = unread AND unresolved; **History** = everything, with `resolution`. Markers: read,
-  unread (the undo), read-all (`category?`, `upTo` — never past the newest row shown),
-  read-subject (the reader opened the item itself).
+- **Inbox** = unresolved, read or not, and the badge counts exactly that; **History** = resolved,
+  with `resolution`. A task is in exactly one of the two. The markers set SEEN and nothing else:
+  read (the row opened) and read-subject (the item itself opened). There is no unread or read-all
+  for an admin since 0189: both existed to take a task out of the Inbox unhandled.
+  `notifications_admin_inbox_idx` is partial on `resolved_at IS NULL` (0189).
+- **A kind whose item may rightly stay as it is declares the decision that ends it**
+  (`closeOutcome` in the catalogue; only `admin.commission.clawback`, outcome `kept` — the
+  partner keeps the commission). `POST /admin/notifications/:id/close` (a reason, 3–500)
+  runs `NotificationsStore.closeAdminTask`: the reader's own visible row, the item locked
+  `FOR SHARE` and re-checked open (a reversal that landed first wins → 409), every open row of
+  that kind about that item resolved with the decider credited, and `notification.task_close`
+  audited in the same transaction. A kind without one answers 400; a reader who cannot act on
+  the kind gets 404. Never a dismiss: it is an answer to the task, with a reason on record.
 - **An attention task ends with "Mark resolved"** — `PATCH /admin/transactions/:id/attention/resolve`
   (a note, audited `transaction.attention_resolve`); it moves no money, it clears the flag, and the
   trigger ends the task. `GET /admin/transactions` carries `needsAttention`/`attentionReason` per row

@@ -12,6 +12,7 @@ import { PasswordService } from '../src/common/security/password.service';
 import {
   adminClientTagScopes,
   admins,
+  auditLog,
   clientTagAssignments,
   clientTags,
   kycSubmissions,
@@ -36,9 +37,11 @@ import { NotificationsService } from '../src/modules/notifications/notifications
  *     read too; revoke it and the tasks go.
  *  3. "When it's handled it should disappear" — ONE admin's decision resolves
  *     the task in EVERY admin's inbox, by trigger, and a claim does not.
- *  4. "If I clicked it, it should disappear" — read leaves YOUR inbox, not
- *     anybody else's, and can be undone.
- *  5. "Keep the old ones" — history keeps everything, with its outcome.
+ *  4. "Clicking it is not handling it" (5 Oct 2026, reversing "read means
+ *     gone") — opening a task marks it SEEN, for the reader alone; it stays in
+ *     every inbox, and on the badge, until the item is decided.
+ *  5. "Keep the old ones" — history keeps every HANDLED task, with its
+ *     outcome; a task still waiting is in the inbox and nowhere else.
  *
  * Every negative assertion sits beside a positive control, so "the desk sees
  * nothing" cannot pass against a feed that is simply broken.
@@ -148,7 +151,8 @@ async function seedTask(
 
 const kycOf = (clientId: number) => ({ kind: 'kyc' as const, id: String(clientId), clientId });
 
-async function feed(session: Session, query = 'view=history&limit=100'): Promise<Feed> {
+/** Defaults to the inbox: every task seeded here is still waiting, so that is where it lives. */
+async function feed(session: Session, query = 'view=inbox&limit=100'): Promise<Feed> {
   const res = await session.get(`/v1/admin/notifications?${query}`);
   expect(res.status).toBe(200);
   return res.body as Feed;
@@ -314,7 +318,6 @@ describe('read-time scope — a row that survived a re-tag is not a row the read
     // A marker aimed at it: absent, never "forbidden" — no existence oracle.
     const marked = await desk.post(`/v1/admin/notifications/${taskId}/read`, {});
     expect(marked.status).toBe(404);
-    expect((await desk.post(`/v1/admin/notifications/${taskId}/unread`, {})).status).toBe(404);
 
     // And back: the same row, unread, as it was.
     await retag(mover, 'north');
@@ -413,10 +416,10 @@ describe('handled means gone — for everybody, by the database', () => {
         'a handled task kept showing',
       ).toBe(false);
     }
-    const history = (await feed(desk)).items.find((t) => t.id === deskTask?.id);
+    const history = (await feed(desk, 'view=history&limit=100')).items.find(
+      (t) => t.id === deskTask?.id,
+    );
     expect(history?.resolution).toMatchObject({ outcome: 'approved', byName: 'Tasks Master' });
-    expect(ids(await feed(desk, 'view=history&status=handled&limit=100'))).toContain(deskTask?.id);
-    expect(ids(await feed(desk, 'view=history&status=open&limit=100'))).not.toContain(deskTask?.id);
   });
 
   it('claiming a KYC for review does NOT end the task — it is still waiting on a decision', async () => {
@@ -431,56 +434,30 @@ describe('handled means gone — for everybody, by the database', () => {
   });
 });
 
-describe('read means gone — from YOUR inbox, and undoable', () => {
-  it('marking read clears it for the reader only; undo brings it back', async () => {
+describe('opening is not handling — a task stays until somebody decides it (5 Oct 2026)', () => {
+  it('reading marks it seen for the reader alone; it stays in the inbox and on the badge', async () => {
     const subject = await client('north');
     const deskTask = await seedTask(deskId, 'admin.kyc.submitted', kycOf(subject));
     const masterTask = await seedTask(masterId, 'admin.kyc.submitted', kycOf(subject));
     const desk = await actingAs(ctx, 'admin', DESK);
     const master = await actingAs(ctx, 'admin', MASTER);
+    const before = await summary(desk);
 
     const read = await desk.post(`/v1/admin/notifications/${deskTask}/read`, {});
     expect(read.status).toBe(200);
-    expect(ids(await feed(desk, 'view=inbox&limit=100'))).not.toContain(deskTask);
-    expect(ids(await feed(master, 'view=inbox&limit=100')), 'reading was not personal').toContain(
-      masterTask,
-    );
-    // Still in history, now read.
-    expect((await feed(desk)).items.find((t) => t.id === deskTask)?.readAt).not.toBeNull();
-
-    expect((await desk.post(`/v1/admin/notifications/${deskTask}/unread`, {})).status).toBe(200);
-    expect(ids(await feed(desk, 'view=inbox&limit=100'))).toContain(deskTask);
+    const row = (await feed(desk)).items.find((t) => t.id === deskTask);
+    expect(row, 'reading took the task out of the inbox').toBeDefined();
+    expect(row?.readAt).not.toBeNull();
+    expect((await summary(desk)).count, 'reading lowered the badge').toBe(before.count);
+    expect(
+      ids(await feed(desk, 'view=history&limit=100')),
+      'a task nobody handled was filed in history',
+    ).not.toContain(deskTask);
+    // Seen is personal: the other admin's copy still reads as new.
+    expect((await feed(master)).items.find((t) => t.id === masterTask)?.readAt).toBeNull();
   });
 
-  it('read-all honours the category and never marks past what was shown', async () => {
-    const subject = await client('north');
-    const old = await seedTask(
-      deskId,
-      'admin.kyc.submitted',
-      kycOf(subject),
-      new Date(Date.now() - 60_000),
-    );
-    const shownUpTo = new Date(Date.now() - 30_000).toISOString();
-    const arrivedLater = await seedTask(deskId, 'admin.kyc.resubmitted', kycOf(subject));
-    const otherCategory = await seedTask(deskId, 'admin.withdrawal.requested', {
-      kind: 'transaction',
-      id: '00000000-0000-4000-8000-00000000beef',
-      clientId: subject,
-    });
-    const desk = await actingAs(ctx, 'admin', DESK);
-
-    const res = await desk.post('/v1/admin/notifications/read-all', {
-      category: 'kyc',
-      upTo: shownUpTo,
-    });
-    expect(res.status).toBe(200);
-    const inbox = ids(await feed(desk, 'view=inbox&limit=100'));
-    expect(inbox).not.toContain(old);
-    expect(inbox, 'a task newer than the rendered list was cleared unseen').toContain(arrivedLater);
-    expect(inbox, 'another category was cleared').toContain(otherCategory);
-  });
-
-  it('opening the item itself clears the reader’s tasks about it', async () => {
+  it('opening the item itself marks the reader’s tasks about it seen, and keeps them', async () => {
     const subject = await client('north');
     const taskId = await seedTask(deskId, 'admin.kyc.submitted', kycOf(subject));
     const desk = await actingAs(ctx, 'admin', DESK);
@@ -490,7 +467,105 @@ describe('read means gone — from YOUR inbox, and undoable', () => {
     });
     expect(res.status).toBe(200);
     expect((res.body as { updated: number }).updated).toBe(1);
-    expect(ids(await feed(desk, 'view=inbox&limit=100'))).not.toContain(taskId);
+    expect((await feed(desk)).items.find((t) => t.id === taskId)?.readAt).not.toBeNull();
+  });
+});
+
+describe('a task whose item may stay as it is ends by a DECISION — the kept clawback', () => {
+  /** A standing accrual for a clawback task to be about. */
+  async function accrual(earner: number): Promise<string> {
+    const { rows } = await ctx.db.db.execute<{ id: string }>(sql`
+      INSERT INTO ib_accruals (ib_user_id, client_user_id, source_type, source_id, depth,
+                               rate_value, base_amount, amount, currency)
+      VALUES (${earner}, ${earner}, 'transaction', gen_random_uuid(), 1,
+              '10.0000', '50.00000000', '5.00000000', 'USD')
+      RETURNING id`);
+    return rows[0].id;
+  }
+  const clawbackOf = (id: string, clientId: number) => ({
+    kind: 'ib_accrual' as const,
+    id,
+    clientId,
+  });
+  const reason = { reason: 'Dealer re-opened the trade; the partner keeps it.' };
+
+  it('"keep" ends it for EVERY admin, credits the decider, and is audited — once', async () => {
+    const earner = await client('north');
+    const accrualId = await accrual(earner);
+    const masterTask = await seedTask(
+      masterId,
+      'admin.commission.clawback',
+      clawbackOf(accrualId, earner),
+    );
+    const otherTask = await seedTask(
+      maskedId,
+      'admin.commission.clawback',
+      clawbackOf(accrualId, earner),
+    );
+    const master = await actingAs(ctx, 'admin', MASTER);
+    const other = await actingAs(ctx, 'admin', MASKED);
+    expect(ids(await feed(other))).toContain(otherTask);
+
+    const res = await master.post(`/v1/admin/notifications/${masterTask}/close`, reason);
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ id: masterTask, outcome: 'kept' });
+
+    expect(ids(await feed(master))).not.toContain(masterTask);
+    expect(ids(await feed(other)), 'the decision did not reach every holder').not.toContain(
+      otherTask,
+    );
+    const history = (await feed(other, 'view=history&limit=100')).items.find(
+      (t) => t.id === otherTask,
+    );
+    expect(history?.resolution).toMatchObject({ outcome: 'kept', byName: 'Tasks Master' });
+
+    const audited = await ctx.db.db
+      .select()
+      .from(auditLog)
+      .where(
+        and(eq(auditLog.action, 'notification.task_close'), eq(auditLog.subjectId, accrualId)),
+      );
+    expect(audited).toHaveLength(1);
+    expect(audited[0].details).toMatchObject({ kind: 'admin.commission.clawback' });
+
+    const again = await master.post(`/v1/admin/notifications/${masterTask}/close`, reason);
+    expect(again.status).toBe(409);
+  });
+
+  it('cannot keep what was already reversed — the reversal ended it first', async () => {
+    const earner = await client('north');
+    const accrualId = await accrual(earner);
+    const taskId = await seedTask(
+      masterId,
+      'admin.commission.clawback',
+      clawbackOf(accrualId, earner),
+    );
+    await ctx.db.db.execute(
+      sql`UPDATE ib_accruals SET status = 'reversed' WHERE id = ${accrualId}`,
+    );
+    const master = await actingAs(ctx, 'admin', MASTER);
+    const res = await master.post(`/v1/admin/notifications/${taskId}/close`, reason);
+    expect(res.status).toBe(409);
+    const row = (await feed(master, 'view=history&limit=100')).items.find((t) => t.id === taskId);
+    expect(row?.resolution?.outcome).toBe('reversed');
+  });
+
+  it('refuses a kind with no such decision, and a reader who cannot act on the kind', async () => {
+    const subject = await client('north');
+    const kycTask = await seedTask(deskId, 'admin.kyc.submitted', kycOf(subject));
+    const desk = await actingAs(ctx, 'admin', DESK);
+    const refused = await desk.post(`/v1/admin/notifications/${kycTask}/close`, reason);
+    expect(refused.status).toBe(400);
+    expect(ids(await feed(desk)), 'a refused close still ended the task').toContain(kycTask);
+
+    // The desk holds no `ib.commissions.reverse`: its clawback row does not exist for it.
+    const accrualId = await accrual(subject);
+    const clawback = await seedTask(
+      deskId,
+      'admin.commission.clawback',
+      clawbackOf(accrualId, subject),
+    );
+    expect((await desk.post(`/v1/admin/notifications/${clawback}/close`, reason)).status).toBe(404);
   });
 });
 

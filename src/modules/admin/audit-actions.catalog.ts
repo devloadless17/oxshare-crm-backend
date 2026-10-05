@@ -506,6 +506,16 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
     group: 'Money',
   },
   /*
+   * The other answer to a clawback task: the partner KEEPS the commission. Filed
+   * under Money beside the reversal, because whoever audits a clawback looks for
+   * both outcomes in one place.
+   */
+  {
+    action: 'notification.task_close',
+    label: 'Task closed without action (e.g. commission kept)',
+    group: 'Money',
+  },
+  /*
    * `ib.partners.suspend`, matching what is actually written.
    *
    * The action was renamed to sit alongside its permission key and this entry

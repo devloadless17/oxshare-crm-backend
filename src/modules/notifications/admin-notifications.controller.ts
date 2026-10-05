@@ -13,16 +13,17 @@ import {
 import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Request } from 'express';
 import { AnyAdmin, PermissionsGuard, type AuthenticatedAdmin } from '../admin/guards/admin.guard';
-import { NotAudited } from '../admin/guards/audited.decorator';
+import { Audited, NotAudited } from '../admin/guards/audited.decorator';
 import { ScopedToClients } from '../admin/guards/client-scope.decorator';
 import { decodeCursor } from '../../common/pagination';
 import { NotificationsService } from './notifications.service';
 import {
+  AdminNotificationCloseDto,
+  AdminNotificationCloseResponseDto,
   AdminNotificationListResponseDto,
   AdminNotificationMarkResponseDto,
   AdminNotificationSummaryDto,
   AdminNotificationsQueryDto,
-  AdminNotificationsReadAllDto,
   AdminNotificationsReadSubjectDto,
 } from './dto/admin-notifications.dto';
 import { NotificationsMarkAllReadResponseDto } from './dto/notifications.dto';
@@ -50,7 +51,9 @@ const READ_TIME_SCOPE =
  *
  * Handled tasks leave every admin's inbox without anybody touching this
  * controller: the item tables' triggers resolve them the moment the item
- * leaves its queue, whichever path moved it.
+ * leaves its queue, whichever path moved it. That is the ONLY way out of the
+ * inbox (the owner's rule, 5 Oct 2026): opening a task marks it seen, nothing
+ * more, so there is no "mark unread" and no "mark all read" for an admin.
  *
  * ## `@AnyAdmin`, not a `notifications.*` permission key — a decision, written down
  *
@@ -82,7 +85,6 @@ export class AdminNotificationsController {
   ): Promise<AdminNotificationListResponseDto> {
     const page = await this.notifications.adminFeed(req.admin, {
       view: query.view ?? 'history',
-      status: query.status,
       category: query.category,
       q: query.q,
       cursor: query.cursor ? decodeCursor(query.cursor) : undefined,
@@ -121,7 +123,8 @@ export class AdminNotificationsController {
   @AnyAdmin('A count of the actor’s own open tasks. No client is named in the response.')
   @ApiCookieAuth()
   @ApiOperation({
-    summary: 'Tasks waiting on the signed-in admin — the bell badge, in total and per category',
+    summary:
+      'Tasks not yet handled by anybody, seen or not — the bell badge, in total and per category',
   })
   @ApiOkResponse({ type: AdminNotificationSummaryDto })
   @ScopedToClients(READ_TIME_SCOPE)
@@ -131,32 +134,14 @@ export class AdminNotificationsController {
     return this.notifications.adminSummary(req.admin);
   }
 
-  @Post('read-all')
-  @HttpCode(200)
-  @AnyAdmin('Marks the actor’s OWN tasks read; touches nobody else’s rows.')
-  @ApiCookieAuth()
-  @ApiOperation({ summary: 'Mark tasks read — all, or one category — up to what was shown' })
-  @ApiOkResponse({ type: NotificationsMarkAllReadResponseDto })
-  @NotAudited('Clears the actor’s own unread markers — no client data, no money, no configuration.')
-  @ScopedToClients(READ_TIME_SCOPE)
-  async markAllRead(
-    @Req() req: Request & { admin: AuthenticatedAdmin },
-    @Body() body: AdminNotificationsReadAllDto,
-  ): Promise<NotificationsMarkAllReadResponseDto> {
-    return {
-      updated: await this.notifications.markAllAdminRead(req.admin, {
-        category: body.category,
-        upTo: body.upTo ? new Date(body.upTo) : undefined,
-      }),
-    };
-  }
-
   @Post('read-subject')
   @HttpCode(200)
   @AnyAdmin('Marks the actor’s OWN tasks about one item read — they opened the item itself.')
   @ApiCookieAuth()
   @ApiOperation({
-    summary: 'The reader opened an item (e.g. a KYC review) — mark their tasks about it read',
+    summary:
+      'The reader opened an item (e.g. a KYC review) — mark their tasks about it seen. They stay ' +
+      'in the inbox until the item is handled.',
   })
   @ApiOkResponse({ type: NotificationsMarkAllReadResponseDto })
   @NotAudited('Clears the actor’s own unread markers — no client data, no money, no configuration.')
@@ -174,11 +159,37 @@ export class AdminNotificationsController {
     };
   }
 
+  @Post(':id/close')
+  @HttpCode(200)
+  @AnyAdmin(
+    'The kind’s ACTION permission is enforced by the feed’s visibility: a row of a kind the ' +
+      'reader cannot act on now reads as absent, so only someone who could decide the item ' +
+      'can close its task.',
+  )
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary:
+      'End a task by the decision its kind declares for leaving the item as it is (a clawback: ' +
+      'the partner keeps the commission). Ends it for EVERY admin; 409 if already handled.',
+  })
+  @ApiOkResponse({ type: AdminNotificationCloseResponseDto })
+  @Audited('notification.task_close')
+  @ScopedToClients(READ_TIME_SCOPE)
+  close(
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: AdminNotificationCloseDto,
+  ): Promise<AdminNotificationCloseResponseDto> {
+    return this.notifications.closeAdminTask(req.admin, id, body.reason);
+  }
+
   @Post(':id/read')
   @HttpCode(200)
   @AnyAdmin('Marks the actor’s OWN task read; ownership and scope are the WHERE clause.')
   @ApiCookieAuth()
-  @ApiOperation({ summary: 'Mark one task read. Idempotent.' })
+  @ApiOperation({
+    summary: 'Mark one task seen. It stays in the inbox until handled. Idempotent.',
+  })
   @ApiOkResponse({ type: AdminNotificationMarkResponseDto })
   @NotAudited(
     'Marks the actor’s own bell row read — touches no client data, no money and no configuration. ' +
@@ -190,22 +201,5 @@ export class AdminNotificationsController {
     @Param('id', ParseUUIDPipe) id: string,
   ): Promise<AdminNotificationMarkResponseDto> {
     return this.notifications.markAdminRead(req.admin, id);
-  }
-
-  @Post(':id/unread')
-  @HttpCode(200)
-  @AnyAdmin('Marks the actor’s OWN task unread again — the undo of a mark-read.')
-  @ApiCookieAuth()
-  @ApiOperation({ summary: 'Mark one task unread again (undo). Idempotent.' })
-  @ApiOkResponse({ type: AdminNotificationMarkResponseDto })
-  @NotAudited(
-    'Restores the actor’s own unread marker — no client data, no money, no configuration.',
-  )
-  @ScopedToClients(READ_TIME_SCOPE)
-  markUnread(
-    @Req() req: Request & { admin: AuthenticatedAdmin },
-    @Param('id', ParseUUIDPipe) id: string,
-  ): Promise<AdminNotificationMarkResponseDto> {
-    return this.notifications.markAdminUnread(req.admin, id);
   }
 }

@@ -1,6 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ScheduledJob } from '../../common/scheduling/scheduled-job.decorator';
-import { ClientNotFoundError, NotFoundError } from '../../common/errors/domain-errors';
+import {
+  ClientNotFoundError,
+  ConflictError,
+  NotFoundError,
+} from '../../common/errors/domain-errors';
+import { AuditLogStore, type AuditSubjectType } from '../../store/audit-log.store';
 import type { Executor } from '../../database/db';
 import type { NotificationSubjectKind } from '../../database/schema';
 import type {
@@ -58,9 +63,20 @@ export type AdminFeedItem = Omit<AdminNotificationRow, 'kind'> & {
   category: AdminNotificationCategory;
 };
 
+/**
+ * A task's item, as the audit log names it. A KYC task's subject is the
+ * client's Portal ID, which is how every `kyc_submission` audit row is keyed.
+ */
+const AUDIT_SUBJECT_OF: Record<NotificationSubjectKind, AuditSubjectType> = {
+  transaction: 'transaction',
+  kyc: 'kyc_submission',
+  ib_application: 'ib_application',
+  transfer: 'transfer',
+  ib_accrual: 'ib_accrual',
+};
+
 export interface AdminFeedQuery {
   view: 'inbox' | 'history';
-  status?: 'open' | 'handled';
   category?: AdminNotificationCategory;
   q?: string;
   cursor?: CursorPosition;
@@ -86,6 +102,7 @@ export class NotificationsService implements NotificationDispatchPort {
     private readonly scopes: AdminClientScopesStore,
     private readonly visibility: ClientVisibilityService,
     private readonly leases: JobLeaseService,
+    private readonly auditLog: AuditLogStore,
   ) {}
 
   async notify(input: NotificationInput, executor?: Executor): Promise<void> {
@@ -261,7 +278,6 @@ export class NotificationsService implements NotificationDispatchPort {
   ): Promise<CursorPage<AdminFeedItem>> {
     const page = await this.store.findAdminPage(readerOf(admin), {
       view: query.view,
-      status: query.view === 'history' ? query.status : undefined,
       kinds: query.category ? kindsIn(query.category) : undefined,
       q: query.q,
       cursor: query.cursor,
@@ -298,18 +314,39 @@ export class NotificationsService implements NotificationDispatchPort {
     return this.store.markAdminRead(readerOf(admin), id);
   }
 
-  async markAdminUnread(admin: AdminFeedPrincipal, id: string) {
-    return this.store.markAdminUnread(readerOf(admin), id);
-  }
-
-  async markAllAdminRead(
-    admin: AdminFeedPrincipal,
-    options: { category?: AdminNotificationCategory; upTo?: Date } = {},
-  ): Promise<number> {
-    return this.store.markAllAdminRead(readerOf(admin), {
-      kinds: options.category ? kindsIn(options.category) : undefined,
-      upTo: options.upTo,
-    });
+  /**
+   * End a task by the decision its catalogue kind declares for leaving the item
+   * as it is (the clawback's "the partner keeps it"), for every admin who holds
+   * it. Audited `notification.task_close` in the same transaction, naming the
+   * item and the client, so the decision is on record exactly like the one it
+   * stands in for. 409 when somebody handled the item first.
+   */
+  async closeAdminTask(
+    admin: AdminFeedPrincipal & { email: string },
+    id: string,
+    reason: string,
+  ): Promise<{ id: string; outcome: string }> {
+    const note = reason.trim();
+    const closed = await this.store.closeAdminTask(readerOf(admin), id, (tx, task) =>
+      this.auditLog
+        .record(
+          {
+            actorId: admin.id,
+            actorEmail: admin.email,
+            action: 'notification.task_close',
+            subjectType: AUDIT_SUBJECT_OF[task.subjectKind],
+            subjectId: task.subjectId,
+            clientId: task.clientId,
+            details: { kind: task.kind, userId: task.clientId, reason: note },
+          },
+          tx,
+        )
+        .then(() => undefined),
+    );
+    if (!closed) {
+      throw new ConflictError('Somebody handled this task already — it is in History.');
+    }
+    return { id, outcome: closed.outcome };
   }
 
   async markAdminSubjectRead(
