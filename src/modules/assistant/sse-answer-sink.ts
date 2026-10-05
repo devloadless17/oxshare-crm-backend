@@ -8,7 +8,9 @@ const HEARTBEAT_MS = 15_000;
  * The answer as Server-Sent Events, the provider-neutral protocol the portal reads:
  *
  *     event: meta       {conversationId, messageId, created}
+ *     event: status     {stage: 'searching'}
  *     event: delta      {text}
+ *     event: sources    {items: [{title, url}]}
  *     event: followups  {questions}
  *     event: done       {messageId, finish, remainingToday}
  *     event: error      {code}
@@ -41,6 +43,14 @@ export class SseAnswerSink implements AnswerSink {
 
   meta(data: { conversationId: string; messageId: string; created: boolean }): void {
     this.event('meta', data);
+  }
+
+  status(stage: 'searching'): void {
+    this.event('status', { stage });
+  }
+
+  sources(items: { title: string; url: string }[]): void {
+    this.event('sources', { items });
   }
 
   delta(text: string): void {

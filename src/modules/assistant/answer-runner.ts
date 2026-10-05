@@ -1,6 +1,7 @@
 import { Inject, Injectable, Logger, type BeforeApplicationShutdown } from '@nestjs/common';
 import type { Locale } from '../../common/i18n/locale';
 import { AssistantStore, type AssistantAnswerOutcome } from '../../store/assistant.store';
+import { withoutCitations } from './answer-text';
 import { FollowupSplitter } from './followups';
 import { buildInstructions, languageOf } from './knowledge/system-prompt';
 import {
@@ -11,6 +12,7 @@ import {
   type LlmItem,
   type LlmProvider,
   type LlmRequest,
+  type LlmSource,
 } from './llm/llm-provider';
 import { ToolRegistry } from './tools/tool-registry';
 
@@ -37,7 +39,11 @@ export interface PreparedAnswer {
  */
 export interface AnswerSink {
   meta(data: { conversationId: string; messageId: string; created: boolean }): void;
+  /** Nothing to show yet, and why: the model is searching the web. */
+  status(stage: 'searching'): void;
   delta(text: string): void;
+  /** The pages the answer cited, sent once, before `done`. */
+  sources(items: LlmSource[]): void;
   followups(questions: string[]): void;
   done(data: { messageId: string; finish: LlmFinish | 'refused'; remainingToday: number }): void;
   error(code: AnswerErrorCode): void;
@@ -45,8 +51,13 @@ export interface AnswerSink {
 
 export type AnswerErrorCode = 'UPSTREAM' | 'TIMEOUT' | 'INTERNAL';
 
-/** Output cap per model turn: room for a thorough answer, a bound on any single one's cost. */
-const MAX_OUTPUT_TOKENS = 1_200;
+/**
+ * Output cap per model turn: room for a full market analysis (news, levels,
+ * scenarios, a trade plan), a bound on any single one's cost.
+ */
+const MAX_OUTPUT_TOKENS = 1_800;
+/** Cited pages shown under one answer: enough to check it, few enough to read. */
+const MAX_SOURCES = 8;
 /** Model → tools → model rounds. v1 offers no tools, so one round is the norm. */
 const MAX_ROUNDS = 4;
 /** The longest one answer may take, end to end. */
@@ -136,7 +147,9 @@ export class AnswerRunner implements BeforeApplicationShutdown {
     const stopping = this.stopping.signal;
     const signal = AbortSignal.any([clientGone, timedOut, stopping]);
     const splitter = new FollowupSplitter();
-    const usage = { inputTokens: 0, cachedTokens: 0, outputTokens: 0 };
+    const usage = { inputTokens: 0, cachedTokens: 0, outputTokens: 0, webSearches: 0 };
+    const sources = new Map<string, LlmSource>();
+    let searching = false;
 
     let text = '';
     let ttftMs: number | null = null;
@@ -190,6 +203,8 @@ export class AnswerRunner implements BeforeApplicationShutdown {
           tools: toolSpecs,
           maxOutputTokens: MAX_OUTPUT_TOKENS,
           endUserKey: prepared.endUserKey,
+          // Prices, news and levels change by the minute: the model searches when a question needs them.
+          webSearch: true,
           signal,
         };
         for await (const event of this.streamWithOneRetry(request, () => text.length > 0)) {
@@ -197,10 +212,19 @@ export class AnswerRunner implements BeforeApplicationShutdown {
             await emit(splitter.push(event.delta));
           } else if (event.type === 'tool_call') {
             calls.push(event);
+          } else if (event.type === 'searching') {
+            // Said once, and only before any text: after that the text itself shows progress.
+            if (!searching && text.length === 0) sink.status('searching');
+            searching = true;
+          } else if (event.type === 'source') {
+            if (sources.size < MAX_SOURCES && !sources.has(event.url)) {
+              sources.set(event.url, { title: event.title, url: event.url });
+            }
           } else {
             usage.inputTokens += event.usage.inputTokens;
             usage.cachedTokens += event.usage.cachedTokens;
             usage.outputTokens += event.usage.outputTokens;
+            usage.webSearches += event.usage.webSearches;
             finish = event.finish;
           }
         }
@@ -238,6 +262,7 @@ export class AnswerRunner implements BeforeApplicationShutdown {
         throw new LlmUpstreamError(`The model returned no text (finish: ${finish}).`, false);
       }
       followups = tail.followups;
+      if (sources.size > 0) sink.sources([...sources.values()]);
       if (followups.length > 0) sink.followups(followups);
       sink.done({
         messageId: prepared.assistantMessageId,
@@ -284,9 +309,11 @@ export class AnswerRunner implements BeforeApplicationShutdown {
       const latencyMs = Date.now() - startedAt;
       await this.store
         .finishAnswer(prepared.assistantMessageId, {
-          content: text.trimEnd(),
+          content: withoutCitations(text).trimEnd(),
           status: outcome,
           followups: followups.length > 0 ? followups : null,
+          // A refused answer shows only the refusal, so it keeps no pages either.
+          sources: outcome !== 'refused' && sources.size > 0 ? [...sources.values()] : null,
           model: this.llm.model,
           ...usage,
           ttftMs,
@@ -301,7 +328,7 @@ export class AnswerRunner implements BeforeApplicationShutdown {
       // One line per answer: what it cost and how it felt. Never the content.
       this.logger.log(
         `answer ${outcome} model=${this.llm.model} in=${usage.inputTokens} cached=${usage.cachedTokens} ` +
-          `out=${usage.outputTokens} ttft=${ttftMs ?? '-'}ms total=${latencyMs}ms`,
+          `out=${usage.outputTokens} searches=${usage.webSearches} ttft=${ttftMs ?? '-'}ms total=${latencyMs}ms`,
       );
     }
   }

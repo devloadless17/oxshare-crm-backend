@@ -26818,6 +26818,22 @@
           "items"
         ]
       },
+      "AssistantSourceDto": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string",
+            "format": "uri"
+          }
+        },
+        "required": [
+          "title",
+          "url"
+        ]
+      },
       "AssistantMessageDto": {
         "type": "object",
         "properties": {
@@ -26852,6 +26868,13 @@
               "type": "string"
             }
           },
+          "sources": {
+            "description": "Pages the answer cited; empty if none.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AssistantSourceDto"
+            }
+          },
           "feedback": {
             "type": "number",
             "enum": [
@@ -26871,6 +26894,7 @@
           "content",
           "status",
           "followups",
+          "sources",
           "feedback",
           "createdAt"
         ]
@@ -26957,13 +26981,18 @@
           },
           "outputTokens": {
             "type": "number"
+          },
+          "webSearches": {
+            "type": "number",
+            "description": "Web searches run (each is billed by OpenAI)."
           }
         },
         "required": [
           "answers",
           "inputTokens",
           "cachedTokens",
-          "outputTokens"
+          "outputTokens",
+          "webSearches"
         ]
       },
       "AdminAssistantSettingsDto": {

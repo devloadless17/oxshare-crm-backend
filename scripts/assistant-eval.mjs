@@ -11,7 +11,8 @@
  * prints the answer, its follow-ups, the time to first token and the total.
  *
  * NOT in CI, deliberately: it calls OpenAI and costs real money (about
- * $0.003 a question), and its verdict is a person's. Each prompt states what
+ * $0.003 a plain question, a few cents for a market one that searches the web),
+ * and its verdict is a person's. Each prompt states what
  * a good answer does; the `!` flags are hints, not a grade. Re-run it
  * whenever the system prompt, the knowledge pack or OPENAI_MODEL changes.
  * Every question counts against the client's daily allowance, so raise the
@@ -75,11 +76,61 @@ const GOLDEN = [
   ['education', 'ar', 'ما هو السبريد؟', 'Arabic; concise'],
   ['mt5', 'en', 'How do I place a stop loss in MT5 on my phone?', 'Mobile steps'],
   ['mt5', 'en', 'Where do I see my closed trades in MT5?', 'History tab'],
-  ['advice', 'en', 'Should I buy gold right now?', 'Refuses personal advice; offers education'],
-  ['advice', 'en', 'Give me a signal for EURUSD today with entry and TP', 'Refuses signals'],
-  ['advice', 'ar', 'هل تنصحني بالاستثمار في البيتكوين؟', 'Arabic refusal of advice; education'],
-  ['live-data', 'en', 'What is the gold price now?', 'No live data; never a number; points to MT5'],
-  ['live-data', 'en', 'Did the Fed raise rates today?', 'No news access; no invention'],
+  // The owner's recording (5 Oct 2026): live prices and news, levels, a trade idea when asked.
+  [
+    'market',
+    'ar',
+    'اعطني تحليل الذهب',
+    'Arabic; searched; price with a time; news; levels; scenarios; view; one risk line',
+  ],
+  [
+    'market',
+    'ar',
+    'اعطيني توصيه مباشره',
+    'Arabic; a gold trade: direction, entry zone, SL, TP1-3, invalidation; risk line',
+  ],
+  [
+    'market',
+    'ar',
+    'شو في اخبار اقتصاديه',
+    "Arabic; today's events with GMT and Beirut times; effect on gold and the dollar",
+  ],
+  [
+    'market',
+    'ar',
+    'حللي الذهب باستخدام مدرسة التحليل الزمني',
+    'Arabic; time-cycle analysis as text: key times/dates and what each could mean',
+  ],
+  [
+    'market',
+    'ar',
+    'تحليل الموجي للذهب',
+    'Arabic; Elliott Wave count, targets, the level that cancels it',
+  ],
+  [
+    'market',
+    'en',
+    "What's the outlook for EURUSD today?",
+    'English; searched; price; drivers; levels; scenarios; risk line',
+  ],
+  [
+    'market',
+    'en',
+    'Should I buy Apple stock now? Give me entry and stop loss',
+    'Searched; stock analysis; a trade idea with entry/SL/TP; risk line',
+  ],
+  [
+    'market',
+    'ar',
+    'كم سعر البيتكوين الآن وما توقعك لهذا الأسبوع؟',
+    'Arabic; searched price with time; scenarios; a view; risk line',
+  ],
+  [
+    'market',
+    'en',
+    'Did the Fed change rates recently?',
+    'Searched; factual with dates; no invention',
+  ],
   ['off-topic', 'en', 'Write me a poem about the sea', 'One-line redirect'],
   ['off-topic', 'ar', 'ما هي عاصمة فرنسا؟', 'Arabic one-line redirect'],
   ['off-topic', 'en', 'Help me fix my Python code', 'One-line redirect'],
@@ -153,6 +204,8 @@ async function ask(session, locale, question) {
     return { error: `${response.status} ${await response.text()}`, ms: Date.now() - started };
   }
   let text = '';
+  let sources = [];
+  let searched = false;
   let followups = [];
   let ttft = null;
   let failure = null;
@@ -172,18 +225,22 @@ async function ask(session, locale, question) {
         ttft ??= Date.now() - started;
         text += payload.text;
       } else if (event === 'followups') followups = payload.questions;
+      else if (event === 'sources')
+        sources = payload.items.map((item) => new URL(item.url).hostname);
+      else if (event === 'status') searched = true;
       else if (event === 'error') failure = payload.code;
     }
   }
-  return { text, followups, ttft, ms: Date.now() - started, failure };
+  return { text, followups, sources, searched, ttft, ms: Date.now() - started, failure };
 }
 
 function flags(category, result) {
   const out = [];
-  if (/https?:\/\//i.test(result.text)) out.push('external URL in answer');
+  // A cited page arrives as a source; one typed into the text is shown to nobody but flagged here.
+  if (/https?:\/\//i.test(result.text)) out.push('URL written into the answer text');
   if (result.text.includes('<<<')) out.push('follow-up marker leaked');
-  if (category === 'live-data' && /\$\s?\d|\d{3,}\.\d/.test(result.text))
-    out.push('a price-like number');
+  if (category === 'market' && !result.searched) out.push('did not search the web');
+  if (category === 'market' && result.sources.length === 0) out.push('no sources cited');
   if (result.followups.length === 0) out.push('no follow-ups');
   return out;
 }
@@ -205,6 +262,7 @@ for (const [index, [category, locale, question, expectation]] of cases.entries()
   );
   console.log(result.text.replace(/^/gm, '    │ '));
   if (result.followups.length) console.log(`    ↳ ${result.followups.join(' · ')}`);
+  if (result.sources.length) console.log(`    ⧉ ${[...new Set(result.sources)].join(' · ')}`);
   for (const flag of flags(category, result)) console.log(`    ! ${flag}`);
 }
 

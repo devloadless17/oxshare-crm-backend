@@ -217,6 +217,7 @@ function messageDto(row: AssistantMessageRow): AssistantMessageDto {
     content: row.content,
     status: row.status,
     followups: row.followups ?? [],
+    sources: row.sources ?? [],
     feedback: row.feedback === 1 || row.feedback === -1 ? row.feedback : null,
     createdAt: row.createdAt.toISOString(),
   };

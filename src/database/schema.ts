@@ -5556,6 +5556,10 @@ export const assistantMessages = pgTable(
     outputTokens: integer('output_tokens'),
     ttftMs: integer('ttft_ms'),
     latencyMs: integer('latency_ms'),
+    /** Web pages the answer cited (0190), shown to the client under it. */
+    sources: jsonb('sources').$type<{ title: string; url: string }[]>(),
+    /** Web searches run for the answer (0190): each is billed by OpenAI. */
+    webSearches: smallint('web_searches'),
     feedback: smallint('feedback'),
     feedbackReason: varchar('feedback_reason', { length: 32 }),
     feedbackAt: timestamp('feedback_at', { withTimezone: true }),
