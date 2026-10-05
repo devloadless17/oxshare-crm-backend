@@ -4,16 +4,16 @@ name: CI
 # This workflow is that requirement. If the money path stops balancing, the
 # build goes red before anyone reviews the diff.
 #
-# ── This workflow no longer deploys (21 Aug 2026) ───────────────────────────
+# ── A push to `production` deploys (DEPLOY-PLAYBOOK §1) ──────────────────────
 #
-# It VERIFIES only. The `build` and `deploy` jobs are commented out at the bottom
-# of this file, with a banner explaining why and how to bring them back: the
-# backend now runs on the Contabo Windows server beside the MT5 bridge, as a bare
-# Node process, and is deployed by hand.
+#   main / PRs to production → verify only, never touches a server
+#   push to production       → verify → build (Docker Hub, :latest + :<sha>)
+#                              → deploy to the backend server over SSH:
+#                                migrate, `up -d`, health gate
 #
-# Both branches therefore behave the same today — `main` and `production` each run
-# `verify` and stop. `production` remains the release branch by convention, so the
-# history still records what was meant to be live.
+# The backend server is Linux (Hostinger, Düsseldorf). It reaches the MT5 bridge,
+# which stays alone on the Contabo Windows server, through a WireGuard tunnel:
+# the bridge is http://10.8.0.2:5055 and answers nobody else.
 #
 # ── Minutes are a budget, so this runs when it can tell you something ────────
 #
@@ -29,29 +29,17 @@ name: CI
 # To skip deliberately, put `[skip ci]` in the commit message — GitHub honours it
 # natively, and `workflow_dispatch` below still works on a skipped commit, so
 # nothing becomes unverifiable. Take care skipping a commit destined for
-# production: with deploys now manual there is no gate to catch it later, so the
-# green run on that exact SHA is the only evidence it was ever checked.
+# production: `[skip ci]` on a production push skips the DEPLOY too, which is the
+# point of skipping, and `workflow_dispatch` redeploys it when wanted.
 on:
-  # `main` ONLY. A push to `production` is not built here, deliberately.
-  #
-  # Promotion used to run this suite THREE times on identical code: the push to
-  # main, the PR to production, and then the post-merge push to production. The
-  # third proves nothing the second did not — GitHub tests the MERGE RESULT on a
-  # pull_request, so by the time the merge commit exists it has already been
-  # verified under this exact workflow.
-  #
-  # Measured 10 Sep 2026: ~10 minutes per run, so ~10 minutes per promotion for
-  # no information. The account was at 1,803 of 2,000 included Actions minutes
-  # when this was cut.
-  #
-  # ⚠️ THE TRADE-OFF, STATED: a DIRECT push to `production` — bypassing a PR — now
-  # runs nothing. That is the one case this removes cover from. It is acceptable
-  # because production is reached by PR (a direct push is refused as a
-  # non-fast-forward anyway, since production carries merge commits main lacks),
-  # and because `workflow_dispatch` below can run this suite against any ref by
-  # hand if a direct push ever happens.
+  # `production` runs the suite again before it deploys. A PR into production
+  # already tested the merge result, so this costs ~10 Actions minutes per
+  # release (the account was at 1,803 of 2,000 included minutes on 10 Sep 2026).
+  # It is paid because `production` has no branch protection: a DIRECT push
+  # (the "Release:" commits are direct pushes) would otherwise ship untested
+  # code to a money system. `deploy` needs `verify`, so nothing ships red.
   push:
-    branches: [main]
+    branches: [main, production]
     paths-ignore:
       - '**.md'
       - 'docs/**'
@@ -66,9 +54,10 @@ on:
       - '.gitignore'
       - 'LICENSE'
       - '.vscode/**'
-  # A redeploy or a rollback without an empty commit. Rolling back is: set
-  # IMAGE_TAG to the previous SHA in .env on the VPS and `up -d`, or re-run this
-  # workflow from the older commit.
+  # A redeploy without an empty commit. Rolling back is `bash release.sh rollback`
+  # in ~/oxshare-crm-backend on the server (the previous version is kept, and the
+  # switch is the same zero-downtime one), or re-running this workflow on an
+  # older commit.
   workflow_dispatch:
 
 # Nothing here uses GITHUB_TOKEN — the registry and the VPS have their own
@@ -77,15 +66,13 @@ permissions:
   contents: read
 
 # A superseded run describes a commit nobody is on any more, so cancelling it
-# frees minutes for the run that replaced it. `production` is still exempt: while
-# the deploy job is commented out nothing can be interrupted mid-ssh, but the
-# exemption stays so re-enabling it does not silently reintroduce that hazard.
+# frees minutes for the run that replaced it. `production` is exempt: cancelling
+# a deploy mid-ssh orphans containers on the server (DEPLOY-PLAYBOOK §1).
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/production' }}
 
-# `DEPLOY_DIR` lived here and is now inside the commented deploy job, where the
-# only step that used it can be read beside it.
+# `DEPLOY_DIR` is on the deploy job, beside the only step that uses it.
 
 jobs:
   verify:
@@ -254,424 +241,383 @@ jobs:
   # On a pull_request, github.ref is refs/pull/N/merge — so the branch check
   # alone would not be enough, which is why the event is checked too.
   # ───────────────────────────────────────────────────────────────────────────
-# ─────────────────────────────────────────────────────────────────────────────
-# DEPLOYMENT DISABLED — 21 Aug 2026. Everything below is commented out, intact.
-#
-# WHY: the backend no longer runs on the Hostinger VPS this pipeline targets. It
-# was moved onto the Contabo WINDOWS server alongside the MT5 bridge, where it
-# runs as a bare Node process reading a .env file from disk — no Docker, no
-# orchestrator, no SSH deploy target of the shape below. Deploys there are
-# `git pull` + rebuild + restart, performed by hand.
-#
-# Left commented rather than deleted because none of it is wrong — it is aimed at
-# a host that is no longer production. If the backend ever moves back to Linux
-# (only the MT5 bridge genuinely REQUIRES Windows; the CRM API reaches the bridge
-# over HTTPS from anywhere), this is a working, previously-proven pipeline:
-# tests gate the build, the image is tagged with the commit SHA, the release is
-# health-gated, and rollback is one tag.
-#
-# TO RE-ENABLE:
-#   1. Uncomment everything below this banner.
-#   2. Repoint the secrets at the new host: VPS_HOST, VPS_USER, VPS_SSH_KEY_B64.
-#   3. Confirm the target runs Docker + Compose and that the `deploy` user can
-#      reach the socket, then push to `production` and watch the health gate.
-#   Full detail — secrets table, first-admin bootstrap, rollback — in DEPLOYMENT.md.
-#
-# NOTE the `verify` job above is deliberately still ACTIVE: type-check, lint and
-# the §11 money tests still run on every push and PR. With deploys now manual,
-# that gate is the only automated thing standing between a bad commit and a
-# hand-deployed production, so it matters MORE than it did, not less.
-# ─────────────────────────────────────────────────────────────────────────────
+  build:
+    name: Build and push image
+    if: github.ref == 'refs/heads/production' && github.event_name != 'pull_request'
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
 
-# env:
-#   # Deploy target on the VPS, relative to VPS_USER's home directory. Lived at
-#   # the top level while this job was active; kept here so uncommenting the
-#   # block below restores a working workflow in one step.
-#   DEPLOY_DIR: oxshare-crm-backend
-#
-#   build:
-#     name: Build and push image
-#     if: github.ref == 'refs/heads/production' && github.event_name != 'pull_request'
-#     needs: verify
-#     runs-on: ubuntu-latest
-#     timeout-minutes: 30
-#     steps:
-#       - uses: actions/checkout@v4
-#
-#       - uses: docker/setup-buildx-action@v3
-#
-#       - uses: docker/login-action@v3
-#         with:
-#           username: ${{ secrets.DOCKER_USERNAME }}
-#           password: ${{ secrets.DOCKER_SECRET }}
-#
-#       # Two tags: `latest` for a human, and the commit SHA for the machine. The
-#       # deploy pins the stack to the SHA so `up -d` reliably recreates the
-#       # container — with a mutable tag it can decide nothing changed — and so the
-#       # tag doubles as an immutable rollback target.
-#       - uses: docker/build-push-action@v6
-#         with:
-#           context: .
-#           file: Dockerfile
-#           push: true
-#           tags: |
-#             ${{ secrets.DOCKER_USERNAME }}/oxshare-crm-backend:latest
-#             ${{ secrets.DOCKER_USERNAME }}/oxshare-crm-backend:${{ github.sha }}
-#           cache-from: type=gha
-#           cache-to: type=gha,mode=max
-#
-#   deploy:
-#     name: Ship and deploy
-#     if: github.ref == 'refs/heads/production' && github.event_name != 'pull_request'
-#     needs: build
-#     runs-on: ubuntu-latest
-#     timeout-minutes: 20
-#     steps:
-#       # ── Fail on the runner, not in a crash loop on the VPS ────────────────
-#       #
-#       # env.validation.ts refuses to boot on any of these, which is correct and
-#       # also means the symptom is a container restarting forever behind a health
-#       # gate that times out twenty minutes later. Everything checkable is checked
-#       # here, where the error message can say which secret and why.
-#       - name: Validate secrets
-#         env:
-#           REQUIRED: |
-#             DOCKER_USERNAME DOCKER_SECRET VPS_HOST VPS_USER VPS_SSH_KEY_B64
-#             API_DOMAIN ACME_EMAIL POSTGRES_PASSWORD
-#             ADMIN_JWT_SECRET ADMIN_JWT_REFRESH_SECRET JWT_ACCESS_SECRET JWT_REFRESH_SECRET
-#             APP_ENCRYPTION_KEY PORTAL_URL ADMIN_URL
-#             R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET
-#           SECRETS_JSON: ${{ toJSON(secrets) }}
-#         run: |
-#           set -euo pipefail
-#           get() { printf '%s' "$SECRETS_JSON" | jq -r --arg k "$1" '.[$k] // ""'; }
-#           fail() { echo "::error::$1"; FAILED=1; }
-#           FAILED=0
-#
-#           missing=""
-#           for key in $REQUIRED; do
-#             [ -z "$(get "$key")" ] && missing="$missing $key"
-#           done
-#           if [ -n "$missing" ]; then
-#             fail "Missing required GitHub secret(s):$missing"
-#           fi
-#
-#           # Four DISTINCT secrets, each at least 32 characters. env.validation.ts
-#           # throws on a duplicate — reusing one across the admin and portal token
-#           # families means a token minted for one is valid for the other.
-#           for key in ADMIN_JWT_SECRET ADMIN_JWT_REFRESH_SECRET JWT_ACCESS_SECRET JWT_REFRESH_SECRET APP_ENCRYPTION_KEY; do
-#             v="$(get "$key")"
-#             [ -n "$v" ] && [ "${#v}" -lt 32 ] && fail "$key must be at least 32 characters (it is ${#v})."
-#           done
-#           dupes=$(for key in ADMIN_JWT_SECRET ADMIN_JWT_REFRESH_SECRET JWT_ACCESS_SECRET JWT_REFRESH_SECRET; do
-#                     get "$key"; done | sort | uniq -d | wc -l)
-#           [ "$dupes" -ne 0 ] && fail "The four JWT secrets must all be different from each other."
-#
-#           # Both must be https, because session-cookies.ts derives `Secure` and the
-#           # `__Host-` prefix from them; and neither may end in a slash, because
-#           # realtime.gateway.ts compares them to the Origin header by exact string
-#           # equality and an Origin never carries one. z.string().url() accepts a
-#           # trailing slash, so nothing downstream would catch this — every
-#           # WebSocket handshake would just be refused, with a logger.warn as the
-#           # only trace.
-#           for key in PORTAL_URL ADMIN_URL; do
-#             v="$(get "$key")"
-#             case "$v" in
-#               https://*) ;;
-#               "") ;;
-#               *) fail "$key must start with https:// (it is '$v')." ;;
-#             esac
-#             case "$v" in */) fail "$key must not end with a slash (it is '$v')." ;; esac
-#           done
-#
-#           # It is interpolated into DATABASE_URL, so anything outside the URL
-#           # unreserved set would have to be percent-encoded — and a `@` or `:`
-#           # would silently repoint the connection rather than fail. Generate it
-#           # with `openssl rand -hex 32`.
-#           pw="$(get POSTGRES_PASSWORD)"
-#           case "$pw" in
-#             *[!A-Za-z0-9._~-]*) fail "POSTGRES_PASSWORD must use only A-Z a-z 0-9 . _ ~ - so it is safe inside DATABASE_URL. Use: openssl rand -hex 32" ;;
-#           esac
-#
-#           [ "$FAILED" -eq 1 ] && exit 1
-#           echo "All required secrets present and well-formed."
-#
-#       - uses: actions/checkout@v4
-#
-#       # Base64 as a single line so the key's newlines cannot be mangled on paste.
-#       - name: Prepare SSH key
-#         env:
-#           KEY_B64: ${{ secrets.VPS_SSH_KEY_B64 }}
-#         run: |
-#           set -euo pipefail
-#           mkdir -p ~/.ssh && chmod 700 ~/.ssh
-#           printf '%s' "$KEY_B64" | base64 -d > ~/.ssh/deploy_key
-#           chmod 600 ~/.ssh/deploy_key
-#           head -1 ~/.ssh/deploy_key | grep -q "PRIVATE KEY" \
-#             || { echo "::error::VPS_SSH_KEY_B64 did not decode to a private key"; exit 1; }
-#
-#       # Shared runner IPs are intermittently dropped by edge DDoS scrubbing, which
-#       # looks identical to sshd being down. Poll rather than fail on the first
-#       # attempt; a sustained block still exits non-zero so a re-run draws a fresh IP.
-#       - name: Wait for the VPS to accept connections
-#         env:
-#           HOST: ${{ secrets.VPS_HOST }}
-#           PORT: ${{ secrets.VPS_PORT || '22' }}
-#         run: |
-#           for i in $(seq 1 7); do
-#             if timeout 8 bash -c "exec 3<>/dev/tcp/$HOST/$PORT" 2>/dev/null; then
-#               echo "$HOST:$PORT reachable (attempt $i/7)"; exit 0
-#             fi
-#             echo "$HOST:$PORT unreachable (attempt $i/7); retrying in 8s"; sleep 8
-#           done
-#           echo "::error::$HOST:$PORT never became reachable. Re-run for a fresh runner IP."
-#           exit 1
-#
-#       # ── Render .env on the runner. Never committed, never in the image. ────
-#       #
-#       # SINGLE-QUOTED, and that is not cosmetic. compose-go's dotenv parser
-#       # expands $VAR inside unquoted and double-quoted values, and takes an
-#       # unquoted `<` as the start of a variable name — a value like
-#       # `"Name" <a@b.c>` fails the WHOLE FILE to parse, losing every other
-#       # variable with it, not just its own line.
-#       #
-#       # A single quote inside a value cannot be escaped in dotenv syntax at all
-#       # (it is not a shell), so `put` refuses rather than emitting something that
-#       # would parse as the wrong value.
-#       - name: Render .env
-#         env:
-#           IMAGE_REPO: ${{ secrets.DOCKER_USERNAME }}/oxshare-crm-backend
-#           API_DOMAIN: ${{ secrets.API_DOMAIN }}
-#           ACME_EMAIL: ${{ secrets.ACME_EMAIL }}
-#           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
-#           PORTAL_URL: ${{ secrets.PORTAL_URL }}
-#           ADMIN_URL: ${{ secrets.ADMIN_URL }}
-#           ADMIN_JWT_SECRET: ${{ secrets.ADMIN_JWT_SECRET }}
-#           ADMIN_JWT_REFRESH_SECRET: ${{ secrets.ADMIN_JWT_REFRESH_SECRET }}
-#           JWT_ACCESS_SECRET: ${{ secrets.JWT_ACCESS_SECRET }}
-#           JWT_REFRESH_SECRET: ${{ secrets.JWT_REFRESH_SECRET }}
-#           APP_ENCRYPTION_KEY: ${{ secrets.APP_ENCRYPTION_KEY }}
-#           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-#           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-#           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-#           R2_BUCKET: ${{ secrets.R2_BUCKET }}
-#           RIVAL_BASE_URL: ${{ secrets.RIVAL_BASE_URL }}
-#           RIVAL_API_KEY: ${{ secrets.RIVAL_API_KEY }}
-#           RIVAL_WEBHOOK_KEY: ${{ secrets.RIVAL_WEBHOOK_KEY }}
-#         run: |
-#           set -euo pipefail
-#
-#           put() {
-#             local name="$1" value="${2-}"
-#             case "$value" in
-#               *"'"*) echo "::error::$name contains a single quote, which dotenv syntax cannot escape. Regenerate it without one."; exit 1 ;;
-#             esac
-#             if [ "$(printf '%s' "$value" | wc -l)" -ne 0 ]; then
-#               echo "::error::$name contains a newline."; exit 1
-#             fi
-#             printf "%s='%s'\n" "$name" "$value"
-#           }
-#           # Optional settings: an EMPTY value is not the same as an absent one.
-#           # `RIVAL_BASE_URL=''` fails zod's .url() and refuses the boot, where
-#           # leaving the key out entirely is a legal unconfigured state.
-#           put_optional() { [ -n "${2-}" ] && put "$1" "$2" || true; }
-#
-#           {
-#             # Compose interpolation (docker-compose.prod.yml), not application config.
-#             put IMAGE_REPO "$IMAGE_REPO"
-#             put IMAGE_TAG "$GITHUB_SHA"
-#             put POSTGRES_PASSWORD "$POSTGRES_PASSWORD"
-#             put API_DOMAIN "$API_DOMAIN"
-#             put ACME_EMAIL "$ACME_EMAIL"
-#
-#             put NODE_ENV production
-#             put PORT 3001
-#             # Explicit, not inherited: realtime-io.adapter.ts falls back to the
-#             # slower Node engine SILENTLY if uWS will not load, so the intent has
-#             # to be stated somewhere the deploy can assert against.
-#             put REALTIME_ENGINE uws
-#             put REALTIME_PORT 3003
-#             # Exactly one reverse proxy — Caddy, directly internet-facing. Raise
-#             # this to 2 if a CDN is ever put in front, or every request resolves
-#             # to the CDN's address for the rate limiter, the RBAC-08 allowlist
-#             # and the audit trail alike.
-#             put TRUSTED_PROXY_HOPS 1
-#             # Stated, never inferred: env.validation.ts refuses `disk` in
-#             # production outright, because a silent downgrade puts identity
-#             # documents on a container filesystem with nothing reporting it.
-#             put STORAGE_DRIVER r2
-#             put REDIS_URL redis://redis:6379
-#             put DATABASE_URL "postgresql://oxshare:${POSTGRES_PASSWORD}@postgres:5432/oxshare"
-#             put PORTAL_URL "$PORTAL_URL"
-#             put ADMIN_URL "$ADMIN_URL"
-#             put API_PUBLIC_URL "https://${API_DOMAIN}"
-#
-#             put ADMIN_JWT_SECRET "$ADMIN_JWT_SECRET"
-#             put ADMIN_JWT_REFRESH_SECRET "$ADMIN_JWT_REFRESH_SECRET"
-#             put JWT_ACCESS_SECRET "$JWT_ACCESS_SECRET"
-#             put JWT_REFRESH_SECRET "$JWT_REFRESH_SECRET"
-#             put APP_ENCRYPTION_KEY "$APP_ENCRYPTION_KEY"
-#
-#             put R2_ACCOUNT_ID "$R2_ACCOUNT_ID"
-#             put R2_ACCESS_KEY_ID "$R2_ACCESS_KEY_ID"
-#             put R2_SECRET_ACCESS_KEY "$R2_SECRET_ACCESS_KEY"
-#             put R2_BUCKET "$R2_BUCKET"
-#
-#             put_optional RIVAL_BASE_URL "${RIVAL_BASE_URL-}"
-#             put_optional RIVAL_API_KEY "${RIVAL_API_KEY-}"
-#             put_optional RIVAL_WEBHOOK_KEY "${RIVAL_WEBHOOK_KEY-}"
-#
-#             # NO SMTP_* HERE, DELIBERATELY. Mail is admin-configured on
-#             # Settings → Email and lives in the smtp_settings row; see the note
-#             # in src/config/env.validation.ts. Adding it back would put relay
-#             # credentials in two places, with this copy unused after the first save.
-#           } > .env.rendered
-#
-#           echo "Rendered $(wc -l < .env.rendered) variables."
-#
-#       - name: Ship and deploy
-#         env:
-#           HOST: ${{ secrets.VPS_HOST }}
-#           SSH_USER: ${{ secrets.VPS_USER }}
-#           PORT: ${{ secrets.VPS_PORT || '22' }}
-#           DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
-#           DOCKER_SECRET: ${{ secrets.DOCKER_SECRET }}
-#           # Optional. Set both and every deploy guarantees the first
-#           # administrator exists — which is what makes rebuilding this VPS, or
-#           # moving to a different one, a pure `git push`. Omit them and the
-#           # bootstrap step says so and skips. Not in REQUIRED above for that
-#           # reason. The password must be at least 12 characters; the script
-#           # refuses shorter ones rather than putting a guessable credential on
-#           # the only account that holds every permission.
-#           BOOTSTRAP_ADMIN_EMAIL: ${{ secrets.BOOTSTRAP_ADMIN_EMAIL }}
-#           BOOTSTRAP_ADMIN_PASSWORD: ${{ secrets.BOOTSTRAP_ADMIN_PASSWORD }}
-#         run: |
-#           set -euo pipefail
-#           KEY=~/.ssh/deploy_key
-#           COMMON="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
-#
-#           ssh -i "$KEY" -p "$PORT" $COMMON "$SSH_USER@$HOST" "mkdir -p $DEPLOY_DIR"
-#
-#           scp -i "$KEY" -P "$PORT" $COMMON \
-#             docker-compose.prod.yml Caddyfile .env.rendered \
-#             "$SSH_USER@$HOST:$DEPLOY_DIR/"
-#
-#           # DOCKER_SECRET goes over STDIN, not the ssh argv — argv is world-readable
-#           # through `ps` on the VPS for the length of the deploy.
-#           REMOTE_SCRIPT="$(cat <<'REMOTE'
-#           set -euo pipefail
-#           cd "$DEPLOY_DIR"
-#           mv -f .env.rendered .env
-#           chmod 600 .env
-#           COMPOSE="docker compose -f docker-compose.prod.yml"
-#
-#           echo "$DOCKER_SECRET" | docker login -u "$DOCKER_USERNAME" --password-stdin
-#
-#           echo "==> Pulling images"
-#           $COMPOSE pull
-#
-#           # Data services first, so the migration below has something to talk to.
-#           echo "==> Starting postgres and redis"
-#           $COMPOSE up -d postgres redis
-#
-#           echo "==> Waiting for postgres"
-#           for i in $(seq 1 30); do
-#             [ "$(docker inspect --format='{{.State.Health.Status}}' oxshare_postgres 2>/dev/null || echo starting)" = "healthy" ] && break
-#             sleep 2
-#           done
-#
-#           # Runs BEFORE the new code starts, so the schema is never behind the
-#           # application that expects it. drizzle-orm wraps all pending migrations
-#           # in one transaction — an interruption rolls back whole.
-#           echo "==> Applying migrations"
-#           $COMPOSE run --rm api node scripts/migrate.mjs </dev/null
-#
-#           # ── The first administrator, without a manual step ──────────────────
-#           #
-#           # NODE_ENV=production skips runSeeds(), and rightly: that function
-#           # plants the whole e2e cohort — e2e@, e2e-kyc@, e2e-restricted@ and a
-#           # batch of @oxshare-e2e.test clients — into whatever database it is
-#           # pointed at. What is unsafe there is THAT function, not the idea of
-#           # bootstrapping, so this runs the narrow script instead: one role, one
-#           # admin, nothing else.
-#           #
-#           # Runs on EVERY deploy because it is idempotent by database constraint
-#           # (unique role name, unique admin email). On an existing database it
-#           # prints "already exists; password left unchanged" and touches nothing
-#           # — it will NOT resurrect a deleted admin's password or undo a
-#           # narrowing. That is what makes a rebuilt VPS a pure `git push`: new
-#           # server, empty volume, and the admin exists when the deploy finishes.
-#           #
-#           # Skipped rather than failed when the secrets are absent, so a project
-#           # that prefers creating its first admin by hand is not forced into it.
-#           if [ -n "${BOOTSTRAP_ADMIN_EMAIL:-}" ] && [ -n "${BOOTSTRAP_ADMIN_PASSWORD:-}" ]; then
-#             echo "==> Ensuring the bootstrap administrator exists"
-#             $COMPOSE run --rm \
-#               -e BOOTSTRAP_ADMIN_EMAIL="$BOOTSTRAP_ADMIN_EMAIL" \
-#               -e BOOTSTRAP_ADMIN_PASSWORD="$BOOTSTRAP_ADMIN_PASSWORD" \
-#               api node scripts/bootstrap-admin.mjs </dev/null
-#           else
-#             echo "==> No BOOTSTRAP_ADMIN_* secrets; skipping administrator bootstrap"
-#           fi
-#
-#           echo "==> Recreating the stack"
-#           $COMPOSE up -d --remove-orphans
-#
-#           # Caddy's compose definition rarely changes, so `up -d` does not recreate
-#           # it and a freshly shipped Caddyfile would never load. `</dev/null` is
-#           # load-bearing: this script is piped into `bash -s`, and `compose exec`
-#           # drains stdin even with -T, swallowing everything below it.
-#           echo "==> Applying Caddyfile"
-#           if $COMPOSE exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile </dev/null; then
-#             echo "  caddy reloaded"
-#           else
-#             echo "  reload failed (or listener protocols changed) — recreating caddy"
-#             $COMPOSE up -d --force-recreate caddy </dev/null
-#           fi
-#
-#           echo "==> Waiting for the API to become healthy"
-#           RETRIES=0; MAX=45
-#           until [ "$RETRIES" -ge "$MAX" ]; do
-#             STATUS=$(docker inspect --format='{{.State.Health.Status}}' oxshare_api 2>/dev/null || echo "starting")
-#             [ "$STATUS" = "healthy" ] && { echo "API is healthy"; break; }
-#             RETRIES=$((RETRIES + 1)); echo "  ...($RETRIES/$MAX) status=$STATUS"; sleep 4
-#           done
-#           if [ "$RETRIES" -ge "$MAX" ]; then
-#             $COMPOSE logs --tail 80 api
-#             echo "::error::New release did not become healthy."
-#             exit 1
-#           fi
-#
-#           # uWebSockets.js loads a PREBUILT binary and realtime-io.adapter.ts
-#           # catches a load failure, logs a warning and falls back to the Node
-#           # engine — which leaves nothing listening on :3003 while /health stays
-#           # green and Caddy 502s every WebSocket handshake. The health gate above
-#           # cannot see that, so assert it directly.
-#           echo "==> Asserting the realtime engine"
-#           $COMPOSE exec -T api node -e "require('uWebSockets.js')" </dev/null \
-#             || { echo "::error::uWebSockets.js failed to load — realtime would silently fall back to :3001."; exit 1; }
-#
-#           docker logout >/dev/null 2>&1 || true
-#           # SHA-tagged images are never "dangling", so `prune` alone lets one
-#           # accumulate per deploy until the disk fills. Keep the two newest —
-#           # the one now running and the previous one, which is the rollback
-#           # target — and remove the rest. `docker images` lists newest first.
-#           docker images --format '{{.Repository}}:{{.Tag}}' "$DOCKER_USERNAME/oxshare-crm-backend" \
-#             | grep -v ':latest$' | tail -n +3 | xargs -r docker rmi >/dev/null 2>&1 || true
-#           docker image prune -f >/dev/null 2>&1 || true
-#           $COMPOSE ps
-#           REMOTE
-#           )"
-#           # Secrets go over STDIN with %q quoting, never the ssh argv — argv is
-#           # world-readable through `ps` on the VPS for as long as the deploy runs.
-#           # The admin password rides the same channel as the registry password
-#           # for exactly that reason.
-#           {
-#             printf 'DOCKER_SECRET=%q\n' "$DOCKER_SECRET"
-#             printf 'BOOTSTRAP_ADMIN_EMAIL=%q\n' "${BOOTSTRAP_ADMIN_EMAIL:-}"
-#             printf 'BOOTSTRAP_ADMIN_PASSWORD=%q\n' "${BOOTSTRAP_ADMIN_PASSWORD:-}"
-#             printf '%s\n' "$REMOTE_SCRIPT"
-#           } | \
-#             ssh -i "$KEY" -p "$PORT" $COMMON "$SSH_USER@$HOST" \
-#               "DEPLOY_DIR='$DEPLOY_DIR' DOCKER_USERNAME='$DOCKER_USERNAME' bash -s"
-#
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_SECRET }}
+
+      # ── The image is the whole backend, compiled. It must never be public. ──
+      #
+      # Found 5 Oct 2026: this repository was PUBLIC on Docker Hub, so anyone
+      # could pull every money rule this system has. A push does not check, and
+      # a push to a repository that does not exist yet CREATES it with the
+      # account's default visibility, which is public unless changed. So this
+      # step refuses both before anything is pushed: create it private first.
+      - name: Refuse a public or missing Docker Hub repository
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_SECRET: ${{ secrets.DOCKER_SECRET }}
+          # The owner's explicit, temporary override (a repository VARIABLE, so it is
+          # visible): while it is `true` a public or missing repository is a WARNING on
+          # every build instead of a refusal. Delete the variable once the repository
+          # is private, and the guard is back.
+          ALLOW_PUBLIC: ${{ vars.DOCKER_HUB_ALLOW_PUBLIC }}
+          REPOSITORY: oxshare-crm-backend
+        run: |
+          set -euo pipefail
+          repo="$DOCKER_USERNAME/$REPOSITORY"
+          body() { jq -n --arg a "$1" --arg b "$2" --arg ka "$3" --arg kb "$4" '{($ka): $a, ($kb): $b}'; }
+          jwt=$(curl -sS -H 'Content-Type: application/json' \
+                  -d "$(body "$DOCKER_USERNAME" "$DOCKER_SECRET" identifier secret)" \
+                  https://hub.docker.com/v2/auth/token | jq -r '.access_token // empty' || true)
+          [ -n "$jwt" ] || jwt=$(curl -sS -H 'Content-Type: application/json' \
+                  -d "$(body "$DOCKER_USERNAME" "$DOCKER_SECRET" username password)" \
+                  https://hub.docker.com/v2/users/login | jq -r '.token // empty' || true)
+          [ -n "$jwt" ] || { echo "::error::Could not sign in to Docker Hub's API to check that $repo is private."; exit 1; }
+          private=$(curl -sS -H "Authorization: Bearer $jwt" "https://hub.docker.com/v2/repositories/$repo/" | jq -r '.is_private // "missing"')
+          case "$private" in
+            true) echo "$repo is private." ;;
+            *)
+              what=$([ "$private" = false ] && echo "is PUBLIC on Docker Hub: anyone can pull this image" || echo "does not exist yet, and a push creates it with the account's default visibility")
+              if [ "$ALLOW_PUBLIC" = true ]; then
+                echo "::warning::$repo $what. Allowed by the DOCKER_HUB_ALLOW_PUBLIC variable; make it private and delete that variable."
+              else
+                echo "::error::$repo $what. Create it PRIVATE (Repository -> Settings -> Visibility), then re-run."
+                exit 1
+              fi
+              ;;
+          esac
+
+      # Two tags: `latest` for a human, and the commit SHA for the machine. The
+      # deploy pins the stack to the SHA so `up -d` reliably recreates the
+      # container — with a mutable tag it can decide nothing changed — and so the
+      # tag doubles as an immutable rollback target.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: |
+            ${{ secrets.DOCKER_USERNAME }}/oxshare-crm-backend:latest
+            ${{ secrets.DOCKER_USERNAME }}/oxshare-crm-backend:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    name: Ship and deploy
+    if: github.ref == 'refs/heads/production' && github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Deploy target on the VPS, relative to VPS_USER's home directory.
+      DEPLOY_DIR: oxshare-crm-backend
+    steps:
+      # ── Fail on the runner, not in a crash loop on the VPS ────────────────
+      #
+      # env.validation.ts refuses to boot on any of these, which is correct and
+      # also means the symptom is a container restarting forever behind a health
+      # gate that times out twenty minutes later. Everything checkable is checked
+      # here, where the error message can say which secret and why.
+      - name: Validate secrets
+        env:
+          REQUIRED: |
+            DOCKER_USERNAME DOCKER_SECRET VPS_HOST VPS_USER VPS_SSH_KEY_B64
+            API_DOMAIN ACME_EMAIL POSTGRES_PASSWORD
+            ADMIN_JWT_SECRET ADMIN_JWT_REFRESH_SECRET JWT_ACCESS_SECRET JWT_REFRESH_SECRET
+            APP_ENCRYPTION_KEY PORTAL_URL ADMIN_URL
+            MT5_BRIDGE_API_KEY MT5_BRIDGE_SECRET
+            R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET
+          SECRETS_JSON: ${{ toJSON(secrets) }}
+        run: |
+          set -euo pipefail
+          get() { printf '%s' "$SECRETS_JSON" | jq -r --arg k "$1" '.[$k] // ""'; }
+          fail() { echo "::error::$1"; FAILED=1; }
+          FAILED=0
+
+          missing=""
+          for key in $REQUIRED; do
+            [ -z "$(get "$key")" ] && missing="$missing $key"
+          done
+          if [ -n "$missing" ]; then
+            fail "Missing required GitHub secret(s):$missing"
+          fi
+
+          # Four DISTINCT secrets, each at least 32 characters. env.validation.ts
+          # throws on a duplicate — reusing one across the admin and portal token
+          # families means a token minted for one is valid for the other.
+          for key in ADMIN_JWT_SECRET ADMIN_JWT_REFRESH_SECRET JWT_ACCESS_SECRET JWT_REFRESH_SECRET APP_ENCRYPTION_KEY; do
+            v="$(get "$key")"
+            [ -n "$v" ] && [ "${#v}" -lt 32 ] && fail "$key must be at least 32 characters (it is ${#v})."
+          done
+          dupes=$(for key in ADMIN_JWT_SECRET ADMIN_JWT_REFRESH_SECRET JWT_ACCESS_SECRET JWT_REFRESH_SECRET; do
+                    get "$key"; done | sort | uniq -d | wc -l)
+          [ "$dupes" -ne 0 ] && fail "The four JWT secrets must all be different from each other."
+
+          # Both must be https, because session-cookies.ts derives `Secure` and the
+          # `__Host-` prefix from them; and neither may end in a slash, because
+          # realtime.gateway.ts compares them to the Origin header by exact string
+          # equality and an Origin never carries one. z.string().url() accepts a
+          # trailing slash, so nothing downstream would catch this — every
+          # WebSocket handshake would just be refused, with a logger.warn as the
+          # only trace.
+          for key in PORTAL_URL ADMIN_URL; do
+            v="$(get "$key")"
+            case "$v" in
+              https://*) ;;
+              "") ;;
+              *) fail "$key must start with https:// (it is '$v')." ;;
+            esac
+            case "$v" in */) fail "$key must not end with a slash (it is '$v')." ;; esac
+          done
+
+          # It is interpolated into DATABASE_URL, so anything outside the URL
+          # unreserved set would have to be percent-encoded — and a `@` or `:`
+          # would silently repoint the connection rather than fail. Generate it
+          # with `openssl rand -hex 32`.
+          pw="$(get POSTGRES_PASSWORD)"
+          case "$pw" in
+            *[!A-Za-z0-9._~-]*) fail "POSTGRES_PASSWORD must use only A-Z a-z 0-9 . _ ~ - so it is safe inside DATABASE_URL. Use: openssl rand -hex 32" ;;
+          esac
+
+          [ "$FAILED" -eq 1 ] && exit 1
+          echo "All required secrets present and well-formed."
+
+      - uses: actions/checkout@v4
+
+      # Base64 as a single line so the key's newlines cannot be mangled on paste.
+      - name: Prepare SSH key
+        env:
+          KEY_B64: ${{ secrets.VPS_SSH_KEY_B64 }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s' "$KEY_B64" | base64 -d > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          head -1 ~/.ssh/deploy_key | grep -q "PRIVATE KEY" \
+            || { echo "::error::VPS_SSH_KEY_B64 did not decode to a private key"; exit 1; }
+
+      # Shared runner IPs are intermittently dropped by edge DDoS scrubbing, which
+      # looks identical to sshd being down. Poll rather than fail on the first
+      # attempt; a sustained block still exits non-zero so a re-run draws a fresh IP.
+      - name: Wait for the VPS to accept connections
+        env:
+          HOST: ${{ secrets.VPS_HOST }}
+          PORT: ${{ secrets.VPS_PORT || '22' }}
+        run: |
+          for i in $(seq 1 7); do
+            if timeout 8 bash -c "exec 3<>/dev/tcp/$HOST/$PORT" 2>/dev/null; then
+              echo "$HOST:$PORT reachable (attempt $i/7)"; exit 0
+            fi
+            echo "$HOST:$PORT unreachable (attempt $i/7); retrying in 8s"; sleep 8
+          done
+          echo "::error::$HOST:$PORT never became reachable. Re-run for a fresh runner IP."
+          exit 1
+
+      # ── Render .env on the runner. Never committed, never in the image. ────
+      #
+      # SINGLE-QUOTED, and that is not cosmetic. compose-go's dotenv parser
+      # expands $VAR inside unquoted and double-quoted values, and takes an
+      # unquoted `<` as the start of a variable name — a value like
+      # `"Name" <a@b.c>` fails the WHOLE FILE to parse, losing every other
+      # variable with it, not just its own line.
+      #
+      # A single quote inside a value cannot be escaped in dotenv syntax at all
+      # (it is not a shell), so `put` refuses rather than emitting something that
+      # would parse as the wrong value.
+      - name: Render .env
+        env:
+          IMAGE_REPO: ${{ secrets.DOCKER_USERNAME }}/oxshare-crm-backend
+          API_DOMAIN: ${{ secrets.API_DOMAIN }}
+          ACME_EMAIL: ${{ secrets.ACME_EMAIL }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          PORTAL_URL: ${{ secrets.PORTAL_URL }}
+          ADMIN_URL: ${{ secrets.ADMIN_URL }}
+          ADMIN_JWT_SECRET: ${{ secrets.ADMIN_JWT_SECRET }}
+          ADMIN_JWT_REFRESH_SECRET: ${{ secrets.ADMIN_JWT_REFRESH_SECRET }}
+          JWT_ACCESS_SECRET: ${{ secrets.JWT_ACCESS_SECRET }}
+          JWT_REFRESH_SECRET: ${{ secrets.JWT_REFRESH_SECRET }}
+          APP_ENCRYPTION_KEY: ${{ secrets.APP_ENCRYPTION_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          RIVAL_BASE_URL: ${{ secrets.RIVAL_BASE_URL }}
+          RIVAL_API_KEY: ${{ secrets.RIVAL_API_KEY }}
+          RIVAL_WEBHOOK_KEY: ${{ secrets.RIVAL_WEBHOOK_KEY }}
+          MT5_BRIDGE_API_KEY: ${{ secrets.MT5_BRIDGE_API_KEY }}
+          MT5_BRIDGE_SECRET: ${{ secrets.MT5_BRIDGE_SECRET }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+          IB_ACCRUAL_START: ${{ secrets.IB_ACCRUAL_START }}
+          COMMISSION_MAX_PER_DEAL: ${{ secrets.COMMISSION_MAX_PER_DEAL }}
+          COMMISSION_MAX_SHARE_OF_DEAL: ${{ secrets.COMMISSION_MAX_SHARE_OF_DEAL }}
+          DB_POOL_MAX: ${{ secrets.DB_POOL_MAX }}
+          MT5_BRIDGE_TIMEOUT_MS: ${{ secrets.MT5_BRIDGE_TIMEOUT_MS }}
+          MT5_BRIDGE_READ_TIMEOUT_MS: ${{ secrets.MT5_BRIDGE_READ_TIMEOUT_MS }}
+        run: |
+          set -euo pipefail
+
+          put() {
+            local name="$1" value="${2-}"
+            case "$value" in
+              *"'"*) echo "::error::$name contains a single quote, which dotenv syntax cannot escape. Regenerate it without one."; exit 1 ;;
+            esac
+            if [ "$(printf '%s' "$value" | wc -l)" -ne 0 ]; then
+              echo "::error::$name contains a newline."; exit 1
+            fi
+            printf "%s='%s'\n" "$name" "$value"
+          }
+          # Optional settings: an EMPTY value is not the same as an absent one.
+          # `RIVAL_BASE_URL=''` fails zod's .url() and refuses the boot, where
+          # leaving the key out entirely is a legal unconfigured state.
+          put_optional() { [ -n "${2-}" ] && put "$1" "$2" || true; }
+
+          {
+            # Compose interpolation (docker-compose.prod.yml), not application config.
+            put IMAGE_REPO "$IMAGE_REPO"
+            # No IMAGE_TAG: each API colour's tag lives in release.env on the server,
+            # written by deploy/release.sh, so re-rendering .env never moves the live version.
+            put POSTGRES_PASSWORD "$POSTGRES_PASSWORD"
+            put API_DOMAIN "$API_DOMAIN"
+            put ACME_EMAIL "$ACME_EMAIL"
+
+            put NODE_ENV production
+            put PORT 3001
+            # Explicit, not inherited: realtime-io.adapter.ts falls back to the
+            # slower Node engine SILENTLY if uWS will not load, so the intent has
+            # to be stated somewhere the deploy can assert against.
+            put REALTIME_ENGINE uws
+            put REALTIME_PORT 3003
+            # Exactly one reverse proxy — Caddy, directly internet-facing. Raise
+            # this to 2 if a CDN is ever put in front, or every request resolves
+            # to the CDN's address for the rate limiter, the RBAC-08 allowlist
+            # and the audit trail alike.
+            put TRUSTED_PROXY_HOPS 1
+            # Stated, never inferred: env.validation.ts refuses `disk` in
+            # production outright, because a silent downgrade puts identity
+            # documents on a container filesystem with nothing reporting it.
+            put STORAGE_DRIVER r2
+            put REDIS_URL redis://redis:6379
+            put DATABASE_URL "postgresql://oxshare:${POSTGRES_PASSWORD}@postgres:5432/oxshare"
+            put PORTAL_URL "$PORTAL_URL"
+            put ADMIN_URL "$ADMIN_URL"
+            put API_PUBLIC_URL "https://${API_DOMAIN}"
+
+            put ADMIN_JWT_SECRET "$ADMIN_JWT_SECRET"
+            put ADMIN_JWT_REFRESH_SECRET "$ADMIN_JWT_REFRESH_SECRET"
+            put JWT_ACCESS_SECRET "$JWT_ACCESS_SECRET"
+            put JWT_REFRESH_SECRET "$JWT_REFRESH_SECRET"
+            put APP_ENCRYPTION_KEY "$APP_ENCRYPTION_KEY"
+
+            put R2_ACCOUNT_ID "$R2_ACCOUNT_ID"
+            put R2_ACCESS_KEY_ID "$R2_ACCESS_KEY_ID"
+            put R2_SECRET_ACCESS_KEY "$R2_SECRET_ACCESS_KEY"
+            put R2_BUCKET "$R2_BUCKET"
+
+            put_optional RIVAL_BASE_URL "${RIVAL_BASE_URL-}"
+            put_optional RIVAL_API_KEY "${RIVAL_API_KEY-}"
+            put_optional RIVAL_WEBHOOK_KEY "${RIVAL_WEBHOOK_KEY-}"
+
+            # The MT5 bridge, over the WireGuard tunnel to the Contabo server. A
+            # constant, like REDIS_URL: the address belongs to this server's
+            # design (wg0 is 10.8.0.1, the bridge is 10.8.0.2), and port 5055 is
+            # reachable only through the tunnel, never from the internet.
+            put MT5_BRIDGE_URL http://10.8.0.2:5055
+            put MT5_BRIDGE_API_KEY "$MT5_BRIDGE_API_KEY"
+            put MT5_BRIDGE_SECRET "$MT5_BRIDGE_SECRET"
+            put_optional MT5_BRIDGE_TIMEOUT_MS "${MT5_BRIDGE_TIMEOUT_MS-}"
+            put_optional MT5_BRIDGE_READ_TIMEOUT_MS "${MT5_BRIDGE_READ_TIMEOUT_MS-}"
+
+            # The portal assistant. Without a key it answers 503 and nothing else
+            # changes. Use a DEDICATED OpenAI project with a monthly budget.
+            put_optional OPENAI_API_KEY "${OPENAI_API_KEY-}"
+            put_optional OPENAI_MODEL "${OPENAI_MODEL-}"
+
+            # A COMMERCIAL decision, carried over from the current production .env,
+            # never invented here: unset holds an aged commission backlog unpaid
+            # (safe, and it alerts) until somebody decides. See CLAUDE.md
+            # "The backlog is a DECISION".
+            put_optional IB_ACCRUAL_START "${IB_ACCRUAL_START-}"
+            put_optional COMMISSION_MAX_PER_DEAL "${COMMISSION_MAX_PER_DEAL-}"
+            put_optional COMMISSION_MAX_SHARE_OF_DEAL "${COMMISSION_MAX_SHARE_OF_DEAL-}"
+            put_optional DB_POOL_MAX "${DB_POOL_MAX-}"
+
+            # NO SMTP_* HERE, DELIBERATELY. Mail is admin-configured on
+            # Settings → Email and lives in the smtp_settings row; see the note
+            # in src/config/env.validation.ts. Adding it back would put relay
+            # credentials in two places, with this copy unused after the first save.
+          } > .env.rendered
+
+          echo "Rendered $(wc -l < .env.rendered) variables."
+
+      - name: Ship and deploy
+        env:
+          HOST: ${{ secrets.VPS_HOST }}
+          SSH_USER: ${{ secrets.VPS_USER }}
+          PORT: ${{ secrets.VPS_PORT || '22' }}
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_SECRET: ${{ secrets.DOCKER_SECRET }}
+          # Optional. Set both and every deploy guarantees the first
+          # administrator exists — which is what makes rebuilding this VPS, or
+          # moving to a different one, a pure `git push`. Omit them and the
+          # bootstrap step says so and skips. Not in REQUIRED above for that
+          # reason. The password must be at least 12 characters; the script
+          # refuses shorter ones rather than putting a guessable credential on
+          # the only account that holds every permission.
+          BOOTSTRAP_ADMIN_EMAIL: ${{ secrets.BOOTSTRAP_ADMIN_EMAIL }}
+          BOOTSTRAP_ADMIN_PASSWORD: ${{ secrets.BOOTSTRAP_ADMIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEY=~/.ssh/deploy_key
+          COMMON="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+
+          ssh -i "$KEY" -p "$PORT" $COMMON "$SSH_USER@$HOST" "mkdir -p $DEPLOY_DIR"
+
+          scp -i "$KEY" -P "$PORT" $COMMON \
+            docker-compose.prod.yml Caddyfile deploy/release.sh .env.rendered \
+            "$SSH_USER@$HOST:$DEPLOY_DIR/"
+
+          # DOCKER_SECRET goes over STDIN, not the ssh argv — argv is world-readable
+          # through `ps` on the VPS for the length of the deploy.
+          REMOTE_SCRIPT="$(cat <<'REMOTE'
+          set -euo pipefail
+          cd "$DEPLOY_DIR"
+          mv -f .env.rendered .env
+          chmod 600 .env
+
+          echo "$DOCKER_SECRET" | docker login -u "$DOCKER_USERNAME" --password-stdin
+          # Zero downtime: the new version starts BESIDE the live one, Caddy switches
+          # only once it is healthy, and the old one drains. A release that never
+          # becomes healthy is stopped and the live version carries on. Rollback:
+          # `bash release.sh rollback` on the server. See deploy/release.sh.
+          export BOOTSTRAP_ADMIN_EMAIL BOOTSTRAP_ADMIN_PASSWORD
+          bash release.sh deploy "$IMAGE_TAG"
+          docker logout >/dev/null 2>&1 || true
+          bash release.sh status
+          REMOTE
+          )"
+          # Secrets go over STDIN with %q quoting, never the ssh argv — argv is
+          # world-readable through `ps` on the VPS for as long as the deploy runs.
+          # The admin password rides the same channel as the registry password
+          # for exactly that reason.
+          {
+            printf 'DOCKER_SECRET=%q\n' "$DOCKER_SECRET"
+            printf 'IMAGE_TAG=%q\n' "$GITHUB_SHA"
+            printf 'BOOTSTRAP_ADMIN_EMAIL=%q\n' "${BOOTSTRAP_ADMIN_EMAIL:-}"
+            printf 'BOOTSTRAP_ADMIN_PASSWORD=%q\n' "${BOOTSTRAP_ADMIN_PASSWORD:-}"
+            printf '%s\n' "$REMOTE_SCRIPT"
+          } | \
+            ssh -i "$KEY" -p "$PORT" $COMMON "$SSH_USER@$HOST" \
+              "DEPLOY_DIR='$DEPLOY_DIR' DOCKER_USERNAME='$DOCKER_USERNAME' bash -s"
