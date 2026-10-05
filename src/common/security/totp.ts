@@ -18,12 +18,14 @@ export const TOTP_PERIOD_SECONDS = 30;
 export const TOTP_DIGITS = 6;
 
 /**
- * Steps either side of "now" a code is still accepted for — one, i.e. a code
- * is good for up to ~90 seconds. RFC 6238 §5.2 recommends at most one step of
- * skew; a phone whose clock drifts further than that is a phone to fix, and a
- * wider window is more codes an attacker gets to try per guess.
+ * Steps either side of "now" a code is still accepted for — NONE (owner's
+ * ruling, 5 Oct 2026): only the code for the current 30-second step works, so
+ * a code stops working the moment the app replaces it. RFC 6238 §5.2 allows up
+ * to one step of skew; it is deliberately not taken. The cost, accepted: a
+ * phone whose clock is off by more than a few seconds, or a code typed just
+ * as it rolls over, is refused, and the person types the new one.
  */
-const WINDOW = 1;
+const WINDOW = 0;
 
 /** 160 bits — the RFC 4226 §4 recommendation, and what the apps generate themselves. */
 const SECRET_BYTES = 20;
