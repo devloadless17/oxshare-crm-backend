@@ -2,13 +2,13 @@
 
 > ## A push to `production` deploys to the Linux backend server
 >
-> |            |                                                                                                                                                                                   |
-> | ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-> | Server     | Hostinger KVM 2, **Düsseldorf**, `187.7.64.167` (`ssh oxshare-api`), Ubuntu 26.04, provisioned per DEPLOY-PLAYBOOK §2–§3 on 5 Oct 2026                                            |
-> | Stack      | Caddy (the only published ports: 80, 443, 443/udp) → `api` (:3001, realtime :3003) + `postgres` + `redis`, all `docker-compose.prod.yml`                                          |
-> | MT5 bridge | Alone on the Contabo Windows server, reached through a **WireGuard tunnel**: this server is `10.8.0.1`, the bridge `http://10.8.0.2:5055`. Port 5055 answers nobody else.         |
-> | Pipeline   | `.github/workflows/ci.yml`: verify → build (Docker Hub, `:latest` + `:<sha>`, private repo enforced) → deploy over SSH (migrate, `up -d`, health gate)                            |
-> | Rollback   | `IMAGE_TAG=<previous sha>` in `~/oxshare-crm-backend/.env` on the server, then `docker compose -f docker-compose.prod.yml up -d api` — or re-run the workflow on the older commit |
+> |            |                                                                                                                                                                                                                                                                                                             |
+> | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+> | Server     | Hostinger KVM 2, **Düsseldorf**, `187.7.64.167` (`ssh oxshare-api`), Ubuntu 26.04, provisioned per DEPLOY-PLAYBOOK §2–§3 on 5 Oct 2026                                                                                                                                                                      |
+> | Stack      | Caddy (the only published ports: 80, 443, 443/udp) → `api` (:3001, realtime :3003) + `postgres` + `redis`, all `docker-compose.prod.yml`                                                                                                                                                                    |
+> | MT5 bridge | Alone on the Contabo Windows server, reached through a **WireGuard tunnel** in BOTH directions: the backend calls `http://10.8.0.2:5055`, the bridge posts back to `http://10.8.0.1:8080` (its `Crm:BaseUrl`). Neither is reachable from the internet; `/v1/webhooks/mt5/*` answers 404 on the public site. |
+> | Pipeline   | `.github/workflows/ci.yml`: verify → build (Docker Hub, `:latest` + `:<sha>`, private repo enforced) → deploy over SSH (migrate, `up -d`, health gate)                                                                                                                                                      |
+> | Rollback   | `IMAGE_TAG=<previous sha>` in `~/oxshare-crm-backend/.env` on the server, then `docker compose -f docker-compose.prod.yml up -d api` — or re-run the workflow on the older commit                                                                                                                           |
 >
 > Until the switch-over below is done, production still runs on the **Contabo
 > Windows box** (bare Node, auto-deploying on every push to `production`). While
@@ -120,8 +120,10 @@ Done on 5 Oct 2026 (DEPLOY-PLAYBOOK §2–§3): updates + reboot, 2 GB swap, Doc
 log rotation, the `deploy` user (keys `id_ed25519` + `oxshare_deploy`), UFW allowing
 22, 80, 443 and 443/udp, fail2ban, unattended security upgrades. UDP/443 delivery was
 measured, so HTTP/3 stays on. WireGuard (`wg-quick@wg0`, `10.8.0.1/24`, UDP 51820
-allowed **from the Contabo IP only**) is up; its `[Peer]` is added once HazimeHsen
-sends the bridge's public key.
+allowed **from the Contabo IP only**) is up, and a systemd drop-in
+(`/etc/systemd/system/docker.service.d/after-wireguard.conf`) starts Docker after it, because
+Caddy binds the bridge's door on `10.8.0.1:8080`; its `[Peer]` is added once the bridge's
+public key arrives.
 
 ```bash
 ssh oxshare-api                 # deploy@187.7.64.167, no password
@@ -276,7 +278,7 @@ The order matters; each step names what proves it.
 6. Start the API: re-run the workflow (`workflow_dispatch`) or
    `docker compose -f docker-compose.prod.yml up -d api`. Proof: `/health/ready` all up,
    `database migrations` up.
-7. **Bridge:** HazimeHsen points its `Crm` URL at `https://api.<domain>` with the new keys.
+7. **Bridge:** set the bridge's `Crm:BaseUrl` to `http://10.8.0.1:8080` (the tunnel, so it does not wait on DNS).
    Proof: the bridge's `GET /admin/outbox?pending=true` drains to empty.
 8. **Payment providers:** point Rival's and 3pay's webhook URLs at the new API domain
    (System → Payment providers shows each one's address).

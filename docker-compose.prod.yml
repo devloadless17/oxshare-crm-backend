@@ -130,6 +130,10 @@ services:
       - '80:80'
       - '443:443'
       - '443:443/udp'
+      # The bridge's door, bound to the WireGuard address ONLY (Caddyfile, last
+      # block). wg0 must exist before Docker binds this, so the server carries a
+      # systemd drop-in ordering docker.service after wg-quick@wg0 (DEPLOYMENT.md).
+      - '10.8.0.1:8080:8080'
     environment:
       API_DOMAIN: ${API_DOMAIN:?API_DOMAIN is required}
       ACME_EMAIL: ${ACME_EMAIL:?ACME_EMAIL is required}
