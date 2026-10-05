@@ -66,16 +66,8 @@ describe('admin surface (HTTP)', () => {
     });
   });
   /*
-   * An `IpAllowlistGuard` describe block was HERE and went with RBAC-08.
-   *
-   * It proved the guard was registered, ran BEFORE authentication — an
-   * off-list caller could not even attempt credential stuffing at the login
-   * route — did not leak onto the client portal, and read the list live rather
-   * than caching it, so a rule removed on one instance stopped denying on
-   * another.
-   *
-   * None of that holds now: admin routes are gated on authentication and
-   * permissions only. A network restriction, if wanted again, belongs at the
-   * edge rather than in an application guard.
+   * RBAC-08's assembly — the guard registered, running before authentication,
+   * the sign-in doors agreeing with it, exempt administrators (0192) — is
+   * proved over HTTP in `ip-allowlist-exemptions-http.spec.ts`.
    */
 });

@@ -248,7 +248,19 @@ export class SessionSupersededError extends AuthenticationError {
 
 /** The caller is authenticated but not allowed. → 403 */
 export class AuthorizationError extends DomainError {
-  readonly code = 'FORBIDDEN';
+  readonly code: string = 'FORBIDDEN';
+}
+
+/**
+ * RBAC-08: this network may not reach the administration console. → 403
+ *
+ * Its own code so the console can tell it apart from a permission refusal
+ * without reading the English. From outside the listed networks the sign-in
+ * door answers ONLY this for every failure (wrong password, unknown address,
+ * an administrator who is not exempt), so it says nothing about which one.
+ */
+export class NetworkNotPermittedError extends AuthorizationError {
+  override readonly code = 'NETWORK_NOT_PERMITTED';
 }
 
 /**

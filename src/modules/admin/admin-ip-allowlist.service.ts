@@ -1,5 +1,9 @@
 import { Injectable } from '@nestjs/common';
-import { AdminIpAllowlistStore, type AllowlistRule } from '../../store/admin-ip-allowlist.store';
+import {
+  AdminIpAllowlistStore,
+  type AllowlistExemption,
+  type AllowlistRule,
+} from '../../store/admin-ip-allowlist.store';
 import {
   canonicaliseRule,
   coversEverything,
@@ -9,8 +13,9 @@ import {
 } from '../../common/security/ip-range';
 import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/domain-errors';
 import { AdminAuditService } from './admin-audit.service';
-import { Admin } from '../../store/admins.store';
+import { Admin, AdminsStore } from '../../store/admins.store';
 import { assertActorCan } from '../../common/security/actor';
+import { adminNetworkAdmits } from '../../common/security/admin-network';
 
 /**
  * RBAC-08 — managing the admin IP allowlist.
@@ -31,6 +36,7 @@ export class AdminIpAllowlistService {
   constructor(
     private readonly store: AdminIpAllowlistStore,
     private readonly audit: AdminAuditService,
+    private readonly admins: AdminsStore,
   ) {}
 
   list(): Promise<AllowlistRule[]> {
@@ -110,7 +116,13 @@ export class AdminIpAllowlistService {
      * and anyone outside it is refused — including, if they are careless, the
      * person adding it, who then cannot reach this endpoint to undo it.
      */
-    if (existing.length === 0 && !ipMatchesAny(callerIp, [canonical])) {
+    if (
+      existing.length === 0 &&
+      !ipMatchesAny(callerIp, [canonical]) &&
+      // An exempt caller reaches the console from anywhere (0192), so this
+      // rule cannot lock them out — the owner can set up the office from home.
+      !(await this.store.isExempt(actor.id))
+    ) {
       throw new ValidationError(
         `Refusing: this would be the first rule, so enforcement would begin immediately ` +
           `and your own address (${callerIp ?? 'unknown'}) is not inside ${canonical}. ` +
@@ -142,7 +154,11 @@ export class AdminIpAllowlistService {
      * store. Read-then-delete here let two concurrent removals each see the
      * other's rule as "still covering you" and leave nobody covered.
      */
-    const result = await this.store.removeUnlessLockedOut(id, callerIp);
+    const result = await this.store.removeUnlessLockedOut(
+      id,
+      callerIp,
+      await this.store.isExempt(actor.id),
+    );
     if (result.outcome === 'not-found') {
       throw new NotFoundError('That allowlist rule does not exist.');
     }
@@ -160,6 +176,78 @@ export class AdminIpAllowlistService {
       // Recorded because removing the last rule DISABLES the feature entirely,
       // which is a far bigger event than deleting one row.
       enforcementDisabled: result.remaining === 0,
+    });
+  }
+
+  // ── Exemptions (0192): administrators who may connect from ANY network ─────
+
+  listExemptions(): Promise<AllowlistExemption[]> {
+    return this.store.listExemptions();
+  }
+
+  isExempt(adminId: string): Promise<boolean> {
+    return this.store.isExempt(adminId);
+  }
+
+  /**
+   * Let one administrator reach the console from any network. It skips the
+   * network check for their SESSIONS and nothing else — permissions, client
+   * scope and masks are untouched, and API keys are never exempt.
+   *
+   * As privileged as adding a rule (`settings.security.edit`): both decide who
+   * may reach the console from where.
+   */
+  async grantExemption(input: { adminId: string; reason: string }, actor: Admin): Promise<void> {
+    assertActorCan(actor, 'settings.security.edit', 'change the admin IP allowlist');
+
+    const reason = input.reason.trim();
+    if (reason === '') {
+      throw new ValidationError(
+        'Give the exemption a reason. One nobody remembers granting is one nobody removes.',
+      );
+    }
+    const target = await this.admins.findById(input.adminId);
+    if (!target) throw new NotFoundError('That administrator does not exist.');
+    if (target.status === 'suspended') {
+      throw new ValidationError('That administrator is suspended. Reactivate them first.');
+    }
+    const added = await this.store.addExemption({
+      adminId: target.id,
+      reason,
+      createdBy: actor.id,
+    });
+    if (!added) throw new ConflictError(`${target.email} can already connect from any network.`);
+
+    this.audit.record(actor.id, 'ip_allowlist.exempt_add', 'admin', target.id, {
+      email: target.email,
+      reason,
+    });
+  }
+
+  /**
+   * Withdraw an exemption — effective on that administrator's next request.
+   *
+   * Your OWN, from an address the list does not admit, is refused: the next
+   * request would be refused and this screen gone, the same lockout the rule
+   * removal refuses.
+   */
+  async revokeExemption(adminId: string, actor: Admin, callerIp: string | undefined) {
+    assertActorCan(actor, 'settings.security.edit', 'change the admin IP allowlist');
+
+    if (adminId === actor.id && !adminNetworkAdmits(await this.store.listCidrs(), callerIp)) {
+      throw new ValidationError(
+        `Refusing: your own address (${callerIp ?? 'unknown'}) is not on the allowlist, so ` +
+          'removing your exemption would immediately lose you access to this screen. ' +
+          'Add a rule covering yourself first.',
+      );
+    }
+    const target = await this.admins.findById(adminId);
+    const removed = await this.store.removeExemption(adminId);
+    if (!removed) throw new NotFoundError('That administrator is not exempt.');
+
+    this.audit.record(actor.id, 'ip_allowlist.exempt_remove', 'admin', adminId, {
+      email: target?.email ?? null,
+      reason: removed.reason,
     });
   }
 }

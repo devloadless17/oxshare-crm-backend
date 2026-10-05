@@ -1677,17 +1677,22 @@ export const adminIpAllowlist = pgTable(
   ],
 );
 
-/*
- * `admin_ip_allowlist` was HERE, and is dropped in migration 0034.
+/**
+ * RBAC-08 — administrators who may reach the console from ANY network (0192).
  *
- * RBAC-08: a table of CIDR rules that `IpAllowlistGuard` enforced across the
- * whole admin surface, plus an independent check on `/uploads/kyc/:file`
- * because that route sits outside `/admin`. Removed on request, whole.
- *
- * Admin routes are gated on authentication and permissions only now. A network
- * restriction, if wanted again, belongs at the edge — a load balancer or WAF
- * rule — rather than as an application guard reading a table.
+ * A row skips the network check for that one administrator's SESSIONS and
+ * nothing else: permissions, client scope, field masks, CSRF and expiry still
+ * apply, and an API key is never exempt (`IpAllowlistGuard`). The reason is
+ * required for the same reason a rule needs a label.
  */
+export const adminIpAllowlistExemptions = pgTable('admin_ip_allowlist_exemptions', {
+  adminId: uuid('admin_id')
+    .primaryKey()
+    .references(() => admins.id, { onDelete: 'cascade' }),
+  reason: varchar('reason', { length: 200 }).notNull(),
+  createdBy: uuid('created_by').notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
 
 // ═══ MONEY (ARCHITECTURE §6 — non-negotiable) ════════════════════════════════
 //

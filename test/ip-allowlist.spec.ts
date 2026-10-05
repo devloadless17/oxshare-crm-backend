@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ipMatchesAny } from '../src/common/security/ip-range';
-import { ForbiddenException } from '@nestjs/common';
+import { ForbiddenException, UnauthorizedException } from '@nestjs/common';
 import { IpAllowlistGuard } from '../src/modules/admin/guards/ip-allowlist.guard';
 import { AdminIpAllowlistService } from '../src/modules/admin/admin-ip-allowlist.service';
 import type { AdminIpAllowlistStore, AllowlistRule } from '../src/store/admin-ip-allowlist.store';
@@ -40,7 +40,7 @@ const ADMIN: Admin = {
 
 function buildGuard(rules: string[]) {
   const store = { listCidrs: vi.fn().mockResolvedValue(rules) };
-  const guard = new IpAllowlistGuard(store as unknown as AdminIpAllowlistStore);
+  const guard = new IpAllowlistGuard(store as unknown as AdminIpAllowlistStore, {} as never);
   return { guard, store };
 }
 
@@ -145,6 +145,8 @@ function buildService(rules: AllowlistRule[]) {
       Promise.resolve({ id: 'new-rule', createdAt: new Date(), ...input }),
     ),
     delete: vi.fn().mockResolvedValue(rules[0]),
+    // Nobody is exempt in these cases — the exemption paths have their own spec.
+    isExempt: vi.fn().mockResolvedValue(false),
     /*
      * The store decides AND deletes under one lock now (a read-then-delete in
      * the service let two concurrent removals strand everybody). The fake
@@ -166,6 +168,7 @@ function buildService(rules: AllowlistRule[]) {
   const service = new AdminIpAllowlistService(
     store as unknown as AdminIpAllowlistStore,
     audit as unknown as AdminAuditService,
+    { findById: vi.fn() } as never,
   );
   return { service, store, audit };
 }
@@ -321,5 +324,43 @@ describe('AdminIpAllowlistService — removing', () => {
       'only',
       expect.objectContaining({ enforcementDisabled: true }),
     );
+  });
+});
+
+describe('IpAllowlistGuard — exempt administrators (0192)', () => {
+  const outside = (path: string, cookies: Record<string, string> = {}) =>
+    ({
+      getType: () => 'http',
+      switchToHttp: () => ({
+        getRequest: () => ({ path, ip: '198.51.100.9', socket: {}, cookies, headers: {} }),
+      }),
+    }) as never;
+
+  const build = (authenticateSession: () => Promise<{ id: string }>) =>
+    new IpAllowlistGuard(
+      {
+        listCidrs: vi.fn().mockResolvedValue(['203.0.113.0/24']),
+        isExempt: vi.fn((id: string) => Promise.resolve(id === 'exempt-admin')),
+      } as never,
+      { authenticateSession: vi.fn(authenticateSession) } as never,
+    );
+
+  it('lets the sign-in doors through for the service to judge', async () => {
+    const guard = build(() => Promise.reject(new Error('must not authenticate')));
+    for (const path of ['/v1/admin/auth/login', '/v1/admin/auth/refresh']) {
+      await expect(guard.canActivate(outside(path))).resolves.toBe(true);
+    }
+    // Invite acceptance stays inside the listed networks.
+    await expect(guard.canActivate(outside('/v1/admin/invite/accept'))).rejects.toBeInstanceOf(
+      ForbiddenException,
+    );
+  });
+
+  it("answers an expired session's 401, so the console refreshes", async () => {
+    const expired = new UnauthorizedException('Session expired.');
+    const guard = build(() => Promise.reject(expired));
+    await expect(
+      guard.canActivate(outside('/v1/admin/clients', { oxshare_crm_admin_at: 'stale' })),
+    ).rejects.toBe(expired);
   });
 });

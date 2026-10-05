@@ -1,5 +1,15 @@
 import { ipMatchesAny } from './ip-range';
 
+/** RBAC-08's refusal, wherever it is decided (guard, refresh, file routes). */
+export const NETWORK_REFUSED = 'Your network is not permitted to reach the administration API.';
+
+/**
+ * The ONE answer a sign-in from outside the listed networks gets for every
+ * failure (0192) — so it names both causes and confirms neither.
+ */
+export const OUTSIDE_SIGN_IN_REFUSED =
+  'Sign-in refused: this network is not permitted, or the email or password is wrong.';
+
 /**
  * RBAC-08's decision, in one place: may a caller at `ip` exercise ADMIN
  * authority, given the configured allowlist?

@@ -10739,6 +10739,79 @@
         ]
       }
     },
+    "/v1/admin/ip-allowlist/exemptions": {
+      "post": {
+        "operationId": "AdminIpAllowlistController_addExemption",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddIpAllowlistExemptionDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IpAllowlistStatusDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Let an administrator reach the console from any network",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/ip-allowlist/exemptions/{adminId}": {
+      "delete": {
+        "operationId": "AdminIpAllowlistController_removeExemption",
+        "parameters": [
+          {
+            "name": "adminId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Withdraw an administrator's any-network access",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/withdrawals/export": {
       "get": {
         "description": "The same `state` filter as GET /admin/withdrawals, over every matching row rather than one page. Amounts are the exact decimal strings the ledger holds — never rounded, never locale-formatted (§6.1).",
@@ -24496,6 +24569,44 @@
           "createdAt"
         ]
       },
+      "IpAllowlistExemptionDto": {
+        "type": "object",
+        "properties": {
+          "adminId": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string",
+            "example": "Owner, travels"
+          },
+          "createdBy": {
+            "type": "string"
+          },
+          "createdByName": {
+            "type": "string",
+            "nullable": true,
+            "description": "Null once the granter is deleted."
+          },
+          "createdAt": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "adminId",
+          "name",
+          "email",
+          "reason",
+          "createdBy",
+          "createdByName",
+          "createdAt"
+        ]
+      },
       "IpAllowlistStatusDto": {
         "type": "object",
         "properties": {
@@ -24516,13 +24627,26 @@
             "items": {
               "$ref": "#/components/schemas/IpAllowlistRuleDto"
             }
+          },
+          "exemptAdmins": {
+            "description": "Administrators who may reach the console from any network (0192).",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IpAllowlistExemptionDto"
+            }
+          },
+          "youAreExempt": {
+            "type": "boolean",
+            "description": "Whether the requesting administrator is exempt — they cannot lock themselves out."
           }
         },
         "required": [
           "enforced",
           "yourIp",
           "disabledByConfig",
-          "rules"
+          "rules",
+          "exemptAdmins",
+          "youAreExempt"
         ]
       },
       "AddIpAllowlistRuleDto": {
@@ -24542,6 +24666,24 @@
         "required": [
           "cidr",
           "label"
+        ]
+      },
+      "AddIpAllowlistExemptionDto": {
+        "type": "object",
+        "properties": {
+          "adminId": {
+            "type": "string",
+            "description": "The administrator who may reach the console from any network."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why — an exemption nobody remembers granting is one nobody removes.",
+            "example": "Owner, travels"
+          }
+        },
+        "required": [
+          "adminId",
+          "reason"
         ]
       },
       "PayoutPlanDto": {

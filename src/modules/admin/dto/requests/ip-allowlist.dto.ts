@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsNotEmpty, IsString, MaxLength } from 'class-validator';
+import { IsNotEmpty, IsString, IsUUID, MaxLength } from 'class-validator';
 
 export class AddIpAllowlistRuleDto {
   @ApiProperty({
@@ -19,4 +19,19 @@ export class AddIpAllowlistRuleDto {
   @IsNotEmpty()
   @MaxLength(200)
   label: string;
+}
+
+export class AddIpAllowlistExemptionDto {
+  @ApiProperty({ description: 'The administrator who may reach the console from any network.' })
+  @IsUUID()
+  adminId: string;
+
+  @ApiProperty({
+    description: 'Why — an exemption nobody remembers granting is one nobody removes.',
+    example: 'Owner, travels',
+  })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(200)
+  reason: string;
 }

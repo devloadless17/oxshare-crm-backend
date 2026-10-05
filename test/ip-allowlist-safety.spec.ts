@@ -150,7 +150,7 @@ describe('an unreadable list cannot take the console down', () => {
     const store = {
       listCidrs: () => Promise.reject(new Error('relation "admin_ip_allowlist" does not exist')),
     };
-    const guard = new IpAllowlistGuard(store as never);
+    const guard = new IpAllowlistGuard(store as never, {} as never);
 
     const context = {
       getType: () => 'http',
@@ -180,7 +180,7 @@ describe('an unreadable list cannot take the console down', () => {
     const store = {
       listCidrs: () => Promise.reject(new Error('relation "admin_ip_allowlist" does not exist')),
     };
-    const guard = new IpAllowlistGuard(store as never);
+    const guard = new IpAllowlistGuard(store as never, {} as never);
 
     const logged: unknown[] = [];
     const logger = (guard as unknown as { logger: { error: (v: unknown) => void } }).logger;
@@ -217,9 +217,12 @@ describe('an unreadable list cannot take the console down', () => {
   it('still enforces normally when the store answers', async () => {
     // The catch must not have become an unconditional pass.
     const { IpAllowlistGuard } = await import('../src/modules/admin/guards/ip-allowlist.guard');
-    const guard = new IpAllowlistGuard({
-      listCidrs: () => Promise.resolve(['203.0.113.0/24']),
-    } as never);
+    const guard = new IpAllowlistGuard(
+      {
+        listCidrs: () => Promise.resolve(['203.0.113.0/24']),
+      } as never,
+      {} as never,
+    );
 
     const context = {
       getType: () => 'http',

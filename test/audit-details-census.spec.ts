@@ -194,6 +194,9 @@ const WRITES_DETAILS: readonly string[] = [
   'ib_level.delete',
   'ib_level.update',
   'ip_allowlist.add',
+  // 0192: an ADMINISTRATOR's email and the granter's reason — nothing a client owns.
+  'ip_allowlist.exempt_add',
+  'ip_allowlist.exempt_remove',
   'ip_allowlist.remove',
   'kyc.approve',
   'kyc.claim',
@@ -204,6 +207,8 @@ const WRITES_DETAILS: readonly string[] = [
   'kyc_config.consolidated',
   'leverage.create',
   'leverage.delete',
+  // 0189: the client under `userId` (a CLIENT_ID_KEY) and the desk's own note.
+  'notification.task_close',
   'payment_method.create',
   'payment_method.delete',
   'payment_method.update',

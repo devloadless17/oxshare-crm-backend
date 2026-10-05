@@ -707,6 +707,45 @@ shallower means we trust further left than our infrastructure reaches, into call
 an allowlist can be walked through (`page`). It reports and changes nothing — inferring the hop
 count from traffic is the same "trust the header" mistake `client-ip.ts` refuses.
 
+## RBAC-08: the network allowlist, and administrators exempt from it (0192, 5 Oct 2026)
+
+`IpAllowlistGuard` (global) refuses the `/admin` surface from addresses outside
+`admin_ip_allowlist` once it has a row. It covers `/admin` paths and admin reads of `/uploads`.
+Every integration enters elsewhere (`/payments/providers/:code/webhook`, `/webhooks/mt5/*`), so
+providers and the bridge never need listing. Admin API keys DO.
+
+**An exempt administrator** (`admin_ip_allowlist_exemptions`, a reason required, managed on the
+Network access page with `settings.security.edit`, audited `ip_allowlist.exempt_add|remove`)
+reaches the console from any network. The exemption skips the network check for their SESSIONS
+and nothing else. Three doors, one decision (`IpAllowlistGuard.admitsAddress` / `isExempt`):
+
+- **The guard**, outside the list: `OUTSIDE_SIGN_IN_PATHS` (login, the two authenticator steps,
+  refresh, logout, password-reset completion) pass for the service to judge. Invite routes are
+  refused whatever cookies come with them: they act on a token, so an exempt cookie must not vouch
+  for them. An API key is refused, even beside an exempt cookie, because `AdminGuard` prefers the
+  key. No session gets 403. A session is authenticated: exempt passes, anyone else gets 403, and
+  an expired one gets its 401 so the console refreshes.
+- **Sign-in** (`AdminAuthService.loginFromOutside`): from outside, the ONLY distinguishable answer
+  to the password step is the authenticator challenge (exempt + right password). Everything else
+  is one `NETWORK_NOT_PERMITTED` 403 with the same text. The argon2 work is always spent. A
+  failure is recorded only against an exempt account, so the internet cannot lock out office
+  administrators. The authenticator steps (`beginTotpSetup`, `verifyTotp`) re-judge the network
+  BEFORE the code is checked, so a challenge minted inside cannot be finished outside, and a
+  refused attempt spends no code. Refresh is judged before rotation, so a refusal consumes
+  nothing. A reset link is spent from outside only for an exempt administrator, decided inside
+  the transaction that spends it, so a refusal rolls the spend back.
+- **`/uploads`** passes the session's admin id to `assertAdmitted`.
+
+The exemption read FAILS CLOSED while the rules read fails open. Both are right: an unreadable
+grant is no grant, and an unreadable list is no restriction. An exempt caller cannot lock
+themselves out, so the self-lockout refusals on rules are skipped for them. Removing your OWN
+exemption from outside the list is refused. Proved over HTTP by
+`test/ip-allowlist-exemptions-http.spec.ts`.
+
+⚠️ The admin realtime socket (:3003) checks only the Origin, never the allowlist. The risk is low:
+it needs a cookie obtained from inside, and it dies within 15 minutes when refresh is refused.
+Closing it means resolving the socket's forwarded address with `trustedProxyHops()`.
+
 ## The snapshot carries MORE than a balance (0099)
 
 `ingestSnapshot` mirrors `balance`, `credit`, `mt5_group` and `leverage` — all four from one read,

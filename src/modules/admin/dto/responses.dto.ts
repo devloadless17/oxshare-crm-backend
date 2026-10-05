@@ -3177,6 +3177,23 @@ export class ClientTransactionsPageDto {
   @ApiProperty() limit: number;
 }
 
+/** RBAC-08 — an administrator exempt from the network check (0192). */
+@NoClientFields(
+  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
+)
+export class IpAllowlistExemptionDto {
+  @ApiProperty() adminId: string;
+  @ApiProperty() name: string;
+  @ApiProperty()
+  @NotClientField('an ADMINISTRATOR attribute — this describes the operator, never a client')
+  email: string;
+  @ApiProperty({ example: 'Owner, travels' }) reason: string;
+  @ApiProperty() createdBy: string;
+  @ApiProperty({ nullable: true, type: String, description: 'Null once the granter is deleted.' })
+  createdByName: string | null;
+  @ApiProperty() createdAt: string;
+}
+
 /** RBAC-08 — one allowlist rule. */
 @NoClientFields(
   'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
@@ -3219,6 +3236,18 @@ export class IpAllowlistStatusDto {
 
   @ApiProperty({ type: [IpAllowlistRuleDto] })
   rules: IpAllowlistRuleDto[];
+
+  @ApiProperty({
+    type: [IpAllowlistExemptionDto],
+    description: 'Administrators who may reach the console from any network (0192).',
+  })
+  exemptAdmins: IpAllowlistExemptionDto[];
+
+  @ApiProperty({
+    description:
+      'Whether the requesting administrator is exempt — they cannot lock themselves out.',
+  })
+  youAreExempt: boolean;
 }
 
 /**
