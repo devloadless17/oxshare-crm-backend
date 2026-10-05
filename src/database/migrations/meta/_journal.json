@@ -1324,6 +1324,13 @@
       "when": 1789141808750,
       "tag": "0187_assistant",
       "breakpoints": true
+    },
+    {
+      "idx": 190,
+      "version": "7",
+      "when": 1789141908750,
+      "tag": "0188_assistant_soft_delete",
+      "breakpoints": true
     }
   ]
 }

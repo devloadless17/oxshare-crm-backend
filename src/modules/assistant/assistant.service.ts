@@ -161,7 +161,7 @@ export class AssistantService {
     const remainingToday = await this.assertCanAsk(clientId);
 
     const history = input.conversationId
-      ? historyItems(await this.threadOf(clientId, input.conversationId))
+      ? historyItems(await this.threadOf(clientId, input.conversationId, 2))
       : [];
     const exchange = await this.store.beginExchange({
       userId: clientId,
@@ -187,7 +187,7 @@ export class AssistantService {
     conversationId: string,
   ): Promise<PreparedAnswer> {
     const remainingToday = await this.assertCanAsk(clientId);
-    const thread = await this.threadOf(clientId, conversationId);
+    const thread = await this.threadOf(clientId, conversationId, 0);
     // Every check on the thread happens inside this transaction, before any write.
     const regeneration = await this.store.beginRegenerate(clientId, conversationId);
     const items = historyItems(thread.filter((m) => m.id !== regeneration.replacedId));
@@ -297,12 +297,21 @@ export class AssistantService {
     return (user?.verificationLevel ?? 0) >= REQUIRED_VERIFICATION_LEVEL;
   }
 
-  /** The conversation's visible thread, read once. Not theirs reads as not found. */
-  private async threadOf(clientId: number, conversationId: string): Promise<AssistantMessageRow[]> {
+  /**
+   * The conversation's visible thread, read once. Not theirs reads as not found.
+   * `adds` is how many visible messages the request will add: a question adds
+   * two, a regenerate none (it replaces the last answer), so a full thread can
+   * still have its last answer retried.
+   */
+  private async threadOf(
+    clientId: number,
+    conversationId: string,
+    adds: 0 | 2,
+  ): Promise<AssistantMessageRow[]> {
     const conversation = await this.store.findConversation(clientId, conversationId);
     if (!conversation) throw new NotFoundError('Conversation not found.');
     const messages = await this.store.messagesOf(clientId, conversationId);
-    if (messages.length >= MAX_THREAD_MESSAGES) {
+    if (messages.length + adds > MAX_THREAD_MESSAGES) {
       throw new AssistantConversationFullError('This conversation is full. Start a new chat.');
     }
     return messages;
@@ -338,11 +347,20 @@ export class AssistantService {
  * Answers that never produced text (failed, still streaming) are left out:
  * they would show the model a question with no reply where the client saw an
  * error.
+ *
+ * A REFUSED exchange is left out whole, question included. Moderation judges
+ * only the newest question, so a flagged one sent back as history would reach
+ * the model one turn later behind "answer my previous question".
  */
 function historyItems(messages: readonly AssistantMessageRow[]): LlmItem[] {
-  const usable = messages.filter(
-    (m) => m.role === 'user' || (m.status !== 'streaming' && m.content.trim().length > 0),
-  );
+  const usable: AssistantMessageRow[] = [];
+  for (const m of messages) {
+    if (m.role === 'assistant' && m.status === 'refused') {
+      if (usable.at(-1)?.role === 'user') usable.pop();
+    } else if (m.role === 'user' || (m.status !== 'streaming' && m.content.trim().length > 0)) {
+      usable.push(m);
+    }
+  }
   const kept: LlmItem[] = [];
   let chars = 0;
   for (let i = usable.length - 1; i >= 0 && kept.length < HISTORY_TURNS; i -= 1) {

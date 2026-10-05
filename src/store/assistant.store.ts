@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, asc, desc, eq, gte, isNull, lt, ne, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gte, isNull, lt, notInArray, or, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db } from '../database/db';
 import {
@@ -14,7 +14,7 @@ import {
   AssistantDuplicateError,
   NotFoundError,
 } from '../common/errors/domain-errors';
-import { isUniqueViolation } from '../common/errors/pg-violation';
+import { isUniqueViolation, violatesConstraint } from '../common/errors/pg-violation';
 
 /**
  * The portal assistant's conversations, messages and settings (0187).
@@ -96,6 +96,13 @@ export interface AssistantUsage {
  */
 const STALE_STREAM_MS = 3 * 60_000;
 
+/**
+ * A deleted chat's rows are kept this long after the delete, then removed. Past
+ * it no allowance window (a minute, a UTC day) can still see them, and nothing
+ * can be added to a deleted chat.
+ */
+const DELETED_KEEP_MS = 2 * 86_400_000;
+
 const DEFAULT_SETTINGS: AssistantSettingsRow = {
   enabled: false,
   dailyMessageLimit: 30,
@@ -133,9 +140,8 @@ export class AssistantStore {
 
   /**
    * Answers this client was given since `since`. The allowance is a COUNT, never
-   * a counter. An answer that FAILED (the model was down, the key refused) gave
-   * the client nothing, so it does not use up a question; the platform-wide
-   * `usageSince` still counts every attempt.
+   * a counter, over rows the client cannot remove: deleting a chat erases its
+   * words and keeps its rows (0188). Only a CHARGED answer counts.
    */
   async answersSince(userId: number, since: Date): Promise<number> {
     const [row] = await this.db
@@ -145,19 +151,30 @@ export class AssistantStore {
         and(
           eq(assistantMessages.userId, userId),
           eq(assistantMessages.role, 'assistant'),
-          ne(assistantMessages.status, 'failed'),
+          charged(),
           gte(assistantMessages.createdAt, since),
         ),
       );
     return row?.n ?? 0;
   }
 
-  /** Every answer the platform gave since `since`: the platform-wide ceiling. A count, nothing else. */
+  /**
+   * Charged answers the platform gave since `since`: the platform-wide ceiling.
+   * Same rule as the client's allowance, so free attempts (a client who hung up
+   * before the answer began, a model outage) can never use the ceiling up and
+   * shut every client out for the day. `usageSince` still counts every attempt.
+   */
   async platformAnswersSince(since: Date): Promise<number> {
     const [row] = await this.db
       .select({ n: sql<number>`count(*)::int` })
       .from(assistantMessages)
-      .where(and(eq(assistantMessages.role, 'assistant'), gte(assistantMessages.createdAt, since)));
+      .where(
+        and(
+          eq(assistantMessages.role, 'assistant'),
+          charged(),
+          gte(assistantMessages.createdAt, since),
+        ),
+      );
     return row?.n ?? 0;
   }
 
@@ -166,9 +183,13 @@ export class AssistantStore {
     const [row] = await this.db
       .select({
         answers: sql<number>`count(*)::int`,
-        inputTokens: sql<number>`coalesce(sum(${assistantMessages.inputTokens}), 0)::int`,
-        cachedTokens: sql<number>`coalesce(sum(${assistantMessages.cachedTokens}), 0)::int`,
-        outputTokens: sql<number>`coalesce(sum(${assistantMessages.outputTokens}), 0)::int`,
+        // bigint: a busy day's input tokens pass 2^31, and `::int` would 500 the admin screen.
+        inputTokens:
+          sql<number>`coalesce(sum(${assistantMessages.inputTokens}), 0)::bigint`.mapWith(Number),
+        cachedTokens:
+          sql<number>`coalesce(sum(${assistantMessages.cachedTokens}), 0)::bigint`.mapWith(Number),
+        outputTokens:
+          sql<number>`coalesce(sum(${assistantMessages.outputTokens}), 0)::bigint`.mapWith(Number),
       })
       .from(assistantMessages)
       .where(and(eq(assistantMessages.role, 'assistant'), gte(assistantMessages.createdAt, since)));
@@ -186,7 +207,9 @@ export class AssistantStore {
         lastMessageAt: assistantConversations.lastMessageAt,
       })
       .from(assistantConversations)
-      .where(eq(assistantConversations.userId, userId))
+      .where(
+        and(eq(assistantConversations.userId, userId), isNull(assistantConversations.deletedAt)),
+      )
       .orderBy(desc(assistantConversations.lastMessageAt))
       .limit(limit);
   }
@@ -207,6 +230,7 @@ export class AssistantStore {
         and(
           eq(assistantConversations.id, conversationId),
           eq(assistantConversations.userId, userId),
+          isNull(assistantConversations.deletedAt),
         ),
       )
       .limit(1);
@@ -236,18 +260,35 @@ export class AssistantStore {
       .orderBy(asc(assistantMessages.createdAt), asc(assistantMessages.role));
   }
 
-  /** A client deleting a chat means it is gone — not archived. Returns false when not theirs. */
+  /**
+   * A client deleting a chat: what was SAID is gone at once, and the chat reads as
+   * missing everywhere. What was USED stays (the rows, their status, their tokens)
+   * because every allowance counts them; a hard delete let a client reset their
+   * limits by deleting chats, and freed the one-answer index mid-answer (0188).
+   * Retention removes the rows two days later. Returns false when not theirs.
+   *
+   * Lock order: the conversation, then its messages, as `finishAnswer` takes them.
+   */
   async deleteConversation(userId: number, conversationId: string): Promise<boolean> {
-    const rows = await this.db
-      .delete(assistantConversations)
-      .where(
-        and(
-          eq(assistantConversations.id, conversationId),
-          eq(assistantConversations.userId, userId),
-        ),
-      )
-      .returning({ id: assistantConversations.id });
-    return rows.length > 0;
+    return this.db.transaction(async (tx) => {
+      const [deleted] = await tx
+        .update(assistantConversations)
+        .set({ deletedAt: new Date(), title: null })
+        .where(
+          and(
+            eq(assistantConversations.id, conversationId),
+            eq(assistantConversations.userId, userId),
+            isNull(assistantConversations.deletedAt),
+          ),
+        )
+        .returning({ id: assistantConversations.id });
+      if (!deleted) return false;
+      await tx
+        .update(assistantMessages)
+        .set({ content: '', followups: null, feedbackReason: null })
+        .where(eq(assistantMessages.conversationId, conversationId));
+      return true;
+    });
   }
 
   /* ── Exchanges ─────────────────────────────────────────────────────────── */
@@ -274,11 +315,10 @@ export class AssistantStore {
   }): Promise<AssistantExchange> {
     try {
       return await this.db.transaction(async (tx) => {
-        await this.retireStaleStreams(tx, input.userId);
-
         let conversationId = input.conversationId;
         let created = false;
         if (conversationId) {
+          // The conversation is locked FIRST, as everywhere (see `deleteConversation`).
           const [owned] = await tx
             .update(assistantConversations)
             .set({ lastMessageAt: new Date() })
@@ -286,11 +326,14 @@ export class AssistantStore {
               and(
                 eq(assistantConversations.id, conversationId),
                 eq(assistantConversations.userId, input.userId),
+                isNull(assistantConversations.deletedAt),
               ),
             )
             .returning({ id: assistantConversations.id });
           if (!owned) throw new NotFoundError('Conversation not found.');
+          await this.retireStaleStreams(tx, input.userId);
         } else {
+          await this.retireStaleStreams(tx, input.userId);
           const [row] = await tx
             .insert(assistantConversations)
             .values({ userId: input.userId, title: input.title })
@@ -333,14 +376,29 @@ export class AssistantStore {
    * Opens a fresh answer to the conversation's last question, and marks the
    * previous answer superseded (its outcome kept, so a failed answer stays free).
    *
-   * Everything is checked INSIDE the transaction, before any write: there must
-   * be an answer to replace, it must not still be streaming (that would run two
-   * model calls at once and lose the first one's record), and a question must
-   * come before it. Same one-in-flight guarantee as `beginExchange`.
+   * Everything is checked INSIDE the transaction, and a refusal rolls it back:
+   * the chat must be theirs and not deleted, there must be an answer to replace,
+   * it must not still be streaming (that would run two model calls at once and
+   * lose the first one's record), and a question must come before it. Same
+   * one-in-flight guarantee as `beginExchange`.
    */
   async beginRegenerate(userId: number, conversationId: string): Promise<AssistantRegeneration> {
     try {
       return await this.db.transaction(async (tx) => {
+        // Owned and not deleted, and locked FIRST, as everywhere (see `deleteConversation`).
+        const now = new Date();
+        const [owned] = await tx
+          .update(assistantConversations)
+          .set({ lastMessageAt: now })
+          .where(
+            and(
+              eq(assistantConversations.id, conversationId),
+              eq(assistantConversations.userId, userId),
+              isNull(assistantConversations.deletedAt),
+            ),
+          )
+          .returning({ id: assistantConversations.id });
+        if (!owned) throw new NotFoundError('Conversation not found.');
         await this.retireStaleStreams(tx, userId);
 
         const [last, previous] = await tx
@@ -369,15 +427,10 @@ export class AssistantStore {
           );
         }
 
-        const now = new Date();
         await tx
           .update(assistantMessages)
           .set({ supersededAt: now })
           .where(eq(assistantMessages.id, last.id));
-        await tx
-          .update(assistantConversations)
-          .set({ lastMessageAt: now })
-          .where(eq(assistantConversations.id, conversationId));
         // Stamped from the same clock as every other message, so the thread order holds.
         const [answer] = await tx
           .insert(assistantMessages)
@@ -403,12 +456,35 @@ export class AssistantStore {
     }
   }
 
-  /** Closes an answer, whatever happened to it. Only a `streaming` row is closed, once. */
+  /**
+   * Closes an answer, whatever happened to it. Only a `streaming` row is closed, once.
+   *
+   * The chat may have been deleted while the answer was being written. Its row
+   * is closed all the same (it is usage), but its words are not written back.
+   * The conversation is read `FOR SHARE` first, in the order the delete takes
+   * its locks, so whichever runs second sees the other's result.
+   */
   async finishAnswer(messageId: string, outcome: AssistantAnswerOutcome): Promise<void> {
-    await this.db
-      .update(assistantMessages)
-      .set({ ...outcome, completedAt: new Date() })
-      .where(and(eq(assistantMessages.id, messageId), eq(assistantMessages.status, 'streaming')));
+    await this.db.transaction(async (tx) => {
+      const [chat] = await tx
+        .select({ deletedAt: assistantConversations.deletedAt })
+        .from(assistantConversations)
+        .innerJoin(
+          assistantMessages,
+          eq(assistantMessages.conversationId, assistantConversations.id),
+        )
+        .where(eq(assistantMessages.id, messageId))
+        .for('share', { of: assistantConversations });
+      const erased = Boolean(chat?.deletedAt);
+      await tx
+        .update(assistantMessages)
+        .set({
+          ...outcome,
+          ...(erased ? { content: '', followups: null } : {}),
+          completedAt: new Date(),
+        })
+        .where(and(eq(assistantMessages.id, messageId), eq(assistantMessages.status, 'streaming')));
+    });
   }
 
   /** Returns false when the message is not this client's answer. */
@@ -436,12 +512,20 @@ export class AssistantStore {
     return rows.length > 0;
   }
 
-  /** Retention: conversations idle longer than `days` are deleted with their messages. */
+  /**
+   * Retention: conversations idle longer than `days`, and chats the client
+   * deleted over two days ago, are removed with their messages.
+   */
   async pruneIdleConversations(days: number): Promise<number> {
     const cutoff = new Date(Date.now() - days * 86_400_000);
     const rows = await this.db
       .delete(assistantConversations)
-      .where(lt(assistantConversations.lastMessageAt, cutoff))
+      .where(
+        or(
+          lt(assistantConversations.lastMessageAt, cutoff),
+          lt(assistantConversations.deletedAt, new Date(Date.now() - DELETED_KEEP_MS)),
+        ),
+      )
       .returning({ id: assistantConversations.id });
     return rows.length;
   }
@@ -463,20 +547,19 @@ export class AssistantStore {
   }
 }
 
-/** Which partial unique index a violation hit, from the driver error under Drizzle's wrapper. */
-function violatedConstraint(error: unknown): string | undefined {
-  for (let current: unknown = error, depth = 0; current && depth < 5; depth += 1) {
-    const constraint = (current as { constraint?: unknown }).constraint;
-    if (typeof constraint === 'string') return constraint;
-    current = (current as { cause?: unknown }).cause;
-  }
-  return undefined;
+/**
+ * An answer the client is charged for. A FAILED one gave them nothing (the model
+ * was down, they left before it began, a deploy cut it), and an INTERRUPTED one
+ * is an instance that died: neither is their doing, so neither uses a question.
+ */
+function charged() {
+  return notInArray(assistantMessages.status, ['failed', 'interrupted']);
 }
 
 /** The domain refusal a failed exchange transaction stands for, or the error itself. */
 function refusalFor(error: unknown): unknown {
   if (!isUniqueViolation(error)) return error;
-  if (violatedConstraint(error) === 'assistant_messages_request_uq') {
+  if (violatesConstraint(error, 'assistant_messages_request_uq')) {
     return new AssistantDuplicateError('This question was already received.');
   }
   return new AssistantBusyError('An answer is already being written. Wait for it to finish.');
