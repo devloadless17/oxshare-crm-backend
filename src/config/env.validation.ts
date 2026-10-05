@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import { resolveGoogleOauth } from './google-oauth';
 
 // Config validated once at boot — the process refuses to start on invalid or
 // missing configuration instead of failing at 3am on first use (ARCHITECTURE §10,
@@ -404,25 +403,6 @@ const envSchema = z
     API_PUBLIC_URL: z.string().url().optional(),
 
     /*
-     * ── "Sign in with Google" for the ADMIN console (not the portal) ─────────
-     *
-     * OFF unless BOTH the id and the secret are set; one without the other
-     * refuses boot (below). The secret authenticates this API to Google's token
-     * endpoint — secrets manager only, and never logged: `redact.ts` masks any
-     * key containing "secret", and nothing in the Google code prints it.
-     *
-     * GOOGLE_OAUTH_REDIRECT_URI defaults to
-     * `<API_PUBLIC_URL>/v1/admin/auth/google/callback` and must be registered at
-     * Google verbatim. GOOGLE_OAUTH_ALLOWED_DOMAINS (comma list) restricts it to
-     * Workspace accounts of those domains — the `hd` claim AND the address.
-     * The rules live in `config/google-oauth.ts`, shared with the runtime.
-     */
-    GOOGLE_OAUTH_CLIENT_ID: z.string().optional(),
-    GOOGLE_OAUTH_CLIENT_SECRET: z.string().optional(),
-    GOOGLE_OAUTH_REDIRECT_URI: z.string().optional(),
-    GOOGLE_OAUTH_ALLOWED_DOMAINS: z.string().optional(),
-
-    /*
      * The Rival connection's DEVELOPMENT floor. Production config lives in the
      * `rival_settings` row (admin-editable, encrypted at rest), and the row
      * wins WHOLE over these — see `RivalConfigService`. All three optional
@@ -673,30 +653,7 @@ export function validateEnv(config: Record<string, unknown>): Record<string, unk
     seen.set(value, key);
   }
 
-  /*
-   * Google sign-in: all of it or none of it, in every environment. A secret
-   * with no id (or the reverse) is a half-finished edit, and a deployment that
-   * starts with it would hide the Google button and say nothing about why.
-   */
-  const google = resolveGoogleOauth(env);
-  if (google.status === 'invalid') {
-    throw new Error(`Refusing to start: ${google.problem}`);
-  }
-
   if (env.NODE_ENV === 'production') {
-    /*
-     * The Google callback carries an authorization code, and the flow cookie
-     * that proves the browser started the flow. Over plain http both travel in
-     * the clear — the same reasoning as ADMIN_URL below.
-     */
-    if (google.status === 'enabled' && !google.settings.redirectUri.startsWith('https://')) {
-      throw new Error(
-        'Refusing to start in production with a non-HTTPS Google redirect URI ' +
-          `("${google.settings.redirectUri}"). The callback carries the authorization code and ` +
-          'the signed flow cookie; set GOOGLE_OAUTH_REDIRECT_URI (or API_PUBLIC_URL) to https.',
-      );
-    }
-
     /*
      * A reset link in a log file is a takeover waiting to happen, and log
      * aggregation copies it somewhere with a different audience. Refusing to

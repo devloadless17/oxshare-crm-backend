@@ -147,17 +147,12 @@ export class AdminProfileDto {
   passwordChangedAt?: Date | null;
 
   /**
-   * The Google account linked for "Sign in with Google" (0180), or `null`.
-   * Display only — the link is keyed on Google's subject id, never on this.
+   * When this administrator's authenticator app was set up (0191), or `null`
+   * when none is — their next sign-in enrols one.
    */
-  @ApiProperty({ type: String, nullable: true, example: 'ada@bbcorp.trade' })
-  @NotClientField('an ADMINISTRATOR attribute — this describes the operator, never a client')
-  googleEmail: string | null;
-
-  /** When the Google account was linked, or `null` when none is. */
   @ApiProperty({ type: String, format: 'date-time', nullable: true })
   @NotClientField('a timestamp the system recorded, describing the record rather than the client')
-  googleLinkedAt: Date | null;
+  totpEnabledAt: Date | null;
 
   @NotClientField('a timestamp the system recorded, describing the record rather than the client')
   @ApiProperty()
@@ -165,7 +160,7 @@ export class AdminProfileDto {
 }
 
 /**
- * `POST /admin/auth/login`, `/admin/auth/refresh`, `/admin/invite/accept`.
+ * `POST /admin/auth/totp/verify` and `/admin/auth/refresh` — a session exists.
  *
  * No tokens in the body, deliberately. The session is set as httpOnly cookies on
  * the same response (PLATFORM-CONVENTIONS R-3.2); returning the tokens here as
@@ -184,6 +179,38 @@ export class AdminProfileDto {
 )
 export class AdminLoginResponseDto {
   @ApiProperty({ type: AdminProfileDto }) admin: AdminProfileDto;
+}
+
+/**
+ * `POST /admin/auth/login` — the password was right, and that is HALF a
+ * sign-in (0191). No cookies are set; `challengeToken` is good only at
+ * `auth/totp/setup` and `auth/totp/verify`, for `expiresInSeconds`.
+ */
+@NoClientFields('an administrative or configuration shape - no client-owned field on it')
+export class AdminSignInChallengeDto {
+  @ApiProperty({
+    enum: ['totp', 'totp_setup'],
+    description:
+      '`totp`: ask for the 6-digit code. `totp_setup`: no authenticator yet — show the QR code first.',
+  })
+  step: 'totp' | 'totp_setup';
+  @ApiProperty({ description: 'Short-lived; send it back with the code. Not a session.' })
+  challengeToken: string;
+  @ApiProperty({ example: 600 }) expiresInSeconds: number;
+}
+
+/** `POST /admin/auth/totp/setup` — what the authenticator app needs. */
+@NoClientFields('an administrative or configuration shape - no client-owned field on it')
+export class AdminTotpSetupDto {
+  @ApiProperty({ description: 'Base32 secret, for typing into the app by hand.' })
+  secret: string;
+  @ApiProperty({ description: 'The otpauth:// URI the QR code encodes.' })
+  otpauthUri: string;
+  @ApiProperty({ description: 'The QR code, as an SVG document.' })
+  qrSvg: string;
+  @ApiProperty({ example: 'ada@bbcorp.trade', description: 'The account name the app shows.' })
+  account: string;
+  @ApiProperty({ example: 'OxShare Admin' }) issuer: string;
 }
 
 /**
@@ -1503,8 +1530,11 @@ export class InviteValidationDto {
   'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
 )
 export class AcceptInviteResponseDto {
-  @ApiProperty({ example: 'Account created. Welcome aboard!' }) message: string;
-  @ApiProperty({ type: AdminProfileDto }) admin: AdminProfileDto;
+  @ApiProperty({ example: 'Account created. Set up your authenticator app to finish.' })
+  message: string;
+  @ApiProperty({ enum: ['totp', 'totp_setup'] }) step: 'totp' | 'totp_setup';
+  @ApiProperty() challengeToken: string;
+  @ApiProperty({ example: 600 }) expiresInSeconds: number;
 }
 
 /** An invite that has been sent and not yet accepted. Never carries the token. */
@@ -3370,11 +3400,4 @@ export class AttentionResolvedDto {
 
   @ApiProperty({ description: 'Always false after a successful resolve.' })
   needsAttention: boolean;
-}
-
-/** `GET /admin/auth/google/status` — whether the sign-in screen offers Google. */
-@NoClientFields('an administrative or configuration shape - no client-owned field on it')
-export class GoogleSignInStatusDto {
-  @ApiProperty({ description: 'True when GOOGLE_OAUTH_CLIENT_ID and _SECRET are both configured.' })
-  enabled: boolean;
 }

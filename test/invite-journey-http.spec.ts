@@ -3,6 +3,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
   actingAs,
   anonymous,
+  completeAdminTotp,
+  sessionFrom,
   startHttpTestApp,
   stopHttpTestApp,
   SURFACES,
@@ -135,14 +137,24 @@ describe('invite → accept → sign in with the granted role', () => {
     await invitee.post('/v1/admin/roles', { name: 'Nope', permissions: [] }).expect(403);
   });
 
-  it('signs the invitee in immediately on accept, without a second login', async () => {
+  it('sends the invitee straight to authenticator setup — no session until a code checks', async () => {
+    /*
+     * Accept used to sign the invitee in on the spot. Since 0191 every admin
+     * session needs a code from an authenticator app, the newcomer's first one
+     * included, so accept answers with the enrolment challenge instead — and
+     * that challenge alone carries them through setup to a session.
+     */
     const email = 'journey-autologin@oxshare.com';
     const { token } = await invite(email, 'Journey Auto', reviewerRoleId);
 
     const res = await acceptInvite(token, NEW_ADMIN_PASSWORD).expect(200);
-    // The accept response sets the session cookies itself.
-    const setCookie = res.headers['set-cookie'] as unknown as string[] | undefined;
-    expect(setCookie?.join(';')).toMatch(/admin/i);
+    const setCookie = (res.headers['set-cookie'] as unknown as string[] | undefined) ?? [];
+    expect(setCookie.join(';')).not.toMatch(/admin_(at|rt)=/i);
+    expect(res.body).toMatchObject({ step: 'totp_setup', challengeToken: expect.any(String) });
+
+    const cookies = await completeAdminTotp(ctx, email, res.body as { challengeToken: string });
+    const me = await sessionFrom(ctx, 'admin', cookies).get('/v1/admin/auth/me').expect(200);
+    expect((me.body as { email: string }).email).toBe(email);
   });
 
   it('an invite email with CAPITALS still lets its owner log in', async () => {

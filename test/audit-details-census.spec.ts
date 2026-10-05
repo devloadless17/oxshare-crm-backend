@@ -129,9 +129,6 @@ const WRITTEN_BY_MIGRATIONS: Readonly<Record<string, string>> = {
  */
 const WRITES_DETAILS: readonly string[] = [
   'admin.avatar_change',
-  // Sign in with Google (0180): the ADMIN's own Google address and how it was linked — no client data.
-  'admin.google_link',
-  'admin.google_unlink',
   'admin.invite',
   'admin.invite_accept',
   'admin.invite_revoke',
@@ -142,6 +139,9 @@ const WRITES_DETAILS: readonly string[] = [
   'admin.session_displaced',
   'admin.session_revoke',
   'admin.suspend',
+  // 0191: an empty payload on enrolment, the target ADMIN's address on a reset — no client data.
+  'admin.totp_enroll',
+  'admin.totp_reset',
   'admin.update',
   'agency.create',
   'agency.delete',

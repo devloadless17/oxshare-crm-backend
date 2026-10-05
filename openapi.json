@@ -7265,6 +7265,7 @@
     },
     "/v1/admin/auth/login": {
       "post": {
+        "description": "A right password sets NO session. It answers with a short-lived challenge: `step: \"totp\"` → send the 6-digit code to `auth/totp/verify`; `step: \"totp_setup\"` → no authenticator yet, call `auth/totp/setup` for the QR code first.",
         "operationId": "AdminAuthController_login",
         "parameters": [],
         "requestBody": {
@@ -7283,13 +7284,78 @@
             "content": {
               "application/json": {
                 "schema": {
+                  "$ref": "#/components/schemas/AdminSignInChallengeDto"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Admin login, step one: the password (then the authenticator code)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/auth/totp/setup": {
+      "post": {
+        "description": "Only while the account has no authenticator. Each call replaces the previous secret, so only the newest QR code can finish enrolment.",
+        "operationId": "AdminAuthController_beginTotpSetup",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminTotpChallengeDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminTotpSetupDto"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Admin login, enrolment: a new authenticator secret as a QR code",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/auth/totp/verify": {
+      "post": {
+        "operationId": "AdminAuthController_verifyTotp",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminTotpVerifyDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
                   "$ref": "#/components/schemas/AdminLoginResponseDto"
                 }
               }
             }
           }
         },
-        "summary": "Admin login",
+        "summary": "Admin login, step two: the 6-digit authenticator code — starts the session",
         "tags": [
           "admin"
         ]
@@ -7545,6 +7611,7 @@
     },
     "/v1/admin/invite/accept": {
       "post": {
+        "description": "Creates the account and answers with the same challenge a correct password buys at login (`step: \"totp_setup\"`). No session until the authenticator code checks.",
         "operationId": "AdminAuthController_acceptInvite",
         "parameters": [],
         "requestBody": {
@@ -7569,7 +7636,7 @@
             }
           }
         },
-        "summary": "Accept invite and set password — logs admin in immediately",
+        "summary": "Accept invite and set password — then set up the authenticator to sign in",
         "tags": [
           "admin"
         ]
@@ -7606,6 +7673,43 @@
           }
         ],
         "summary": "Email another administrator a single-use password reset link",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/users/{id}/totp/reset": {
+      "post": {
+        "description": "Their next sign-in shows a new QR code to scan. Their password is unchanged.",
+        "operationId": "AdminAuthController_resetTotp",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Reset another administrator's authenticator app (admins.reset)",
         "tags": [
           "admin"
         ]
@@ -7793,165 +7897,6 @@
           }
         ],
         "summary": "Remove your profile photo",
-        "tags": [
-          "admin"
-        ]
-      }
-    },
-    "/v1/admin/auth/google/status": {
-      "get": {
-        "operationId": "AdminGoogleAuthController_status",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/GoogleSignInStatusDto"
-                }
-              }
-            }
-          }
-        },
-        "summary": "Whether the admin sign-in screen offers \"Sign in with Google\"",
-        "tags": [
-          "admin"
-        ]
-      }
-    },
-    "/v1/admin/auth/google/start": {
-      "get": {
-        "description": "Sets a signed, httpOnly flow cookie (state, nonce, PKCE verifier) and redirects to Google's authorization endpoint. `next` must be a relative console path; anything else lands on /dashboard. `invite` (the emailed invite token) is kept in the cookie only.",
-        "operationId": "AdminGoogleAuthController_start",
-        "parameters": [
-          {
-            "name": "invite",
-            "required": false,
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "next",
-            "required": false,
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "302": {
-            "description": "Redirect to Google, or back to the console when disabled."
-          }
-        },
-        "summary": "Begin Google sign-in (browser navigation; 302 to Google)",
-        "tags": [
-          "admin"
-        ]
-      }
-    },
-    "/v1/admin/auth/google/callback": {
-      "get": {
-        "description": "Verifies state against the signed flow cookie, exchanges the code with the PKCE verifier, verifies the ID token and starts an admin session. Every failure redirects to the console with `?google_error=<code>` — never Google text, never the address.",
-        "operationId": "AdminGoogleAuthController_callback",
-        "parameters": [
-          {
-            "name": "error",
-            "required": false,
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "state",
-            "required": false,
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "code",
-            "required": false,
-            "in": "query",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "302": {
-            "description": "Redirect to the console."
-          }
-        },
-        "summary": "Google redirects here (browser navigation; 302 back to the console)",
-        "tags": [
-          "admin"
-        ]
-      }
-    },
-    "/v1/admin/auth/me/google": {
-      "delete": {
-        "operationId": "AdminGoogleAuthController_unlinkOwn",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/MessageResponseDto"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "cookie": []
-          }
-        ],
-        "summary": "Unlink your own Google account",
-        "tags": [
-          "admin"
-        ]
-      }
-    },
-    "/v1/admin/users/{id}/google": {
-      "delete": {
-        "operationId": "AdminGoogleAuthController_unlinkFor",
-        "parameters": [
-          {
-            "name": "id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/MessageResponseDto"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "cookie": []
-          }
-        ],
-        "summary": "Unlink another administrator's Google account (admins.reset)",
         "tags": [
           "admin"
         ]
@@ -21404,6 +21349,95 @@
           "password"
         ]
       },
+      "AdminSignInChallengeDto": {
+        "type": "object",
+        "properties": {
+          "step": {
+            "type": "string",
+            "enum": [
+              "totp",
+              "totp_setup"
+            ],
+            "description": "`totp`: ask for the 6-digit code. `totp_setup`: no authenticator yet — show the QR code first."
+          },
+          "challengeToken": {
+            "type": "string",
+            "description": "Short-lived; send it back with the code. Not a session."
+          },
+          "expiresInSeconds": {
+            "type": "number",
+            "example": 600
+          }
+        },
+        "required": [
+          "step",
+          "challengeToken",
+          "expiresInSeconds"
+        ]
+      },
+      "AdminTotpChallengeDto": {
+        "type": "object",
+        "properties": {
+          "challengeToken": {
+            "type": "string",
+            "description": "From `POST /admin/auth/login` or `/admin/invite/accept`."
+          }
+        },
+        "required": [
+          "challengeToken"
+        ]
+      },
+      "AdminTotpSetupDto": {
+        "type": "object",
+        "properties": {
+          "secret": {
+            "type": "string",
+            "description": "Base32 secret, for typing into the app by hand."
+          },
+          "otpauthUri": {
+            "type": "string",
+            "description": "The otpauth:// URI the QR code encodes."
+          },
+          "qrSvg": {
+            "type": "string",
+            "description": "The QR code, as an SVG document."
+          },
+          "account": {
+            "type": "string",
+            "example": "ada@bbcorp.trade",
+            "description": "The account name the app shows."
+          },
+          "issuer": {
+            "type": "string",
+            "example": "OxShare Admin"
+          }
+        },
+        "required": [
+          "secret",
+          "otpauthUri",
+          "qrSvg",
+          "account",
+          "issuer"
+        ]
+      },
+      "AdminTotpVerifyDto": {
+        "type": "object",
+        "properties": {
+          "challengeToken": {
+            "type": "string",
+            "description": "From `POST /admin/auth/login` or `/admin/invite/accept`."
+          },
+          "code": {
+            "type": "string",
+            "example": "123456",
+            "description": "The 6-digit code the authenticator app shows."
+          }
+        },
+        "required": [
+          "challengeToken",
+          "code"
+        ]
+      },
       "AdminScopeTagDto": {
         "type": "object",
         "properties": {
@@ -21496,12 +21530,7 @@
             "format": "date-time",
             "nullable": true
           },
-          "googleEmail": {
-            "type": "string",
-            "nullable": true,
-            "example": "ada@bbcorp.trade"
-          },
-          "googleLinkedAt": {
+          "totpEnabledAt": {
             "type": "string",
             "format": "date-time",
             "nullable": true
@@ -21522,8 +21551,7 @@
           "scopedTags",
           "seesUntriaged",
           "seesAllClients",
-          "googleEmail",
-          "googleLinkedAt",
+          "totpEnabledAt",
           "createdAt"
         ]
       },
@@ -21691,15 +21719,28 @@
         "properties": {
           "message": {
             "type": "string",
-            "example": "Account created. Welcome aboard!"
+            "example": "Account created. Set up your authenticator app to finish."
           },
-          "admin": {
-            "$ref": "#/components/schemas/AdminProfileDto"
+          "step": {
+            "type": "string",
+            "enum": [
+              "totp",
+              "totp_setup"
+            ]
+          },
+          "challengeToken": {
+            "type": "string"
+          },
+          "expiresInSeconds": {
+            "type": "number",
+            "example": 600
           }
         },
         "required": [
           "message",
-          "admin"
+          "step",
+          "challengeToken",
+          "expiresInSeconds"
         ]
       },
       "CompleteAdminResetDto": {
@@ -21818,18 +21859,6 @@
             "example": "/uploads/avatars/6f1c...c2.png"
           }
         }
-      },
-      "GoogleSignInStatusDto": {
-        "type": "object",
-        "properties": {
-          "enabled": {
-            "type": "boolean",
-            "description": "True when GOOGLE_OAUTH_CLIENT_ID and _SECRET are both configured."
-          }
-        },
-        "required": [
-          "enabled"
-        ]
       },
       "ClientTagDto": {
         "type": "object",

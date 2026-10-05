@@ -6,6 +6,7 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
+  Matches,
   MaxLength,
   MinLength,
 } from 'class-validator';
@@ -51,6 +52,22 @@ export class AdminLoginDto {
   @IsString()
   @MaxLength(PASSWORD_MAX)
   password: string;
+}
+
+/** `POST /admin/auth/totp/setup` — the challenge a correct password bought. */
+export class AdminTotpChallengeDto {
+  @ApiProperty({ description: 'From `POST /admin/auth/login` or `/admin/invite/accept`.' })
+  @IsString()
+  @MaxLength(2048)
+  challengeToken: string;
+}
+
+/** `POST /admin/auth/totp/verify` — the challenge plus the code from the app. */
+export class AdminTotpVerifyDto extends AdminTotpChallengeDto {
+  @ApiProperty({ example: '123456', description: 'The 6-digit code the authenticator app shows.' })
+  @IsString()
+  @Matches(/^\s*\d{3}\s?\d{3}\s*$/, { message: 'Enter the 6-digit code from your app.' })
+  code: string;
 }
 
 export class InviteDto {

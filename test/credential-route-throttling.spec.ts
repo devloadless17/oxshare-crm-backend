@@ -66,6 +66,23 @@ const CREDENTIAL_ROUTES: { controller: object; name: string; method: string }[] 
     name: 'POST /admin/auth/refresh',
     method: 'refresh',
   },
+  // The authenticator step of admin sign-in (0191): the code is a credential
+  // guess like the password, and setup mints a secret on every call.
+  {
+    controller: AdminAuthController.prototype,
+    name: 'POST /admin/auth/totp/verify',
+    method: 'verifyTotp',
+  },
+  {
+    controller: AdminAuthController.prototype,
+    name: 'POST /admin/auth/totp/setup',
+    method: 'beginTotpSetup',
+  },
+  {
+    controller: AdminAuthController.prototype,
+    name: 'POST /admin/users/:id/totp/reset',
+    method: 'resetTotp',
+  },
   /*
    * The seven the list had always omitted, plus the invite.
    *

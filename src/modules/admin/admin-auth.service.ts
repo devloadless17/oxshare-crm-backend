@@ -33,10 +33,11 @@ import type { AuthenticatedAdmin } from './guards/admin.guard';
 import { AdminRbacService } from './admin-rbac.service';
 import { deviceOf } from '../../common/security/device-fingerprint';
 import type { DeviceFingerprint } from '../../common/security/refresh-tokens.service';
-import { randomBytes, randomUUID } from 'crypto';
-import { violatesConstraint } from '../../common/errors/pg-violation';
-import { GoogleSignInError } from './google/google-sign-in.error';
+import { randomUUID } from 'crypto';
 import { refuseReset, RESET_TOKEN_TTL_MS } from './admin-reset';
+import QRCode from 'qrcode';
+import { openSecret, sealSecret } from '../../common/security/secret-box';
+import { generateTotpSecret, totpUri, verifyTotp } from '../../common/security/totp';
 import { CsrfService } from '../../common/security/csrf.service';
 import { RefreshTokensService } from '../../common/security/refresh-tokens.service';
 import { PasswordService } from '../../common/security/password.service';
@@ -77,6 +78,22 @@ const ACCESS_TTL_MS = 15 * 60 * 1000;
 const REFRESH_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
 /**
+ * How long the gap between "password right" and "code typed" may be. Enrolment
+ * — install the app, scan, type — is the slow case, and ten minutes covers it;
+ * past that the person signs in again rather than holding a half-credential.
+ */
+const TOTP_CHALLENGE_TTL_SECONDS = 10 * 60;
+
+/** The name an authenticator app files the entry under. */
+const TOTP_ISSUER = 'OxShare Admin';
+
+/**
+ * What a correct password buys: not a session, a challenge. `totp` — type the
+ * code from your app; `totp_setup` — no app is set up yet, enrol one first.
+ */
+export type AdminSignInStep = 'totp' | 'totp_setup';
+
+/**
  * Admin sessions and the invite lifecycle.
  *
  * Split out of a 726-line AdminService that owned fifteen unrelated concerns.
@@ -111,7 +128,7 @@ export class AdminAuthService {
   ) {}
 
   // ─── Admin Login ───────────────────────────────────────────────────────────
-  async login(email: string, password: string, res: Response, device?: DeviceFingerprint) {
+  async login(email: string, password: string) {
     /*
      * Per-ACCOUNT lockout, checked before anything else — R-3.5.
      *
@@ -158,13 +175,154 @@ export class AdminAuthService {
       throw new AuthorizationError('This administrator account has been suspended.');
     }
 
-    await this.loginAttempts.recordSuccess('admin', email);
     if (needsRehash) {
       const upgraded = await this.passwords.hash(password);
       await this.admins.update(admin.id, { passwordHash: upgraded });
       this.logger.log(`Upgraded password hash to argon2id for admin ${admin.id}`);
     }
 
+    /*
+     * NO SESSION YET — the authenticator code is owed first (0191, required
+     * for every administrator). The body carries a ten-minute challenge good
+     * only at `auth/totp/*`; the session cookies are set when the code checks.
+     *
+     * `recordSuccess` is NOT called here, deliberately: it clears the failure
+     * counter, and a wrong CODE counts as a failure. Clearing it on the
+     * password would let someone holding the password guess codes forever —
+     * four wrong, sign in again, four more. The counter clears on a right code.
+     */
+    return this.challengeFor(admin);
+  }
+
+  /** The first half of sign-in, for an admin whose password just checked. */
+  private async challengeFor(admin: Admin) {
+    const state = await this.admins.totpState(admin.id);
+    const step: AdminSignInStep = state?.secret ? 'totp' : 'totp_setup';
+    const challengeToken = this.jwt.sign(
+      { sub: admin.id, typ: TOKEN_KIND.totpChallenge },
+      {
+        secret: this.config.getOrThrow<string>('ADMIN_JWT_SECRET'),
+        expiresIn: TOTP_CHALLENGE_TTL_SECONDS,
+        audience: TOKEN_AUDIENCE.admin,
+        issuer: TOKEN_ISSUER,
+        algorithm: TOKEN_ALGORITHM,
+      },
+    );
+    return { step, challengeToken, expiresInSeconds: TOTP_CHALLENGE_TTL_SECONDS };
+  }
+
+  /**
+   * The admin a challenge belongs to — re-read, so a suspension or an
+   * authenticator reset since the password step is honoured. Every failure is
+   * the same message: the only remedy for any of them is signing in again.
+   */
+  private async adminForChallenge(challengeToken: string): Promise<Admin> {
+    const expired = 'Your sign-in has expired. Enter your email and password again.';
+    let adminId: string;
+    try {
+      const decoded = this.jwt.verify<{ sub: string; typ?: string }>(challengeToken, {
+        secret: this.config.getOrThrow<string>('ADMIN_JWT_SECRET'),
+        audience: TOKEN_AUDIENCE.admin,
+        issuer: TOKEN_ISSUER,
+        algorithms: TOKEN_ALGORITHMS,
+        clockTolerance: TOKEN_CLOCK_TOLERANCE_SECONDS,
+      });
+      if (!isTokenKind(decoded, TOKEN_KIND.totpChallenge)) throw new Error('kind');
+      adminId = decoded.sub;
+    } catch {
+      throw new AuthenticationError(expired);
+    }
+    const admin = await this.admins.findById(adminId);
+    if (!admin) throw new AuthenticationError(expired);
+    if (admin.status === 'suspended') {
+      throw new AuthorizationError('This administrator account has been suspended.');
+    }
+    return admin;
+  }
+
+  private encryptionKey(): string | undefined {
+    return this.config.get<string>('APP_ENCRYPTION_KEY');
+  }
+
+  // ─── Authenticator (TOTP) — the second step of every admin sign-in ─────────
+  /**
+   * Enrolment, step one: a fresh secret, as the QR code an authenticator app
+   * scans and as text for typing in by hand.
+   *
+   * Only for an admin with NO confirmed authenticator — otherwise a stolen
+   * password would be enough to swap the victim's app for the thief's. Losing a
+   * phone is recovered by another administrator's reset (`resetTotpFor`), which
+   * clears the secret and lands the person back here.
+   *
+   * Each call replaces the pending secret, so reloading the page shows a new
+   * code and only the last one shown can complete enrolment.
+   */
+  async beginTotpSetup(challengeToken: string) {
+    const admin = await this.adminForChallenge(challengeToken);
+    const state = await this.admins.totpState(admin.id);
+    if (state?.secret) {
+      throw new ConflictError(
+        'An authenticator app is already set up for this account. Enter the code it shows.',
+      );
+    }
+    const secret = generateTotpSecret();
+    await this.admins.setPendingTotp(admin.id, sealSecret(secret, this.encryptionKey()));
+    const otpauthUri = totpUri(TOTP_ISSUER, admin.email, secret);
+    const qrSvg = await QRCode.toString(otpauthUri, { type: 'svg', margin: 1, width: 220 });
+    return { secret, otpauthUri, qrSvg, account: admin.email, issuer: TOTP_ISSUER };
+  }
+
+  /**
+   * The second step: the 6-digit code. Right → the session cookies; wrong →
+   * a failure on the same per-account counter the password uses, so five wrong
+   * codes lock the account exactly as five wrong passwords do.
+   *
+   * During enrolment the code is checked against the PENDING secret, and a
+   * right one confirms it: the app is proven to hold the secret before the
+   * account depends on it.
+   */
+  async verifyTotp(
+    challengeToken: string,
+    code: string,
+    res: Response,
+    device?: DeviceFingerprint,
+  ) {
+    const admin = await this.adminForChallenge(challengeToken);
+
+    const lockedFor = await this.loginAttempts.lockedFor('admin', admin.email);
+    if (lockedFor !== null) {
+      throw new AuthenticationError(lockoutMessage(lockedFor));
+    }
+
+    const state = await this.admins.totpState(admin.id);
+    const key = this.encryptionKey();
+    const now = new Date();
+    const wrong = async () => {
+      await this.loginAttempts.recordFailure('admin', admin.email);
+      return new AuthenticationError('That code is not correct. Check the app and try again.');
+    };
+
+    if (state?.secret) {
+      const step = verifyTotp(openSecret(state.secret, key), code, now, state.lastStep);
+      // `consumeTotpStep` is conditional: a code already spent — replayed, or
+      // racing its twin — fails here exactly like a wrong one.
+      if (step === null || !(await this.admins.consumeTotpStep(admin.id, step))) {
+        throw await wrong();
+      }
+    } else if (state?.pendingSecret) {
+      const step = verifyTotp(openSecret(state.pendingSecret, key), code, now);
+      if (step === null) throw await wrong();
+      if (!(await this.admins.confirmTotp(admin.id, state.pendingSecret, step))) {
+        throw new ConflictError(
+          'This QR code was replaced. Scan the newest one shown, or sign in again.',
+        );
+      }
+      this.audit.record(admin.id, 'admin.totp_enroll', 'admin', admin.id, {});
+    } else {
+      throw new ValidationError('Scan the QR code with your authenticator app first.');
+    }
+
+    await this.loginAttempts.recordSuccess('admin', admin.email);
     await this.startSession(admin, res, device);
     /*
      * The tokens are NOT in the body, deliberately.
@@ -180,7 +338,62 @@ export class AdminAuthService {
      * browser and logging in again reproduced it every time. Removing the fields
      * makes that impossible rather than merely discouraged.
      */
-    return { admin: await this.rbac.sanitize(admin) };
+    const current = (await this.admins.findById(admin.id)) ?? admin;
+    return { admin: await this.rbac.sanitize(current) };
+  }
+
+  /**
+   * `POST /admin/users/:id/totp/reset` — forget ANOTHER administrator's
+   * authenticator (a lost or replaced phone). Their next sign-in enrols a new
+   * one.
+   *
+   * Gated exactly like a password reset (`admins.reset` + `refuseReset`): it
+   * removes half of what proves who somebody is, so a sub-admin must not reach
+   * a higher-privileged admin with it, and nobody does it to themselves — a
+   * factor its holder could reset with only a session would be worth nothing
+   * against a stolen session. The password still stands, and sessions are left
+   * alone: suspension is the tool for those.
+   */
+  async resetTotpFor(actorId: string, targetId: string) {
+    const [actor, target] = await Promise.all([
+      this.admins.findById(actorId),
+      this.admins.findById(targetId),
+    ]);
+    if (!actor) throw new AuthenticationError('Your session is no longer valid.');
+    if (!target) throw new NotFoundError('That administrator does not exist.');
+
+    const normalize = (keys: string[]) => keys.map((k) => AdminRbacService.normalizeKey(k));
+    const [actorPermissions, targetPermissions] = await Promise.all([
+      this.roles.resolvePermissions(actor.roleId, actor.permissions),
+      this.roles.resolvePermissions(target.roleId, target.permissions),
+    ]);
+    const refusal = refuseReset(
+      { id: actor.id, permissions: normalize(actorPermissions) },
+      { id: target.id, permissions: normalize(targetPermissions) },
+    );
+    if (refusal === 'self') {
+      throw new ValidationError(
+        'You cannot reset your own authenticator. Ask another administrator to do it.',
+      );
+    }
+    if (refusal) {
+      // One message for every refusal — see `initiatePasswordReset` on why.
+      this.logger.warn(
+        `Authenticator reset refused (${refusal}): ${actor.email} → ${target.email}`,
+      );
+      throw new AuthorizationError('You may not reset that administrator’s authenticator.');
+    }
+
+    if (!(await this.admins.clearTotp(target.id))) {
+      throw new ValidationError('That administrator has not set up an authenticator yet.');
+    }
+    this.audit.record(actor.id, 'admin.totp_reset', 'admin', target.id, {
+      targetEmail: target.email,
+    });
+    this.logger.log(`Authenticator reset by ${actor.email} for ${target.email}`);
+    return {
+      message: `Authenticator reset. ${target.email} will set up a new one at their next sign-in.`,
+    };
   }
   // ─── Admin Logout ──────────────────────────────────────────────────────────
   /**
@@ -520,13 +733,7 @@ export class AdminAuthService {
     };
   }
   // ─── Accept Invite ─────────────────────────────────────────────────────────
-  async acceptInvite(
-    token: string,
-    password: string,
-    res: Response,
-    device?: DeviceFingerprint,
-    req?: Request,
-  ) {
+  async acceptInvite(token: string, password: string, req?: Request) {
     const invite = await this.invites.findByToken(token);
     if (!invite) throw new NotFoundError('Invite not found or already used.');
     if (invite.accepted) throw new ValidationError('This invite has already been used.');
@@ -571,7 +778,7 @@ export class AdminAuthService {
 
     /*
      * The moment an ADMINISTRATOR ACCOUNT COMES INTO EXISTENCE, and it was the
-     * one privileged event with no audit row at all. See `inviteAcceptDetails`.
+     * one privileged event with no audit row at all.
      *
      * The actor is the NEW ADMIN — they performed this action, from their own
      * address — and `invitedBy` names who authorised it. Recording the inviter
@@ -583,23 +790,45 @@ export class AdminAuthService {
       'admin.invite_accept',
       'admin',
       admin.id,
-      this.inviteAcceptDetails(invite, admin),
+      /*
+       * `admin.invite` recorded that somebody was asked; this records that
+       * they arrived, keyed on the ADMIN (where a compliance query about one
+       * administrator starts). The other half of "with what" is what they can
+       * SEE: `null` means UNRESTRICTED for the scope and "inherits the role's
+       * mask" for the mask — the columns' own conventions, stated here because
+       * an auditor reading this row has no reason to know them.
+       */
+      {
+        email: admin.email,
+        invitedBy: invite.invitedBy,
+        roleId: invite.roleId,
+        permissions: admin.permissions,
+        maskedFields: admin.maskedFields ?? null,
+        scopedTagIds: invite.scopedTagIds ?? null,
+        seesUntriaged: admin.seesUntriaged,
+        seesAllClients: admin.seesAllClients ?? false,
+      },
     );
 
     if (req) await this.endDisplacedSession(req, invite.email);
 
-    await this.startSession(admin, res, device);
-
-    return { message: 'Account created. Welcome aboard!', admin: await this.rbac.sanitize(admin) };
+    /*
+     * Not a session: the account exists, and the authenticator is set up next
+     * (0191 — required for every administrator, the new one included). The
+     * challenge is the same one a correct password buys at login.
+     */
+    return {
+      message: 'Account created. Set up your authenticator app to finish.',
+      ...(await this.challengeFor(admin)),
+    };
   }
 
   /**
    * The administrator an invite describes, created inside the caller's
    * transaction AFTER the caller has claimed the invite.
    *
-   * Shared by the password accept and the Google accept, so the permissions,
-   * role, mask, intake and all-clients grants and territory an invitee arrives
-   * with are decided by one piece of code whichever way they accept.
+   * One piece of code decides the permissions, role, mask, intake and
+   * all-clients grants and territory an invitee arrives with.
    */
   private async createAdminFromInvite(
     invite: AdminInvite,
@@ -639,33 +868,6 @@ export class AdminAuthService {
   }
 
   /**
-   * The `admin.invite_accept` details — "when did this administrator get
-   * access, and with what". `admin.invite` recorded that somebody was asked;
-   * this records that they arrived, keyed on the ADMIN (where a compliance
-   * query about one administrator starts). The other half of "with what" is
-   * what they can SEE: `null` means UNRESTRICTED for the scope and "inherits
-   * the role's mask" for the mask — the columns' own conventions, stated here
-   * because an auditor reading this row has no reason to know them.
-   */
-  private inviteAcceptDetails(
-    invite: AdminInvite,
-    admin: Admin,
-    extra: Record<string, unknown> = {},
-  ): Record<string, unknown> {
-    return {
-      email: admin.email,
-      invitedBy: invite.invitedBy,
-      roleId: invite.roleId,
-      permissions: admin.permissions,
-      maskedFields: admin.maskedFields ?? null,
-      scopedTagIds: invite.scopedTagIds ?? null,
-      seesUntriaged: admin.seesUntriaged,
-      seesAllClients: admin.seesAllClients ?? false,
-      ...extra,
-    };
-  }
-
-  /**
    * Whoever was signed in on THIS browser is being replaced by an invitee, so
    * their session ends — not merely their cookies. `/invite/accept`
    * deliberately works with a session (a shared machine), and overwriting the
@@ -684,241 +886,6 @@ export class AdminAuthService {
       });
     }
   }
-  // ─── Sign in with Google (admin console only) ─────────────────────────────
-  /**
-   * Turn a VERIFIED Google identity into an admin session, or refuse with a
-   * fixed `GoogleSignInError` code. The protocol half — state, PKCE, the ID
-   * token's signature and claims — is `AdminGoogleAuthService`'s and has
-   * already passed by the time this runs; this half decides WHO it is.
-   *
-   * Resolution, in order:
-   *  1. `google_sub` already linked → that administrator.
-   *  2. else an administrator whose email equals the Google address → link it
-   *     (only if they have no OTHER Google account linked: `account_mismatch`).
-   *  3. else, in invite mode, the invite → create the administrator exactly
-   *     as a password accept would, linked to Google.
-   *  4. else `no_account`. A pending invite is NOT auto-accepted without its
-   *     link: the emailed token is the inviter's authorisation, not the address.
-   *
-   * ── login_attempts, and why Google failures use their own counter ────────
-   * Success is recorded exactly as a password success (`admin`, the admin's
-   * email), which also clears that address's failure counter — the person has
-   * just proved control of it. Failures (`no_account`, `account_mismatch`) are
-   * recorded too, but under `google:<address>`, NOT the bare address. The
-   * password lockout keys on the bare address and locks after five failures,
-   * and anybody can sign in to Google as an address they own with a different
-   * sub, or simply replay the callback: counting those against the password
-   * counter would let an outsider lock a named administrator out of the
-   * password form at will. A separate key keeps the forensic row (and its
-   * page-level alert) without handing out that lever. Conversely the password
-   * lockout is not checked here: a locked password form is exactly when a
-   * legitimate admin should still be able to come in through Google, and
-   * Google — not a guessable secret — is the proof on this path.
-   */
-  async signInWithGoogle(input: {
-    identity: { sub: string; email: string };
-    mode: 'login' | 'invite';
-    invite?: string;
-    res: Response;
-    req: Request;
-    device?: DeviceFingerprint;
-  }): Promise<void> {
-    const { identity, res, req, device } = input;
-    const email = identity.email.trim().toLowerCase();
-    const google = { sub: identity.sub, email };
-
-    const bySub = await this.admins.findByGoogleSub(identity.sub);
-    if (bySub) {
-      this.refuseSuspended(bySub);
-      const minted = await this.db.transaction(async (tx: Executor) => {
-        if (bySub.googleEmail !== email) await this.admins.refreshGoogleEmail(bySub.id, email, tx);
-        return this.mintSession(bySub, device, tx);
-      });
-      this.setAdminCookies(res, minted.accessToken, minted.refreshToken, bySub.id);
-      await this.loginAttempts.recordSuccess('admin', bySub.email);
-      return;
-    }
-
-    const byEmail = await this.admins.findByEmail(email);
-    if (byEmail) {
-      if (byEmail.googleSub && byEmail.googleSub !== identity.sub) {
-        await this.recordGoogleFailure(email);
-        throw new GoogleSignInError('account_mismatch');
-      }
-      this.refuseSuspended(byEmail);
-      await this.linkAndStart(byEmail, google, res, device);
-      await this.loginAttempts.recordSuccess('admin', byEmail.email);
-      return;
-    }
-
-    if (input.mode === 'invite' && input.invite) {
-      const admin = await this.acceptInviteWithGoogle(input.invite, google, res, req, device);
-      await this.loginAttempts.recordSuccess('admin', admin.email);
-      return;
-    }
-
-    await this.recordGoogleFailure(email);
-    throw new GoogleSignInError('no_account');
-  }
-
-  private refuseSuspended(admin: Admin): void {
-    if (admin.status === 'suspended') throw new GoogleSignInError('suspended');
-  }
-
-  /** See `signInWithGoogle` on why this is not the password counter. */
-  private async recordGoogleFailure(email: string): Promise<void> {
-    await this.loginAttempts.recordFailure('admin', `google:${email}`.slice(0, 255));
-  }
-
-  /**
-   * Link + audit + session, as ONE transaction: a session never exists for a
-   * link that did not commit, and a link never commits without its audit row.
-   */
-  private async linkAndStart(
-    admin: Admin,
-    google: { sub: string; email: string },
-    res: Response,
-    device: DeviceFingerprint | undefined,
-  ): Promise<void> {
-    let minted: { accessToken: string; refreshToken: string };
-    try {
-      minted = await this.db.transaction(async (tx: Executor) => {
-        const linked = await this.admins.linkGoogle(admin.id, google, tx);
-        // Lost a race to a concurrent first sign-in: the row now carries a link.
-        if (!linked) throw new GoogleSignInError('account_mismatch');
-        await this.audit.recordWithin(tx, admin.id, 'admin.google_link', 'admin', admin.id, {
-          googleEmail: google.email,
-          method: 'first_sign_in',
-        });
-        return this.mintSession(linked, device, tx);
-      });
-    } catch (error) {
-      // The same Google account already linked to ANOTHER administrator.
-      if (violatesConstraint(error, 'admins_google_sub_unique')) {
-        throw new GoogleSignInError('account_mismatch');
-      }
-      throw error;
-    }
-    this.setAdminCookies(res, minted.accessToken, minted.refreshToken, admin.id);
-  }
-
-  /**
-   * Accept an invite with Google: the same validity rules, the same claim, the
-   * same `createAdminFromInvite` and the same audit row as the password path,
-   * with a password nobody knows (argon2 of 32 random bytes — they can set one
-   * later through the ordinary reset flow) and the Google account linked.
-   */
-  private async acceptInviteWithGoogle(
-    token: string,
-    google: { sub: string; email: string },
-    res: Response,
-    req: Request,
-    device: DeviceFingerprint | undefined,
-  ): Promise<Admin> {
-    const invite = await this.invites.findByToken(token);
-    if (!invite || invite.accepted || invite.expiresAt < new Date()) {
-      throw new GoogleSignInError('invite_invalid');
-    }
-    if (invite.email.trim().toLowerCase() !== google.email) {
-      throw new GoogleSignInError('invite_email_mismatch');
-    }
-    const unusablePassword = await this.passwords.hash(randomBytes(32).toString('base64url'));
-
-    let admin: Admin;
-    try {
-      admin = await this.db.transaction(async (tx: Executor) => {
-        const claimed = await this.invites.claim(token, tx);
-        if (!claimed) throw new GoogleSignInError('invite_invalid');
-        const created = await this.createAdminFromInvite(invite, unusablePassword, tx);
-        const linked = await this.admins.linkGoogle(created.id, google, tx);
-        if (!linked) throw new GoogleSignInError('server');
-        return linked;
-      });
-    } catch (error) {
-      if (violatesConstraint(error, 'admins_google_sub_unique')) {
-        throw new GoogleSignInError('account_mismatch');
-      }
-      throw error;
-    }
-
-    /*
-     * Recorded AFTER commit, exactly as the password accept does: the actor is
-     * the new administrator, whose row (and so whose email on the audit row)
-     * does not exist outside the transaction until it commits.
-     */
-    this.audit.record(
-      admin.id,
-      'admin.invite_accept',
-      'admin',
-      admin.id,
-      this.inviteAcceptDetails(invite, admin, { method: 'google' }),
-    );
-    this.audit.record(admin.id, 'admin.google_link', 'admin', admin.id, {
-      googleEmail: google.email,
-      method: 'invite_accept',
-    });
-
-    await this.endDisplacedSession(req, invite.email);
-    await this.startSession(admin, res, device);
-    return admin;
-  }
-
-  /** `DELETE /admin/auth/me/google` — the caller removes their own link. */
-  async unlinkOwnGoogle(adminId: string) {
-    const before = await this.admins.unlinkGoogle(adminId);
-    if (!before) throw new ValidationError('No Google account is linked to your account.');
-    this.audit.record(adminId, 'admin.google_unlink', 'admin', adminId, {
-      googleEmail: before.googleEmail ?? null,
-      by: 'self',
-    });
-    return { message: 'Google account unlinked.' };
-  }
-
-  /**
-   * `DELETE /admin/users/:id/google` — remove ANOTHER administrator's link.
-   *
-   * Gated like a password reset (`admins.reset` + `refuseReset`), because it
-   * is the same class of act: it changes how somebody else proves who they
-   * are. A sub-admin must not be able to strip a higher-privileged admin's
-   * sign-in method, and the refusal says nothing about why (see the reset).
-   * Sessions are left alone: removing a sign-in method is not a sign-out;
-   * suspension is the tool for that.
-   */
-  async unlinkGoogleFor(actorId: string, targetId: string) {
-    const [actor, target] = await Promise.all([
-      this.admins.findById(actorId),
-      this.admins.findById(targetId),
-    ]);
-    if (!actor) throw new AuthenticationError('Your session is no longer valid.');
-    if (!target) throw new NotFoundError('That administrator does not exist.');
-
-    const normalize = (keys: string[]) => keys.map((k) => AdminRbacService.normalizeKey(k));
-    const [actorPermissions, targetPermissions] = await Promise.all([
-      this.roles.resolvePermissions(actor.roleId, actor.permissions),
-      this.roles.resolvePermissions(target.roleId, target.permissions),
-    ]);
-    const refusal = refuseReset(
-      { id: actor.id, permissions: normalize(actorPermissions) },
-      { id: target.id, permissions: normalize(targetPermissions) },
-    );
-    if (refusal === 'self') {
-      throw new ValidationError('Unlink your own Google account from your profile.');
-    }
-    if (refusal) {
-      this.logger.warn(`Google unlink refused (${refusal}): ${actor.email} → ${target.email}`);
-      throw new AuthorizationError('You may not change that administrator’s sign-in methods.');
-    }
-
-    const before = await this.admins.unlinkGoogle(target.id);
-    if (!before) throw new ValidationError('That administrator has no Google account linked.');
-    this.audit.record(actor.id, 'admin.google_unlink', 'admin', target.id, {
-      googleEmail: before.googleEmail ?? null,
-      targetEmail: target.email,
-      by: 'administrator',
-    });
-    return { message: `Google account unlinked from ${target.email}.` };
-  }
-
   // ─── Validate invite token (for UI pre-fill) ───────────────────────────────
   async validateInviteToken(token: string) {
     const invite = await this.invites.findByToken(token);
@@ -1172,19 +1139,12 @@ export class AdminAuthService {
   }
 
   /**
-   * THE one way a new admin session begins — password login, invite
-   * acceptance, the password-change reissue and Google sign-in all call it, so
-   * a session started by Google is indistinguishable from any other: same
-   * refresh-token family table, same device fingerprint, same cookies.
+   * THE one way a new admin session begins — the authenticator code step and
+   * the password-change reissue both call it: same refresh-token family table,
+   * same device fingerprint, same cookies.
    *
    * The family id is minted BEFORE anything is signed, because the access token
    * has to carry it as `fam` — see `generateAdminTokens`.
-   *
-   * A caller that must start the session inside its own transaction (the
-   * Google first sign-in links the account and records the session as one
-   * unit) calls `mintSession` in it and `setAdminCookies` after COMMIT, so a
-   * rolled-back transaction can never leave cookies for a session that does
-   * not exist.
    */
   private async startSession(
     admin: Admin,
@@ -1195,11 +1155,10 @@ export class AdminAuthService {
     this.setAdminCookies(res, minted.accessToken, minted.refreshToken, admin.id);
   }
 
-  /** The session's tokens and family row, without the cookies — for use inside a transaction. */
+  /** The session's tokens and family row, without the cookies. */
   private async mintSession(
     admin: Admin,
     device?: DeviceFingerprint,
-    executor?: Executor,
   ): Promise<{ accessToken: string; refreshToken: string }> {
     const familyId = randomUUID();
     const { accessToken, refreshToken, jti } = this.generateAdminTokens(admin, familyId);
@@ -1212,7 +1171,6 @@ export class AdminAuthService {
       familyId,
       // Recorded so `GET /admin/auth/sessions` can show WHERE this login is.
       device,
-      executor,
     });
     return { accessToken, refreshToken };
   }

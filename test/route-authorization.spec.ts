@@ -167,20 +167,13 @@ const PUBLIC_ROUTES: Record<string, string> = {
     'Alias of POST /auth/resend-verification — same handler, both prefixes.',
   'GET /admin/invite/validate': 'Pre-fills the accept form from an emailed token. Rate limited.',
   'POST /admin/invite/accept': 'The emailed invite token is the credential; no session exists yet.',
-
-  /*
-   * "Sign in with Google" (admin only). Establishing a session cannot require
-   * one. `start`/`callback` are top-level browser navigations answered with a
-   * 302; the flow's signed cookie, `state`, nonce and PKCE verifier bind the
-   * callback to the browser that started it, and the ID token Google signs IS
-   * the credential. All three are throttled and behind RBAC-08's allowlist.
-   */
-  'GET /admin/auth/google/status':
-    'Tells the signed-out sign-in screen whether to offer Google. A configuration flag, nothing more.',
-  'GET /admin/auth/google/start':
-    'Begins Google sign-in for a signed-out administrator; sets only a signed flow cookie. Throttled 20/min.',
-  'GET /admin/auth/google/callback':
-    'Google returns here; the verified ID token plus the signed flow cookie are the credential. Throttled 20/min.',
+  // The authenticator step of admin sign-in (0191): half-way through signing in
+  // there is no session; the ten-minute challenge a right password bought is
+  // the credential, and the code itself is the second.
+  'POST /admin/auth/totp/setup':
+    'Enrolment QR code for an admin whose password just checked; the challenge token is the credential. Throttled 10/min.',
+  'POST /admin/auth/totp/verify':
+    'The authenticator code, with the challenge a right password bought. Throttled 5/min plus the account lockout.',
 
   // Infrastructure.
   'GET /health': 'Liveness. A load balancer cannot authenticate, and it reveals nothing.',

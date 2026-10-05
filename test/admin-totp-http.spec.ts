@@ -1,0 +1,385 @@
+/**
+ * The admin sign-in's second factor (0191): an authenticator app — Google
+ * Authenticator or any RFC 6238 app — REQUIRED for every administrator.
+ *
+ * Driven through the real routes against real Postgres. `actingAs` completes
+ * the authenticator step for every other spec; this one drives it by hand, so
+ * each refusal is asserted where it happens: no session on a password alone,
+ * no session on a wrong or replayed code, no swapping a confirmed app, the
+ * shared lockout, the reset and who may do it, and the invite path.
+ *
+ * Codes are computed from the secret the setup route returned — exactly what
+ * the phone does with the QR code it scanned.
+ */
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { and, eq } from 'drizzle-orm';
+import { ALL_PERMISSIONS } from './support/all-permissions';
+import {
+  actingAs,
+  anonymous,
+  parseSetCookies,
+  sessionFrom,
+  startHttpTestApp,
+  stopHttpTestApp,
+  SURFACES,
+  type HttpTestContext,
+} from './http-setup';
+import { PasswordService } from '../src/common/security/password.service';
+import { admins, auditLog, loginAttempts, roles } from '../src/database/schema';
+import { totpCode, totpStepAt } from '../src/common/security/totp';
+import { COOKIE_BASES } from '../src/common/security/session-cookies';
+
+const PASSWORD = 'totp-password-123';
+const MASTER = { email: 'totp-master@oxshare.com', password: PASSWORD };
+const PEER = { email: 'totp-peer@oxshare.com', password: PASSWORD };
+const JUNIOR = { email: 'totp-junior@oxshare.com', password: PASSWORD };
+
+let ctx: HttpTestContext;
+const ids: Record<string, string> = {};
+
+beforeAll(async () => {
+  ctx = await startHttpTestApp();
+  const passwords = new PasswordService();
+  const hash = await passwords.hash(PASSWORD);
+  const [masterRole] = await ctx.db.db
+    .insert(roles)
+    .values({ name: 'TOTP Master', permissions: ALL_PERMISSIONS, isSystem: true })
+    .returning();
+  for (const [key, who, perms] of [
+    ['master', MASTER, ALL_PERMISSIONS],
+    ['peer', PEER, ALL_PERMISSIONS],
+    ['junior', JUNIOR, ['kyc.review', 'admins.view']],
+  ] as const) {
+    const [row] = await ctx.db.db
+      .insert(admins)
+      .values({
+        email: who.email,
+        passwordHash: hash,
+        name: key,
+        role: key === 'junior' ? 'sub_admin' : 'master_admin',
+        roleId: key === 'junior' ? null : masterRole.id,
+        permissions: [...perms],
+        status: 'active',
+      })
+      .returning();
+    ids[key] = row.id;
+  }
+});
+
+afterAll(async () => {
+  await stopHttpTestApp(ctx);
+});
+
+const origin = SURFACES.admin.origin;
+
+function login(who: { email: string; password: string }) {
+  return anonymous(ctx).post('/v1/admin/auth/login').set('Origin', origin).send(who);
+}
+function setup(challengeToken: string) {
+  return anonymous(ctx)
+    .post('/v1/admin/auth/totp/setup')
+    .set('Origin', origin)
+    .send({ challengeToken });
+}
+function verify(challengeToken: string, code: string) {
+  return anonymous(ctx)
+    .post('/v1/admin/auth/totp/verify')
+    .set('Origin', origin)
+    .send({ challengeToken, code });
+}
+const codeNow = (secret: string, offset = 0) => totpCode(secret, totpStepAt(new Date()) + offset);
+
+async function forget(email: string) {
+  await ctx.db.pool.query(
+    `UPDATE admins SET totp_secret = NULL, totp_pending_secret = NULL,
+       totp_enabled_at = NULL, totp_last_step = NULL WHERE email = $1`,
+    [email],
+  );
+  await ctx.db.db.delete(loginAttempts);
+}
+
+/** Password → setup → confirm; returns the secret the "phone" now holds. */
+async function enrol(who: { email: string; password: string }) {
+  const first = await login(who).expect(200);
+  expect(first.body.step).toBe('totp_setup');
+  const qr = await setup(first.body.challengeToken).expect(200);
+  await verify(first.body.challengeToken, codeNow(qr.body.secret)).expect(200);
+  return qr.body.secret as string;
+}
+
+describe('a password alone is not a session', () => {
+  it('answers a right password with a challenge and sets NO session cookie', async () => {
+    await forget(MASTER.email);
+    const res = await login(MASTER).expect(200);
+    expect(res.body).toEqual({
+      step: 'totp_setup',
+      challengeToken: expect.any(String),
+      expiresInSeconds: 600,
+    });
+    const jar = parseSetCookies(res);
+    expect(Object.keys(jar).some((name) => name.includes(COOKIE_BASES.adminAccess))).toBe(false);
+    expect(Object.keys(jar).some((name) => name.includes(COOKIE_BASES.adminRefresh))).toBe(false);
+    expect(res.body).not.toHaveProperty('admin');
+  });
+
+  it('the challenge token cannot be used AS a session', async () => {
+    await forget(MASTER.email);
+    const { challengeToken } = (await login(MASTER).expect(200)).body as { challengeToken: string };
+    const session = sessionFrom(ctx, 'admin', { [COOKIE_BASES.adminAccess]: challengeToken });
+    await session.get('/v1/admin/auth/me').expect(401);
+  });
+
+  it('refuses a forged or garbage challenge', async () => {
+    const res = await verify('not-a-token', '123456').expect(401);
+    expect(res.body.message).toMatch(/sign-in has expired/i);
+    await setup('not-a-token').expect(401);
+  });
+
+  it('a wrong password still says nothing about the authenticator', async () => {
+    const res = await login({ email: MASTER.email, password: 'wrong-password' }).expect(401);
+    expect(res.body).not.toHaveProperty('challengeToken');
+  });
+});
+
+describe('enrolment — scan the QR code, confirm one code', () => {
+  it('shows a QR code (SVG) and the otpauth URI the app reads', async () => {
+    await forget(MASTER.email);
+    const { challengeToken } = (await login(MASTER).expect(200)).body;
+    const res = await setup(challengeToken).expect(200);
+    expect(res.body.secret).toMatch(/^[A-Z2-7]{32}$/);
+    expect(res.body.qrSvg).toMatch(/^<svg[\s\S]*<\/svg>\s*$/);
+    expect(res.body.otpauthUri).toBe(
+      `otpauth://totp/${encodeURIComponent(`OxShare Admin:${MASTER.email}`)}?secret=${res.body.secret}` +
+        '&issuer=OxShare+Admin&algorithm=SHA1&digits=6&period=30',
+    );
+    expect(res.body.account).toBe(MASTER.email);
+  });
+
+  it('stores the secret SEALED, never readable', async () => {
+    await forget(MASTER.email);
+    const { challengeToken } = (await login(MASTER).expect(200)).body;
+    const { secret } = (await setup(challengeToken).expect(200)).body;
+    const { rows } = await ctx.db.pool.query(
+      'SELECT totp_pending_secret, totp_secret FROM admins WHERE email = $1',
+      [MASTER.email],
+    );
+    expect(rows[0].totp_pending_secret).toMatch(/^v1\./);
+    expect(rows[0].totp_pending_secret).not.toContain(secret);
+    expect(rows[0].totp_secret).toBeNull();
+  });
+
+  it('refuses a code before any QR code was shown', async () => {
+    await forget(MASTER.email);
+    const { challengeToken } = (await login(MASTER).expect(200)).body;
+    await verify(challengeToken, '123456').expect(400);
+  });
+
+  it('a wrong code does not enrol and does not sign in', async () => {
+    await forget(MASTER.email);
+    const { challengeToken } = (await login(MASTER).expect(200)).body;
+    const { secret } = (await setup(challengeToken).expect(200)).body;
+    const wrong = codeNow(secret) === '000000' ? '111111' : '000000';
+    const res = await verify(challengeToken, wrong).expect(401);
+    expect(res.body.message).toMatch(/code is not correct/i);
+    expect(parseSetCookies(res)).toEqual({});
+    const [row] = await ctx.db.db.select().from(admins).where(eq(admins.email, MASTER.email));
+    expect(row.totpSecret).toBeNull();
+  });
+
+  it('only the NEWEST QR code finishes enrolment', async () => {
+    await forget(MASTER.email);
+    const { challengeToken } = (await login(MASTER).expect(200)).body;
+    const old = (await setup(challengeToken).expect(200)).body.secret as string;
+    const fresh = (await setup(challengeToken).expect(200)).body.secret as string;
+    expect(fresh).not.toBe(old);
+    await verify(challengeToken, codeNow(old)).expect(401);
+    await verify(challengeToken, codeNow(fresh)).expect(200);
+  });
+
+  it('a right code confirms the app, starts the session and is audited', async () => {
+    await forget(MASTER.email);
+    const { challengeToken } = (await login(MASTER).expect(200)).body;
+    const { secret } = (await setup(challengeToken).expect(200)).body;
+    const res = await verify(challengeToken, codeNow(secret)).expect(200);
+    expect(res.body.admin.email).toBe(MASTER.email);
+    expect(res.body.admin.totpEnabledAt).toEqual(expect.any(String));
+    expect(JSON.stringify(res.body)).not.toMatch(/totpSecret|totp_secret|pendingSecret/);
+
+    const session = sessionFrom(ctx, 'admin', parseSetCookies(res));
+    const me = await session.get('/v1/admin/auth/me').expect(200);
+    expect(me.body.totpEnabledAt).toEqual(expect.any(String));
+
+    const rows = await ctx.db.db
+      .select()
+      .from(auditLog)
+      .where(and(eq(auditLog.action, 'admin.totp_enroll'), eq(auditLog.subjectId, ids.master)));
+    expect(rows.length).toBeGreaterThan(0);
+  });
+});
+
+describe('every sign-in after enrolment — the code from the app', () => {
+  it('asks for the code (no QR) and refuses to replace a confirmed app', async () => {
+    await forget(MASTER.email);
+    await enrol(MASTER);
+    const next = await login(MASTER).expect(200);
+    expect(next.body.step).toBe('totp');
+    // A stolen password must not be enough to swap in the thief's phone.
+    await setup(next.body.challengeToken).expect(409);
+  });
+
+  it('signs in with the current code, and refuses the SAME code twice', async () => {
+    await forget(MASTER.email);
+    const secret = await enrol(MASTER);
+    // The enrolment spent the current step; the next one is inside the window.
+    const code = codeNow(secret, 1);
+    const a = (await login(MASTER).expect(200)).body.challengeToken;
+    await verify(a, code).expect(200);
+    const b = (await login(MASTER).expect(200)).body.challengeToken;
+    const replay = await verify(b, code).expect(401);
+    expect(parseSetCookies(replay)).toEqual({});
+  });
+
+  it('accepts a code with a space in the middle, as the apps display it', async () => {
+    await forget(MASTER.email);
+    const secret = await enrol(MASTER);
+    const code = codeNow(secret, 1);
+    const challenge = (await login(MASTER).expect(200)).body.challengeToken;
+    await verify(challenge, `${code.slice(0, 3)} ${code.slice(3)}`).expect(200);
+  });
+
+  it('refuses a code from well outside the window', async () => {
+    await forget(MASTER.email);
+    const secret = await enrol(MASTER);
+    const challenge = (await login(MASTER).expect(200)).body.challengeToken;
+    await verify(challenge, codeNow(secret, 10)).expect(401);
+    await verify(challenge, codeNow(secret, -10)).expect(401);
+  });
+
+  it('rejects a malformed code at the DTO', async () => {
+    const challenge = (await login(MASTER).expect(200)).body.challengeToken;
+    await verify(challenge, 'abcdef').expect(400);
+    await verify(challenge, '1234567').expect(400);
+  });
+
+  it('five wrong codes lock the account, like five wrong passwords', async () => {
+    await forget(PEER.email);
+    const secret = await enrol(PEER);
+    const challenge = (await login(PEER).expect(200)).body.challengeToken;
+    const wrong = codeNow(secret, 1) === '000000' ? '111111' : '000000';
+    for (let i = 0; i < 5; i++) await verify(challenge, wrong).expect(401);
+    // Locked: even the RIGHT code is refused, and so is the password.
+    const locked = await verify(challenge, codeNow(secret, 1)).expect(401);
+    expect(locked.body.message).toMatch(/too many/i);
+    await login(PEER).expect(401);
+    await ctx.db.db.delete(loginAttempts);
+  });
+
+  it('a password success does NOT reset the code-failure counter', async () => {
+    await forget(PEER.email);
+    const secret = await enrol(PEER);
+    const wrong = codeNow(secret, 1) === '000000' ? '111111' : '000000';
+    for (let round = 0; round < 2; round++) {
+      const challenge = (await login(PEER).expect(200)).body.challengeToken;
+      for (let i = 0; i < 3; i++) await verify(challenge, wrong);
+    }
+    // 6 wrong codes across two password sign-ins — locked, not reset.
+    const res = await login(PEER).expect(401);
+    expect(res.body.message).toMatch(/too many/i);
+    await ctx.db.db.delete(loginAttempts);
+  });
+
+  it('a suspension between the password and the code is honoured', async () => {
+    await forget(PEER.email);
+    const secret = await enrol(PEER);
+    const challenge = (await login(PEER).expect(200)).body.challengeToken;
+    await ctx.db.db.update(admins).set({ status: 'suspended' }).where(eq(admins.id, ids.peer));
+    await verify(challenge, codeNow(secret, 1)).expect(403);
+    await ctx.db.db.update(admins).set({ status: 'active' }).where(eq(admins.id, ids.peer));
+  });
+});
+
+describe("resetting another administrator's authenticator (lost phone)", () => {
+  it('a peer master resets it; the next sign-in shows a new QR code; audited', async () => {
+    await forget(PEER.email);
+    await enrol(PEER);
+    const master = await actingAs(ctx, 'admin', MASTER);
+    const res = await master.post(`/v1/admin/users/${ids.peer}/totp/reset`).expect(200);
+    expect(res.body.message).toMatch(/new one at their next sign-in/i);
+
+    const next = await login(PEER).expect(200);
+    expect(next.body.step).toBe('totp_setup');
+    const qr = await setup(next.body.challengeToken).expect(200);
+    await verify(next.body.challengeToken, codeNow(qr.body.secret)).expect(200);
+
+    const rows = await ctx.db.db
+      .select()
+      .from(auditLog)
+      .where(and(eq(auditLog.action, 'admin.totp_reset'), eq(auditLog.subjectId, ids.peer)));
+    expect(rows).toHaveLength(1);
+    expect(rows[0].actorId).toBe(ids.master);
+  });
+
+  it('nobody resets their OWN authenticator', async () => {
+    const master = await actingAs(ctx, 'admin', MASTER);
+    const res = await master.post(`/v1/admin/users/${ids.master}/totp/reset`).expect(400);
+    expect(res.body.message).toMatch(/another administrator/i);
+  });
+
+  it('refuses without admins.reset', async () => {
+    const junior = await actingAs(ctx, 'admin', JUNIOR);
+    await junior.post(`/v1/admin/users/${ids.master}/totp/reset`).expect(403);
+  });
+
+  it('says so when the admin has no authenticator to reset', async () => {
+    const master = await actingAs(ctx, 'admin', MASTER);
+    await forget(JUNIOR.email);
+    await master.post(`/v1/admin/users/${ids.junior}/totp/reset`).expect(400);
+  });
+
+  it('a reset does not touch the password or end sessions', async () => {
+    const peer = await actingAs(ctx, 'admin', PEER);
+    const master = await actingAs(ctx, 'admin', MASTER);
+    await master.post(`/v1/admin/users/${ids.peer}/totp/reset`).expect(200);
+    await peer.get('/v1/admin/auth/me').expect(200);
+    await login(PEER).expect(200);
+  });
+});
+
+describe('an invited administrator sets up the app before their first session', () => {
+  it('accept → QR code → code → signed in', async () => {
+    const master = await actingAs(ctx, 'admin', MASTER);
+    const invited = await master
+      .post('/v1/admin/invite', { email: 'totp-invitee@oxshare.com', name: 'Invitee' })
+      .expect(201);
+    const token = new URL(invited.body.inviteUrl as string).searchParams.get('token');
+
+    const accepted = await anonymous(ctx)
+      .post('/v1/admin/invite/accept')
+      .set('Origin', origin)
+      .send({ token, password: PASSWORD })
+      .expect(200);
+    expect(accepted.body.step).toBe('totp_setup');
+    expect(accepted.body).not.toHaveProperty('admin');
+    expect(
+      Object.keys(parseSetCookies(accepted)).some((n) => n.includes(COOKIE_BASES.adminAccess)),
+    ).toBe(false);
+
+    const qr = await setup(accepted.body.challengeToken).expect(200);
+    const signedIn = await verify(accepted.body.challengeToken, codeNow(qr.body.secret)).expect(
+      200,
+    );
+    const session = sessionFrom(ctx, 'admin', parseSetCookies(signedIn));
+    const me = await session.get('/v1/admin/auth/me').expect(200);
+    expect(me.body.email).toBe('totp-invitee@oxshare.com');
+  });
+});
+
+describe('migration 0191', () => {
+  it('dropped every Google sign-in column', async () => {
+    const { rows } = await ctx.db.pool.query(
+      `SELECT column_name FROM information_schema.columns
+        WHERE table_name = 'admins' AND column_name LIKE 'google%'`,
+    );
+    expect(rows).toEqual([]);
+  });
+});

@@ -1,16 +1,4 @@
-import {
-  and,
-  count,
-  desc,
-  eq,
-  gt,
-  isNotNull,
-  isNull,
-  notExists,
-  sql,
-  type SQLWrapper,
-  inArray,
-} from 'drizzle-orm';
+import { and, count, desc, eq, gt, notExists, sql, type SQLWrapper, inArray } from 'drizzle-orm';
 import { createHash } from 'crypto';
 import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
@@ -101,15 +89,19 @@ export interface Admin {
   /** Stored FILENAME of the profile photo, never a URL. See the schema. */
   avatarFilename?: string;
   /**
-   * The linked Google account's stable subject id (0180) — what a Google
-   * sign-in matches on. `undefined` = not linked. Written ONLY through
-   * `linkGoogle` / `unlinkGoogle`, never through `update`.
+   * When this admin's authenticator app was confirmed (0191), or `undefined`
+   * when none is — their next sign-in is enrolment. The secrets themselves are
+   * NOT on this type; see `AdminsStore.totpState`.
    */
-  googleSub?: string;
-  /** The Google address shown as "linked as …". Display only. */
-  googleEmail?: string;
-  googleLinkedAt?: Date;
+  totpEnabledAt?: Date;
   createdAt: Date;
+}
+
+/** The sealed TOTP columns, read only by the sign-in path that needs them. */
+export interface AdminTotpState {
+  secret: string | null;
+  pendingSecret: string | null;
+  lastStep: number | null;
 }
 
 export interface AdminInvite {
@@ -145,7 +137,12 @@ export interface AdminInvite {
 type AdminRow = typeof admins.$inferSelect;
 type InviteRow = typeof adminInvites.$inferSelect;
 
-const toAdmin = (r: AdminRow): Admin => ({
+const toAdmin = ({
+  totpSecret: _secret,
+  totpPendingSecret: _pending,
+  totpLastStep: _step,
+  ...r
+}: AdminRow): Admin => ({
   ...r,
   roleId: r.roleId ?? undefined,
   status: r.status === 'suspended' ? 'suspended' : 'active',
@@ -157,9 +154,7 @@ const toAdmin = (r: AdminRow): Admin => ({
   // handle and one of them eventually gets missed.
   passwordChangedAt: r.passwordChangedAt ?? undefined,
   avatarFilename: r.avatarFilename ?? undefined,
-  googleSub: r.googleSub ?? undefined,
-  googleEmail: r.googleEmail ?? undefined,
-  googleLinkedAt: r.googleLinkedAt ?? undefined,
+  totpEnabledAt: r.totpEnabledAt ?? undefined,
 });
 
 const toInvite = (r: InviteRow): AdminInvite => ({
@@ -274,70 +269,8 @@ export class AdminsStore {
     return row ? toAdmin(row) : undefined;
   }
 
-  /** The administrator a Google account is linked to, if any (0180). */
-  async findByGoogleSub(sub: string): Promise<Admin | undefined> {
-    const [row] = await this.db.select().from(admins).where(eq(admins.googleSub, sub)).limit(1);
-    return row ? toAdmin(row) : undefined;
-  }
-
-  /**
-   * Link a Google account — ONLY if none is linked yet.
-   *
-   * The `google_sub IS NULL` condition is the whole guarantee, as with the
-   * invite claim: two first sign-ins racing each other cannot both link, and a
-   * link to a DIFFERENT Google account can never be overwritten by this call.
-   * Returns the updated admin, or `undefined` when the row already carried a
-   * link (the caller re-reads and decides). A second admin holding the same
-   * `sub` is refused by the UNIQUE constraint, which the caller also handles.
-   */
-  async linkGoogle(
-    id: string,
-    google: { sub: string; email: string },
-    tx?: Executor,
-  ): Promise<Admin | undefined> {
-    const [row] = await (tx ?? this.db)
-      .update(admins)
-      .set({ googleSub: google.sub, googleEmail: google.email, googleLinkedAt: new Date() })
-      .where(and(eq(admins.id, id), isNull(admins.googleSub)))
-      .returning();
-    return row ? toAdmin(row) : undefined;
-  }
-
-  /** Keep the "linked as" address current on a sign-in by `sub`. Display only. */
-  async refreshGoogleEmail(id: string, email: string, tx?: Executor): Promise<void> {
-    await (tx ?? this.db).update(admins).set({ googleEmail: email }).where(eq(admins.id, id));
-  }
-
-  /**
-   * Remove the link. Returns the admin as it was BEFORE (so the caller can audit
-   * which Google address was removed), or `undefined` when nothing was linked.
-   */
-  async unlinkGoogle(id: string, tx?: Executor): Promise<Admin | undefined> {
-    const executor = tx ?? this.db;
-    const [before] = await executor
-      .select()
-      .from(admins)
-      .where(and(eq(admins.id, id), isNotNull(admins.googleSub)))
-      .for('update');
-    if (!before) return undefined;
-    await executor
-      .update(admins)
-      .set({ googleSub: null, googleEmail: null, googleLinkedAt: null })
-      .where(eq(admins.id, id));
-    return toAdmin(before);
-  }
-
   async update(id: string, patch: Partial<Admin>, tx?: Executor): Promise<Admin | undefined> {
-    const {
-      id: _ignored,
-      createdAt: _also,
-      // The Google link has its own conditional writers above; a general patch
-      // must never be able to set or move it.
-      googleSub: _sub,
-      googleEmail: _gEmail,
-      googleLinkedAt: _gAt,
-      ...rest
-    } = patch;
+    const { id: _ignored, createdAt: _also, ...rest } = patch;
     // Explicit nulls clear optional columns (e.g. logout clears refreshToken)
     const set = {
       ...rest,
@@ -360,6 +293,95 @@ export class AdminsStore {
       .where(eq(admins.id, id))
       .returning();
     return row ? toAdmin(row) : undefined;
+  }
+
+  // ─── Authenticator (TOTP, 0191) ────────────────────────────────────────────
+  /*
+   * The secrets live behind these methods rather than on `Admin` for the reason
+   * the reset-token hash does: they are credentials, and a field on the domain
+   * type travels into every object `findById` returns, and from there into logs
+   * and audit payloads. Values here are already SEALED (secret-box); the store
+   * never sees a readable secret.
+   */
+
+  async totpState(id: string): Promise<AdminTotpState | undefined> {
+    const [row] = await this.db
+      .select({
+        secret: admins.totpSecret,
+        pendingSecret: admins.totpPendingSecret,
+        lastStep: admins.totpLastStep,
+      })
+      .from(admins)
+      .where(eq(admins.id, id));
+    return row;
+  }
+
+  /** Enrolment: the secret just shown as a QR code. Replaces any earlier one. */
+  async setPendingTotp(id: string, sealedSecret: string): Promise<void> {
+    await this.db
+      .update(admins)
+      .set({ totpPendingSecret: sealedSecret })
+      .where(and(eq(admins.id, id), sql`${admins.totpSecret} IS NULL`));
+  }
+
+  /**
+   * A code from the pending secret was right: it becomes THE secret, and its
+   * step the replay floor. Conditional on the pending secret being the one the
+   * code was checked against and no secret having been confirmed meanwhile, so
+   * two tabs finishing enrolment at once cannot both win with different apps.
+   */
+  async confirmTotp(id: string, sealedPending: string, step: number): Promise<boolean> {
+    const rows = await this.db
+      .update(admins)
+      .set({
+        totpSecret: sealedPending,
+        totpPendingSecret: null,
+        totpEnabledAt: new Date(),
+        totpLastStep: step,
+      })
+      .where(
+        and(
+          eq(admins.id, id),
+          eq(admins.totpPendingSecret, sealedPending),
+          sql`${admins.totpSecret} IS NULL`,
+        ),
+      )
+      .returning({ id: admins.id });
+    return rows.length > 0;
+  }
+
+  /**
+   * Spend a code's step. False when this step (or a later one) was already
+   * spent — the replay, or the loser of two requests racing with one code.
+   */
+  async consumeTotpStep(id: string, step: number): Promise<boolean> {
+    const rows = await this.db
+      .update(admins)
+      .set({ totpLastStep: step })
+      .where(
+        and(
+          eq(admins.id, id),
+          sql`${admins.totpSecret} IS NOT NULL`,
+          sql`(${admins.totpLastStep} IS NULL OR ${admins.totpLastStep} < ${step})`,
+        ),
+      )
+      .returning({ id: admins.id });
+    return rows.length > 0;
+  }
+
+  /** Forget the authenticator — the next sign-in enrols a new one. True if one was set. */
+  async clearTotp(id: string): Promise<boolean> {
+    const rows = await this.db
+      .update(admins)
+      .set({ totpSecret: null, totpPendingSecret: null, totpEnabledAt: null, totpLastStep: null })
+      .where(
+        and(
+          eq(admins.id, id),
+          sql`(${admins.totpSecret} IS NOT NULL OR ${admins.totpPendingSecret} IS NOT NULL)`,
+        ),
+      )
+      .returning({ id: admins.id });
+    return rows.length > 0;
   }
 
   /**

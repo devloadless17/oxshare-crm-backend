@@ -4,9 +4,6 @@ import { Module } from '@nestjs/common';
 import { AdminAuditController } from './admin-audit.controller';
 import { AdminApiKeysController } from './admin-api-keys.controller';
 import { AdminAuthController } from './admin-auth.controller';
-import { AdminGoogleAuthController } from './admin-google-auth.controller';
-import { AdminGoogleAuthService, GoogleOauthConfig } from './google/admin-google-auth.service';
-import { GOOGLE_FETCH, GoogleOidcClient } from './google/google-oidc.client';
 import { AdminTagsController } from './admin-tags.controller';
 import { AdminClientsController } from './admin-clients.controller';
 import { AdminClientIdentityController } from './admin-client-identity.controller';
@@ -108,7 +105,6 @@ const ADMIN_SERVICES = [
   controllers: [
     AdminCountriesController,
     AdminAuthController,
-    AdminGoogleAuthController,
     AdminClientsController,
     AdminClientIdentityController,
     AdminTagsController,
@@ -142,12 +138,6 @@ const ADMIN_SERVICES = [
   providers: [
     AdminCountriesService,
     ...ADMIN_SERVICES,
-    // "Sign in with Google" (admin only). GOOGLE_FETCH is the HTTP seam the
-    // specs replace with a fake Google signing with a local RSA key.
-    GoogleOauthConfig,
-    GoogleOidcClient,
-    AdminGoogleAuthService,
-    { provide: GOOGLE_FETCH, useValue: (url: string, init?: RequestInit) => fetch(url, init) },
     { provide: APP_GUARD, useClass: IpAllowlistGuard },
     /*
      * Records the permission refusals decided INSIDE services, which the guard

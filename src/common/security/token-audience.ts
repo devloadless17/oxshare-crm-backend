@@ -47,6 +47,13 @@ export const TOKEN_AUDIENCE = {
 export const TOKEN_KIND = {
   access: 'access',
   refresh: 'refresh',
+  /*
+   * "The password was right; the authenticator code is still owed" — admin
+   * sign-in's first half (0191). Ten minutes, good only at the code and
+   * enrolment routes. Signed with the access key, so `typ` is all that keeps
+   * it from being a session: the guard accepts `access` and nothing else.
+   */
+  totpChallenge: 'totp_challenge',
 } as const;
 
 export type TokenKind = (typeof TOKEN_KIND)[keyof typeof TOKEN_KIND];
