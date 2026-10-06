@@ -33,7 +33,7 @@ beforeAll(async () => {
   store = new UsersStore(ctx.db);
   await ctx.db.execute(sql`
     INSERT INTO users (email, password_hash, first_name, last_name, country)
-    VALUES (${EMAIL}, 'x', 'Zanele', 'Mokoena', 'ZA')`);
+    VALUES (${EMAIL}, 'x', 'Zanele', 'Mokoena', 'South Africa')`);
 });
 
 afterAll(async () => {
@@ -88,9 +88,11 @@ describe('filter and sort obey the mask', () => {
 
   it('refuses to filter by a hidden country', async () => {
     await expect(
-      as(['client.country'], () => store.findPage({ page: 1, limit: 10, country: 'ZA' })),
+      as(['client.country'], () => store.findPage({ page: 1, limit: 10, country: 'South Africa' })),
     ).rejects.toBeInstanceOf(ValidationError);
-    const visible = await as([], () => store.findPage({ page: 1, limit: 10, country: 'ZA' }));
+    const visible = await as([], () =>
+      store.findPage({ page: 1, limit: 10, country: 'South Africa' }),
+    );
     expect(visible.rows).toHaveLength(1);
   });
 });
