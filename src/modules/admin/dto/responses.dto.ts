@@ -734,6 +734,9 @@ export class ClientTagDto {
       'Set on a COUNTRY tag (ISO code, 0193): carried by every client living there, derived from their country — never assigned, renamed or deleted; only its colour is editable.',
     example: 'LB',
   })
+  @NotClientField(
+    'the country a TAG stands for, part of the tag catalogue; which clients carry it is derived from their own country',
+  )
   countryCode?: string;
   @ApiProperty() createdAt: Date;
 }
@@ -3484,7 +3487,9 @@ export class SignupLinkRowDto {
 }
 
 /** A sign-up link after a rename. */
-@NoClientFields('a link; no client-owned field')
+@NoClientFields(
+  'an administrator’s sign-up link after a rename: a word and a URL, no client-owned field',
+)
 export class SignupLinkUrlDto {
   @ApiProperty() slug: string;
   @ApiProperty() url: string;

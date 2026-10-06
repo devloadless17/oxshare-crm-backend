@@ -130,14 +130,16 @@ beforeAll(async () => {
   await setLadderShares(ctx.db, [{ commission: '10' }]);
   const seeded = await seedProductTerms(ctx.db, {
     name: 'Clawback terms',
-    commissionPerLot: '100',
+    // $10, not $100: since 0197 a level 1 partner takes the WHOLE pool on their own
+    // client, and $100 a lot would cross the $50-a-lot payout ceiling and be refused.
+    commissionPerLot: '10',
     rebatePerLot: '0',
   });
   terms = {
     id: seeded.typeId,
     name: 'Clawback terms',
     enabled: true,
-    commissionPerLot: '100.00000000',
+    commissionPerLot: '10.00000000',
     rebatePerLot: '0',
   };
 

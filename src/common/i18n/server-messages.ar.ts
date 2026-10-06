@@ -1049,4 +1049,37 @@ export const SERVER_MESSAGES_AR: Readonly<Record<string, string>> = {
   'This task ends only when its item is handled — open it and decide it there.':
     'لا تنتهي هذه المهمة إلا بمعالجة عنصرها. افتحه واتخذ القرار هناك.',
   'Write a question of up to 2000 characters.': 'اكتب سؤالاً لا يتجاوز 2000 حرف.',
+  // ── Added 6 Oct 2026: period filters, the two-level partner tree (0197), sign-up links, pay-to ──
+  'from must be a date or a date-time with its offset':
+    'يجب أن تكون قيمة «من» تاريخًا، أو تاريخًا ووقتًا مع فرق التوقيت.',
+  'to must be a date or a date-time with its offset':
+    'يجب أن تكون قيمة «إلى» تاريخًا، أو تاريخًا ووقتًا مع فرق التوقيت.',
+  '{1} must be a date (YYYY-MM-DD) or a date-time with its offset (2026-10-06T08:30:00+03:00)':
+    'يجب أن تكون قيمة {1} تاريخًا (YYYY-MM-DD) أو تاريخًا ووقتًا مع فرق التوقيت (2026-10-06T08:30:00+03:00).',
+  '{1} must be after {2}': 'يجب أن تكون قيمة {1} بعد {2}.',
+  'Commission share must be a percentage from 0 to 100, at most 4 decimals.':
+    'يجب أن تكون حصة العمولة نسبة مئوية من 0 إلى 100، بأربع منازل عشرية كحد أقصى.',
+  'Rebate share must be a percentage from 0 to 100, at most 4 decimals.':
+    'يجب أن تكون حصة الاسترداد نسبة مئوية من 0 إلى 100، بأربع منازل عشرية كحد أقصى.',
+  'The chosen parent is a sub-partner, and a sub-partner cannot have partners beneath them — the tree has two levels. Approve this application under a main partner, or with no parent.':
+    'الشريك الأعلى المختار شريك فرعي، ولا يمكن أن يكون تحت الشريك الفرعي شركاء، فللشجرة مستويان فقط. وافق على هذا الطلب تحت شريك رئيسي، أو من دون شريك أعلى.',
+  'This partner has no parent, so they are a main partner (level 1). To make them a sub-partner, reassign them under a main partner.':
+    'ليس لهذا الشريك شريك أعلى، لذا فهو شريك رئيسي (المستوى 1). لجعله شريكًا فرعيًا، انقله تحت شريك رئيسي.',
+  'This partner sits under another partner, so they are a sub-partner (level 2). To make them a main partner, remove their parent.':
+    'هذا الشريك تحت شريك آخر، لذا فهو شريك فرعي (المستوى 2). لجعله شريكًا رئيسيًا، أزل شريكه الأعلى.',
+  'Only a sub-partner has their own commission and rebate. A main partner takes the whole commission on their own clients and the rest on their sub-partners’.':
+    'وحده الشريك الفرعي له عمولة واسترداد خاصان به. يأخذ الشريك الرئيسي كامل العمولة على عملائه، والباقي على عملاء شركائه الفرعيين.',
+  'That partner is a sub-partner, and a sub-partner cannot have partners beneath them. Choose a main partner (level 1).':
+    'هذا الشريك شريك فرعي، ولا يمكن أن يكون تحت الشريك الفرعي شركاء. اختر شريكًا رئيسيًا (المستوى 1).',
+  'This partner has sub-partners of their own, so they cannot become a sub-partner. Move their sub-partners first.':
+    'لهذا الشريك شركاء فرعيون، لذا لا يمكن أن يصبح شريكًا فرعيًا. انقل شركاءه الفرعيين أولًا.',
+  'The partner tree has {1} levels: main partners (level 1) and their sub-partners (level 2). A deeper level cannot be added.':
+    'عدد مستويات شجرة الشركاء {1}: الشركاء الرئيسيون (المستوى 1) وشركاؤهم الفرعيون (المستوى 2). لا يمكن إضافة مستوى أعمق.',
+  'This phone number is already used by another OxShare account.':
+    'رقم الهاتف هذا مستخدم بالفعل في حساب OxShare آخر.',
+  'Another administrator already uses this link. Choose another word.':
+    'يستخدم مسؤول آخر هذا الرابط بالفعل. اختر كلمة أخرى.',
+  'A method can show at most {1} details.': 'يمكن أن تعرض الطريقة {1} تفاصيل كحد أقصى.',
+  'Enter what the client should see.': 'أدخل ما يجب أن يراه العميل.',
+  'Keep the value to {1} characters, on one line.': 'اجعل القيمة في حدود {1} حرفًا وعلى سطر واحد.',
 };

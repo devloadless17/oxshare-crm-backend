@@ -231,7 +231,8 @@ describe('register', () => {
   it('lowercases the email, so one address cannot become two accounts', async () => {
     const h = build();
     await h.service.register(dto);
-    expect(h.users.create).toHaveBeenCalledWith(
+    // The account row is written inside the registration's transaction (the second argument).
+    expect(h.users.create.mock.calls[0]?.[0]).toEqual(
       expect.objectContaining({ email: 'new.person@oxshare.com' }),
     );
   });
@@ -250,7 +251,7 @@ describe('register', () => {
   it('starts unverified at level 0, whatever the caller sent', async () => {
     const h = build();
     await h.service.register({ ...dto, ...({ verificationLevel: 1, status: 'active' } as object) });
-    expect(h.users.create).toHaveBeenCalledWith(
+    expect(h.users.create.mock.calls[0]?.[0]).toEqual(
       expect.objectContaining({ emailVerified: false, verificationLevel: 0 }),
     );
   });
