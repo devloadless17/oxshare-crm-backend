@@ -381,8 +381,8 @@ describe('offeredTo: who sees which live products (owner, 6 Oct 2026)', () => {
     await giveType(ecn);
     for (const [id, env, group] of [
       [standard, 'live', 'real\\Standard-USD'],
-      [ecn, 'live', 'real\\ECN-USD'],
-      [raw, 'live', 'real\\Raw-USD'],
+      [ecn, 'live', 'real\\Standard-EUR'],
+      [raw, 'live', 'real\\Pro-USD'],
       [demoId, 'demo', 'demo\\Standard-USD'],
     ] as const) {
       await service.attachGroup(id, { environment: env, mt5Group: group }, TEST_ACTOR);
@@ -411,12 +411,12 @@ describe('offeredTo: who sees which live products (owner, 6 Oct 2026)', () => {
 
   it('an individual sees only live products with NO commission type', async () => {
     const { direct } = await fixture();
-    expect(await groups(direct)).toEqual(['real\\Raw-USD']);
+    expect(await groups(direct)).toEqual(['real\\Pro-USD']);
   });
 
   it('a main partner opening his own account sees only products with no commission type', async () => {
     const { main } = await fixture();
-    expect(await groups(main)).toEqual(['real\\Raw-USD']);
+    expect(await groups(main)).toEqual(['real\\Pro-USD']);
   });
 
   it('a sub-partner opening his own account sees his MAIN partner’s agency', async () => {
@@ -446,7 +446,7 @@ describe('offeredTo: who sees which live products (owner, 6 Oct 2026)', () => {
   it('inside a tree whose main partner has no agency: every product with a type', async () => {
     const { underMain, main } = await fixture();
     await ctx.db.execute(sql`UPDATE ib_accounts SET agency_id = NULL WHERE user_id = ${main}`);
-    expect(await groups(underMain)).toEqual(['real\\ECN-USD', 'real\\Standard-USD']);
+    expect(await groups(underMain)).toEqual(['real\\Standard-EUR', 'real\\Standard-USD']);
   });
 
   it('demo is the same for everybody, and disabling it closes it for everybody', async () => {
