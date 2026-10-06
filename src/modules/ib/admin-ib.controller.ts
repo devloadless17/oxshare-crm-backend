@@ -46,6 +46,7 @@ import {
   IB_APPLICATION_STATUSES,
   IB_PARTNER_STATUSES,
   ReassignIbParentDto,
+  SetIbTermsDto,
   RejectIbApplicationDto,
   SetIbActiveDto,
   type IbApplicationStatusDto,
@@ -711,6 +712,36 @@ export class AdminIbController {
         req.admin.clientScope,
         req.admin,
       ),
+      req.admin.clientScope,
+    );
+  }
+
+  /**
+   * A sub-partner's own commission and rebate — 0197, the owner's rule.
+   * Same grant as moving their level: both decide what they are paid.
+   */
+  @Patch('partners/:userId/terms')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('ib.partners.edit')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Set a sub-partner’s own commission and rebate shares',
+    description:
+      'Sub-partners only. `commissionShare` is their percentage of the product’s commission; ' +
+      'the main partner above them takes the rest (100 − it). `rebateShare` is what their ' +
+      'CLIENTS get back of the product’s rebate. Null = level 2’s share; an absent key is left ' +
+      'unchanged. Applies from the next trade.',
+  })
+  @ApiOkResponse({ type: IbAccountDto })
+  @ScopedToClients('Acts on one client’s partner account; out-of-scope 404s like a missing one.')
+  @Audited('ib.terms_change')
+  async setTerms(
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+    @Param('userId', ClientRefPipe) userId: number,
+    @Body() dto: SetIbTermsDto,
+  ) {
+    return this.applications.accountViewFor(
+      await this.applications.setTerms(userId, dto, req.admin.clientScope, req.admin),
       req.admin.clientScope,
     );
   }

@@ -10,6 +10,7 @@ import {
   IsInt,
   IsOptional,
   IsString,
+  Matches,
   IsUUID,
   Length,
   Max,
@@ -426,13 +427,13 @@ export class ChangeIbLevelDto {
   @ApiProperty({
     example: 2,
     minimum: 1,
-    maximum: 10,
+    maximum: 2,
     description:
-      'Must be a CONFIGURED and ENABLED level. 1 is a partner dealing with the broker directly.',
+      'Must match the partner’s position (0197): 1 with no parent, 2 under a main partner.',
   })
   @IsInt()
   @Min(1)
-  @Max(10)
+  @Max(2)
   level: number;
 }
 
@@ -474,6 +475,45 @@ export class ReassignIbParentDto {
   @IsInt()
   @Min(1)
   parentIbUserId: number | null;
+}
+
+/**
+ * `PATCH /admin/ib/partners/{userId}/terms` — a SUB-PARTNER's own commission
+ * and rebate (0197). `null` falls back to level 2's share; an absent key is
+ * left as it is.
+ */
+export class SetIbTermsDto {
+  @ApiPropertyOptional({
+    type: 'string',
+    nullable: true,
+    example: '50',
+    description:
+      'Their percentage of the product’s commission, 0–100. The main partner above them takes ' +
+      'the rest. Null = level 2’s share.',
+  })
+  @IsOptional()
+  @ValidateIf((_, value) => value !== null)
+  @IsString()
+  @Matches(/^(100(\.0{1,4})?|\d{1,2}(\.\d{1,4})?)$/, {
+    message: 'Commission share must be a percentage from 0 to 100, at most 4 decimals.',
+  })
+  commissionShare?: string | null;
+
+  @ApiPropertyOptional({
+    type: 'string',
+    nullable: true,
+    example: '30',
+    description:
+      'What their CLIENTS get back, as a percentage of the product’s rebate, 0–100. Null = ' +
+      'level 2’s rebate share.',
+  })
+  @IsOptional()
+  @ValidateIf((_, value) => value !== null)
+  @IsString()
+  @Matches(/^(100(\.0{1,4})?|\d{1,2}(\.\d{1,4})?)$/, {
+    message: 'Rebate share must be a percentage from 0 to 100, at most 4 decimals.',
+  })
+  rebateShare?: string | null;
 }
 
 export class SetIbActiveDto {
@@ -659,6 +699,23 @@ export class IbPartnerDetailDto {
     'not a client-owned attribute \u2014 levelRebateShare describes the record rather than the person',
   )
   levelRebateShare: string | null;
+  @ApiProperty({
+    type: 'string',
+    nullable: true,
+    description:
+      'A sub-partner’s own commission share (0197), overriding the level’s. Null = the level’s.',
+  })
+  @NotClientField('commission terms set for this partner — not an attribute of the person')
+  commissionShareOverride: string | null;
+  @ApiProperty({
+    type: 'string',
+    nullable: true,
+    description:
+      'What a sub-partner’s clients get back of the rebate (0197), overriding the level’s. ' +
+      'Null = the level’s.',
+  })
+  @NotClientField('commission terms set for this partner — not an attribute of the person')
+  rebateShareOverride: string | null;
   @NotClientField(
     'not a client-owned attribute \u2014 referralCode describes the record rather than the person',
   )

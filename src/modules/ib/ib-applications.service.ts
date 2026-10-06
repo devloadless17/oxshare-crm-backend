@@ -34,6 +34,7 @@ import type { Actor } from '../../common/security/actor';
 import type { ClientScope } from '../../common/security/client-scope';
 import { maskedFieldsFor, type FieldMask } from '../../common/security/field-mask';
 import { REFERRAL_CODE_ALPHABET, REFERRAL_CODE_LENGTH } from '../../common/referral-code';
+import { IB_TREE_MAX_LEVELS } from '../../common/ib-levels';
 import { ConflictError, NotFoundError, ValidationError } from '../../common/errors/domain-errors';
 import type { IbIneligibleCode } from './dto/ib-application.dto';
 import { localizeMessage } from '../../common/i18n/localize-message';
@@ -861,6 +862,13 @@ export class IbApplicationsService {
      * `calculate` reports it per trade, but per trade is after the fact. The
      * refusal names both remedies because both are ordinary decisions.
      */
+    if (parentIbUserId && parentLevel >= IB_TREE_MAX_LEVELS) {
+      throw new ValidationError(
+        'The chosen parent is a sub-partner, and a sub-partner cannot have partners beneath ' +
+          'them — the tree has two levels. Approve this application under a main partner, or ' +
+          'with no parent.',
+      );
+    }
     if (parentIbUserId && !(await this.ladderHasRungBeneath(parentLevel))) {
       throw new ValidationError(
         `The chosen parent stands on level ${parentLevel}, and the ladder has no enabled ` +
@@ -1347,6 +1355,9 @@ export class IbApplicationsService {
       levelEnabled: levelTerms?.enabled ?? false,
       levelCommissionShare: levelTerms?.commissionShare ?? null,
       levelRebateShare: levelTerms?.rebateShare ?? null,
+      // 0197 — a sub-partner's own terms; null = the level's.
+      commissionShareOverride: account.commissionShareOverride ?? null,
+      rebateShareOverride: account.rebateShareOverride ?? null,
       referralCode: account.referralCode,
       active: account.active,
       approvedAt: account.approvedAt,
@@ -1483,6 +1494,24 @@ export class IbApplicationsService {
     const account = await this.ib.findAccount(userId);
     if (!account) throw new NotFoundError('That partner does not exist.');
 
+    /*
+     * Since 0197 the level IS the position in a two-level tree: level 1 takes
+     * the rest of the commission and level 2 takes their own share, so a
+     * partner labelled against their position would be paid the wrong side of
+     * the split. A partner with no parent is level 1; one with a parent is 2.
+     * Moving them is "Reassign parent", which re-levels them.
+     */
+    const positional = account.parentIbUserId ? 2 : 1;
+    if (level !== positional) {
+      throw new ValidationError(
+        positional === 1
+          ? 'This partner has no parent, so they are a main partner (level 1). To make them a ' +
+              'sub-partner, reassign them under a main partner.'
+          : 'This partner sits under another partner, so they are a sub-partner (level 2). To ' +
+              'make them a main partner, remove their parent.',
+      );
+    }
+
     const target = await this.levels.findTerms(level);
     if (!target) {
       throw new NotFoundError(
@@ -1504,6 +1533,58 @@ export class IbApplicationsService {
       before: account.level,
       after: updated.level,
       levelName: target.name,
+    });
+    return updated;
+  }
+
+  /**
+   * A SUB-PARTNER's own terms (0197) — the owner's rule, 6 Oct 2026.
+   *
+   * `commissionShare`: their percentage of the product's commission; the main
+   * partner above takes the rest (100 − it). `rebateShare`: what THEIR clients
+   * get back of the product's rebate. Either may be `null` to fall back to
+   * level 2's share on the ladder; `undefined` leaves it as it is.
+   *
+   * Sub-partners only: a main partner takes the whole commission on their own
+   * clients and the rest on their sub-partners', so there is no share of
+   * theirs to set. Applies from the NEXT trade; accruals record the rate used.
+   */
+  async setTerms(
+    userId: number,
+    terms: { commissionShare?: string | null; rebateShare?: string | null },
+    scope: ClientScope,
+    actor: Actor,
+  ): Promise<IbAccountRow> {
+    await this.visibility.assertVisible(userId, scope);
+
+    const account = await this.ib.findAccount(userId);
+    if (!account) throw new NotFoundError('That partner does not exist.');
+    if (!account.parentIbUserId || account.level < 2) {
+      throw new ValidationError(
+        'Only a sub-partner has their own commission and rebate. A main partner takes the whole ' +
+          'commission on their own clients and the rest on their sub-partners’.',
+      );
+    }
+
+    const patch: { commissionShareOverride?: string | null; rebateShareOverride?: string | null } =
+      {};
+    if (terms.commissionShare !== undefined) patch.commissionShareOverride = terms.commissionShare;
+    if (terms.rebateShare !== undefined) patch.rebateShareOverride = terms.rebateShare;
+    if (Object.keys(patch).length === 0) return account;
+
+    const updated = await this.ib.updateAccount(userId, patch);
+    if (!updated) throw new NotFoundError('That partner does not exist.');
+
+    // Who changed a partner's pay, from what to what — the row an auditor asks for.
+    this.audit.record(actor.id, 'ib.terms_change', 'ib_account', userId, {
+      before: {
+        commissionShare: account.commissionShareOverride,
+        rebateShare: account.rebateShareOverride,
+      },
+      after: {
+        commissionShare: updated.commissionShareOverride,
+        rebateShare: updated.rebateShareOverride,
+      },
     });
     return updated;
   }
@@ -1561,8 +1642,37 @@ export class IbApplicationsService {
           );
         }
         await this.assertParentHasRoom(parentIbUserId, tx);
+        /*
+         * Two levels at most (6 Oct 2026): the new parent must be a main
+         * partner, and a partner who has sub-partners of their own cannot
+         * become one — their sub-partners would land on a third level.
+         */
+        const parent = await this.ib.findAccount(parentIbUserId, tx);
+        if (parent && parent.level >= IB_TREE_MAX_LEVELS) {
+          throw new ValidationError(
+            'That partner is a sub-partner, and a sub-partner cannot have partners beneath them. ' +
+              'Choose a main partner (level 1).',
+          );
+        }
+        if ((await this.ib.countDirectPartners(userId, tx)) > 0) {
+          throw new ValidationError(
+            'This partner has sub-partners of their own, so they cannot become a sub-partner. ' +
+              'Move their sub-partners first.',
+          );
+        }
       }
-      return this.ib.updateAccount(userId, { parentIbUserId }, tx);
+      /*
+       * The level follows the position (0197): under a parent → 2, on their
+       * own → 1. A per-partner override only means something on a
+       * sub-partner, so becoming a main partner clears it.
+       */
+      return this.ib.updateAccount(
+        userId,
+        parentIbUserId
+          ? { parentIbUserId, level: 2 }
+          : { parentIbUserId, level: 1, commissionShareOverride: null, rebateShareOverride: null },
+        tx,
+      );
     });
     if (!updated) throw new NotFoundError('That partner does not exist.');
 
@@ -1704,6 +1814,8 @@ export class IbApplicationsService {
    * for sale.
    */
   private async ladderHasRungBeneath(parentLevel: number): Promise<boolean> {
+    // Two levels at most (6 Oct 2026): nobody is placed beneath a sub-partner.
+    if (parentLevel + 1 > IB_TREE_MAX_LEVELS) return false;
     const rung = await this.levels.findTerms(parentLevel + 1);
     return Boolean(rung?.enabled);
   }

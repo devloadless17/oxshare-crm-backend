@@ -46,11 +46,12 @@ let ib2: number;
 let ib3: number;
 let clientId: number;
 /**
- * The product's rate card: $100 a lot to the partners (0140).
+ * The product's rate card: $40 a lot to the partners (0140).
  *
- * Every trade here is ONE LOT, so a rung's SHARE of $100 is the same number
- * of dollars — "25%" pays $25 — and every assertion downstream reads as it
- * did when the rung carried "$25 a lot" itself.
+ * Every trade here is ONE LOT, so the commission POOL on each trade is $40.
+ * Since 0197 the whole pool is paid out down the chain — each sub-partner
+ * takes their share and the level 1 partner the rest — so the total paid is
+ * always the pool, and $40 keeps it inside the shipped $50-a-lot ceiling.
  */
 let terms: CommissionTypeTerms;
 
@@ -67,7 +68,9 @@ async function makeUser(email: string): Promise<number> {
 
 /**
  * Set the whole ladder — one SHARE per rung, level 1 first, as a percentage of
- * the product's $100 a lot (0140). Every rung is reset first: a share left on
+ * the product's $40 a lot (0140). Level 1's own share decides nothing since
+ * 0197 — the level 1 partner takes what the rungs beneath them do not. Every
+ * rung is reset first: a share left on
  * level 3 by a previous case would pay a partner the current one never
  * configured, and these suites share a database.
  */
@@ -139,33 +142,30 @@ beforeAll(async () => {
   );
 
   /*
-   * $25 / $10 / $5 a lot — three DIFFERENT rates, deliberately. Equal rates
-   * would let a transposition (paying depth 3 the depth-2 tier) pass every
-   * assertion here.
+   * 10% at level 2 and 5% at level 3 — DIFFERENT shares, deliberately. Equal
+   * shares would let a transposition (paying depth 3 the depth-2 share) pass
+   * every assertion here. Level 1's 25% is IGNORED since 0197: the level 1
+   * partner takes 100 − (10 + 5) = 85%, and a 25% showing up anywhere below
+   * would mean level 1's own share had crept back in.
    *
-   * ⚠️ They must also SUM to under `ib_max_payout_per_lot` ($50, the shipped
-   * default). Under percentages the three rungs were 50/20/10 and summed to 80%
-   * of a $100 base — fine, because that ceiling is a PERCENTAGE one. As per-lot
-   * amounts the same figures are $80 a lot, which `checkPlausible` refuses
-   * outright: a per-lot payout is not bounded by the revenue of the trade, so
-   * the unit-error guard is all that stands between a mistyped amount and
-   * eighty dollars a lot. Halving them keeps the three rungs distinct and the
-   * total ($40) inside the ceiling.
+   * ⚠️ The whole pool is paid out now, so the POOL must sit under
+   * `ib_max_payout_per_lot` ($50, the shipped default) — which is why the
+   * type pays $40 a lot rather than $100: at $100 every trade here would pay
+   * $100 and `checkPlausible` would refuse it outright.
    */
   const seeded = await seedProductTerms(ctx.db, {
     name: 'Deep terms',
-    commissionPerLot: '100',
+    commissionPerLot: '40',
     rebatePerLot: '0',
   });
   terms = {
     id: seeded.typeId,
     name: 'Deep terms',
     enabled: true,
-    commissionPerLot: '100.00000000',
+    commissionPerLot: '40.00000000',
     rebatePerLot: '0',
   };
   await setLadder(['25.0000', '10.0000', '5.0000']);
-  /* One level: pays its holder on their own clients and nothing beyond. */
 
   commissions = new CommissionService(
     ctx.db,
@@ -209,12 +209,12 @@ beforeEach(async () => {
   await ctx.db.execute(sql`UPDATE ib_accounts SET level = 3, active = true WHERE user_id = ${ib1}`);
   /*
    * No cap to raise. The broker's floor was a setting that scaled every leg pro
-   * rata to fit under a configured share; it went in 0103, so the 80% this
+   * rata to fit under a configured share; it went in 0103, so the $40 pool this
    * fixture pays across three levels arrives intact.
    *
-   * `checkPlausible` still refuses a set exceeding the REVENUE — 80% does not,
-   * which is why these amounts are the ones asserted below rather than scaled
-   * ones.
+   * `checkPlausible` still refuses a trade paying over $50 a lot — $40 does
+   * not, which is why these amounts are the ones asserted below rather than
+   * scaled ones.
    */
 });
 
@@ -225,29 +225,30 @@ describe('a trade three levels deep', () => {
    * payout depth because it counted rungs.
    */
   /*
-   * ── EACH PARTNER IS PAID BY THEIR OWN RUNG (0112) ────────────────────────
+   * ── SUB-PARTNERS BY THEIR RUNG, LEVEL 1 TAKES THE REST (0197) ────────────
    *
    * The chain is built top-down: `ib3` deals with the broker directly and is
    * level 1, `ib2` was recruited by them at level 2, `ib1` by `ib2` at level 3.
    * A client of `ib1` therefore reaches them at DEPTH 1 — but `ib1` stands on
-   * the THIRD rung, so they take the third rate.
+   * the THIRD rung, so they take the third share.
    *
-   * That inversion is the change. Under programmes the rate followed the depth,
-   * so the partner nearest the trade took the largest share whoever they were.
-   * Under levels the partner nearest the BROKER does, which is what "static per
-   * lot for the main partner, a percentage for the partner under him" means.
+   * New partners are capped at two levels, but a three-deep tree can still
+   * exist in the data, and the engine walks it: every partner at level 2 or
+   * deeper is paid their own rung's share, and the level 1 partner takes what
+   * is left of the pool — 100 − 10 − 5 = 85%.
    */
-  it('pays every partner in the chain by the rung they stand on', async () => {
+  it('pays each sub-partner by their rung and the level 1 partner the rest', async () => {
     const written = await accrue();
     expect(written).toBe(3);
 
     const rows = await accrualRows();
     expect(rows.map((r) => [r.ib_user_id, r.depth, r.amount])).toEqual([
-      // ib1 is nearest the trade and furthest from the broker: rung 3.
-      [ib1, 1, '5.00000000'],
-      [ib2, 2, '10.00000000'],
-      // ib3 is the main partner, and takes the most however deep the trade was.
-      [ib3, 3, '25.00000000'],
+      // ib1 is nearest the trade and furthest from the broker: rung 3, 5% of $40.
+      [ib1, 1, '2.00000000'],
+      // ib2: rung 2, 10% of $40.
+      [ib2, 2, '4.00000000'],
+      // ib3 is the main partner and takes the rest: 85% of $40.
+      [ib3, 3, '34.00000000'],
     ]);
   });
 
@@ -269,11 +270,14 @@ describe('a trade three levels deep', () => {
     for (const row of await accrualRows()) {
       expect(row.level_id).toBeTruthy();
     }
-    /* The PER-LOT amount that priced each row, not a percentage (0117). */
+    /*
+     * The SHARE actually applied, as a percentage of the pool — so for the
+     * level 1 partner it is the remainder (85), not level 1's 25 on the ladder.
+     */
     expect((await accrualRows()).map((r) => r.rate_value)).toEqual([
       '5.0000',
       '10.0000',
-      '25.0000',
+      '85.0000',
     ]);
   });
 
@@ -299,9 +303,10 @@ describe('a trade three levels deep', () => {
     await place(ib1, 9);
 
     expect(await accrue()).toBe(2);
+    /* ib1 took nothing, so the level 1 partner's rest is 100 − 10 = 90%. */
     expect((await accrualRows()).map((r) => [r.depth, r.amount])).toEqual([
-      [2, '10.00000000'],
-      [3, '25.00000000'],
+      [2, '4.00000000'],
+      [3, '36.00000000'],
     ]);
   });
 

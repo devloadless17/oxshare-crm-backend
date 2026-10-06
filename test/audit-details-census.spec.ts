@@ -191,6 +191,8 @@ const WRITES_DETAILS: readonly string[] = [
   'ib.parent_change',
   'ib.partners.suspend',
   'ib.reject',
+  // 0197: percentages before/after — no client data.
+  'ib.terms_change',
   'ib_commission_type.create',
   'ib_commission_type.delete',
   'ib_commission_type.update',

@@ -4810,6 +4810,14 @@ export const ibAccounts = pgTable(
      * because terms are chosen by it again.
      */
     level: integer('level').notNull().default(1),
+    /*
+     * 0197 — this partner's OWN terms, overriding their level's. NULL = the
+     * level's. Set on sub-partners (level 2): their share of the commission
+     * (level 1 above them takes the rest) and what their clients get back of
+     * the rebate. Percentages, 0..100.
+     */
+    commissionShareOverride: numeric('commission_share_override', { precision: 12, scale: 4 }),
+    rebateShareOverride: numeric('rebate_share_override', { precision: 12, scale: 4 }),
     /** NULL means they deal with the broker directly — the top of a chain. */
     parentIbUserId: integer('parent_ib_user_id'),
     /**

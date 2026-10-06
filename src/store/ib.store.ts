@@ -39,6 +39,9 @@ export interface IbChainNode {
   parentIbUserId: number | null;
   active: boolean;
   level: number;
+  /** 0197 — this partner's own shares, overriding their level's. Null = the level's. */
+  commissionShareOverride: string | null;
+  rebateShareOverride: string | null;
 }
 
 export type IbApplicationStatus = (typeof ibApplications.status.enumValues)[number];
@@ -382,8 +385,8 @@ export class IbStore {
   }
 
   /** How many partners sit directly beneath this one — the `maxDirectPartners` check. */
-  async countDirectPartners(parentUserId: number): Promise<number> {
-    const [{ value }] = await this.db
+  async countDirectPartners(parentUserId: number, executor?: Executor): Promise<number> {
+    const [{ value }] = await (executor ?? this.db)
       .select({ value: count() })
       .from(ibAccounts)
       .where(eq(ibAccounts.parentIbUserId, parentUserId));
@@ -523,30 +526,39 @@ export class IbStore {
     const result = await (executor ?? this.db).execute(sql`
       WITH RECURSIVE chain AS (
         SELECT a.user_id, a.parent_ib_user_id, a.active, a.level,
+               a.commission_share_override, a.rebate_share_override,
                1 AS depth, ARRAY[a.user_id] AS path
           FROM ${ibAccounts} a
          WHERE a.user_id = ${userId}
         UNION ALL
         SELECT p.user_id, p.parent_ib_user_id, p.active, p.level,
+               p.commission_share_override, p.rebate_share_override,
                c.depth + 1, c.path || p.user_id
           FROM ${ibAccounts} p
           JOIN chain c ON p.user_id = c.parent_ib_user_id
          WHERE ${bound}
            AND NOT p.user_id = ANY(c.path)
       )
-      SELECT user_id, parent_ib_user_id, active, level FROM chain ORDER BY depth
+      SELECT user_id, parent_ib_user_id, active, level,
+             commission_share_override::text AS commission_share_override,
+             rebate_share_override::text AS rebate_share_override
+        FROM chain ORDER BY depth
     `);
     const rows = result.rows as unknown as {
       user_id: number;
       parent_ib_user_id: number | null;
       active: boolean;
       level: number;
+      commission_share_override: string | null;
+      rebate_share_override: string | null;
     }[];
     return rows.map((row) => ({
       userId: row.user_id,
       parentIbUserId: row.parent_ib_user_id,
       active: row.active,
       level: row.level,
+      commissionShareOverride: row.commission_share_override,
+      rebateShareOverride: row.rebate_share_override,
     }));
   }
 
@@ -1072,7 +1084,17 @@ export class IbStore {
      * programme stays assignable only so a historical value can be corrected;
      * nothing on the live path writes it.
      */
-    patch: Partial<Pick<IbAccountRow, 'level' | 'programId' | 'parentIbUserId' | 'active'>>,
+    patch: Partial<
+      Pick<
+        IbAccountRow,
+        | 'level'
+        | 'programId'
+        | 'parentIbUserId'
+        | 'active'
+        | 'commissionShareOverride'
+        | 'rebateShareOverride'
+      >
+    >,
     executor?: Executor,
   ): Promise<IbAccountRow | undefined> {
     const [row] = await (executor ?? this.db)

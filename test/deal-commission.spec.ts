@@ -55,11 +55,11 @@ const DEMO_LOGIN = '5000007';
 
 /**
  * The product every fixture account here is sold on: $10 a lot to the
- * partners, nothing back to the client (0140). With level 1 at 30% a one-lot
- * trade pays $3.00 on a $10.00 pool — the same two figures the suite asserted
- * when the base was "the 10.00 the broker kept", which is why most
- * expectations below did not have to move. What the broker earned on a trade
- * no longer enters the arithmetic at all.
+ * partners, nothing back to the client (0140). Every introducer in this suite
+ * is a level 1 partner with no sub-partner beneath them, so since 0197 they
+ * take the WHOLE pool on their own client: a one-lot trade pays $10.00 on a
+ * $10.00 pool. Level 1's own share on the ladder no longer decides anything,
+ * and what the broker earned on a trade does not enter the arithmetic at all.
  */
 let terms: CommissionTypeTerms;
 let productId: string;
@@ -189,11 +189,11 @@ beforeAll(async () => {
   ctx = await startMoneyTestDb();
 
   /*
-   * A rate WELL UNDER the broker's revenue-share cap, which defaults to 50%.
-   *
-   * At 70% every figure below would come back scaled down to the ceiling, and
-   * the suite would be asserting the cap rather than the seam it is about. What
-   * the cap does is covered in `commission.spec.ts`.
+   * Level 1 must be ON the ladder and enabled for its partners to be paid, but
+   * since 0197 its commission share is IGNORED: a level 1 partner takes 100%
+   * less whatever sub-partners beneath them took. The 30 below is deliberately
+   * not 100, so every $10.00 asserted in this file proves the share was not
+   * read. What the payout ceiling does is covered in `commission.spec.ts`.
    *
    * ## The rate is a TIER now, and there is only one place to set it
    *
@@ -309,9 +309,16 @@ describe('an ingested deal pays the partner behind the client', () => {
 
     const [accrual] = await accrualsFor(id);
     expect(accrual.ib_user_id).toBe(partnerId);
-    // 30% of the 10.00 the broker kept. Not of the client's volume or profit.
-    expect(accrual.amount).toBe('3.00000000');
+    // The whole $10 pool one lot puts on the table: a level 1 partner's own
+    // client (0197). Not a share of the client's volume or profit.
+    expect(accrual.amount).toBe('10.00000000');
     expect(accrual.base_amount).toBe('10.00000000');
+
+    // The share actually applied is on the row: 100, not the ladder's 30.
+    const { rows } = await ctx.db.execute<{ rate_value: string }>(
+      sql`SELECT rate_value FROM ib_accruals WHERE source_type = 'deal' AND source_id = ${id}`,
+    );
+    expect(rows[0].rate_value).toBe('100.0000');
   });
 
   /*
@@ -439,7 +446,7 @@ describe('an ingested deal pays the partner behind the client', () => {
     const run = await deals.accruePending(2);
 
     expect(run.accrued).toBe(1);
-    expect((await accrualsFor(closing))[0].amount).toBe('3.00000000');
+    expect((await accrualsFor(closing))[0].amount).toBe('10.00000000');
   });
 
   it('pays the whole position when it closes, entry charge included', async () => {
@@ -463,10 +470,10 @@ describe('an ingested deal pays the partner behind the client', () => {
     await deals.accruePending();
 
     const [accrual] = await accrualsFor(closing);
-    // 30% of the $10 pool ONE closing lot puts on the table. The charges on
+    // All of the $10 pool ONE closing lot puts on the table. The charges on
     // either leg are not what pays (0140) — but both legs are consumed by the
     // close, so the opener never comes back as an unpaid deal.
-    expect(accrual.amount).toBe('3.00000000');
+    expect(accrual.amount).toBe('10.00000000');
     expect(accrual.base_amount).toBe('10.00000000');
     expect(await isProcessed(closing)).toBe(true);
   });
@@ -532,8 +539,8 @@ describe('an ingested deal pays the partner behind the client', () => {
 
     // The SAME on both. A partner is owed the product's per-lot terms on
     // volume (0140); what MT5 charged or credited does not move the number.
-    expect((await accrualsFor(charged))[0].amount).toBe('3.00000000');
-    expect((await accrualsFor(credited))[0].amount).toBe('3.00000000');
+    expect((await accrualsFor(charged))[0].amount).toBe('10.00000000');
+    expect((await accrualsFor(credited))[0].amount).toBe('10.00000000');
   });
 });
 
@@ -640,7 +647,7 @@ describe('what is finished, and what waits', () => {
     });
     const run = await deals.accruePending();
     expect(run.accrued).toBe(1);
-    expect((await accrualsFor(id))[0].amount).toBe('3.00000000');
+    expect((await accrualsFor(id))[0].amount).toBe('10.00000000');
     expect(await processedAt(id)).not.toBeNull();
   });
 
@@ -697,7 +704,7 @@ describe('what is finished, and what waits', () => {
     // makes the backoff a delay rather than a write-off.
     await makeDue(id);
     expect((await deals.accruePending()).accrued).toBe(1);
-    expect((await accrualsFor(id))[0].amount).toBe('3.00000000');
+    expect((await accrualsFor(id))[0].amount).toBe('10.00000000');
   });
 
   it('backs a repeatedly refused deal off further each time', async () => {
@@ -781,7 +788,7 @@ describe('a stuck deal does not block the ones behind it', () => {
     const run = await deals.accruePending(2);
 
     expect(run.accrued).toBe(1);
-    expect((await accrualsFor(payable))[0].amount).toBe('3.00000000');
+    expect((await accrualsFor(payable))[0].amount).toBe('10.00000000');
 
     // Held out of the batch, not lost: still queued, still counted, and still
     // the number that reaches an operator.
@@ -823,7 +830,7 @@ describe('a stuck deal does not block the ones behind it', () => {
     const run = await deals.accruePending(2);
 
     expect(run.accrued).toBe(1);
-    expect((await accrualsFor(payable))[0].amount).toBe('3.00000000');
+    expect((await accrualsFor(payable))[0].amount).toBe('10.00000000');
     expect(run.deferred).toBe(2);
   });
 
@@ -929,7 +936,7 @@ describe('only one feed pays for a trade', () => {
 
     const [accrual] = await accrualsFor(id);
     expect(accrual.ib_user_id).toBe(partnerId);
-    expect(accrual.amount).toBe('3.00000000');
+    expect(accrual.amount).toBe('10.00000000');
   });
 });
 
@@ -961,7 +968,7 @@ describe('a deposit cannot accrue a revenue share', () => {
 
   it('writes no accrual row for a referred client with a working ladder', async () => {
     /*
-     * The client below IS referred and the programme DOES pay 30% — the exact
+     * The client below IS referred and their partner DOES earn — the exact
      * fixture every other test in this file uses to prove commission lands. So
      * a zero here is the refusal and not an unreferred client or a dead rate.
      */
@@ -1045,7 +1052,7 @@ describe('what the engine is allowed to pay for', () => {
 
     expect(run.awaitingBacklogDecision).toBe(false);
     expect(run.accrued).toBe(1);
-    expect((await accrualsFor(fresh))[0].amount).toBe('3.00000000');
+    expect((await accrualsFor(fresh))[0].amount).toBe('10.00000000');
   });
 
   it('pays the whole backlog when somebody says so out loud', async () => {
@@ -1056,7 +1063,7 @@ describe('what the engine is allowed to pay for', () => {
 
     expect(run.awaitingBacklogDecision).toBe(false);
     expect(run.accrued).toBe(1);
-    expect((await accrualsFor(old))[0].amount).toBe('3.00000000');
+    expect((await accrualsFor(old))[0].amount).toBe('10.00000000');
   });
 
   it('pays from the chosen instant and FINISHES what predates it', async () => {
@@ -1067,7 +1074,7 @@ describe('what the engine is allowed to pay for', () => {
     const run = await deals.accruePending();
 
     expect(run.accrued).toBe(1);
-    expect((await accrualsFor(after))[0].amount).toBe('3.00000000');
+    expect((await accrualsFor(after))[0].amount).toBe('10.00000000');
 
     // Out of scope, and DONE — not left to be re-examined on every run forever
     // while inflating a backlog nobody intends to pay.
@@ -1167,9 +1174,9 @@ describe('what the accrual is a share of', () => {
     });
     await deals.accruePending();
 
-    /* 30% of a $50 pool: two lots at $25. The $10 of charges is not in it. */
+    /* All of a $50 pool: two lots at $25. The $10 of charges is not in it. */
     const [accrual] = await accrualsFor(closing);
-    expect(accrual.amount).toBe('15.00000000');
+    expect(accrual.amount).toBe('50.00000000');
     expect(accrual.base_amount).toBe('50.00000000');
     expect(await isProcessed(opening)).toBe(true);
 
@@ -1267,9 +1274,9 @@ describe('a trade the broker earned nothing on', () => {
     });
     await deals.accruePending();
 
-    /* 30% of a $20 pool: two lots at $10. */
+    /* All of a $20 pool: two lots at $10 — a level 1 partner's own client. */
     const [accrual] = await accrualsFor(closing);
-    expect(accrual?.amount).toBe('6.00000000');
+    expect(accrual?.amount).toBe('20.00000000');
     expect(accrual?.ib_user_id).toBe(zeroPartnerId);
     expect(await isProcessed(opening)).toBe(true);
   });

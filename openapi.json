@@ -3151,6 +3151,53 @@
         ]
       }
     },
+    "/v1/admin/ib/partners/{userId}/terms": {
+      "patch": {
+        "description": "Sub-partners only. `commissionShare` is their percentage of the product’s commission; the main partner above them takes the rest (100 − it). `rebateShare` is what their CLIENTS get back of the product’s rebate. Null = level 2’s share; an absent key is left unchanged. Applies from the next trade.",
+        "operationId": "AdminIbController_setTerms",
+        "parameters": [
+          {
+            "name": "userId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetIbTermsDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IbAccountDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Set a sub-partner’s own commission and rebate shares",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/ib/partners/{userId}/active": {
       "patch": {
         "description": "Suspension keeps the referral code and the tree and stops the earning. There is no delete: removing the row would orphan every client and partner attributed beneath them.",
@@ -16390,6 +16437,16 @@
             "nullable": true,
             "description": "What their clients get back, as a percentage of the product’s rebate per lot."
           },
+          "commissionShareOverride": {
+            "type": "string",
+            "nullable": true,
+            "description": "A sub-partner’s own commission share (0197), overriding the level’s. Null = the level’s."
+          },
+          "rebateShareOverride": {
+            "type": "string",
+            "nullable": true,
+            "description": "What a sub-partner’s clients get back of the rebate (0197), overriding the level’s. Null = the level’s."
+          },
           "referralCode": {
             "type": "string"
           },
@@ -16469,6 +16526,8 @@
           "levelEnabled",
           "levelCommissionShare",
           "levelRebateShare",
+          "commissionShareOverride",
+          "rebateShareOverride",
           "referralCode",
           "active",
           "approvedAt",
@@ -16491,8 +16550,8 @@
             "type": "number",
             "example": 2,
             "minimum": 1,
-            "maximum": 10,
-            "description": "Must be a CONFIGURED and ENABLED level. 1 is a partner dealing with the broker directly."
+            "maximum": 2,
+            "description": "Must match the partner’s position (0197): 1 with no parent, 2 under a main partner."
           }
         },
         "required": [
@@ -16511,6 +16570,23 @@
         "required": [
           "parentIbUserId"
         ]
+      },
+      "SetIbTermsDto": {
+        "type": "object",
+        "properties": {
+          "commissionShare": {
+            "type": "string",
+            "nullable": true,
+            "example": "50",
+            "description": "Their percentage of the product’s commission, 0–100. The main partner above them takes the rest. Null = level 2’s share."
+          },
+          "rebateShare": {
+            "type": "string",
+            "nullable": true,
+            "example": "30",
+            "description": "What their CLIENTS get back, as a percentage of the product’s rebate, 0–100. Null = level 2’s rebate share."
+          }
+        }
       },
       "SetIbActiveDto": {
         "type": "object",

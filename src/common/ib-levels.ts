@@ -199,3 +199,12 @@ export function normaliseIbCommissionInterval(stored: number | null | undefined)
   if (stored < MIN_IB_COMMISSION_INTERVAL_SECONDS) return DEFAULT_IB_COMMISSION_INTERVAL_SECONDS;
   return stored;
 }
+
+/**
+ * How deep the partner tree goes — the owner's rule (6 Oct 2026): main
+ * partners (level 1) and their sub-partners (level 2), and no deeper. The
+ * ladder refuses a third rung, approvals and re-parenting refuse a partner
+ * beneath a sub-partner, and a sub-partner cannot be given partners of their
+ * own.
+ */
+export const IB_TREE_MAX_LEVELS = 2;

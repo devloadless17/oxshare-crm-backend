@@ -497,6 +497,8 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
    * looks wrong, and the level is what decides the rate.
    */
   { action: 'ib.level_change', label: 'Partner level changed', group: 'Compliance' },
+  // 0197 — a sub-partner's own commission / rebate shares, before and after.
+  { action: 'ib.terms_change', label: 'Sub-partner commission changed', group: 'Compliance' },
   {
     action: 'ib.program_change',
     label: 'Partner moved to another commission programme',

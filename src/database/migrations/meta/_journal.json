@@ -1387,6 +1387,13 @@
       "when": 1789142708750,
       "tag": "0196_grant_clients_bulk",
       "breakpoints": true
+    },
+    {
+      "idx": 199,
+      "version": "7",
+      "when": 1789142808750,
+      "tag": "0197_partner_term_overrides",
+      "breakpoints": true
     }
   ]
 }
