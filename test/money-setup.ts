@@ -66,6 +66,19 @@ export async function startMoneyTestDb(
   const connectionString = uri.toString();
 
   const pool = new Pool({ connectionString });
+  /*
+   * WITHOUT THIS LISTENER A PASSING SHARD FAILS AT RANDOM (6 Oct 2026, a
+   * production release blocked with every test green).
+   *
+   * `stopMoneyTestDb` awaits `pool.end()`, which resolves once the idle clients
+   * are TOLD to close — not once their sockets are closed — and then drops the
+   * database WITH (FORCE), which terminates them. A client still closing gets
+   * that FATAL 57P01 as an `'error'` on the pool; with no listener Node treats it
+   * as an uncaught exception, and vitest reports it against whichever file runs
+   * next. Production's pool carries the same listener for the same reason
+   * (`database/db.ts`). Queries in flight still reject to their own callers.
+   */
+  pool.on('error', () => undefined);
   const db = drizzle(pool, { schema });
   await migrate(db, { migrationsFolder: options.migrationsFolder ?? './src/database/migrations' });
 
