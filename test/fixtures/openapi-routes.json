@@ -191,6 +191,7 @@
   "PATCH /v1/admin/kyc/{userId}/release",
   "PATCH /v1/admin/leverages/{ratio}",
   "PATCH /v1/admin/payment-methods/{key}",
+  "PATCH /v1/admin/products/{id}/groups/{groupId}",
   "PATCH /v1/admin/signup-links/{adminId}",
   "PATCH /v1/admin/tags/{id}",
   "PATCH /v1/admin/trading-accounts/{id}/product",
