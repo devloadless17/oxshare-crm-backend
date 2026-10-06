@@ -12,17 +12,12 @@
 > | MT5 bridge | Alone on the Contabo Windows server, reached through a **WireGuard tunnel** in BOTH directions: the backend calls `http://10.8.0.2:5055`, the bridge posts back to `http://10.8.0.1:8080` (its `Crm:BaseUrl`). Neither is reachable from the internet; `/v1/webhooks/mt5/*` answers 404 on the public site. |
 > | Pipeline   | `.github/workflows/ci.yml`: **build once on `main`, promote on `production`** (main: checks ∥ build → promote `tree-<content key>`; production: deploy that verified image in ~2 min, zero downtime via `deploy/release.sh`). See INFRASTRUCTURE.md.                                                        |
 > | Rollback   | `ssh oxshare-api`, `cd oxshare-crm-backend && bash release.sh rollback`: the same zero-downtime switch back to the previous version, whose image is kept. Migrations are forward-only, so they are not reversed.                                                                                            |
->
-> Until the switch-over below is done, production still runs on the **Contabo
-> Windows box** (bare Node, auto-deploying on every push to `production`). While
-> both exist, a push to `production` deploys to BOTH, which is harmless only
-> because they run the same code; the switch-over turns the Contabo one off.
 
 ## Where the frontends must live — a hard requirement, not a preference
 
 **The frontends and this API must be served from SIBLING SUBDOMAINS of one
 registrable domain.** `admin.example.com` + `api.example.com` is correct;
-`admin.vercel.app` + `api.example.com` is not, and neither is any pairing whose
+`admin.example.net` + `api.example.com` is not, and neither is any pairing whose
 parent domains differ.
 
 This is not stylistic. Sessions are httpOnly `__Host-` cookies, which browsers
@@ -44,7 +39,7 @@ Consequences to plan for:
 - `PORTAL_URL` / `ADMIN_URL` must be the EXACT browser origins — scheme + host, no
   trailing slash. They are compared by string equality for CORS, for the CSRF
   origin check and for the WebSocket handshake.
-- Preview deployments on random hostnames (Vercel previews, for instance) are
+- Preview deployments on a hosting provider's random hostnames are
   cross-site and will be refused on every authenticated write. That is the guard
   working, not a bug. Give previews their own backend or accept the limit.
 - The frontends read the API origin from `NEXT_PUBLIC_API_BASE_URL`, which also
@@ -58,10 +53,10 @@ Consequences to plan for:
   because a token in JavaScript is a token XSS can steal. Not built; decide
   deliberately before promising it.
 
-Verified working 18 Aug 2026: `oxshareadmin.loadless.site` and
-`oxshareportal.loadless.site` against `aipp.loadless.site` — login 200, foreign
-origin 403, and a `/realtime` namespace connection accepted (`40/realtime,{...}`)
-using only the cookies the login returned.
+Verified on the live domains 6 Oct 2026 (65 browser checks): `admin-dashboard.oxshare.com` and
+`portal.oxshare.com` against `api-admin.oxshare.com`: sign-in on both, foreign origin 403, a real
+cross-site attack page created nothing, and a `/realtime` connection admitted (`40/realtime,{...}`)
+using only the cookies the sign-in returned.
 
 ## GitHub secrets
 
@@ -94,23 +89,23 @@ internet, 17 Aug 2026).
 Every one of these is load-bearing: `src/config/env.validation.ts` refuses to boot the
 production container without them.
 
-| Secret                                                                 | Constraint                                                                                                                                                                            |
-| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `POSTGRES_PASSWORD`                                                    | Only `A-Z a-z 0-9 . _ ~ -` (it is interpolated into `DATABASE_URL`). Generate: `openssl rand -hex 32`.                                                                                |
-| `ADMIN_JWT_SECRET`                                                     | ≥ 32 chars. `openssl rand -base64 48`.                                                                                                                                                |
-| `ADMIN_JWT_REFRESH_SECRET`                                             | ≥ 32 chars, **different from the other three**.                                                                                                                                       |
-| `JWT_ACCESS_SECRET`                                                    | ≥ 32 chars, different.                                                                                                                                                                |
-| `JWT_REFRESH_SECRET`                                                   | ≥ 32 chars, different. The validator throws on any duplicate among the four — a reused secret makes a token minted for one surface valid on the other.                                |
-| `APP_ENCRYPTION_KEY`                                                   | ≥ 32 chars. Seals secrets stored via the settings screens (the SMTP relay password, API keys). **Never rotate it casually**: a changed key means stored ciphertexts stop decrypting.  |
-| `PORTAL_URL`                                                           | `https://…`, **no trailing slash** (compared to the browser's `Origin` header by exact string equality — a slash kills every WebSocket handshake silently).                           |
-| `ADMIN_URL`                                                            | Same rules. These two decide CORS _and_ cookie security: the real `https://admin.<domain>` and `https://portal.<domain>` the frontends server serves.                                 |
-| `R2_ACCOUNT_ID` `R2_ACCESS_KEY_ID` `R2_SECRET_ACCESS_KEY` `R2_BUCKET`  | All four. Production refuses `STORAGE_DRIVER=disk` outright, so there is no running without R2.                                                                                       |
-| `RIVAL_BASE_URL` `RIVAL_API_KEY` `RIVAL_WEBHOOK_KEY`                   | Optional. Rival is configured on its `payment_providers` row (System → Payment providers); these apply only while that row was never saved.                                           |
-| `MT5_BRIDGE_API_KEY` `MT5_BRIDGE_SECRET`                               | **Required.** The bridge's `Bridge__ApiKey` and `Crm__Secret`, agreed with HazimeHsen (rotate at the switch-over). The URL is NOT a secret: it is the tunnel, `http://10.8.0.2:5055`. |
-| `MT5_BRIDGE_TIMEOUT_MS` `MT5_BRIDGE_READ_TIMEOUT_MS`                   | Optional. Production used `MT5_BRIDGE_TIMEOUT_MS=30000`.                                                                                                                              |
-| `OPENAI_API_KEY` `OPENAI_MODEL`                                        | Optional. The portal assistant; without a key it answers 503. Use a DEDICATED OpenAI project with a monthly budget.                                                                   |
-| `IB_ACCRUAL_START`                                                     | **Carry the production value over** (`all` on 5 Oct 2026). A commercial decision: unset holds an aged commission backlog unpaid until somebody decides.                               |
-| `COMMISSION_MAX_PER_DEAL` `COMMISSION_MAX_SHARE_OF_DEAL` `DB_POOL_MAX` | Optional; omit for the defaults.                                                                                                                                                      |
+| Secret                                                                 | Constraint                                                                                                                                                                                                               |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `POSTGRES_PASSWORD`                                                    | Only `A-Z a-z 0-9 . _ ~ -` (it is interpolated into `DATABASE_URL`). Generate: `openssl rand -hex 32`.                                                                                                                   |
+| `ADMIN_JWT_SECRET`                                                     | ≥ 32 chars. `openssl rand -base64 48`.                                                                                                                                                                                   |
+| `ADMIN_JWT_REFRESH_SECRET`                                             | ≥ 32 chars, **different from the other three**.                                                                                                                                                                          |
+| `JWT_ACCESS_SECRET`                                                    | ≥ 32 chars, different.                                                                                                                                                                                                   |
+| `JWT_REFRESH_SECRET`                                                   | ≥ 32 chars, different. The validator throws on any duplicate among the four — a reused secret makes a token minted for one surface valid on the other.                                                                   |
+| `APP_ENCRYPTION_KEY`                                                   | ≥ 32 chars. Seals secrets stored via the settings screens (the SMTP relay password, API keys). **Never rotate it casually**: a changed key means stored ciphertexts stop decrypting.                                     |
+| `PORTAL_URL`                                                           | `https://…`, **no trailing slash** (compared to the browser's `Origin` header by exact string equality — a slash kills every WebSocket handshake silently).                                                              |
+| `ADMIN_URL`                                                            | Same rules. These two decide CORS _and_ cookie security: the real `https://admin.<domain>` and `https://portal.<domain>` the frontends server serves.                                                                    |
+| `R2_ACCOUNT_ID` `R2_ACCESS_KEY_ID` `R2_SECRET_ACCESS_KEY` `R2_BUCKET`  | All four. Production refuses `STORAGE_DRIVER=disk` outright, so there is no running without R2.                                                                                                                          |
+| `RIVAL_BASE_URL` `RIVAL_API_KEY` `RIVAL_WEBHOOK_KEY`                   | Optional. Rival is configured on its `payment_providers` row (System → Payment providers); these apply only while that row was never saved.                                                                              |
+| `MT5_BRIDGE_API_KEY` `MT5_BRIDGE_SECRET`                               | **Required.** The bridge's `Bridge__ApiKey` and `Crm__Secret`, agreed with HazimeHsen (rotate both, here AND on the bridge, if they are ever shared). The URL is NOT a secret: it is the tunnel, `http://10.8.0.2:5055`. |
+| `MT5_BRIDGE_TIMEOUT_MS` `MT5_BRIDGE_READ_TIMEOUT_MS`                   | Optional. Production used `MT5_BRIDGE_TIMEOUT_MS=30000`.                                                                                                                                                                 |
+| `OPENAI_API_KEY` `OPENAI_MODEL`                                        | Optional. The portal assistant; without a key it answers 503. Use a DEDICATED OpenAI project with a monthly budget.                                                                                                      |
+| `IB_ACCRUAL_START`                                                     | **Carry the production value over** (`all` on 5 Oct 2026). A commercial decision: unset holds an aged commission backlog unpaid until somebody decides.                                                                  |
+| `COMMISSION_MAX_PER_DEAL` `COMMISSION_MAX_SHARE_OF_DEAL` `DB_POOL_MAX` | Optional; omit for the defaults.                                                                                                                                                                                         |
 
 **There is no `SMTP_*` secret, deliberately.** Mail is configured by an administrator
 on **Settings → Email** and stored (password encrypted under `APP_ENCRYPTION_KEY`) in
@@ -228,89 +223,55 @@ because a dropped response is far more common than a stolen token and treating
 it as theft would sign out a user whose network blinked. Outside that window
 reuse revokes the family. `refresh-reuse.spec.ts` pins both halves.
 
-## Moving off the Contabo box: the switch-over
+## The database: start again empty, or restore a dump
 
-The order matters; each step names what proves it.
+Both run on `oxshare-api`, in `~/oxshare-crm-backend`, as `deploy`. Read the live colour first:
 
-**Before the day, nothing user-visible:**
+```bash
+cd ~/oxshare-crm-backend && . ./release.env      # ACTIVE=blue|green, BLUE_TAG, GREEN_TAG
+C="docker compose -f docker-compose.prod.yml --env-file .env --env-file release.env"
+TAG=$([ "$ACTIVE" = blue ] && echo "$BLUE_TAG" || echo "$GREEN_TAG")
+```
 
-1. **Docker Hub:** make `<user>/oxshare-crm-backend` private, and create `oxshare-crm-admin`
-   and `oxshare-crm-portal` as private.
-2. **Tunnel:** Done 6 Oct 2026: the Windows tunnel is up and its key is in `/etc/wireguard/wg0.conf`.
-   The bridge must also listen on the tunnel (`--urls`, see "The Windows bridge server"). Proof:
-   `curl http://10.8.0.2:5055/health/ready` from the server says `"mt5Connected": true`.
-3. **Storage:** production and dev share one R2 bucket and key today (`oxshare-crm-local`).
-   Give production its own bucket and an access key scoped to it (in the buyer's Cloudflare
-   account), and copy the objects once on the day (step 5 below).
-4. **Secrets:** fill the tables above. Copy `APP_ENCRYPTION_KEY` **exactly** from the
-   current production `.env` (payment-provider secrets are sealed with it). New
-   `POSTGRES_PASSWORD`. Fresh JWT secrets, R2 key, OpenAI key and bridge key/secret:
-   the old ones were shared in a chat. The frontend repos need their own secrets
-   (their DEPLOYMENT.md).
-5. **DNS** on the buyer's domain, TTL 300: `api` → `187.7.64.167`, `admin` and `portal` →
-   `31.97.52.63`. All three on ONE registrable domain (see "Where the frontends must live").
-6. **Postgres version on Windows** (`SELECT version();`) must be 16 or older, so the dump
-   restores into this server's Postgres 16.
-7. **3pay:** add `187.7.64.167` to the dashboard's IP whitelist (keep the old IP until
-   the day is done).
-8. **First deploy, on empty data:** disable the **OxShare Deploy** task on Contabo first (it
-   rebuilds the old backend on every push), then release `production` for all three repos. Proof: the
-   playbook §9d check on both frontends (log in as the bootstrap admin → hard refresh →
-   a write), and realtime connects. Contabo still serves the real users meanwhile.
+**Start again from an EMPTY database** (everything is deleted: clients, money, settings, admins):
 
-**The day (a short maintenance window):**
+```bash
+$C stop api_$ACTIVE
+$C exec -T postgres sh -c 'dropdb -U oxshare oxshare && createdb -U oxshare oxshare' </dev/null
+bash release.sh deploy "$TAG"       # migrates the empty database, recreates the bootstrap admin, switches over
+```
 
-1. On Contabo, disable and stop the **OxShare Deploy**, **OxShare API** and **OxShare Caddy**
-   scheduled tasks (keep **OxShare Bridge**). From now on
-   a push to `production` reaches only the new servers. The bridge keeps running and
-   queues every deal in its outbox.
-2. On Contabo: `pg_dump -Fc -U oxshare oxshare > oxshare-final.dump`. Note the row counts
-   of `users`, `wallets`, `ledger_entries`, `transactions`, the number of indexes, and
-   `SELECT count(*) FROM drizzle.__drizzle_migrations`.
-3. Copy the dump to `oxshare-api` (through your machine, `scp`).
-4. On `oxshare-api`, in `~/oxshare-crm-backend`:
-   ```bash
-   docker compose -f docker-compose.prod.yml stop api
-   docker compose -f docker-compose.prod.yml exec -T postgres sh -c \
-     'dropdb -U oxshare oxshare && createdb -U oxshare oxshare' </dev/null
-   docker compose -f docker-compose.prod.yml exec -T postgres \
-     pg_restore -U oxshare -d oxshare -j 2 --no-owner < oxshare-final.dump
-   ```
-   `-j 2` stays inside the 1 GB `/dev/shm` (SERVER-CONCEPTS §7a). **Compare the counts
-   from step 2, indexes included**: a restore that ran short of shared memory reports
-   "errors ignored on restore" and silently skips indexes while every row is present.
-5. If storage moves: copy the bucket (`rclone sync`), set the new `R2_*` secrets.
-6. Start the API: re-run the workflow (`workflow_dispatch`) or
-   `docker compose -f docker-compose.prod.yml up -d api`. Proof: `/health/ready` all up,
-   `database migrations` up.
-7. **Bridge:** set the bridge's `Crm:BaseUrl` to `http://10.8.0.1:8080` (the tunnel, so it does not wait on DNS).
-   Proof: the bridge's `GET /admin/outbox?pending=true` drains to empty.
-8. **Payment providers:** point Rival's and 3pay's webhook URLs at the new API domain
-   (System → Payment providers shows each one's address).
-9. **Verify as a user** (playbook §9d): log in on both frontends → hard refresh → a write;
-   a client's wallet and an MT5 account read; Settings → Scheduled jobs shows runs.
+The bootstrap admin comes back with `BOOTSTRAP_ADMIN_PASSWORD` (change that secret first if the
+password was ever shared) and must scan a new authenticator QR code. Everything set in the console is
+gone too: email (Settings → Email), payment providers, the KYC form, roles. Client numbering restarts
+at #1000000. Documents already uploaded stay in the R2 bucket, unreferenced.
 
-**Rollback:** until step 7, nothing has written to the new database that Contabo lacks:
-start the Contabo backend again and point DNS back. After step 7, the new database is
-the truth; fix forward.
+**Restore a dump** (`pg_dump -Fc` from another server, copied here with `scp`):
 
-**After:** Contabo keeps ONLY the bridge. Delete its Postgres and old backend files
-(keep `oxshare-final.dump` offsite first), close 80/443 there, and limit RDP (3389) to
-known IPs. Remove the Vercel projects and the old `loadless.site` records. Then set up the
-nightly offsite database backup (DEPLOY-PLAYBOOK §10): the system is live with real
-users from this moment.
+```bash
+$C stop api_$ACTIVE
+$C exec -T postgres sh -c 'dropdb -U oxshare oxshare && createdb -U oxshare oxshare' </dev/null
+$C exec -T postgres pg_restore -U oxshare -d oxshare -j 2 --no-owner < oxshare.dump
+bash release.sh deploy "$TAG"
+```
+
+`-j 2` stays inside the 1 GB `/dev/shm` (SERVER-CONCEPTS §7a). Compare row counts AND the number of
+indexes with the source: a restore that runs short of shared memory reports "errors ignored on
+restore" and silently skips indexes while every row is present. The dump must come from Postgres 16
+or older, and `APP_ENCRYPTION_KEY` must be the source's, or every stored provider and email secret
+stops decrypting.
 
 ## The Windows bridge server (Contabo, `169.58.194.0`)
 
 It runs ONLY the MT5 bridge (`Mt5Bridge.Api.exe`, HazimeHsen's repo), started by Windows
 **scheduled tasks** that run scripts in `C:\OxShare\`:
 
-| Task           | Script             | After the switch-over                                                                                                |
-| -------------- | ------------------ | -------------------------------------------------------------------------------------------------------------------- |
-| OxShare Bridge | `start-bridge.ps1` | **Keep.** It must start the exe with `--urls http://0.0.0.0:5055`, so the tunnel reaches it (localhost still works). |
-| OxShare API    | `start-api.ps1`    | Disable: the old backend.                                                                                            |
-| OxShare Caddy  | `start-caddy.ps1`  | Disable: it served the old API on 80/443.                                                                            |
-| OxShare Deploy | `deploy.ps1`       | Disable **before** the backend's first production deploy: it rebuilds the old backend on every push.                 |
+| Task           | Script             | What it is                                                                                                                                                                                     |
+| -------------- | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| OxShare Bridge | `start-bridge.ps1` | **Keep.** Starts the bridge on `127.0.0.1:5055` and `10.8.0.2:5055` only (never `0.0.0.0`); waits for the tunnel at boot.                                                                      |
+| OxShare Deploy | `deploy.ps1`       | **Keep.** Releases the BRIDGE from git every 2 minutes. Its old-backend block must be switched off, `finally` included: that block restarts the old API whenever nothing answers on 8080/8081. |
+| OxShare API    | `start-api.ps1`    | The old backend. Disable and remove (INFRASTRUCTURE.md, open items).                                                                                                                           |
+| OxShare Caddy  | `start-caddy.ps1`  | Served the old API on 80/443. Disable and remove, then close 80/443 in the Windows firewall.                                                                                                   |
 
 **The tunnel**, WireGuard for Windows, tunnel `oxshare-backend`:
 
@@ -354,10 +315,10 @@ Everything a server needs is in this repo, the secrets and DNS:
    `[Peer] PublicKey` and its IP in `Endpoint`, and in the Windows firewall's UDP 51820 rule.
 4. Update the `VPS_HOST` secret, `~/.ssh/config`, the DNS record, and for the backend the
    3pay IP whitelist. Push `production` (or re-run the workflow): the pipeline does the rest.
-5. Data: a new backend server starts with an empty database; restore the latest dump as
-   in the switch-over, step 4.
+5. Data: a new backend server starts with an empty database; restore the latest dump
+   ("The database" above).
 
-## When the buyer's domain arrives
+## Changing the domain
 
 Nothing in the code names a domain, so it is secrets, DNS and a redeploy:
 

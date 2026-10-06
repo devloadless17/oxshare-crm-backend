@@ -3,8 +3,7 @@
 #   docker compose down         stop (data kept)
 #   docker compose down -v      stop + wipe data (fresh database)
 #
-# Dev runs against this local Postgres; the shared Neon instance is
-# staging/demo only (its URL stays commented in .env). Tests use
+# Dev runs against this local Postgres. Tests use
 # Testcontainers (ARCHITECTURE §2/§11) and manage their own containers.
 services:
   postgres:

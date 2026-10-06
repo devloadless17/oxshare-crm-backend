@@ -1599,8 +1599,6 @@ the Claude `Stop` hook skips it here and CI owns it. Run it by hand before any m
   must also be made re-runnable (`ADD COLUMN IF NOT EXISTS`, `DROP CONSTRAINT IF EXISTS` before
   `ADD`), exactly as 0091 was. Do NOT fix it by inflating the new migration's `when`: that rescues
   the machine in front of you and re-arms the trap for everyone whose database is in the same state.
-- **Don't run `src/database/migrate.ts` or `run-migrate.js`** — they need `dotenv`/`bcrypt`,
-  which are not dependencies, and force Neon-style SSL.
 - `@casl/ability` is installed with **0 imports**; real enforcement is `PermissionsGuard` plus
   `config/permissions.json` (which _is_ wired, via `admin-rbac.service.ts`). The dep is kept
   only as a marker for the unbuilt ARCHITECTURE §2 item — same for `bullmq`/`ioredis` and §9.

@@ -90,9 +90,6 @@ Let's Encrypt no longer sends expiry emails, so this is the only warning. To loo
 `docker logs oxshare_caddy 2>&1 | grep -E "renewal info|certificate obtained"` (`oxshare_web_caddy`
 on the frontends server).
 
-- The old names (`oxshareapi/oxshareadmin/oxshareportal.loadless.site`) belong to the previous
-  setup (Contabo backend, Vercel frontends).
-
 ## Who can reach what
 
 | Server           | Open to the internet                                              | Open to one source only                                 | Never reachable                                                           |
@@ -192,7 +189,7 @@ the KYC form, countries, roles, the IP allowlist.
 | R2 or OpenAI keys        | provider dashboard → GitHub secret                                                                                   | redeploy the backend                                                                                             |
 | The bridge key or secret | GitHub secret AND the bridge's `appsettings.Production.json`, together                                               | redeploy the backend and restart the bridge                                                                      |
 | Docker Hub token         | Docker Hub → GitHub secret                                                                                           | next deploy uses it                                                                                              |
-| A domain                 | DNS + secrets (backend DEPLOYMENT.md, "When the buyer's domain arrives")                                             | redeploy the backend, then rebuild both frontends; update `HOSTS` in `certificate-watch.yml`                     |
+| A domain                 | DNS + secrets (backend DEPLOYMENT.md, "Changing the domain")                                                         | redeploy the backend, then rebuild both frontends; update `HOSTS` in `certificate-watch.yml`                     |
 | Replace or add a server  | backend DEPLOYMENT.md, "Replacing a server"                                                                          | one script + secrets + DNS                                                                                       |
 | More capacity            | backend DEPLOYMENT.md, "How this scales"                                                                             | a bigger Hostinger plan first                                                                                    |
 | The broker upgrades MT5  | the bridge repo's `docs/DLL-UPGRADE.md`                                                                              | bridge only                                                                                                      |
@@ -212,6 +209,5 @@ the KYC form, countries, roles, the IP allowlist.
       the tunnel or the bridge stops answering (DEPLOY-PLAYBOOK §10).
 - [ ] Contabo: stop and remove the old API, Caddy and Postgres (tasks "OxShare API" / "OxShare
       Caddy"), close 80/443 there, and limit RDP 3389 to known IPs.
-- [ ] Retire the Vercel projects and the old `loadless.site` records (or redirect them to the new names).
 - [ ] DNS hardening (optional): a CAA record `0 issue "letsencrypt.org"`, and DNSSEC in Hostinger.
 - [ ] The browser E2E suites in both frontends cannot sign an admin in since 0191 (authenticator codes).
