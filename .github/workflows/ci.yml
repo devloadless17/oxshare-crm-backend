@@ -260,6 +260,12 @@ jobs:
     name: Find the verified image
     if: github.ref == 'refs/heads/production' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    # Reads main's CI run to wait for it (or stop when it failed). The workflow-wide
+    # `contents: read` alone refuses that read, so a release pushed before main had
+    # finished failed at once (6 Oct 2026); re-running after main finished worked.
+    permissions:
+      contents: read
+      actions: read
     timeout-minutes: 50
     outputs:
       key: ${{ steps.find.outputs.key }}
