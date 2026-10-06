@@ -31,7 +31,8 @@ import {
   RequirePermissions,
   type AuthenticatedAdmin,
 } from './guards/admin.guard';
-import { dateQuery, enumQuery, searchQuery, uuidQuery } from '../../common/query-params';
+import { enumQuery, searchQuery, uuidQuery } from '../../common/query-params';
+import { ApiDateRangeQueries, dateRangeQuery } from '../../common/date-range';
 import { ClientRefPipe } from '../../common/client-ref.pipe';
 import { transactionDirectionEnum, transactionStateEnum } from '../../database/schema';
 import { ScopedToClients } from './guards/client-scope.decorator';
@@ -71,8 +72,7 @@ function FinancialFilterQueries() {
         'A Portal ID (digits, matched exactly) or free text over the client’s email and name — ' +
         'the one client search every queue shares.',
     }),
-    ApiQuery({ name: 'from', required: false, description: 'Inclusive, YYYY-MM-DD.' }),
-    ApiQuery({ name: 'to', required: false, description: 'Inclusive, YYYY-MM-DD.' }),
+    ApiDateRangeQueries(),
     ApiQuery({
       name: 'attention',
       required: false,
@@ -88,6 +88,13 @@ function FinancialFilterQueries() {
         'a record outside it answers an empty result. No state is implied.',
     }),
     ApiQuery({
+      name: 'method',
+      required: false,
+      description:
+        'Payment method keys, comma-separated — deposit or withdrawal methods. Only payments ' +
+        'have a method, so a transfer never matches. At most 50.',
+    }),
+    ApiQuery({
       name: 'decidedBy',
       required: false,
       enum: ['desk'],
@@ -96,6 +103,29 @@ function FinancialFilterQueries() {
         'withdrawal. A deposit on a provider’s hosted page is settled by the provider. (0168)',
     }),
   );
+}
+
+const METHOD_KEY = /^[A-Za-z0-9_.-]{1,100}$/;
+
+/** `?method=a,b` → the keys, or a 400 naming the parameter. */
+function methodKeysQuery(raw: string | undefined): string[] | undefined {
+  const keys = [
+    ...new Set(
+      (raw ?? '')
+        .split(',')
+        .map((k) => k.trim())
+        .filter(Boolean),
+    ),
+  ];
+  if (keys.length === 0) return undefined;
+  if (keys.length > 50 || !keys.every((k) => METHOD_KEY.test(k))) {
+    throw new BadRequestException({
+      code: 'VALIDATION_FAILED',
+      message: ['method must be up to 50 comma-separated payment method keys'],
+      fields: { method: 'must be up to 50 comma-separated payment method keys' },
+    });
+  }
+  return keys;
 }
 
 /** The raw strings the routes hand to `filters()` — one name per query param. */
@@ -110,6 +140,7 @@ interface RawFilterParams {
   to?: string;
   attention?: string;
   decidedBy?: string;
+  method?: string;
   id?: string;
 }
 
@@ -173,11 +204,11 @@ export class AdminFinancialController {
       userId: raw.userId,
       currency,
       q: searchQuery(raw.q),
-      from: dateQuery(raw.from, 'from'),
-      to: dateQuery(raw.to, 'to'),
+      ...dateRangeQuery(raw.from, raw.to),
       // `true` or absent — anything else is a 400, like every enum filter here.
       attention: enumQuery(raw.attention, ['true'] as const, 'attention') ? true : undefined,
       deskDecided: enumQuery(raw.decidedBy, ['desk'] as const, 'decidedBy') ? true : undefined,
+      methods: methodKeysQuery(raw.method),
       id: uuidQuery(raw.id, 'id'),
     };
   }
@@ -242,6 +273,7 @@ export class AdminFinancialController {
     @Query('to') to?: string,
     @Query('attention') attention?: string,
     @Query('decidedBy') decidedBy?: string,
+    @Query('method') method?: string,
     @Query('id') id?: string,
   ) {
     const chosen = exportFormat(format);
@@ -256,6 +288,7 @@ export class AdminFinancialController {
       to,
       attention,
       decidedBy,
+      method,
       id,
     });
 
@@ -316,6 +349,7 @@ export class AdminFinancialController {
     @Query('to') to?: string,
     @Query('attention') attention?: string,
     @Query('decidedBy') decidedBy?: string,
+    @Query('method') method?: string,
     @Query('id') id?: string,
   ) {
     return this.money.transactionsSummary(
@@ -330,6 +364,7 @@ export class AdminFinancialController {
         to,
         attention,
         decidedBy,
+        method,
         id,
       }),
       req.admin,
@@ -379,6 +414,7 @@ export class AdminFinancialController {
     @Query('to') to?: string,
     @Query('attention') attention?: string,
     @Query('decidedBy') decidedBy?: string,
+    @Query('method') method?: string,
     @Query('id') id?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
@@ -399,6 +435,7 @@ export class AdminFinancialController {
           to,
           attention,
           decidedBy,
+          method,
           id,
         })),
         page,

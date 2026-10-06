@@ -1,3 +1,4 @@
+import { type DateRange, withinRange } from '../common/date-range';
 import {
   and,
   asc,
@@ -413,6 +414,8 @@ export class AuditLogStore {
        * came from is worse than one that stops early.
        */
       unclampedLimit?: boolean;
+      /** When it happened — `[from, until)`, `common/date-range.ts`. */
+      range?: DateRange;
       /**
        * `false` skips the `count()` — an export pages by cursor and never shows
        * a total, and counting the filtered set once per 1,000-row batch is a
@@ -430,7 +433,7 @@ export class AuditLogStore {
     const direction = filter.order ?? 'desc';
     const sortColumn: SQLWrapper = AUDIT_SORT_COLUMNS[sortKey];
 
-    const conditions: SQL[] = [];
+    const conditions: SQL[] = [...withinRange(auditLog.createdAt, filter.range)];
     if (filter.action) conditions.push(eq(auditLog.action, filter.action));
     if (filter.subjectType) conditions.push(eq(auditLog.subjectType, filter.subjectType));
     if (filter.actorId) conditions.push(eq(auditLog.actorId, filter.actorId));

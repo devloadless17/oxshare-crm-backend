@@ -293,7 +293,6 @@ describe('client-subject rows follow the reader’s scope — D-54, resolved', (
         permissions: ['audit.view'],
         // The explicit restriction (0058 made the grant default TRUE) - this
         // spec exists to prove territory isolation.
-        seesUntriaged: false,
         status: 'active',
       })
       .returning();

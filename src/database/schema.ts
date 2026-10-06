@@ -14,6 +14,7 @@ import {
   numeric,
   pgEnum,
   pgTable,
+  pgView,
   primaryKey,
   smallint,
   text,
@@ -283,7 +284,16 @@ export const users = pgTable(
      * step now reads and writes these columns, and `personal_info` keeps only
      * answers to fields a broker invented.
      */
-    country: varchar('country', { length: 100 }),
+    /**
+     * The country of residence, by the platform's English name. NOT NULL with a
+     * foreign key to `countries` (0193): every client has a country, so every
+     * client carries a country TAG (derived — see `client_tag_memberships`).
+     * "Unknown" (ZZ) only for an import that has none.
+     */
+    country: varchar('country', { length: 100 })
+      .notNull()
+      .default('Unknown')
+      .references(() => countries.name, { onUpdate: 'cascade', onDelete: 'restrict' }),
     phone: varchar('phone', { length: 32 }),
     dateOfBirth: date('date_of_birth', { mode: 'string' }),
     nationality: varchar('nationality', { length: 100 }),
@@ -323,6 +333,14 @@ export const users = pgTable(
      * reference at module scope.
      */
     referredByIbUserId: integer('referred_by_ib_user_id'),
+    /**
+     * The administrator's sign-up link this client came through (0195), or
+     * NULL. Written once at registration and never changed (trigger): which
+     * link brought a client is history, whatever happens to the link.
+     */
+    acquisitionLinkId: uuid('acquisition_link_id').references(() => acquisitionLinks.id, {
+      onDelete: 'restrict',
+    }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -334,6 +352,7 @@ export const users = pgTable(
     /* "Which clients did this partner introduce?" — asked per partner by every
        commission calculation the engine will eventually run. */
     index('users_referred_by_idx').on(t.referredByIbUserId),
+    index('users_acquisition_link_idx').on(t.acquisitionLinkId),
     /*
      * The verification lookup, which is a by-token seek over the whole table.
      *
@@ -355,6 +374,12 @@ export const users = pgTable(
      * token are unaffected.
      */
     uniqueIndex('users_email_verification_token_hash_idx').on(t.emailVerificationTokenHash),
+    /*
+     * One client per phone number (0194, the buyer's rule): staff find a client
+     * BY phone. Nulls do not collide. Its trigram twin `users_phone_trgm_idx`
+     * lives in the migration only, like 0010's and 0157's.
+     */
+    uniqueIndex('users_phone_unique').on(t.phone),
   ],
 );
 
@@ -440,23 +465,11 @@ export const admins = pgTable(
      */
     maskedFields: jsonb('masked_fields').$type<string[]>(),
     /**
-     * D-60 — sees the intake pool: clients with NO tag assignments yet.
-     *
-     * "Untriaged" is a DERIVED state (has no tags), never a tag — materialising
-     * it was tried and reverted (migrations 0055–0057): stored derived state
-     * needed three guards to stay true, and still allowed an orphan class
-     * (remove a client's last tag and nobody scoped could see them). Under the
-     * derived model every client is ALWAYS either in a territory or in intake.
-     *
-     * Only meaningful for a SCOPED admin — an unrestricted admin sees everything
-     * regardless. Honoured as an OR-branch in `clientScopePredicate`.
-     */
-    seesUntriaged: boolean('sees_untriaged').notNull().default(true),
-    /**
      * Sees EVERY client — the explicit grant (0154). Territory tags restrict and
-     * only this grants: with no tags and this false, an admin sees new clients
-     * (if `seesUntriaged`) or none. An empty territory used to mean everyone,
-     * which made the widest sight the result of an absence.
+     * only this grants: with no tags and this false, an admin sees no client.
+     * An empty territory used to mean everyone, which made the widest sight the
+     * result of an absence. (D-60's intake grant, `sees_untriaged`, went with
+     * 0193: every client carries their country tag, so none is untagged.)
      */
     seesAllClients: boolean('sees_all_clients').notNull().default(true),
     /*
@@ -583,8 +596,6 @@ export const adminInvites = pgTable(
      * in words rather than leaving to inference.
      */
     scopedTagIds: jsonb('scoped_tag_ids').$type<string[]>(),
-    /** D-60 — intake grant chosen at invite time, for the same window reason. */
-    seesUntriaged: boolean('sees_untriaged').notNull().default(true),
     /** Sees every client, chosen at invite time (0154). See `admins.sees_all_clients`. */
     seesAllClients: boolean('sees_all_clients').notNull().default(true),
     invitedBy: uuid('invited_by').notNull(),
@@ -671,8 +682,6 @@ export const apiKeys = pgTable(
      * exactly the reasoning behind `admin_invites.scoped_tag_ids`.
      */
     scopedTagIds: jsonb('scoped_tag_ids').$type<string[]>(),
-    /** The creator's intake grant, snapshot with the territory above (D-60). */
-    seesUntriaged: boolean('sees_untriaged').notNull().default(true),
     /** The creator's all-clients grant, snapshot with the territory (0154). */
     seesAllClients: boolean('sees_all_clients').notNull().default(true),
     /**
@@ -721,6 +730,18 @@ export const apiKeys = pgTable(
 // ── Client tagging & segmentation (ADM-14, DECISIONS D-15) ───────────────────
 
 /**
+ * The countries the platform knows (0193): ISO code + the English name stored
+ * on `users.country`. The same list as `WORLD_COUNTRIES`
+ * (common/kyc/country-options.ts), plus ZZ "Unknown" for imports —
+ * `test/countries-table.spec.ts` fails the day the package and this table
+ * disagree. The anchor of both `users.country` and every country tag.
+ */
+export const countries = pgTable('countries', {
+  code: char('code', { length: 2 }).primaryKey(),
+  name: varchar('name', { length: 100 }).notNull().unique('countries_name_uq'),
+});
+
+/**
  * Arbitrary client labels. The "country tag" half of ADM-14 is `users.country`,
  * which already exists and is indexed; this is the "general tags/labels" half.
  *
@@ -744,10 +765,22 @@ export const clientTags = pgTable(
     /** Chip colour token for the admin UI. Presentation, hence nullable. */
     color: varchar('color', { length: 32 }),
     description: text('description'),
+    /**
+     * Set on a COUNTRY tag (0193) — one per country, created by the migration.
+     * Its clients are DERIVED from `users.country`, never assigned: a trigger
+     * refuses one in `client_tag_assignments`, and another refuses deleting it
+     * or changing its country or slug. Colour stays editable.
+     */
+    countryCode: char('country_code', { length: 2 }).references(() => countries.code, {
+      onDelete: 'restrict',
+    }),
     createdBy: uuid('created_by'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [uniqueIndex('client_tags_slug_uq').on(t.slug)],
+  (t) => [
+    uniqueIndex('client_tags_slug_uq').on(t.slug),
+    uniqueIndex('client_tags_country_code_uq').on(t.countryCode),
+  ],
 );
 
 export const clientTagAssignments = pgTable(
@@ -781,6 +814,66 @@ export const clientTagAssignments = pgTable(
     // The other direction — "which clients carry this tag" — which is the
     // segment query behind `?tag=` and behind every scoped admin's client list.
     index('client_tag_assignments_tag_idx').on(t.tagId, t.userId),
+  ],
+);
+
+/**
+ * THE tags a client carries (0193): every assigned tag, plus the country tag
+ * derived from `users.country`. Read-only, defined in SQL by the migration;
+ * every question of the form "which tags does this client carry" or "which
+ * clients carry this tag" — the scope predicate, the chips, the counts, the
+ * `?tag=` filter — reads THIS, so a country tag can never be counted by one
+ * screen and missed by another. Writes go to `client_tag_assignments`.
+ * `assigned_by` is NULL and `assigned_at` is the client's creation on a derived
+ * row.
+ */
+export const clientTagMemberships = pgView('client_tag_memberships', {
+  userId: integer('user_id').notNull(),
+  tagId: uuid('tag_id').notNull(),
+  assignedBy: uuid('assigned_by'),
+  assignedAt: timestamp('assigned_at', { withTimezone: true }).notNull(),
+}).existing();
+
+/**
+ * An administrator's SIGN-UP LINK (0195): `/join/<code>`. A client who signs up
+ * through it arrives carrying the link's tags — and since a tag is a territory,
+ * in the owner's book from the first second. A disabled link, or one whose owner
+ * is suspended, tags nobody; the sign-up itself always goes through.
+ */
+export const acquisitionLinks = pgTable(
+  'acquisition_links',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    /** Public, in the URL. Upper-case letters and digits (CHECK), unique. */
+    code: varchar('code', { length: 16 }).notNull().unique('acquisition_links_code_uq'),
+    name: varchar('name', { length: 100 }).notNull(),
+    /** RESTRICT: hand an administrator's links to somebody before deleting them. */
+    ownerAdminId: uuid('owner_admin_id')
+      .notNull()
+      .references(() => admins.id, { onDelete: 'restrict' }),
+    createdBy: uuid('created_by').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    disabledAt: timestamp('disabled_at', { withTimezone: true }),
+  },
+  (t) => [index('acquisition_links_owner_idx').on(t.ownerAdminId)],
+);
+
+/** What a sign-up through a link is tagged with. Never a country tag (trigger). */
+export const acquisitionLinkTags = pgTable(
+  'acquisition_link_tags',
+  {
+    linkId: uuid('link_id')
+      .notNull()
+      .references(() => acquisitionLinks.id, { onDelete: 'cascade' }),
+    // RESTRICT, like a territory: a tag on a live link cannot vanish under it.
+    tagId: uuid('tag_id')
+      .notNull()
+      .references(() => clientTags.id, { onDelete: 'restrict' }),
+  },
+  (t) => [
+    primaryKey({ columns: [t.linkId, t.tagId] }),
+    index('acquisition_link_tags_tag_idx').on(t.tagId),
   ],
 );
 

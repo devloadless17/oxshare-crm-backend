@@ -1115,17 +1115,6 @@ export async function runSeeds(): Promise<void> {
           .insert(adminClientTagScopes)
           .values({ adminId: restrictedId, tagId: alphaTagId, createdBy: restrictedId })
           .onConflictDoNothing();
-        /*
-         * The intake grant is TRUE BY DEFAULT (migration 0058) — restriction is
-         * the explicit act. This fixture IS the explicit act: its purpose is to
-         * prove both directions of visibility, so it must NOT see the untagged
-         * pool. Re-asserted every boot, because the e2e suite depends on it the
-         * way it depends on the alpha scope above.
-         */
-        await db
-          .update(admins)
-          .set({ seesUntriaged: false })
-          .where(eq(admins.email, 'e2e-restricted@oxshare.com'));
       }
     }
   }
@@ -1230,6 +1219,7 @@ export async function reassertReviewPool(db: ReturnType<typeof getDb>): Promise<
         emailVerified: true,
         verificationLevel: 0,
         ...POOL_PROFILE,
+        phone: poolPhone(label),
       })
       .onConflictDoUpdate({
         target: users.email,
@@ -1270,6 +1260,7 @@ export async function reassertReviewPool(db: ReturnType<typeof getDb>): Promise<
           firstName: 'Pool',
           lastName: label,
           ...POOL_PROFILE,
+          phone: poolPhone(label),
         },
       })
       .returning();
@@ -1368,9 +1359,16 @@ function fixtureEvidence(tag: string) {
   };
 }
 
+/**
+ * A pool client's own phone — one client per number since 0194. `+961700009NN`
+ * by the label's place in the list, so it is stable across boots.
+ */
+function poolPhone(label: (typeof REVIEW_POOL_LABELS)[number]): string {
+  return `+961700009${String(REVIEW_POOL_LABELS.indexOf(label)).padStart(2, '0')}`;
+}
+
 /** Every pool client's profile — a real, complete identity a reviewer can check. */
 const POOL_PROFILE = {
-  phone: '+96170000900',
   dateOfBirth: '1990-06-15',
   nationality: 'Lebanese',
   country: 'Lebanon',
@@ -1429,7 +1427,8 @@ export async function createFreshE2eClient(
       emailVerified: true,
       verificationLevel: 0,
       ...POOL_PROFILE,
-      phone: '+96170000901',
+      // Its own number (0194), from the stamp: `+96176` + 6 digits.
+      phone: `+96176${String(Date.now() % 1_000_000).padStart(6, '0')}`,
     })
     .returning();
 

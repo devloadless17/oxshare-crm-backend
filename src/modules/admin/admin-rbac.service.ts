@@ -707,8 +707,6 @@ export class AdminRbacService {
       maskedFields?: string[] | null;
       /** RBAC-03 territory. An empty array means NO territory tags (0154), never everyone. */
       scopedTagIds?: string[];
-      /** D-60 — sees the intake pool (clients with no tags yet). */
-      seesUntriaged?: boolean;
       /** Sees every client — the explicit grant (0154). */
       seesAllClients?: boolean;
     },
@@ -746,7 +744,6 @@ export class AdminRbacService {
       patch.permissions ||
       patch.maskedFields !== undefined ||
       patch.scopedTagIds !== undefined ||
-      patch.seesUntriaged !== undefined ||
       patch.seesAllClients !== undefined,
     );
 
@@ -772,7 +769,6 @@ export class AdminRbacService {
     if (
       patch.maskedFields !== undefined ||
       patch.scopedTagIds !== undefined ||
-      patch.seesUntriaged !== undefined ||
       patch.seesAllClients !== undefined
     ) {
       assertActorCan(actor, 'admins.scope', "change an administrator's client visibility");
@@ -797,24 +793,6 @@ export class AdminRbacService {
       // `null` clears the override; an array pins this person's own answer.
       if (patch.maskedFields !== null) this.assertMaskAllowed(actor, patch.maskedFields);
       update = { ...update, maskedFields: patch.maskedFields ?? undefined };
-    }
-
-    /*
-     * D-60 — the intake grant. Guarded by `admins.scope` above with the other
-     * visibility writes: whether somebody sees the untriaged pool is exactly
-     * as access-shaped as which territories they hold. A scoped actor may
-     * grant it only if they hold it themselves — the subset rule, same as
-     * territories: you cannot hand out sight you do not have.
-     */
-    if (patch.seesUntriaged !== undefined) {
-      if (patch.seesUntriaged && !actor.clientScope.unrestricted) {
-        if (!actor.seesUntriaged) {
-          throw new AuthorizationError(
-            'You cannot grant sight of the intake pool: you do not see it yourself.',
-          );
-        }
-      }
-      update = { ...update, seesUntriaged: patch.seesUntriaged };
     }
 
     if (patch.scopedTagIds !== undefined) {
@@ -898,7 +876,6 @@ export class AdminRbacService {
       // March" is not answerable from a permission diff, and it is exactly the
       // question a compliance review asks after an incident.
       ...(patch.scopedTagIds === undefined ? {} : { scopedTagIds: patch.scopedTagIds }),
-      ...(patch.seesUntriaged === undefined ? {} : { seesUntriaged: patch.seesUntriaged }),
       ...(update.seesAllClients === undefined ? {} : { seesAllClients: update.seesAllClients }),
       ...(keysClamped > 0 ? { apiKeysClamped: keysClamped } : {}),
     });
@@ -1132,8 +1109,6 @@ export class AdminRbacService {
        */
       maskedFieldsOverride: admin.maskedFields ?? null,
       scopedTags,
-      // D-60 — the intake grant, beside the territory it belongs with.
-      seesUntriaged: admin.seesUntriaged ?? false,
       // 0154 — the EFFECTIVE all-clients grant: tags restrict whatever the flag
       // says, so a screen reading this cannot mistake a stale flag for sight.
       seesAllClients: (admin.seesAllClients ?? false) && scopedTags.length === 0,

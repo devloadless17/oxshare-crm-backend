@@ -85,7 +85,7 @@ function page(tagIds: string[]) {
   return store.findAccrualsPage({
     page: 1,
     limit: 25,
-    scope: scopeOf(tagIds, false, false),
+    scope: scopeOf(tagIds, false),
   }) as unknown as Promise<{ rows: Row[]; total: number }>;
 }
 

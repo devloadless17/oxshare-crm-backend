@@ -111,15 +111,6 @@ export class AdminProfileDto {
   scopedTags: AdminScopeTagDto[];
 
   /**
-   * D-60 — sees the intake pool: clients with no tag assignments yet.
-   * "Untriaged" is a DERIVED state, not a tag; this grant is the flag beside
-   * the territory list. Meaningful only when the admin is scoped.
-   */
-  @NotClientField('an ADMINISTRATOR attribute \u2014 this describes the operator, never a client')
-  @ApiProperty()
-  seesUntriaged: boolean;
-
-  /**
    * Sees EVERY client — the effective explicit grant (0154): the flag set and
    * no territory tags. An empty territory no longer means every client.
    */
@@ -738,6 +729,12 @@ export class ClientTagDto {
   @ApiProperty() label: string;
   @ApiPropertyOptional() color?: string;
   @ApiPropertyOptional() description?: string;
+  @ApiPropertyOptional({
+    description:
+      'Set on a COUNTRY tag (ISO code, 0193): carried by every client living there, derived from their country — never assigned, renamed or deleted; only its colour is editable.',
+    example: 'LB',
+  })
+  countryCode?: string;
   @ApiProperty() createdAt: Date;
 }
 

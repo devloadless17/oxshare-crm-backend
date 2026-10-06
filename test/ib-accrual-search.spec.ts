@@ -176,7 +176,7 @@ describe('narrowing the commission ledger to a partner by name', () => {
     await ctx.db.execute(sql`
       DELETE FROM client_tag_assignments WHERE user_id = ${bruceId}
     `);
-    const desk = scopeOf([tagId], false, false);
+    const desk = scopeOf([tagId], false);
 
     const mine = await page('alexandra', desk);
     expect(mine.rows.length).toBe(2);

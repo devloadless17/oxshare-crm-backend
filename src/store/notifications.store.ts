@@ -1,3 +1,4 @@
+import { type DateRange, withinRange } from '../common/date-range';
 import {
   and,
   count,
@@ -103,6 +104,8 @@ export interface AdminFeedFilter {
   kinds?: readonly string[];
   /** Portal ID (exact) or name/email — `clientIdentitySearch`, as every client search. */
   q?: string;
+  /** When it was raised — `[from, until)`, `common/date-range.ts`. */
+  range?: DateRange;
   cursor?: CursorPosition;
   limit?: number;
 }
@@ -478,6 +481,7 @@ export class NotificationsStore {
         : isNotNull(notifications.resolvedAt),
     );
     if (filter.kinds) conditions.push(kindIn(filter.kinds));
+    conditions.push(...withinRange(notifications.createdAt, filter.range));
     const q = filter.q?.trim();
     if (q) conditions.push(clientIdentitySearch(q, users));
     if (filter.cursor) conditions.push(this.after(filter.cursor));

@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import type { DateRange } from '../../common/date-range';
 import { decodeCursor, type CursorPosition } from '../../common/pagination';
 import { DEFAULT_AUDIT_SORT } from '../../store/audit-log.store';
 import { formatProofDetails } from '../../common/payments/proof-fields';
@@ -231,6 +232,7 @@ export class AdminExportService {
       kycStatus: kycStatusFilter(query.kycStatus),
       referredBy,
       referred: referredFilter(query.referred),
+      registered: query.registered,
       sort,
       order,
       // The whole point. Row-level visibility, in the WHERE clause.
@@ -295,7 +297,7 @@ export class AdminExportService {
   ];
 
   async withdrawalBatch(
-    query: { state?: string },
+    query: { state?: string; range?: DateRange },
     actor: AuthenticatedAdmin,
     offset: number,
     limit: number,
@@ -306,6 +308,7 @@ export class AdminExportService {
     const rows = await this.transactions.listForExport({
       startedAt,
       state: query.state,
+      range: query.range,
       offset,
       limit,
       scope: actor.clientScope,
@@ -610,7 +613,7 @@ export class AdminExportService {
    * so is an audited act.
    */
   async kycBatch(
-    query: { status?: string; q?: string },
+    query: { status?: string; q?: string; range?: DateRange },
     actor: AuthenticatedAdmin,
     offset: number,
     limit: number,
@@ -620,6 +623,7 @@ export class AdminExportService {
     const { items } = await this.kyc.findPageWithUsers({
       status: query.status as KycExportRow['status'] | undefined,
       q: query.q,
+      range: query.range,
       page: Math.floor(offset / limit) + 1,
       limit,
       scope: actor.clientScope,
@@ -673,6 +677,7 @@ export class AdminExportService {
       actorId?: string;
       subjectId?: string;
       q?: string;
+      range?: DateRange;
     },
     actor: AuthenticatedAdmin,
     offset: number,
@@ -716,6 +721,7 @@ export class AdminExportService {
       actorId: query.actorId,
       subjectId: query.subjectId,
       q: query.q,
+      range: query.range,
       // D-54: the export follows the same scope as the list — an export is not
       // a lesser act, and it would otherwise be the way around the filter.
       scope: actor.clientScope,
@@ -873,6 +879,7 @@ export class AdminExportService {
 // a presentational change to a screen silently reshape an audit artefact.
 
 export interface ClientExportQuery {
+  registered?: DateRange;
   q?: string;
   type?: string;
   status?: string;

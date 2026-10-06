@@ -120,7 +120,7 @@ beforeAll(async () => {
     tagId: foreignTag.id,
     createdBy: outsider.id,
   });
-  await ctx.db.db.update(admins).set({ seesUntriaged: false }).where(eq(admins.id, outsider.id));
+  await ctx.db.db.update(admins).set({ seesAllClients: false }).where(eq(admins.id, outsider.id));
 
   await ctx.db.db.insert(kycSubmissions).values({
     userId: subjectId,

@@ -1,3 +1,4 @@
+import type { DateRange } from '../../common/date-range';
 import { Inject, Injectable } from '@nestjs/common';
 import { v4 as uuidv4 } from 'uuid';
 import {
@@ -93,6 +94,7 @@ export class AdminComplianceService {
       limit?: string;
       sort?: string;
       order?: string;
+      range?: DateRange;
     },
     actor: AuthenticatedAdmin,
   ) {
@@ -111,6 +113,7 @@ export class AdminComplianceService {
         ? { statuses: NEEDS_REVIEW_STATUSES }
         : { status: query.status as import('../../store/kyc.store').KycStatus | undefined }),
       q: query.q,
+      range: query.range,
       page: parseInt(query.page ?? '1', 10) || 1,
       limit: parseInt(query.limit ?? '25', 10) || 25,
       // The predicate goes into the queue's own query, so an out-of-scope

@@ -162,7 +162,7 @@ beforeEach(async () => {
   // Territory rows reference users; clear them (and the tags) before the users
   // they point at — the scope test below assigns a tag to a partner.
   await ctx.db.execute(sql`DELETE FROM client_tag_assignments`);
-  await ctx.db.execute(sql`DELETE FROM client_tags`);
+  await ctx.db.execute(sql`DELETE FROM client_tags WHERE country_code IS NULL`);
   /*
    * Wallets reference users with ON DELETE RESTRICT, so they go first.
    *
@@ -1440,7 +1440,7 @@ describe('managing a live partner', () => {
     await ctx.db.execute(sql`
       INSERT INTO client_tag_assignments (user_id, tag_id) VALUES (${child}, ${tagId})
     `);
-    const scope = scopeOf([tagId], false, false);
+    const scope = scopeOf([tagId], false);
 
     await expect(service.reassignParent(child, outsider, scope, REVIEWER)).rejects.toThrow(
       /not.*(found|exist)/i,
@@ -1479,7 +1479,7 @@ describe('managing a live partner', () => {
       INSERT INTO client_tags (slug, label) VALUES ('ib-inherit-mine', 'Mine') RETURNING id`);
     await ctx.db.execute(sql`
       INSERT INTO client_tag_assignments (user_id, tag_id) VALUES (${client}, ${tagRows[0].id})`);
-    const scope = scopeOf([tagRows[0].id], false, false);
+    const scope = scopeOf([tagRows[0].id], false);
 
     const application = await service.apply(client, {});
     const account = await service.approve(application.id, REVIEWER, scope);

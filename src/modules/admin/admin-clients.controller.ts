@@ -1,3 +1,4 @@
+import { ApiDateRangeQueries, dateRangeQuery } from '../../common/date-range';
 import { Throttle } from '@nestjs/throttler';
 // Part of the `admin` controller surface, split by concern.
 //
@@ -108,6 +109,7 @@ export class AdminClientsController {
   })
   @ApiQuery({ name: 'sort', required: false, enum: Object.keys(CLIENT_SORT_COLUMNS) })
   @ApiQuery({ name: 'order', required: false, enum: ['asc', 'desc'] })
+  @ApiDateRangeQueries('registration')
   @ScopedToClients(
     'The list predicate — UsersStore.findPage applies clientScopePredicate to users.id.',
   )
@@ -129,6 +131,8 @@ export class AdminClientsController {
     @Query('referred') referred?: string,
     @Query('sort') sort?: string,
     @Query('order') order?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
   ) {
     return this.clients.listClients(
       {
@@ -162,6 +166,7 @@ export class AdminClientsController {
         referredBy,
         // Validated in the service: `true`, `false` or absent, anything else a 400.
         referred,
+        registered: dateRangeQuery(from, to),
         // `sort`/`order` are validated in the service against the SORTABLE_COLUMNS
         // allowlist, which is where the column mapping lives. Validating here too
         // would put the allowlist in two places.
@@ -265,6 +270,7 @@ export class AdminClientsController {
   })
   @ApiQuery({ name: 'sort', required: false, enum: Object.keys(CLIENT_SORT_COLUMNS) })
   @ApiQuery({ name: 'order', required: false, enum: ['asc', 'desc'] })
+  @ApiDateRangeQueries('registration')
   @ScopedToClients(
     'AdminExportService.clientBatch → UsersStore.findPage with actor.clientScope, the same predicate on users.id the list applies.',
   )
@@ -290,6 +296,8 @@ export class AdminClientsController {
     @Query('referred') referred?: string,
     @Query('sort') sort?: string,
     @Query('order') order?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
   ) {
     const chosen = exportFormat(format);
     const query = {
@@ -311,6 +319,7 @@ export class AdminClientsController {
       referredBy,
       // The Referrals page's filter, parsed by the list's own function.
       referred,
+      registered: dateRangeQuery(from, to),
       sort,
       order,
     };

@@ -88,7 +88,7 @@ describe('commission accruals mask the out-of-scope client (#4)', () => {
     const { rows } = (await store.findAccrualsPage({
       page: 1,
       limit: 10,
-      scope: scopeOf([tagId], false, false),
+      scope: scopeOf([tagId], false),
     })) as unknown as { rows: AccrualRow[] };
 
     // Scoped on the partner, who is in territory — both rows are present.
@@ -101,7 +101,7 @@ describe('commission accruals mask the out-of-scope client (#4)', () => {
     const { rows } = (await store.findAccrualsPage({
       page: 1,
       limit: 10,
-      scope: scopeOf([tagId], false, false),
+      scope: scopeOf([tagId], false),
     })) as unknown as { rows: AccrualRow[] };
 
     const mine = rows.find((r) => r.client.id === inScopeClientId);
@@ -124,7 +124,7 @@ describe('commission accruals mask the out-of-scope client (#4)', () => {
     const page = await store.findAccrualsPage({
       page: 1,
       limit: 10,
-      scope: scopeOf([tagId], false, false),
+      scope: scopeOf([tagId], false),
     });
     const theirs = page.rows.find((r) => r.clientMasked)!;
     expect(theirs.client.id).toBeNull();
@@ -134,7 +134,7 @@ describe('commission accruals mask the out-of-scope client (#4)', () => {
   });
 
   it('a filter or search naming the outside client answers like an unknown one', async () => {
-    const scope = scopeOf([tagId], false, false);
+    const scope = scopeOf([tagId], false);
     // The control: the same filter on the in-scope client finds its row.
     const mine = await store.findAccrualsPage({
       page: 1,
@@ -174,7 +174,7 @@ describe('commission accruals mask the out-of-scope client (#4)', () => {
     expect(rows.every((r) => r.client.email !== null)).toBe(true);
   });
   it('the partner search matches only a partner the reader may see', async () => {
-    const outsider = scopeOf([tagId], false, false);
+    const outsider = scopeOf([tagId], false);
     // Runs LAST: it adds a rebate row the counts above do not expect.
     const { rows: tag } = await ctx.db.execute<{ id: string }>(sql`
       INSERT INTO client_tags (slug, label) VALUES ('accrual-other', 'Other') RETURNING id`);

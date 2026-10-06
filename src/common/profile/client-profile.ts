@@ -484,14 +484,20 @@ export interface ProfileCheck {
  * left alone, a key that is blank means "clear it". `required` names the fields
  * that may not be blank. First and last name are never clearable, whoever asks:
  * the columns are NOT NULL and every screen and audit row names the person by
- * them.
+ * them. Nor is the country (0193): it is NOT NULL too, and it is the client's
+ * country TAG — clearing it would take them out of every country desk.
  */
 export function checkProfile(
   input: Partial<Record<ProfileKey, unknown>>,
   options: { required?: readonly ProfileKey[]; asOf?: Date } = {},
 ): ProfileCheck {
   const asOf = options.asOf ?? new Date();
-  const required = new Set<ProfileKey>([...(options.required ?? []), 'firstName', 'lastName']);
+  const required = new Set<ProfileKey>([
+    ...(options.required ?? []),
+    'firstName',
+    'lastName',
+    'country',
+  ]);
   const values: ProfileCheck['values'] = {};
   const errors: ProfileCheck['errors'] = {};
 

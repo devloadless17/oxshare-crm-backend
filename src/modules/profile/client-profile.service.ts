@@ -10,7 +10,9 @@ import {
   NotFoundError,
   ProfileLockedError,
   ValidationError,
+  PhoneAlreadyRegisteredError,
 } from '../../common/errors/domain-errors';
+import { violatesConstraint } from '../../common/errors/pg-violation';
 import {
   adminEditRule,
   checkProfile,
@@ -195,7 +197,19 @@ export class ClientProfileService {
         if (refusal) throw new FieldValidationError(refusal, refused);
       }
 
-      await tx.update(users).set(changes).where(eq(users.id, userId));
+      // One client per phone (0194): told on the field; the unique index decides a race.
+      if (changes.phone && (await this.users.findIdByPhone(changes.phone, userId, tx))) {
+        throw new PhoneAlreadyRegisteredError();
+      }
+      await tx
+        .update(users)
+        .set(changes)
+        .where(eq(users.id, userId))
+        .catch((error: unknown) => {
+          if (violatesConstraint(error, 'users_phone_unique'))
+            throw new PhoneAlreadyRegisteredError();
+          throw error;
+        });
 
       /*
        * A reviewer's flag on a field is ANSWERED by changing that field —

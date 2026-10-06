@@ -28,6 +28,7 @@ import {
   AuthenticationError,
   AuthorizationError,
   EmailAlreadyRegisteredError,
+  PhoneAlreadyRegisteredError,
   EmailCodeInvalidError,
   FieldValidationError,
   EmailNotVerifiedError,
@@ -57,7 +58,7 @@ import { PasswordService } from '../../common/security/password.service';
 import { AVATAR_BUCKET, StoredFilesService } from '../../common/uploads/stored-files.service';
 import { LoginAttemptsService } from '../../common/security/login-attempts.service';
 import { localizeMessage } from '../../common/i18n/localize-message';
-import { isUniqueViolation } from '../../common/errors/pg-violation';
+import { violatesConstraint } from '../../common/errors/pg-violation';
 import {
   isTokenKind,
   TOKEN_ALGORITHM,
@@ -115,6 +116,10 @@ const EMAIL_TAKEN =
 
 function emailAlreadyRegistered(): EmailAlreadyRegisteredError {
   return new EmailAlreadyRegisteredError(EMAIL_TAKEN, { email: EMAIL_TAKEN });
+}
+
+function phoneAlreadyRegistered(): PhoneAlreadyRegisteredError {
+  return new PhoneAlreadyRegisteredError();
 }
 
 @Injectable()
@@ -175,8 +180,7 @@ export class AuthService {
      * Tells every admin screen that the client list moved when somebody
      * registers — data only, no bell. A registration is not a task (the admin
      * notification rule, migration 0140): nobody has to DO anything because a
-     * client signed up, and "new / untriaged" is already a derived state the
-     * client list shows. What the intake desk needs is for that list to be
+     * client signed up. What a country desk needs is for its client list to be
      * current, which is exactly what `resource.changed` delivers.
      *
      * OPTIONAL for the positional-constructor reason the parameters above
@@ -255,6 +259,8 @@ export class AuthService {
     if (profileError) {
       throw new FieldValidationError(profileError, errors);
     }
+    // One client per phone number (0194) — told on the field, like a taken address.
+    if (profile.values.phone) await this.assertPhoneAvailable(profile.values.phone);
     // A blank optional field is simply not stored — there is nothing to clear yet.
     const seeded = Object.fromEntries(
       Object.entries(profile.values).filter(([, value]) => value !== null),
@@ -290,7 +296,8 @@ export class AuthService {
       .catch((error: unknown) => {
         // Two sign-ups for one NEW address at the same moment: the unique index
         // decides, and the loser gets the same plain answer as any taken address.
-        if (isUniqueViolation(error)) throw emailAlreadyRegistered();
+        if (violatesConstraint(error, 'users_email_unique')) throw emailAlreadyRegistered();
+        if (violatesConstraint(error, 'users_phone_unique')) throw phoneAlreadyRegistered();
         throw error;
       });
 
@@ -305,12 +312,9 @@ export class AuthService {
     await this.walletProvisioning?.openAllEnabledWallets(user.id);
 
     /*
-     * Registration deliberately does NOT tag the client — D-60, final form.
-     * "New / untriaged" is the DERIVED state of carrying no tag assignments,
-     * honoured by `clientScopePredicate` for admins holding the
-     * `sees_untriaged` grant. A materialised intake tag was tried and reverted
-     * (migrations 0055–0057): stored derived state needed guards to stay true
-     * and still allowed an orphan class the derived state cannot express.
+     * The client already carries their COUNTRY tag (0193): it is derived from
+     * `users.country`, which registration requires, so there is nothing to
+     * write — and nothing that could drift from the country they gave.
      */
 
     /*
@@ -361,6 +365,11 @@ export class AuthService {
   /** Refused, in the sign-up form's own words, when the address is taken. */
   private async assertEmailAvailable(email: string): Promise<void> {
     if (!(await this.emailAvailable(email))) throw emailAlreadyRegistered();
+  }
+
+  /** Refused under the phone field when another client already holds the number (E.164). */
+  private async assertPhoneAvailable(phone: string): Promise<void> {
+    if (await this.users.findIdByPhone(phone)) throw phoneAlreadyRegistered();
   }
 
   /**

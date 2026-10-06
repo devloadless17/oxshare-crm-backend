@@ -67,7 +67,6 @@ beforeAll(async () => {
       role: 'sub_admin',
       roleId: deskRole.id,
       permissions: [],
-      seesUntriaged: false,
       seesAllClients: false,
       status: 'active',
     })

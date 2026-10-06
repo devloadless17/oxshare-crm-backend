@@ -1,3 +1,4 @@
+import type { DateRange } from '../../common/date-range';
 import { Injectable, Logger } from '@nestjs/common';
 import { ScheduledJob } from '../../common/scheduling/scheduled-job.decorator';
 import {
@@ -79,6 +80,7 @@ export interface AdminFeedQuery {
   view: 'inbox' | 'history';
   category?: AdminNotificationCategory;
   q?: string;
+  range?: DateRange;
   cursor?: CursorPosition;
   limit?: number;
 }
@@ -199,16 +201,10 @@ export class NotificationsService implements NotificationDispatchPort {
      * Every candidate's territory in ONE query, then ONE visibility check per
      * DISTINCT territory, concurrently. This used to await two queries per
      * admin, serially, on the request path of every deposit and KYC submit.
-     *
-     * Each admin's OWN intake grant (D-60) rides on the row — omitting it
-     * treated an intake-granted admin as restricted and dropped their bell
-     * for an untagged client's event.
      */
     const scopes = await this.scopes.scopesFor(candidates);
     const keyOf = (scope: ClientScope) =>
-      scope.unrestricted
-        ? '*'
-        : `${scope.includesUntriaged ? 'u' : '-'}:${[...scope.tagIds].sort().join(',')}`;
+      scope.unrestricted ? '*' : [...scope.tagIds].sort().join(',');
     const verdicts = new Map<string, Promise<boolean>>();
     const sees = (scope: ClientScope): Promise<boolean> => {
       if (scope.unrestricted) return Promise.resolve(true);
@@ -280,6 +276,7 @@ export class NotificationsService implements NotificationDispatchPort {
       view: query.view,
       kinds: query.category ? kindsIn(query.category) : undefined,
       q: query.q,
+      range: query.range,
       cursor: query.cursor,
       limit: query.limit,
     });

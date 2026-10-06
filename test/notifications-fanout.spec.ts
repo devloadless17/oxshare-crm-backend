@@ -75,7 +75,6 @@ function build(opts: {
             (opts.scopeTags?.[adminId] ?? []).length > 0
               ? scopeOf(
                   opts.scopeTags?.[adminId] ?? [],
-                  false,
                   (opts.scopeTags?.[adminId] ?? []).length === 0,
                 )
               : UNRESTRICTED,
@@ -170,9 +169,8 @@ describe('notifyAdmins', () => {
         // Takes the admin ROW since 0154 — matching on an id string made every admin
         // unrestricted here, and the refusal this case proves went unobserved.
         scopeFor: vi.fn().mockImplementation(({ id: adminId }: { id: string }) => {
-          if (adminId === 'in-territory') return Promise.resolve(scopeOf(['north'], false, false));
-          if (adminId === 'out-of-territory')
-            return Promise.resolve(scopeOf(['south'], false, false));
+          if (adminId === 'in-territory') return Promise.resolve(scopeOf(['north'], false));
+          if (adminId === 'out-of-territory') return Promise.resolve(scopeOf(['south'], false));
           return Promise.resolve(UNRESTRICTED);
         }),
       } as unknown as AdminClientScopesStore),
@@ -210,7 +208,7 @@ describe('notifyAdmins', () => {
           ),
       } as unknown as RolesStore,
       withBatchScopes({
-        scopeFor: vi.fn().mockResolvedValue(scopeOf(['south'], false, false)),
+        scopeFor: vi.fn().mockResolvedValue(scopeOf(['south'], false)),
       } as unknown as AdminClientScopesStore),
       { assertVisible } as unknown as ClientVisibilityService,
       alwaysLeads(),
@@ -245,7 +243,7 @@ describe('notifyAdmins', () => {
           ),
       } as unknown as RolesStore,
       withBatchScopes({
-        scopeFor: vi.fn().mockResolvedValue(scopeOf(['north'], false, false)),
+        scopeFor: vi.fn().mockResolvedValue(scopeOf(['north'], false)),
       } as unknown as AdminClientScopesStore),
       {
         // NOT a NotFoundError: the database blipped. Swallowing this as

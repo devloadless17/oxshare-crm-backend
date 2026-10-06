@@ -208,7 +208,6 @@ beforeAll(async () => {
         roleId: deskRole.id,
         permissions: [],
         // Territory only — no intake pool, so an untagged client is outside.
-        seesUntriaged: false,
       },
       {
         email: MASKED.email,

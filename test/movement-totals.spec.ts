@@ -36,9 +36,9 @@ let clientA: number;
 
 /** Territory tag A, with and without new clients; new clients alone. */
 const scopes = (): Record<string, ClientScope> => ({
-  onlyA: { unrestricted: false, tagIds: [tagA], includesUntriaged: false },
-  aAndNew: { unrestricted: false, tagIds: [tagA], includesUntriaged: true },
-  newOnly: { unrestricted: false, tagIds: [], includesUntriaged: true },
+  onlyA: { unrestricted: false, tagIds: [tagA] },
+  aAndNew: { unrestricted: false, tagIds: [tagA] },
+  newOnly: { unrestricted: false, tagIds: [] },
 });
 const EVERYTHING = { from: '2000-01-01', to: '2999-12-31' };
 

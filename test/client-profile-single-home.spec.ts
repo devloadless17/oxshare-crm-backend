@@ -234,6 +234,8 @@ describe('sign-up writes the profile — once, in its canonical shape', () => {
     const { address: _a, city: _c, postalCode: _p, ...required } = SIGN_UP;
     const res = await register({
       ...required,
+      // Its own number: SIGN_UP's belongs to the client registered above (0194).
+      phone: '+961 71 444 555',
       email: `single-home-no-address-${Date.now()}@oxshare-e2e.test`,
     });
     expect(res.status, JSON.stringify(res.body)).toBe(201);

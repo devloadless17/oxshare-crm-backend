@@ -1,3 +1,4 @@
+import { ApiDateRangeQueries, dateRangeQuery } from '../../common/date-range';
 import { Throttle } from '@nestjs/throttler';
 // Part of the `admin` controller surface, split by concern.
 //
@@ -137,6 +138,7 @@ export class AdminAuditController {
       '(subject_type user / kyc_submission, via auditBatch → scope) — D-54, resolved. ' +
       'Admin-subject rows are unscoped: the trail about administrators is not client data.',
   )
+  @ApiDateRangeQueries()
   @Audited('export.audit_log')
   async exportAuditLog(
     @Req() req: Request & { admin: AuthenticatedAdmin },
@@ -147,6 +149,8 @@ export class AdminAuditController {
     @Query('actorId') actorId?: string,
     @Query('subjectId') subjectId?: string,
     @Query('q') q?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
   ) {
     const chosen = exportFormat(format);
     // Bounded to the column width exactly as the list route does: a term longer
@@ -160,6 +164,7 @@ export class AdminAuditController {
       actorId: uuidQuery(actorId, 'actorId'),
       subjectId,
       q: searchQuery(q, 'q'),
+      range: dateRangeQuery(from, to),
     };
 
     this.audit.record(req.admin.id, 'export.audit_log', 'audit_log', req.admin.id, {
@@ -221,6 +226,7 @@ export class AdminAuditController {
   })
   @ApiQuery({ name: 'sort', required: false, enum: Object.keys(AUDIT_SORT_COLUMNS) })
   @ApiQuery({ name: 'order', required: false, enum: ['asc', 'desc'] })
+  @ApiDateRangeQueries()
   listAuditLog(
     @Req() req: Request & { admin: AuthenticatedAdmin },
     @Query('page') page?: string,
@@ -233,6 +239,8 @@ export class AdminAuditController {
     @Query('q') q?: string,
     @Query('sort') sort?: string,
     @Query('order') order?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
   ) {
     /*
      * `action` and `subjectType` are varchar(100), not enums, so an odd value
@@ -272,6 +280,7 @@ export class AdminAuditController {
       // column mapping lives.
       sort,
       order,
+      range: dateRangeQuery(from, to),
     });
   }
 }

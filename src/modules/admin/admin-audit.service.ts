@@ -1,3 +1,4 @@
+import type { DateRange } from '../../common/date-range';
 import { Injectable, Logger } from '@nestjs/common';
 import { maskAuditRow } from '../../common/security/audit-detail-fields';
 import { maskedFieldsFor } from '../../common/security/field-mask';
@@ -164,6 +165,7 @@ export class AdminAuditService {
       q?: string;
       sort?: string;
       order?: string;
+      range?: DateRange;
     },
   ) {
     /*
@@ -228,6 +230,7 @@ export class AdminAuditService {
       q: query.q,
       sort,
       order,
+      range: query.range,
     });
 
     return {

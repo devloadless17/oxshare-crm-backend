@@ -1,4 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
+import { type DateRange, withinRange } from '../../common/date-range';
 import Decimal from 'decimal.js';
 import { and, count, desc, eq, isNotNull, or, sql } from 'drizzle-orm';
 import type { getDb } from '../../database/db';
@@ -583,12 +584,14 @@ export class WalletService {
     limit?: string | number;
     /** Keyset position — R-2.4. When present, `page` is ignored. */
     cursor?: CursorPosition;
+    /** When posted — `[from, until)`, `common/date-range.ts`. */
+    range?: DateRange;
   }) {
     const page = Math.max(1, filter.page ?? 1);
     const limit = pageSize(filter.limit);
     const db = this.db;
 
-    const conditions = [];
+    const conditions = [...withinRange(ledgerEntries.createdAt, filter.range)];
     if (filter.walletId) conditions.push(eq(ledgerEntries.walletId, filter.walletId));
     if (filter.entryType) conditions.push(eq(ledgerEntries.entryType, filter.entryType));
     if (filter.userId) conditions.push(eq(wallets.userId, filter.userId));

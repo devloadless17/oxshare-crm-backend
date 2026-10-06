@@ -81,6 +81,7 @@ import {
 } from './guards/admin.guard';
 import { ReconciliationService } from '../wallet/reconciliation.service';
 import { UuidParam, enumQuery, uuidQuery } from '../../common/query-params';
+import { ApiDateRangeQueries, dateRangeQuery } from '../../common/date-range';
 import { ClientRefPipe } from '../../common/client-ref.pipe';
 import { transactionStateEnum } from '../../database/schema';
 import { NotClientScoped, ScopedToClients } from './guards/client-scope.decorator';
@@ -163,6 +164,7 @@ export class AdminMoneyController {
   })
   @ApiQuery({ name: 'format', required: false, enum: ['csv'] })
   @ApiQuery({ name: 'state', required: false, enum: transactionStateEnum.enumValues })
+  @ApiDateRangeQueries('requested')
   @ScopedToClients(
     'AdminExportService.withdrawalBatch → TransactionsService.listForExport, the same clientScopePredicate on transactions.user_id the queue applies.',
   )
@@ -172,16 +174,21 @@ export class AdminMoneyController {
     @Res() res: Response,
     @Query('format') format?: string,
     @Query('state') state?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
   ) {
     const chosen = exportFormat(format);
     // Validated against the schema's own enum, exactly as the list route does,
     // so an unrecognised state is a 400 rather than a database error or a file
     // that is silently empty.
-    const query = { state: enumQuery(state, transactionStateEnum.enumValues, 'state') };
+    const query = {
+      state: enumQuery(state, transactionStateEnum.enumValues, 'state'),
+      range: dateRangeQuery(from, to),
+    };
 
     this.audit.record(req.admin.id, 'export.withdrawals', 'withdrawal_queue', req.admin.id, {
       format: chosen,
-      filters: query,
+      filters: { state: query.state, from: query.range.from, until: query.range.until },
     });
 
     /*
@@ -238,6 +245,7 @@ export class AdminMoneyController {
       "filter and the reader's scope, so a record outside it answers an empty page, like any " +
       'filtered-out row. No state is implied: a handled record is still returned.',
   })
+  @ApiDateRangeQueries('requested')
   @ScopedToClients(
     'TransactionsService.listForAdmin applies the predicate to transactions.user_id.',
   )
@@ -251,10 +259,13 @@ export class AdminMoneyController {
     @Query('sort') sort?: string,
     @Query('order') order?: string,
     @Query('id') id?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
   ) {
     return this.money.listWithdrawals(
       {
         id: uuidQuery(id, 'id'),
+        range: dateRangeQuery(from, to),
         // `transactions.service.ts` compared this against a Postgres enum column
         // behind a cast, so an unrecognised value came back as a 500 carrying a
         // database error. Checked against the schema's own value list instead.
@@ -854,6 +865,7 @@ export class AdminMoneyController {
       'still applies: this cannot reach a client outside the actor’s territory.',
   })
   @ApiOkResponse({ type: LedgerListResponseDto })
+  @ApiDateRangeQueries('posted')
   @ScopedToClients('WalletService.listEntries applies the predicate to wallets.user_id.')
   listLedger(
     @Req() req: Request & { admin: AuthenticatedAdmin },
@@ -864,6 +876,8 @@ export class AdminMoneyController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('cursor') cursor?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
   ) {
     return this.money.listLedger(
       {
@@ -882,6 +896,7 @@ export class AdminMoneyController {
         page,
         limit,
         cursor,
+        range: dateRangeQuery(from, to),
       },
       req.admin,
     );

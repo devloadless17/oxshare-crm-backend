@@ -121,19 +121,11 @@ export class UpdateAdminDto {
   @ApiPropertyOptional({
     type: [String],
     description:
-      'Client tag ids. [] means no territory tags (new clients only, or none) — every client is only ever `seesAllClients` (0154).',
+      'Client tag ids. [] means no territory tags (no client) — every client is only ever `seesAllClients` (0154).',
   })
   @IsArray()
   @IsOptional()
   scopedTagIds?: string[];
-
-  @ApiPropertyOptional({
-    description:
-      'D-60 — sees the intake pool: clients with no tag assignments yet. Meaningful only for a scoped admin. DEFAULTS TO TRUE — restriction is the explicit act; an inviter who does not see the pool cannot grant it, and their default resolves to false.',
-  })
-  @IsBoolean()
-  @IsOptional()
-  seesUntriaged?: boolean;
 
   @ApiPropertyOptional({
     description:

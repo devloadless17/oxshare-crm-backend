@@ -518,7 +518,7 @@ beforeEach(() => {
 describe('visibility at INVITE time runs the updateAdmin rulebook', () => {
   /*
    * The invite path used to check permissions only, so an `admins.create`
-   * holder could hand out a territory, a mask or the intake grant that the
+   * holder could hand out a territory or a mask that the
    * edit path would refuse them. One rulebook, both doors.
    */
   const SCOPER: AuthenticatedAdmin = {
@@ -562,28 +562,6 @@ describe('visibility at INVITE time runs the updateAdmin rulebook', () => {
     expect(h.invites.create).not.toHaveBeenCalled();
   });
 
-  it('refuses the intake grant from a scoped inviter who does not hold it', async () => {
-    const h = build();
-    const scoped: AuthenticatedAdmin = {
-      ...SCOPER,
-      clientScope: { unrestricted: false, tagIds: ['tag-1'], includesUntriaged: false },
-      seesUntriaged: false,
-    };
-    await expect(
-      h.service.createInvite(
-        'new@oxshare.com',
-        'New',
-        scoped,
-        undefined,
-        ['kyc.review'],
-        undefined,
-        undefined,
-        true,
-      ),
-    ).rejects.toThrow(AuthorizationError);
-    expect(h.invites.create).not.toHaveBeenCalled();
-  });
-
   it('an EMPTY territory list means no territory tags — never every client (0154)', async () => {
     // It used to be normalised to "absent", which from this inviter meant
     // UNRESTRICTED: the widest sight, from an empty list.
@@ -607,7 +585,7 @@ describe('visibility at INVITE time runs the updateAdmin rulebook', () => {
     const scopedInviter = {
       ...MASTER,
       permissions: ['admins.create', 'admins.scope', 'kyc.review'],
-      clientScope: { unrestricted: false, tagIds: ['tag-1'], includesUntriaged: false },
+      clientScope: { unrestricted: false, tagIds: ['tag-1'] },
     };
     await h.service.createInvite(
       'narrow@oxshare.com',
@@ -628,7 +606,7 @@ describe('visibility at INVITE time runs the updateAdmin rulebook', () => {
     const scopedInviter = {
       ...MASTER,
       permissions: ['admins.create', 'admins.scope', 'kyc.review'],
-      clientScope: { unrestricted: false, tagIds: ['tag-1'], includesUntriaged: false },
+      clientScope: { unrestricted: false, tagIds: ['tag-1'] },
     };
     await expect(
       h.service.createInvite(
@@ -639,27 +617,10 @@ describe('visibility at INVITE time runs the updateAdmin rulebook', () => {
         ['kyc.review'],
         undefined,
         undefined,
-        undefined,
         true,
       ),
     ).rejects.toThrow(AuthorizationError);
     expect(h.invites.create).not.toHaveBeenCalled();
-  });
-
-  it('defaults the intake grant to FALSE for an inviter who cannot grant it', async () => {
-    // A scoped inviter without the grant must not hand out sight of the pool
-    // through a default they never chose — the default bends to the subset
-    // rule rather than around it.
-    const h = build();
-    const scoped: AuthenticatedAdmin = {
-      ...SCOPER,
-      clientScope: { unrestricted: false, tagIds: ['tag-1'], includesUntriaged: false },
-      seesUntriaged: false,
-    };
-    await h.service.createInvite('new@oxshare.com', 'New', scoped, undefined, ['kyc.review']);
-    expect(h.invites.create).toHaveBeenCalledWith(
-      expect.objectContaining({ seesUntriaged: false }),
-    );
   });
 
   it('gives a SILENT scoped inviter their OWN territory, never an unrestricted one', async () => {
@@ -691,8 +652,7 @@ describe('visibility at INVITE time runs the updateAdmin rulebook', () => {
       // `admins.scope`: the inheritance below is the system's default, not a
       // visibility choice the actor is making.
       permissions: ['admins.create', 'kyc.review'],
-      clientScope: { unrestricted: false, tagIds: ['tag-1', 'tag-2'], includesUntriaged: false },
-      seesUntriaged: false,
+      clientScope: { unrestricted: false, tagIds: ['tag-1', 'tag-2'] },
     };
     await h.service.createInvite(
       'silent@oxshare.com',
@@ -700,7 +660,7 @@ describe('visibility at INVITE time runs the updateAdmin rulebook', () => {
       scopedInviter,
       undefined,
       ['kyc.review'],
-      // No mask, NO TERRITORY, no intake grant — every visibility field absent.
+      // No mask, NO TERRITORY — every visibility field absent.
     );
     expect(h.invites.create).toHaveBeenCalledWith(
       expect.objectContaining({ scopedTagIds: ['tag-1', 'tag-2'] }),
@@ -731,7 +691,7 @@ describe('visibility at INVITE time runs the updateAdmin rulebook', () => {
       true,
     );
     expect(h.invites.create).toHaveBeenCalledWith(
-      expect.objectContaining({ scopedTagIds: ['tag-1'], seesUntriaged: true }),
+      expect.objectContaining({ scopedTagIds: ['tag-1'] }),
     );
   });
 });

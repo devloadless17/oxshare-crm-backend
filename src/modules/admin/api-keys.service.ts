@@ -110,9 +110,6 @@ export class ApiKeysService {
     // All-clients is the explicit grant (0154): a key sees everyone only when
     // its creator does, never because it carries no tags.
     const seesAllClients = actor.clientScope.unrestricted;
-    const seesUntriaged = actor.clientScope.unrestricted
-      ? true
-      : (actor.clientScope.includesUntriaged ?? false);
 
     const row = await this.store.create({
       name,
@@ -121,7 +118,6 @@ export class ApiKeysService {
       permissions: input.permissions,
       createdBy: actor.id,
       scopedTagIds,
-      seesUntriaged,
       seesAllClients,
       // The creator's mask travels with the key (0155): a key is never a way
       // to read what its creator's role hides.

@@ -135,7 +135,6 @@ beforeAll(async () => {
       // Explicitly restricted from intake (the 0058 default is TRUE): this
       // file proves TERRITORY isolation, and untagged fixture clients would
       // otherwise be visible through the intake branch.
-      seesUntriaged: false,
       status: 'active',
     })
     .returning();

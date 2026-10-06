@@ -126,6 +126,9 @@
     "wallets.view",
     "withdrawals.approve",
     "withdrawals.settle",
-    "withdrawals.view"
+    "withdrawals.view",
+    "links.view",
+    "links.create",
+    "links.manage"
   ]
 }

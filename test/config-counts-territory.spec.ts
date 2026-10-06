@@ -56,7 +56,6 @@ beforeAll(async () => {
       roleId: role.id,
       permissions: [],
       // Without this an untagged fixture would be visible through intake.
-      seesUntriaged: false,
       status: 'active',
     })
     .returning();

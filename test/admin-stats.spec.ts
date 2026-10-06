@@ -168,7 +168,6 @@ async function makeAdmin(
       status: 'active',
       // Territory isolation is this file's subject - restrict from the
       // intake pool explicitly (the 0058 default is TRUE).
-      seesUntriaged: false,
     })
     .returning();
   return adminRow.id;

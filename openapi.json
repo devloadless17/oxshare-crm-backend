@@ -265,6 +265,24 @@
             }
           },
           {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Raised at or after: a date-time with offset, or YYYY-MM-DD (a UTC day).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "End: a date-time with offset (exclusive), or YYYY-MM-DD (that whole day).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "cursor",
             "required": false,
             "in": "query",
@@ -3808,9 +3826,9 @@
             "name": "from",
             "required": false,
             "in": "query",
-            "description": "Inclusive, YYYY-MM-DD.",
+            "description": "Inclusive start: a date-time with offset, or YYYY-MM-DD.",
             "schema": {
-              "example": "2026-08-01",
+              "example": "2026-08-01T00:00:00+03:00",
               "type": "string"
             }
           },
@@ -3818,9 +3836,9 @@
             "name": "to",
             "required": false,
             "in": "query",
-            "description": "Inclusive, YYYY-MM-DD.",
+            "description": "End: a date-time with offset (exclusive), or YYYY-MM-DD (that whole day).",
             "schema": {
-              "example": "2026-08-31",
+              "example": "2026-09-01T00:00:00+03:00",
               "type": "string"
             }
           },
@@ -3953,9 +3971,9 @@
             "name": "from",
             "required": false,
             "in": "query",
-            "description": "Inclusive, YYYY-MM-DD.",
+            "description": "Inclusive start: a date-time with offset, or YYYY-MM-DD.",
             "schema": {
-              "example": "2026-08-01",
+              "example": "2026-08-01T00:00:00+03:00",
               "type": "string"
             }
           },
@@ -3963,9 +3981,9 @@
             "name": "to",
             "required": false,
             "in": "query",
-            "description": "Inclusive, YYYY-MM-DD.",
+            "description": "End: a date-time with offset (exclusive), or YYYY-MM-DD (that whole day).",
             "schema": {
-              "example": "2026-08-31",
+              "example": "2026-09-01T00:00:00+03:00",
               "type": "string"
             }
           },
@@ -8085,6 +8103,24 @@
               ],
               "type": "string"
             }
+          },
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Earliest registration time, inclusive: a date-time with offset (2026-10-06T00:00:00+03:00) or a date (YYYY-MM-DD, a UTC day).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -8268,6 +8304,24 @@
                 "asc",
                 "desc"
               ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Earliest registration time, inclusive: a date-time with offset (2026-10-06T00:00:00+03:00) or a date (YYYY-MM-DD, a UTC day).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
+            "schema": {
               "type": "string"
             }
           }
@@ -8990,6 +9044,24 @@
               ],
               "type": "string"
             }
+          },
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Earliest submitted time, inclusive: a date-time with offset (2026-10-06T00:00:00+03:00) or a date (YYYY-MM-DD, a UTC day).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -9052,6 +9124,24 @@
             "required": false,
             "in": "query",
             "description": "A Portal ID (digits, matched exactly) or free text over email and name.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Earliest submitted time, inclusive: a date-time with offset (2026-10-06T00:00:00+03:00) or a date (YYYY-MM-DD, a UTC day).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
             "schema": {
               "type": "string"
             }
@@ -10391,6 +10481,24 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Earliest created time, inclusive: a date-time with offset (2026-10-06T00:00:00+03:00) or a date (YYYY-MM-DD, a UTC day).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -10511,6 +10619,24 @@
                 "asc",
                 "desc"
               ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Earliest created time, inclusive: a date-time with offset (2026-10-06T00:00:00+03:00) or a date (YYYY-MM-DD, a UTC day).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
+            "schema": {
               "type": "string"
             }
           }
@@ -10842,6 +10968,24 @@
               ],
               "type": "string"
             }
+          },
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Earliest requested time, inclusive: a date-time with offset (2026-10-06T00:00:00+03:00) or a date (YYYY-MM-DD, a UTC day).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -10955,6 +11099,24 @@
             "required": false,
             "in": "query",
             "description": "One record by its uuid — where a notification deep link lands. AND-ed with every other filter and the reader's scope, so a record outside it answers an empty page, like any filtered-out row. No state is implied: a handled record is still returned.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Earliest requested time, inclusive: a date-time with offset (2026-10-06T00:00:00+03:00) or a date (YYYY-MM-DD, a UTC day).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
             "schema": {
               "type": "string"
             }
@@ -11714,6 +11876,24 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Earliest posted time, inclusive: a date-time with offset (2026-10-06T00:00:00+03:00) or a date (YYYY-MM-DD, a UTC day).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -12070,7 +12250,7 @@
             "name": "from",
             "required": false,
             "in": "query",
-            "description": "Inclusive, YYYY-MM-DD.",
+            "description": "Earliest created time, inclusive: a date-time with offset (2026-10-06T00:00:00+03:00) or a date (YYYY-MM-DD, a UTC day).",
             "schema": {
               "type": "string"
             }
@@ -12079,7 +12259,7 @@
             "name": "to",
             "required": false,
             "in": "query",
-            "description": "Inclusive, YYYY-MM-DD.",
+            "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
             "schema": {
               "type": "string"
             }
@@ -12105,6 +12285,15 @@
               "enum": [
                 "desk"
               ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "method",
+            "required": false,
+            "in": "query",
+            "description": "Payment method keys, comma-separated — deposit or withdrawal methods. Only payments have a method, so a transfer never matches. At most 50.",
+            "schema": {
               "type": "string"
             }
           },
@@ -12218,7 +12407,7 @@
             "name": "from",
             "required": false,
             "in": "query",
-            "description": "Inclusive, YYYY-MM-DD.",
+            "description": "Earliest created time, inclusive: a date-time with offset (2026-10-06T00:00:00+03:00) or a date (YYYY-MM-DD, a UTC day).",
             "schema": {
               "type": "string"
             }
@@ -12227,7 +12416,7 @@
             "name": "to",
             "required": false,
             "in": "query",
-            "description": "Inclusive, YYYY-MM-DD.",
+            "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
             "schema": {
               "type": "string"
             }
@@ -12253,6 +12442,15 @@
               "enum": [
                 "desk"
               ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "method",
+            "required": false,
+            "in": "query",
+            "description": "Payment method keys, comma-separated — deposit or withdrawal methods. Only payments have a method, so a transfer never matches. At most 50.",
+            "schema": {
               "type": "string"
             }
           },
@@ -12365,7 +12563,7 @@
             "name": "from",
             "required": false,
             "in": "query",
-            "description": "Inclusive, YYYY-MM-DD.",
+            "description": "Earliest created time, inclusive: a date-time with offset (2026-10-06T00:00:00+03:00) or a date (YYYY-MM-DD, a UTC day).",
             "schema": {
               "type": "string"
             }
@@ -12374,7 +12572,7 @@
             "name": "to",
             "required": false,
             "in": "query",
-            "description": "Inclusive, YYYY-MM-DD.",
+            "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
             "schema": {
               "type": "string"
             }
@@ -12400,6 +12598,15 @@
               "enum": [
                 "desk"
               ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "method",
+            "required": false,
+            "in": "query",
+            "description": "Payment method keys, comma-separated — deposit or withdrawal methods. Only payments have a method, so a transfer never matches. At most 50.",
+            "schema": {
               "type": "string"
             }
           },
@@ -21587,9 +21794,6 @@
               "$ref": "#/components/schemas/AdminScopeTagDto"
             }
           },
-          "seesUntriaged": {
-            "type": "boolean"
-          },
           "seesAllClients": {
             "type": "boolean"
           },
@@ -21622,7 +21826,6 @@
           "status",
           "maskedFields",
           "scopedTags",
-          "seesUntriaged",
           "seesAllClients",
           "totpEnabledAt",
           "createdAt"
@@ -21671,15 +21874,11 @@
             }
           },
           "scopedTagIds": {
-            "description": "Client tags this admin is limited to. [] means no territory tags (new clients only, or none) — every client is only ever `seesAllClients` (0154).",
+            "description": "Client tags this admin is limited to. [] means no territory tags (no client) — every client is only ever `seesAllClients` (0154).",
             "type": "array",
             "items": {
               "type": "string"
             }
-          },
-          "seesUntriaged": {
-            "type": "boolean",
-            "description": "D-60 — sees the intake pool: clients with no tag assignments yet. Meaningful only for a scoped admin. DEFAULTS TO TRUE — restriction is the explicit act; an inviter who does not see the pool cannot grant it, and their default resolves to false."
           },
           "seesAllClients": {
             "type": "boolean",
@@ -21951,6 +22150,11 @@
           },
           "description": {
             "type": "string"
+          },
+          "countryCode": {
+            "type": "string",
+            "description": "Set on a COUNTRY tag (ISO code, 0193): carried by every client living there, derived from their country — never assigned, renamed or deleted; only its colour is editable.",
+            "example": "LB"
           },
           "createdAt": {
             "format": "date-time",
@@ -22999,6 +23203,11 @@
           "description": {
             "type": "string"
           },
+          "countryCode": {
+            "type": "string",
+            "description": "Set on a COUNTRY tag (ISO code, 0193): carried by every client living there, derived from their country — never assigned, renamed or deleted; only its colour is editable.",
+            "example": "LB"
+          },
           "createdAt": {
             "format": "date-time",
             "type": "string"
@@ -23077,6 +23286,11 @@
           },
           "description": {
             "type": "string"
+          },
+          "countryCode": {
+            "type": "string",
+            "description": "Set on a COUNTRY tag (ISO code, 0193): carried by every client living there, derived from their country — never assigned, renamed or deleted; only its colour is editable.",
+            "example": "LB"
           },
           "createdAt": {
             "format": "date-time",
@@ -24262,15 +24476,11 @@
             }
           },
           "scopedTagIds": {
-            "description": "Client tag ids. [] means no territory tags (new clients only, or none) — every client is only ever `seesAllClients` (0154).",
+            "description": "Client tag ids. [] means no territory tags (no client) — every client is only ever `seesAllClients` (0154).",
             "type": "array",
             "items": {
               "type": "string"
             }
-          },
-          "seesUntriaged": {
-            "type": "boolean",
-            "description": "D-60 — sees the intake pool: clients with no tag assignments yet. Meaningful only for a scoped admin. DEFAULTS TO TRUE — restriction is the explicit act; an inviter who does not see the pool cannot grant it, and their default resolves to false."
           },
           "seesAllClients": {
             "type": "boolean",

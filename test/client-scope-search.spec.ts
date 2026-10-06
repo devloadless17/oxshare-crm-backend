@@ -60,7 +60,7 @@ const THEIRS = {
   last: 'Outside',
 };
 
-/** Nobody has triaged this one yet — the D-60 intake pool. */
+/** Carries no chosen tag — only their country's, which is in no territory here. */
 const UNTRIAGED = {
   email: 'scope-search-untriaged@oxshare-e2e.test',
   first: 'Quillon',
@@ -75,7 +75,6 @@ let scoped: Session;
 let master: Session;
 let mineId: number;
 let theirsId: number;
-let untriagedId: number;
 let theirWalletNumber: string;
 
 const items = (body: unknown) => (body as { items?: unknown[] }).items ?? [];
@@ -133,7 +132,7 @@ beforeAll(async () => {
     ])
     .returning();
 
-  const [mine, theirs, untriaged] = await db
+  const [mine, theirs] = await db
     .insert(users)
     .values([
       { email: MINE.email, passwordHash: 'x', firstName: MINE.first, lastName: MINE.last },
@@ -148,22 +147,13 @@ beforeAll(async () => {
     .returning();
   mineId = mine.id;
   theirsId = theirs.id;
-  untriagedId = untriaged.id;
 
   /*
-   * ⚠️ THE OUT-OF-SCOPE CLIENT CARRIES ANOTHER DESK'S TAG, and getting this
-   * wrong is how a scope test quietly proves nothing.
-   *
-   * `admins.sees_untriaged` DEFAULTS TO TRUE (D-60, the intake pool): a scoped
-   * reader also sees clients carrying NO tags at all, so that completing a
-   * triage does not make a client invisible to the person triaging. An
-   * "out-of-scope" client left untagged is therefore LEGITIMATELY VISIBLE, and
-   * the first version of this file asserted against that and read as six scope
-   * leaks. The client outside the territory has to be triaged INTO somewhere
-   * else, which is what this does.
-   *
-   * The intake grant is then asserted on its own below, both ways, because a
-   * default of TRUE is a real and easily-forgotten widening of every scope.
+   * THE OUT-OF-SCOPE CLIENT CARRIES ANOTHER DESK'S TAG, so the boundary is
+   * between two desks rather than between a desk and nobody. (Before 0193 an
+   * untagged client sat in the intake pool, legitimately visible to a scoped
+   * reader; today every client carries their country tag and none of the
+   * fixture's countries is in this territory.)
    */
   await db.insert(clientTagAssignments).values([
     { userId: mineId, tagId: tag.id },
@@ -342,60 +332,6 @@ describe('the COUNTS do not leak what the rows hide', () => {
     expect((all.body as { total: number }).total).toBeGreaterThan(
       (mine.body as { total: number }).total,
     );
-  });
-});
-
-describe('the INTAKE POOL — an untriaged client, and the flag that decides', () => {
-  /*
-   * D-60. `admins.sees_untriaged` defaults to TRUE, so a scoped desk also sees
-   * clients carrying no tags at all. That is deliberate — completing a triage
-   * must not blank the trail of the person who did it, and somebody has to be
-   * able to see a brand-new registration before anyone has classified it — but
-   * it is a WIDENING of every scope, by default, and it is worth stating out
-   * loud rather than leaving in a migration note.
-   *
-   * Both directions are asserted, because only the pair distinguishes "the flag
-   * works" from "the predicate ignores tags".
-   */
-  it('a scoped admin WITH the intake grant sees a client nobody has triaged', async () => {
-    const res = await scoped.get(`/v1/admin/clients?q=${UNTRIAGED.first}&limit=100`);
-    expect(res.status).toBe(200);
-    const found = items(res.body) as { id: number }[];
-    expect(found, 'the intake pool is not reaching the desk that triages it').toHaveLength(1);
-    // The right person, not merely a person — the search term is distinctive,
-    // so a filter matching everything would pass the length check alone.
-    expect(found[0].id).toBe(untriagedId);
-  });
-
-  it('and does NOT see one triaged into another desk’s territory', async () => {
-    // The contrast that makes the case above a grant rather than a hole.
-    const res = await scoped.get(`/v1/admin/clients?q=${THEIRS.first}&limit=100`);
-    expect(items(res.body)).toHaveLength(0);
-  });
-
-  it('WITHOUT the grant, the untriaged client disappears too', async () => {
-    await ctx.db.db.execute(sql`
-      UPDATE admins SET sees_untriaged = false WHERE email = ${SCOPED.email}
-    `);
-    try {
-      // A fresh session: the scope is resolved from the row at authentication.
-      const narrowed = await actingAs(ctx, 'admin', SCOPED);
-      const res = await narrowed.get(`/v1/admin/clients?q=${UNTRIAGED.first}&limit=100`);
-      expect(res.status).toBe(200);
-      expect(
-        items(res.body),
-        'the intake grant does nothing — every scope is wider than it says',
-      ).toHaveLength(0);
-
-      // And their own client is still reachable, so this narrowed the scope
-      // rather than breaking the query.
-      const mineRes = await narrowed.get(`/v1/admin/clients?q=${MINE.first}&limit=100`);
-      expect(items(mineRes.body)).toHaveLength(1);
-    } finally {
-      await ctx.db.db.execute(sql`
-        UPDATE admins SET sees_untriaged = true WHERE email = ${SCOPED.email}
-      `);
-    }
   });
 });
 

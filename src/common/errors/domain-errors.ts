@@ -130,6 +130,27 @@ export class EmailAlreadyRegisteredError extends DomainError {
 }
 
 /**
+ * A phone number another client already holds. → 409 `PHONE_ALREADY_REGISTERED`,
+ * with the sentence under `phone`.
+ *
+ * One client per number (the buyer's rule, 6 Oct 2026): staff find a client BY
+ * phone, which only works if a number names one person. Enforced by the
+ * partial unique index `users_phone_unique` (0194); every writer checks first
+ * so the answer lands on the field, and maps the index's refusal to this on a
+ * race. The other holder is never named — they may be outside the reader's
+ * territory.
+ */
+export class PhoneAlreadyRegisteredError extends DomainError {
+  readonly code = 'PHONE_ALREADY_REGISTERED';
+  readonly fields: Record<string, string>;
+
+  constructor(message = 'This phone number is already used by another OxShare account.') {
+    super(message, { fields: { phone: message } });
+    this.fields = { phone: message };
+  }
+}
+
+/**
  * The verification link's 24 hours are up. → 400 `VERIFICATION_TOKEN_EXPIRED`
  *
  * A distinct subclass ONLY so it carries a distinct `code`, exactly as

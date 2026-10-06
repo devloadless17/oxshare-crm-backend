@@ -1,4 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import type { DateRange } from '../../common/date-range';
 import { and, eq } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
@@ -835,6 +836,8 @@ export class AdminMoneyService {
       cursor?: string;
       sort?: string;
       order?: string;
+      /** `[from, until)` — `common/date-range.ts`. */
+      range?: DateRange;
     },
     actor: AuthenticatedAdmin,
   ) {
@@ -867,6 +870,7 @@ export class AdminMoneyService {
       cursor: query.cursor ? decodeCursor(query.cursor, sort) : undefined,
       sort,
       order,
+      range: query.range,
     });
 
     /*
@@ -1600,6 +1604,7 @@ export class AdminMoneyService {
       page?: string;
       limit?: string;
       cursor?: string;
+      range?: DateRange;
     },
     actor: AuthenticatedAdmin,
   ) {
@@ -1638,6 +1643,7 @@ export class AdminMoneyService {
       page: parseInt(query.page ?? '1', 10) || 1,
       limit: parseInt(query.limit ?? '50', 10) || 50,
       cursor: query.cursor ? decodeCursor(query.cursor) : undefined,
+      range: query.range,
     });
     return { ...page, maskedFields: maskedFieldsFor('client', actor.fieldMask) };
   }

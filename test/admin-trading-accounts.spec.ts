@@ -96,7 +96,6 @@ beforeAll(async () => {
     status: 'active',
     // Territory isolation is this file's subject - restrict from the
     // intake pool explicitly (the 0058 default is TRUE).
-    seesUntriaged: false,
   });
 
   // Holds the route's permission; only territory constrains them.
@@ -128,7 +127,6 @@ beforeAll(async () => {
       status: 'active',
       // Territory isolation is this file's subject - restrict from the
       // intake pool explicitly (the 0058 default is TRUE).
-      seesUntriaged: false,
     })
     .returning();
 
@@ -146,7 +144,6 @@ beforeAll(async () => {
     status: 'active',
     // Territory isolation is this file's subject - restrict from the
     // intake pool explicitly (the 0058 default is TRUE).
-    seesUntriaged: false,
   });
 
   const [mineTag] = await db

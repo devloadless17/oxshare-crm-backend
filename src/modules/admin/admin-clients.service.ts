@@ -1,3 +1,5 @@
+import { currentFieldMask } from '../../common/logging/request-context';
+import type { DateRange } from '../../common/date-range';
 import { Injectable } from '@nestjs/common';
 import { UsersStore, clientSortKey, clientSortOrder, type User } from '../../store/users.store';
 import { IbStore } from '../../store/ib.store';
@@ -217,6 +219,11 @@ export async function assertClientTagExists(
       `There is no client tag "${slug}". Check the tag list for the current names.`,
     );
   }
+  // A country tag IS the client's country (0193): filtering by it answers "is
+  // this client from X?" one guess at a time — the refusal `?country=` makes.
+  if (tag.countryCode && currentFieldMask().includes('client.country')) {
+    throw new ValidationError('Cannot filter by country: that field is hidden from your role.');
+  }
 }
 
 export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -273,6 +280,7 @@ export class AdminClientsService {
       referred?: string;
       sort?: string;
       order?: string;
+      registered?: DateRange;
     },
     actor: AuthenticatedAdmin,
   ) {
@@ -364,6 +372,7 @@ export class AdminClientsService {
       tagSlug: query.tag,
       referredBy,
       referred: referredFilter(query.referred),
+      registered: query.registered,
       sort,
       order,
       // Row-level visibility, applied in the WHERE clause. An out-of-scope

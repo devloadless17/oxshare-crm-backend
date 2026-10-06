@@ -27,6 +27,7 @@ import {
   FieldValidationError,
   ProfileLockedError,
   EmailAlreadyRegisteredError,
+  PhoneAlreadyRegisteredError,
   MailNotConfiguredError,
   AssistantBusyError,
   AssistantCapacityError,
@@ -94,6 +95,8 @@ const DOMAIN_STATUS = new Map<new (...args: never[]) => DomainError, HttpStatus>
   // Sign-up with a taken address — the portal puts it under the email FIELD and
   // offers sign-in and a password reset. See the class.
   [EmailAlreadyRegisteredError, HttpStatus.CONFLICT],
+  // A number another client holds — on the phone FIELD, wherever it was typed.
+  [PhoneAlreadyRegisteredError, HttpStatus.CONFLICT],
   [ReferralCodeUnknownError, HttpStatus.BAD_REQUEST],
   [ReferralSelfError, HttpStatus.BAD_REQUEST],
   [ReferralPartnerInactiveError, HttpStatus.BAD_REQUEST],
@@ -446,7 +449,8 @@ export class AllExceptionsFilter implements ExceptionFilter {
       const fields =
         exception instanceof FieldValidationError ||
         exception instanceof ProfileLockedError ||
-        exception instanceof EmailAlreadyRegisteredError
+        exception instanceof EmailAlreadyRegisteredError ||
+        exception instanceof PhoneAlreadyRegisteredError
           ? exception.fields
           : undefined;
       for (const [type, status] of DOMAIN_STATUS) {

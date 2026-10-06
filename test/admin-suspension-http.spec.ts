@@ -268,7 +268,6 @@ describe('what cannot be suspended', () => {
       name: 'Susp Peer',
       role: 'sub_admin',
       permissions: ALL_PERMISSIONS,
-      seesUntriaged: false,
       status: 'active',
     });
 

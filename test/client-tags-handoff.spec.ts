@@ -19,16 +19,15 @@ import {
  *
  * The rule this replaces refused every tag outside the actor's own territory
  * and refused removing the last tag keeping a client in view. Together those
- * made it impossible for a desk to hand a client to another desk, or for an
- * admin who sees new clients to route one to the right team.
+ * made it impossible for a desk to hand a client to another desk.
  *
  * What is pinned here:
  *   - a hand-off works, in two confirmed steps, and the client then belongs to
  *     the other desk and no longer to the actor;
  *   - an unconfirmed change that would hide the client is REFUSED AND NOT
  *     WRITTEN (409 TAG_CHANGE_LEAVES_SCOPE);
- *   - the "new clients" grant counts: removing a last tag returns the client to
- *     intake, which that admin still sees, so nothing is asked;
+ *   - a COUNTRY desk counts (0193): the client keeps their country tag whatever
+ *     else changes, so that desk keeps them and nothing is asked;
  *   - two concurrent removals cannot together hide a client unconfirmed — the
  *     per-client lock makes the second one see the first;
  *   - a client outside the actor's territory is still a 404, whatever the tag.
@@ -40,7 +39,7 @@ const MASTER = { email: 'handoff-master@oxshare.com', password: PASSWORD };
 const DESK_A = { email: 'handoff-desk-a@oxshare.com', password: PASSWORD };
 /** Territory: desk B. The desk clients are handed to. */
 const DESK_B = { email: 'handoff-desk-b@oxshare.com', password: PASSWORD };
-/** Territory: desk A, plus the "new clients" grant. */
+/** Territory: desk A, plus the country every fixture client lives in ("Unknown"). */
 const INTAKE = { email: 'handoff-intake@oxshare.com', password: PASSWORD };
 /** Territory: desks A and C, no grant — for the concurrency case. */
 const DESK_AC = { email: 'handoff-desk-ac@oxshare.com', password: PASSWORD };
@@ -58,9 +57,9 @@ let deskB: string;
 let deskC: string;
 /** Tagged desk A — handed to desk B by DESK_A. */
 let handoffClient: number;
-/** No tags — routed to desk B by INTAKE. */
+/** No chosen tags — routed to desk B by INTAKE, the country desk. */
 let newClient: number;
-/** Tagged desk A — INTAKE removes it, returning the client to intake. */
+/** Tagged desk A — INTAKE removes it; the client stays in its country. */
 let returningClient: number;
 /** Tagged desks A and C — the concurrency case. */
 let raceClient: number;
@@ -124,12 +123,7 @@ beforeAll(async () => {
     .values({ name: 'Handoff Desk', permissions: ['clients.view', 'clients.tag', 'tags.view'] })
     .returning();
 
-  const scopedAdmin = async (
-    who: { email: string },
-    name: string,
-    territory: string[],
-    seesUntriaged: boolean,
-  ) => {
+  const scopedAdmin = async (who: { email: string }, name: string, territory: string[]) => {
     const [admin] = await db
       .insert(admins)
       .values({
@@ -139,7 +133,6 @@ beforeAll(async () => {
         role: 'sub_admin',
         roleId: deskRole.id,
         permissions: [],
-        seesUntriaged,
         status: 'active',
       })
       .returning();
@@ -147,10 +140,14 @@ beforeAll(async () => {
       .insert(adminClientTagScopes)
       .values(territory.map((tagId) => ({ adminId: admin.id, tagId, createdBy: admin.id })));
   };
-  await scopedAdmin(DESK_A, 'Desk A', [deskA], false);
-  await scopedAdmin(DESK_B, 'Desk B', [deskB], false);
-  await scopedAdmin(INTAKE, 'Intake', [deskA], true);
-  await scopedAdmin(DESK_AC, 'Desk AC', [deskA, deskC], false);
+  const [unknownCountry] = await db
+    .select({ id: clientTags.id })
+    .from(clientTags)
+    .where(eq(clientTags.countryCode, 'ZZ'));
+  await scopedAdmin(DESK_A, 'Desk A', [deskA]);
+  await scopedAdmin(DESK_B, 'Desk B', [deskB]);
+  await scopedAdmin(INTAKE, 'Intake', [deskA, unknownCountry.id]);
+  await scopedAdmin(DESK_AC, 'Desk AC', [deskA, deskC]);
 
   const client = async (label: string, tags: string[]) => {
     const [row] = await db
@@ -185,9 +182,14 @@ describe('a desk hands a client to another desk', () => {
     const deskAdmin = await actingAs(ctx, 'admin', DESK_A);
     const res = await deskAdmin.post(`${CLIENTS}/${handoffClient}/tags/${deskB}`).expect(201);
 
-    const body = res.body as ChangeBody;
+    const body = res.body as {
+      stillVisible: boolean;
+      assignments: { id: string; countryCode?: string }[];
+    };
     expect(body.stillVisible).toBe(true);
-    expect(body.assignments.map((t) => t.id).sort()).toEqual([deskA, deskB].sort());
+    // The chosen tags; the derived country tag rides along (0193).
+    const chosen = body.assignments.filter((t) => !t.countryCode).map((t) => t.id);
+    expect(chosen.sort()).toEqual([deskA, deskB].sort());
   });
 
   it('asks before removing our own tag — refused AND NOT WRITTEN until confirmed', async () => {
@@ -230,39 +232,29 @@ describe('a desk hands a client to another desk', () => {
   });
 });
 
-describe('an admin who sees new clients', () => {
-  it('routes a new client to another desk — asked first, then moved', async () => {
+describe('a country desk (0193)', () => {
+  it('routes a client to another desk and KEEPS them: the country tag stays, so nothing is asked', async () => {
     const intake = await actingAs(ctx, 'admin', INTAKE);
-    // Visible to them through the grant: it carries no tags at all.
+    // Visible through the country tag alone: no chosen tag at all.
     await intake.get(`${CLIENTS}/${newClient}`).expect(200);
 
-    const asked = await intake.post(`${CLIENTS}/${newClient}/tags/${deskB}`);
-    expect(asked.status).toBe(409);
-    expect((asked.body as { code?: string }).code).toBe('TAG_CHANGE_LEAVES_SCOPE');
-    expect(await tagIdsOf(newClient)).toEqual([]);
+    const routed = await intake.post(`${CLIENTS}/${newClient}/tags/${deskB}`).expect(201);
+    expect((routed.body as ChangeBody).stillVisible).toBe(true);
+    expect(await tagIdsOf(newClient)).toEqual([deskB]);
 
-    const moved = await intake
-      .post(`${CLIENTS}/${newClient}/tags/${deskB}?confirmLeavesScope=true`)
-      .expect(201);
-    expect((moved.body as ChangeBody).stillVisible).toBe(false);
-
-    expect((await intake.get(`${CLIENTS}/${newClient}`)).status).toBe(404);
+    await intake.get(`${CLIENTS}/${newClient}`).expect(200);
     const deskBAdmin = await actingAs(ctx, 'admin', DESK_B);
     await deskBAdmin.get(`${CLIENTS}/${newClient}`).expect(200);
   });
 
-  it('is NOT asked when removing a last tag: the client returns to new, which they see', async () => {
-    /*
-     * The old refusal ("the only tag putting this client in your view")
-     * ignored the grant and refused this outright, although nothing left the
-     * actor's view.
-     */
+  it('is NOT asked when removing a last chosen tag: the client stays in its country', async () => {
     const intake = await actingAs(ctx, 'admin', INTAKE);
     const res = await intake.del(`${CLIENTS}/${returningClient}/tags/${deskA}`).expect(200);
 
-    const body = res.body as ChangeBody;
+    const body = res.body as { stillVisible: boolean; assignments: { countryCode?: string }[] };
     expect(body.stillVisible).toBe(true);
-    expect(body.assignments).toEqual([]);
+    // Only the derived country tag is left.
+    expect(body.assignments.map((tag) => tag.countryCode)).toEqual(['ZZ']);
     await intake.get(`${CLIENTS}/${returningClient}`).expect(200);
   });
 });

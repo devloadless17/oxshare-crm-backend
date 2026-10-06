@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { and, inArray } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import {
   clientScopePredicate,
   seesClientWithTags,
@@ -7,6 +7,7 @@ import {
   type ClientScope,
 } from '../src/common/security/client-scope';
 import { clientTagAssignments, clientTags, users } from '../src/database/schema';
+import { ClientTagsStore } from '../src/store/client-tags.store';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
 
 /**
@@ -17,50 +18,44 @@ import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './mone
  * exist yet: a tag change is judged on the set it WILL leave ("does this take
  * the client out of my view?") before anything is written.
  *
- * Two definitions drift the moment one is edited alone, and a drift here is
- * silent in the worst direction: the console would let an admin hand a client
- * away without the confirmation, or ask for one when nothing leaves. So the SQL
- * is treated as the truth and the twin must agree on every cell of a complete
- * matrix — every subset of three tags (one client each) against every scope
- * shape the predicate distinguishes.
+ * Since 0193 a client's tags are MEMBERSHIPS: the tags somebody assigned plus
+ * the COUNTRY tag derived from `users.country`. The twin is fed what
+ * `ClientTagsStore.tagIdsForClient` returns, so this matrix pins the store and
+ * the view as well: every subset of two chosen tags, in each of two countries,
+ * against every scope shape — a chosen territory, a country desk, and both.
  */
 
 let ctx: MoneyTestContext;
-const tagIds: string[] = [];
-/** Each fixture client, with the tag ids it carries. */
-const carried = new Map<number, string[]>();
+let store: ClientTagsStore;
+let t1: string;
+let t2: string;
+let lebanon: string;
+let egypt: string;
+const clients: number[] = [];
 
 const SCOPES = [
   'unrestricted',
-  'one tag',
-  'one tag + new clients',
-  'two tags',
-  'two tags + new clients',
-  'all three tags',
-  'new clients only',
-  'no tags, no new clients',
+  'tag 1',
+  'tags 1 and 2',
+  'Lebanon desk',
+  'tag 1 + Egypt desk',
+  'no tags',
 ] as const;
 type ScopeName = (typeof SCOPES)[number];
 
-/** Built on demand: the tag ids only exist once `beforeAll` has run. */
 function scopeNamed(name: ScopeName): ClientScope {
-  const [t1, t2, t3] = tagIds;
   switch (name) {
     case 'unrestricted':
       return UNRESTRICTED;
-    case 'one tag':
+    case 'tag 1':
       return { unrestricted: false, tagIds: [t1] };
-    case 'one tag + new clients':
-      return { unrestricted: false, tagIds: [t1], includesUntriaged: true };
-    case 'two tags':
+    case 'tags 1 and 2':
       return { unrestricted: false, tagIds: [t1, t2] };
-    case 'two tags + new clients':
-      return { unrestricted: false, tagIds: [t1, t2], includesUntriaged: true };
-    case 'all three tags':
-      return { unrestricted: false, tagIds: [t1, t2, t3] };
-    case 'new clients only':
-      return { unrestricted: false, tagIds: [], includesUntriaged: true };
-    case 'no tags, no new clients':
+    case 'Lebanon desk':
+      return { unrestricted: false, tagIds: [lebanon] };
+    case 'tag 1 + Egypt desk':
+      return { unrestricted: false, tagIds: [t1, egypt] };
+    case 'no tags':
       // The fail-closed shape: the predicate answers `false` for it.
       return { unrestricted: false, tagIds: [] };
   }
@@ -70,39 +65,53 @@ async function visibleBySql(scope: ClientScope): Promise<Set<number>> {
   const rows = await ctx.db
     .select({ id: users.id })
     .from(users)
-    .where(and(inArray(users.id, [...carried.keys()]), clientScopePredicate(scope, users.id)));
+    .where(and(inArray(users.id, clients), clientScopePredicate(scope, users.id)));
   return new Set(rows.map((row) => row.id));
+}
+
+async function countryTag(name: string): Promise<string> {
+  const [row] = await ctx.db
+    .select({ id: clientTags.id })
+    .from(clientTags)
+    .where(sql`${clientTags.label} = ${name} AND ${clientTags.countryCode} IS NOT NULL`);
+  return row.id;
 }
 
 beforeAll(async () => {
   ctx = await startMoneyTestDb();
+  store = new ClientTagsStore(ctx.db);
+  lebanon = await countryTag('Lebanon');
+  egypt = await countryTag('Egypt');
+  [t1, t2] = await Promise.all(
+    [1, 2].map(async (n) => {
+      const [tag] = await ctx.db
+        .insert(clientTags)
+        .values({ slug: `twin-tag-${n}`, label: `Twin Tag ${n}` })
+        .returning();
+      return tag.id;
+    }),
+  );
 
-  for (const n of [1, 2, 3]) {
-    const [tag] = await ctx.db
-      .insert(clientTags)
-      .values({ slug: `twin-tag-${n}`, label: `Twin Tag ${n}` })
-      .returning();
-    tagIds.push(tag.id);
-  }
-
-  // Every subset of the three tags, the empty set included.
-  for (let subset = 0; subset < 8; subset++) {
-    const tags = tagIds.filter((_, i) => (subset & (1 << i)) !== 0);
-    const [client] = await ctx.db
-      .insert(users)
-      .values({
-        email: `twin-${subset}@oxshare-e2e.test`,
-        passwordHash: 'x',
-        firstName: 'Twin',
-        lastName: `Subset${subset}`,
-      })
-      .returning();
-    if (tags.length > 0) {
-      await ctx.db
-        .insert(clientTagAssignments)
-        .values(tags.map((tagId) => ({ userId: client.id, tagId })));
+  for (const country of ['Lebanon', 'Egypt']) {
+    for (let subset = 0; subset < 4; subset++) {
+      const tags = [t1, t2].filter((_, i) => (subset & (1 << i)) !== 0);
+      const [client] = await ctx.db
+        .insert(users)
+        .values({
+          email: `twin-${country}-${subset}@oxshare-e2e.test`,
+          passwordHash: 'x',
+          firstName: 'Twin',
+          lastName: `Subset`,
+          country,
+        })
+        .returning();
+      if (tags.length > 0) {
+        await ctx.db
+          .insert(clientTagAssignments)
+          .values(tags.map((tagId) => ({ userId: client.id, tagId })));
+      }
+      clients.push(client.id);
     }
-    carried.set(client.id, tags);
   }
 });
 
@@ -110,36 +119,76 @@ afterAll(async () => {
   await stopMoneyTestDb(ctx);
 });
 
-describe('seesClientWithTags agrees with clientScopePredicate on every tag set', () => {
+describe('seesClientWithTags agrees with clientScopePredicate on every membership set', () => {
   for (const name of SCOPES) {
     it(`scope "${name}"`, async () => {
       const scope = scopeNamed(name);
       const bySql = await visibleBySql(scope);
-
-      const disagreements = [...carried.entries()]
-        .filter(([id, tags]) => bySql.has(id) !== seesClientWithTags(scope, tags))
-        .map(([id, tags]) => ({
-          tags: tags.map((tagId) => `tag ${tagIds.indexOf(tagId) + 1}`),
-          sql: bySql.has(id),
-          twin: seesClientWithTags(scope, tags),
-        }));
-
+      const disagreements: number[] = [];
+      for (const id of clients) {
+        const memberships = await store.tagIdsForClient(id);
+        if (bySql.has(id) !== seesClientWithTags(scope, memberships)) disagreements.push(id);
+      }
       expect(disagreements, `the twin disagrees with the SQL for scope "${name}"`).toEqual([]);
     });
   }
 
   it('is not vacuous — the matrix really separates the scopes', async () => {
-    /*
-     * Without this, a predicate and a twin that both answered "everyone" (or
-     * "no one") would agree on every cell above. Pin the counts the SQL itself
-     * produces for three shapes whose answers are known by hand.
-     */
     expect((await visibleBySql(scopeNamed('unrestricted'))).size).toBe(8);
-    // Subsets containing tag 1: 4 of 8.
-    expect((await visibleBySql(scopeNamed('one tag'))).size).toBe(4);
-    // Plus the one client with no tags at all.
-    expect((await visibleBySql(scopeNamed('one tag + new clients'))).size).toBe(5);
-    expect((await visibleBySql(scopeNamed('new clients only'))).size).toBe(1);
-    expect((await visibleBySql(scopeNamed('no tags, no new clients'))).size).toBe(0);
+    // Subsets containing tag 1, in both countries: 2 × 2.
+    expect((await visibleBySql(scopeNamed('tag 1'))).size).toBe(4);
+    expect((await visibleBySql(scopeNamed('tags 1 and 2'))).size).toBe(6);
+    // Every Lebanese client, whatever else they carry.
+    expect((await visibleBySql(scopeNamed('Lebanon desk'))).size).toBe(4);
+    // Every Egyptian client, plus the two Lebanese ones carrying tag 1.
+    expect((await visibleBySql(scopeNamed('tag 1 + Egypt desk'))).size).toBe(6);
+    expect((await visibleBySql(scopeNamed('no tags'))).size).toBe(0);
+  });
+});
+
+describe('the country tag is derived, and Postgres keeps it that way (0193)', () => {
+  it('follows the client when their country changes', async () => {
+    const [moving] = clients;
+    const desk = scopeNamed('Lebanon desk');
+    expect((await visibleBySql(desk)).has(moving)).toBe(true);
+    await ctx.db.update(users).set({ country: 'Egypt' }).where(eq(users.id, moving));
+    expect((await visibleBySql(desk)).has(moving)).toBe(false);
+    expect(await store.tagIdsForClient(moving)).toContain(egypt);
+    await ctx.db.update(users).set({ country: 'Lebanon' }).where(eq(users.id, moving));
+  });
+
+  it('refuses a client without a country, or with one the platform does not know', async () => {
+    await expect(
+      ctx.db.execute(sql`UPDATE users SET country = NULL WHERE id = ${clients[0]}`),
+    ).rejects.toThrow();
+    await expect(
+      ctx.db.execute(sql`UPDATE users SET country = 'Atlantis' WHERE id = ${clients[0]}`),
+    ).rejects.toThrow();
+  });
+
+  it('defaults a raw insert to Unknown, which is itself a country tag', async () => {
+    const [row] = await ctx.db
+      .insert(users)
+      .values({
+        email: 'twin-nocountry@oxshare-e2e.test',
+        passwordHash: 'x',
+        firstName: 'N',
+        lastName: 'C',
+      })
+      .returning();
+    expect(row.country).toBe('Unknown');
+    expect(await store.tagIdsForClient(row.id)).toEqual([await countryTag('Unknown')]);
+  });
+
+  it('refuses assigning, deleting or re-pointing a country tag', async () => {
+    await expect(
+      ctx.db.insert(clientTagAssignments).values({ userId: clients[0], tagId: egypt }),
+    ).rejects.toThrow();
+    await expect(ctx.db.delete(clientTags).where(eq(clientTags.id, egypt))).rejects.toThrow();
+    await expect(
+      ctx.db.update(clientTags).set({ countryCode: 'LB' }).where(eq(clientTags.id, egypt)),
+    ).rejects.toThrow();
+    // Its colour is the desk's.
+    await ctx.db.update(clientTags).set({ color: 'blue' }).where(eq(clientTags.id, egypt));
   });
 });

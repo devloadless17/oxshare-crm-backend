@@ -1,3 +1,4 @@
+import type { DateRange } from '../../common/date-range';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { AdminsStore } from '../../store/admins.store';
 import {
@@ -172,6 +173,7 @@ export class KycReviewService {
       /** R-2.5 server-side sort, already validated against KYC_SORT_COLUMNS. */
       sort?: KycSortKey;
       order?: SortOrder;
+      range?: DateRange;
     } = {},
   ) {
     const page = Math.max(1, filter.page ?? 1);
@@ -186,6 +188,7 @@ export class KycReviewService {
       status: filter.status,
       statuses: filter.statuses ? [...filter.statuses] : undefined,
       q: filter.q,
+      range: filter.range,
       page,
       limit,
       scope: filter.scope,

@@ -1,3 +1,5 @@
+import { randomBytes } from 'node:crypto';
+
 /**
  * What a referral code is made of, and how to read one a human sent us.
  *
@@ -48,4 +50,17 @@ export function normaliseReferralCode(raw: string | null | undefined): string | 
   if (raw === null || raw === undefined) return undefined;
   const cleaned = raw.toUpperCase().replace(TRANSPORT_DEBRIS, '');
   return cleaned.length > 0 ? cleaned : undefined;
+}
+
+/**
+ * A fresh code from the mint alphabet — for an administrator's sign-up link
+ * (0195). `randomBytes`, not `Math.random`: a code is not a secret, but it is
+ * an identifier somebody could enumerate. The caller checks uniqueness (the
+ * column is UNIQUE regardless).
+ */
+export function randomReferralCode(length = REFERRAL_CODE_LENGTH): string {
+  const bytes = randomBytes(length);
+  let out = '';
+  for (const byte of bytes) out += REFERRAL_CODE_ALPHABET[byte % REFERRAL_CODE_ALPHABET.length];
+  return out;
 }

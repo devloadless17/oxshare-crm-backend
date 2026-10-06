@@ -1,3 +1,4 @@
+import { dateRangeQuery } from '../../common/date-range';
 import {
   Body,
   Controller,
@@ -87,6 +88,7 @@ export class AdminNotificationsController {
       view: query.view ?? 'history',
       category: query.category,
       q: query.q,
+      range: dateRangeQuery(query.from, query.to),
       cursor: query.cursor ? decodeCursor(query.cursor) : undefined,
       limit: query.limit,
     });

@@ -75,8 +75,6 @@ export interface Admin {
    * person's own answer. See `RolesStore.resolveMaskedFields`.
    */
   maskedFields?: string[];
-  /** D-60 — sees the intake pool: clients with no tag assignments yet. */
-  seesUntriaged?: boolean;
   /** Sees every client — the explicit grant (0154). See `scopeOf`. */
   seesAllClients?: boolean;
   /**
@@ -124,8 +122,6 @@ export interface AdminInvite {
    */
   maskedFields?: string[];
   scopedTagIds?: string[];
-  /** D-60 — intake grant chosen at invite time, applied on acceptance. */
-  seesUntriaged?: boolean;
   /** All-clients grant chosen at invite time, applied on acceptance (0154). */
   seesAllClients?: boolean;
   invitedBy: string;

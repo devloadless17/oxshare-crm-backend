@@ -90,7 +90,6 @@ beforeAll(async () => {
       role: 'sub_admin',
       roleId: deskRole.id,
       permissions: [],
-      seesUntriaged: true,
       status: 'active',
     })
     .returning();

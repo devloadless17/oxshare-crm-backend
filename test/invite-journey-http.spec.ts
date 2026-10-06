@@ -425,7 +425,7 @@ describe('outstanding invites are visible and cancellable', () => {
  *
  * ── The gap this closes ────────────────────────────────────────────────────
  *
- * `InviteDto` carries `maskedFields`, `scopedTagIds` and `seesUntriaged`, and
+ * `InviteDto` carries `maskedFields` and `scopedTagIds`, and
  * its own comment explains why they are settable at INVITE time rather than
  * after acceptance: an empty scope means unrestricted, so configuring
  * territory later leaves a window — between the invitee clicking the emailed
@@ -477,7 +477,7 @@ describe('an invite records the VISIBILITY it grants, not only the permissions',
     return row.id;
   }
 
-  it('carries the mask, the territory and the intake grant onto BOTH audit rows', async () => {
+  it('carries the mask and the territory onto BOTH audit rows', async () => {
     const [tag] = await ctx.db.db
       .insert(clientTags)
       .values({ slug: 'journey-territory', label: 'Journey Territory' })
@@ -491,7 +491,6 @@ describe('an invite records the VISIBILITY it grants, not only the permissions',
       roleId: reviewerRoleId,
       maskedFields: ['client.phone'],
       scopedTagIds: [tag.id],
-      seesUntriaged: false,
     });
     // Asserted rather than assumed: a 400 here (an unmaskable key, an unknown
     // tag) would otherwise leave the audit assertions below testing nothing.
@@ -502,7 +501,6 @@ describe('an invite records the VISIBILITY it grants, not only the permissions',
     const invited = inviteRow.details as Record<string, unknown>;
     expect(invited.maskedFields).toEqual(['client.phone']);
     expect(invited.scopedTagIds).toEqual([tag.id]);
-    expect(invited.seesUntriaged).toBe(false);
 
     // The invite row is keyed on the INVITE. A compliance query about one
     // administrator starts from the admin, so the same facts have to be
@@ -517,7 +515,6 @@ describe('an invite records the VISIBILITY it grants, not only the permissions',
     const accepted = acceptRow.details as Record<string, unknown>;
     expect(accepted.maskedFields).toEqual(['client.phone']);
     expect(accepted.scopedTagIds).toEqual([tag.id]);
-    expect(accepted.seesUntriaged).toBe(false);
   });
 
   it('records an UNRESTRICTED territory as an explicit null, not as an absent key', async () => {
@@ -538,9 +535,6 @@ describe('an invite records the VISIBILITY it grants, not only the permissions',
     expect(details).toHaveProperty('scopedTagIds');
     expect(details.scopedTagIds).toBeNull();
     expect(details).toHaveProperty('maskedFields');
-    // The intake grant is not null-able: it resolves to a boolean either way,
-    // and an unrestricted inviter grants it by default (0058).
-    expect(details.seesUntriaged).toBe(true);
   });
 });
 

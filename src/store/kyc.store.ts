@@ -1,3 +1,4 @@
+import { type DateRange, withinRange } from '../common/date-range';
 import {
   and,
   asc,
@@ -540,6 +541,8 @@ export class KycStore {
     /** R-2.5 server-side sort. Validated by `sortKey` before it gets here. */
     sort?: KycSortKey;
     order?: SortOrder;
+    /** When it was submitted (a draft: started) — `[from, until)`, `common/date-range.ts`. */
+    range?: DateRange;
   }) {
     const db = this.db;
     const conditions: SQL[] = [];
@@ -588,6 +591,18 @@ export class KycStore {
     // or export that forgot to filter. See common/security/client-scope.ts.
     const scoped = clientScopePredicate(filter.scope ?? UNRESTRICTED, kycSubmissions.userId);
     if (scoped) visibility.push(scoped);
+    /*
+     * The period, like the search, is what the reader is looking at: the tabs
+     * count within it. By SUBMISSION, or by when it was started while it is
+     * still a draft — an in-progress row has no submission date, and keying on
+     * that alone would hide every draft from any period at all.
+     */
+    visibility.push(
+      ...withinRange(
+        sql`coalesce(${kycSubmissions.submittedAt}, ${kycSubmissions.createdAt})`,
+        filter.range,
+      ),
+    );
     if (filter.q?.trim()) {
       // A Portal ID or a name/email — the one definition every client search
       // shares, including why its text expression must match migration 0010.

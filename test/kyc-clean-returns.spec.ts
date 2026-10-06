@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { uniqueTestPhone } from './support/registration';
 import { sql } from 'drizzle-orm';
 import { ALL_PERMISSIONS } from './support/all-permissions';
 import {
@@ -32,7 +33,10 @@ const PROFILE = {
   firstName: 'Layla',
   lastName: 'Haddad',
   dateOfBirth: '1990-01-01',
-  phone: '+96170123456',
+  // A fresh number per spread: one client per phone (0194).
+  get phone(): string {
+    return uniqueTestPhone();
+  },
   nationality: 'Lebanese',
   country: 'Lebanon',
   address: 'Hamra Street 12',
