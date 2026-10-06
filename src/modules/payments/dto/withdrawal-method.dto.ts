@@ -1,4 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Type } from 'class-transformer';
 import { METHOD_AVAILABILITIES, type MethodAvailability } from '../providers/provider-status';
 import {
   ArrayMaxSize,
@@ -12,9 +13,16 @@ import {
   Matches,
   Min,
   ValidateIf,
+  ValidateNested,
 } from 'class-validator';
 import { NoClientFields, NotClientField } from '../../../common/security/client-field.decorator';
-import { LOGO_URL_MESSAGE, LOGO_URL_PATTERN } from './payment-method.dto';
+import {
+  LOGO_URL_MESSAGE,
+  LOGO_URL_PATTERN,
+  PayToFieldDto,
+  PayToFieldInputDto,
+} from './payment-method.dto';
+import { PROOF_FIELD_LIMITS } from '../../../common/payments/proof-fields';
 import { METHOD_KEY_MESSAGE, METHOD_KEY_PATTERN } from '../method-keys';
 import { OptionalArabicText } from '../../../common/dto/arabic-text';
 
@@ -79,6 +87,15 @@ export class AdminWithdrawalMethodDto {
 
   @ApiProperty({ example: 0, description: 'The order clients see the methods in.' })
   sortOrder: number;
+
+  @ApiProperty({
+    type: PayToFieldDto,
+    isArray: true,
+    description:
+      'Every detail the rail shows the client on the withdraw form (0202), hidden ones ' +
+      'included.',
+  })
+  payToFields: PayToFieldDto[];
 
   @ApiProperty({
     example: 'Whish payouts',
@@ -226,6 +243,21 @@ export class CreateWithdrawalMethodDto {
   @IsInt()
   @Min(0)
   sortOrder?: number;
+
+  @ApiPropertyOptional({
+    type: PayToFieldInputDto,
+    isArray: true,
+    description:
+      'What the rail SHOWS the client on the withdraw form (0202) — where to collect cash, a ' +
+      'reference to quote. Ordered; the whole list is replaced on save. Each request keeps ' +
+      'what it was shown.',
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(PROOF_FIELD_LIMITS.fields + 4)
+  @ValidateNested({ each: true })
+  @Type(() => PayToFieldInputDto)
+  payToFields?: PayToFieldInputDto[];
 }
 
 /**
@@ -292,4 +324,19 @@ export class UpdateWithdrawalMethodDto {
   @IsInt()
   @Min(0)
   sortOrder?: number;
+
+  @ApiPropertyOptional({
+    type: PayToFieldInputDto,
+    isArray: true,
+    description:
+      'What the rail SHOWS the client on the withdraw form (0202) — where to collect cash, a ' +
+      'reference to quote. Ordered; the whole list is replaced on save. Each request keeps ' +
+      'what it was shown.',
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(PROOF_FIELD_LIMITS.fields + 4)
+  @ValidateNested({ each: true })
+  @Type(() => PayToFieldInputDto)
+  payToFields?: PayToFieldInputDto[];
 }

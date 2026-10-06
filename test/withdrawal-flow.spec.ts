@@ -133,6 +133,47 @@ describe('requesting a withdrawal', () => {
     expect(cash.destination).toBeNull();
   });
 
+  it('shows the client what the rail tells them, and keeps a copy on the request (0202)', async () => {
+    const userId = await makeFundedClient('withdraw-pay-to@test.local');
+    await ctx.db.execute(sql`
+      INSERT INTO withdrawal_payment_methods (key, name, internal_label, enabled, provider_code, channel_code, pay_to_fields)
+      VALUES ('cash_told', 'Cash', 'Cash (told)', true, 'manual', 'cash',
+        '[{"id":"f_where00001","label":"Collect at","type":"text","value":"Hamra branch","enabled":true},
+          {"id":"f_hidden0001","label":"Old","type":"text","value":"x","enabled":false}]'::jsonb)
+      ON CONFLICT (key) DO NOTHING`);
+    const offered = (await transactions.listWithdrawalMethods(null)).find(
+      (m) => m.key === 'cash_told',
+    );
+    expect(offered?.payToFields.map((f) => [f.label, f.value])).toEqual([
+      ['Collect at', 'Hamra branch'],
+    ]);
+
+    const row = await transactions.requestWithdrawal({
+      userId,
+      currency: 'USD',
+      amount: '10',
+      destination: '',
+      methodKey: 'cash_told',
+    });
+    const told = sql`SELECT pay_to_details FROM transactions WHERE id = ${row.id}`;
+    const shown = [
+      { fieldId: 'f_where00001', label: 'Collect at', type: 'text', value: 'Hamra branch' },
+    ];
+    expect(
+      (await ctx.db.execute<{ pay_to_details: unknown }>(told)).rows[0]?.pay_to_details,
+    ).toEqual(shown);
+    // The desk reads it on the request (the list maps every field by name).
+    const [desk] = (await transactions.listForAdmin({ id: row.id })).items;
+    expect(desk?.payToDetails).toEqual(shown);
+    // The rail moves branch; the request keeps the one it was told.
+    await ctx.db.execute(
+      sql`UPDATE withdrawal_payment_methods SET pay_to_fields = '[]'::jsonb WHERE key = 'cash_told'`,
+    );
+    expect(
+      (await ctx.db.execute<{ pay_to_details: unknown }>(told)).rows[0]?.pay_to_details,
+    ).toEqual(shown);
+  });
+
   it('debits the balance immediately', async () => {
     const userId = await makeFundedClient('debit@test.local');
 

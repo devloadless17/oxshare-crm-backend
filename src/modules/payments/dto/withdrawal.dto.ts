@@ -1,5 +1,6 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { ProofDetailDto } from './deposit.dto';
+import { ShownPayToFieldDto } from './payment-method.dto';
 import { NoClientFields } from '../../../common/security/client-field.decorator';
 import { transactionStateEnum } from '../../../database/schema';
 import { IsNotEmpty, IsNumberString, IsOptional, IsString, MaxLength } from 'class-validator';
@@ -107,6 +108,15 @@ export class WithdrawalMethodDto {
       'currency’s wallet is refused.',
   })
   currencies: string[] | null;
+
+  @ApiProperty({
+    type: ShownPayToFieldDto,
+    isArray: true,
+    description:
+      'What the rail tells the client, in order (0202) — where to collect cash, a reference ' +
+      'to quote. Read-only for the client; the shown details only.',
+  })
+  payToFields: ShownPayToFieldDto[];
 }
 
 /*

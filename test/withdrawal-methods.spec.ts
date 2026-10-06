@@ -234,3 +234,48 @@ describe('the Arabic name (0179)', () => {
     expect((await methods.create({ key: 'plain', name: 'Plain' }, TEST_ACTOR)).nameAr).toBeNull();
   });
 });
+
+describe('details the rail shows the client (0202)', () => {
+  it('stores a phone as E.164, keeps a hidden one, and refuses a broken one under its row', async () => {
+    const created = await methods.create(
+      {
+        name: 'Cash pickup',
+        payToFields: [
+          {
+            id: 'f_wpick00001',
+            label: 'Collect at',
+            type: 'text',
+            value: 'Hamra branch',
+            enabled: true,
+          },
+          {
+            id: 'f_wcall00001',
+            label: 'Call',
+            type: 'phone',
+            value: '+961 70 123 456',
+            enabled: false,
+          },
+        ],
+      },
+      TEST_ACTOR,
+    );
+    expect(created.payToFields).toEqual([
+      expect.objectContaining({ label: 'Collect at', value: 'Hamra branch', hint: null }),
+      expect.objectContaining({ label: 'Call', value: '+96170123456', enabled: false }),
+    ]);
+    await expect(
+      methods.update(
+        created.key,
+        {
+          payToFields: [
+            { id: 'f_wcall00001', label: 'Call', type: 'phone', value: '+961 7150', enabled: true },
+          ],
+        },
+        TEST_ACTOR,
+      ),
+    ).rejects.toMatchObject({ fields: { 'payToFields.0.value': expect.stringMatching(/short/) } });
+    // An edit that does not send the list leaves it alone.
+    const renamed = await methods.update(created.key, { name: 'Cash' }, TEST_ACTOR);
+    expect(renamed.payToFields).toHaveLength(2);
+  });
+});

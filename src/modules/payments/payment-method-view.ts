@@ -4,7 +4,7 @@ import type {
   PaymentMethodRow,
 } from './payment-methods.service';
 import { askedProofFields } from '../../common/payments/proof-fields';
-import { shownPayToFields } from '../../common/payments/pay-to-fields';
+import { consolePayToFields, shownPayToFields } from '../../common/payments/pay-to-fields';
 
 /**
  * A deposit method as the console reads it — exactly the fields
@@ -59,16 +59,7 @@ export function adminPaymentMethodView(row: AdminPaymentMethod) {
       hintAr: field.hintAr ?? null,
     })),
     // Every shown detail, hidden ones included (0199).
-    payToFields: row.payToFields.map((field) => ({
-      id: field.id,
-      label: field.label,
-      labelAr: field.labelAr ?? null,
-      type: field.type,
-      value: field.value,
-      enabled: field.enabled,
-      hint: field.hint ?? null,
-      hintAr: field.hintAr ?? null,
-    })),
+    payToFields: consolePayToFields(row.payToFields),
   };
 }
 

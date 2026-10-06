@@ -23,6 +23,7 @@ import {
   requireInternalLabel,
 } from './method-keys';
 import { arabicText } from '../../common/dto/arabic-text';
+import { consolePayToFields, normalisePayToFields } from '../../common/payments/pay-to-fields';
 
 type WithdrawalMethodRow = typeof withdrawalPaymentMethods.$inferSelect;
 
@@ -109,7 +110,14 @@ export class WithdrawalMethodsService {
       providers.get(row.providerCode),
       !off.has(channelSwitchKey(row, 'payout')),
     );
-    return { ...row, builtIn: false, inUse, ...status };
+    return {
+      ...row,
+      // Every shown detail, hidden ones included, absent text as null (0202).
+      payToFields: consolePayToFields(row.payToFields),
+      builtIn: false,
+      inUse,
+      ...status,
+    };
   }
 
   private async providerStates(): Promise<Map<string, ProviderState>> {
@@ -154,6 +162,7 @@ export class WithdrawalMethodsService {
         enabled: dto.enabled ?? true,
         sortOrder: dto.sortOrder ?? (await this.nextSortOrder()),
         ...(normaliseCountryRule(dto.countryRule, dto.countryCodes) ?? {}),
+        payToFields: normalisePayToFields(dto.payToFields ?? []),
         providerCode: route.providerCode,
         channelCode: route.channelCode,
       })
@@ -164,6 +173,7 @@ export class WithdrawalMethodsService {
       nameAr: row.nameAr,
       internalLabel: row.internalLabel,
       enabled: row.enabled,
+      payToFields: row.payToFields,
     });
     return this.adminView(row, false, await this.providerStates(), await readOffSwitches(this.db));
   }
@@ -181,6 +191,9 @@ export class WithdrawalMethodsService {
       dto.internalLabel !== undefined ? requireInternalLabel(dto.internalLabel) : undefined;
     if (internalLabel !== undefined) await this.assertLabelFree(internalLabel, current.key);
     const countryRule = normaliseCountryRule(dto.countryRule, dto.countryCodes);
+    // Omitted leaves the stored list alone, so an older console never clears it.
+    const payToFields =
+      dto.payToFields !== undefined ? normalisePayToFields(dto.payToFields) : undefined;
     const [row] = await this.db
       .update(withdrawalPaymentMethods)
       .set({
@@ -191,6 +204,7 @@ export class WithdrawalMethodsService {
         ...(dto.enabled !== undefined ? { enabled: dto.enabled } : {}),
         ...(dto.sortOrder !== undefined ? { sortOrder: dto.sortOrder } : {}),
         ...(countryRule ?? {}),
+        ...(payToFields !== undefined ? { payToFields } : {}),
         updatedAt: new Date(),
       })
       .where(eq(withdrawalPaymentMethods.key, current.key))
@@ -224,6 +238,10 @@ export class WithdrawalMethodsService {
         before: { rule: current.countryRule, codes: current.countryCodes },
         after: { rule: row.countryRule, codes: row.countryCodes },
       };
+    }
+    // What clients are told (0202): a list, compared as a whole.
+    if (JSON.stringify(current.payToFields) !== JSON.stringify(row.payToFields)) {
+      changed['payToFields'] = { before: current.payToFields, after: row.payToFields };
     }
     this.audit.record(actor.id, 'withdrawal_method.update', 'withdrawal_method', row.key, {
       changed,

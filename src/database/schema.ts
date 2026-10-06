@@ -2901,6 +2901,16 @@ export const withdrawalPaymentMethods = pgTable(
       .array()
       .notNull()
       .default(sql`'{}'::text[]`),
+    /**
+     * What the rail SHOWS the client on the withdraw form (0202) — where to
+     * collect cash, a reference to quote. The deposit column's shape and rules
+     * (`common/payments/pay-to-fields.ts`); a request records what it was shown
+     * in `transactions.pay_to_details`.
+     */
+    payToFields: jsonb('pay_to_fields')
+      .$type<PayToField[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
     sortOrder: integer('sort_order').notNull().default(0),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
