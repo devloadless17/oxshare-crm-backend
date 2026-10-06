@@ -385,8 +385,6 @@ describe('recorded: the feature modules', () => {
      * on the audit row it claims to be about.
      */
     const res = await session.put('/v1/admin/settings/trading', {
-      maxLiveAccounts: 4,
-      maxDemoAccounts: 6,
       maxDemoDeposit: '500000',
       /*
        * The ladder ceiling (0105) — required for the reason the note below

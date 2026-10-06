@@ -851,17 +851,21 @@ export const SERVER_MESSAGES_AR: Readonly<Record<string, string>> = {
     'توجد طريقة سحب أخرى بالاسم الداخلي «{1}» مسبقاً.',
 
   // ── products and agencies ────────────────────────────────────────────────────
-  'The demo product cannot carry a commission type: practice trades never pay partner commission, so the type would look configured and pay nobody.':
-    'لا يمكن ربط المنتج التجريبي بنوع عمولة: فصفقات التدريب لا تدفع عمولات للشركاء.',
+  'A demo product cannot carry a commission type: practice trades never pay partner commission, so the type would look configured and pay nobody.':
+    'لا يمكن ربط منتج تجريبي بنوع عمولة: فصفقات التدريب لا تدفع عمولات للشركاء.',
   'Product not found.': 'المنتج غير موجود.',
   "A product's type is fixed when it is created. To change what is offered as demo, create the product you want and move the groups instead.":
     'يُحدَّد نوع المنتج عند إنشائه. لتغيير ما يُعرض كتجريبي، أنشئ المنتج المطلوب وانقل المجموعات إليه.',
   'This product is sold by {1}. Remove it from those agencies first, or disable it instead — disabling stops it being sold and leaves open accounts alone.':
     'تبيع هذا المنتج: {1}. أزله من تلك الوكالات أولاً، أو عطّله بدلاً من ذلك.',
-  "'{1}' is the demo product — it takes demo groups only. Attach live groups to a real product instead.":
-    "'{1}' هو المنتج التجريبي — يقبل المجموعات التجريبية فقط. اربط المجموعات الحقيقية بمنتج حقيقي.",
-  "'{1}' is a real product — it takes live groups only. Demo groups belong on the demo product, which is offered to every client.":
-    "'{1}' منتج حقيقي — يقبل المجموعات الحقيقية فقط. المجموعات التجريبية تتبع المنتج التجريبي.",
+  "'{1}' is a demo product — it takes demo groups only. Attach live groups to a real product instead.":
+    "'{1}' منتج تجريبي — يقبل المجموعات التجريبية فقط. اربط المجموعات الحقيقية بمنتج حقيقي.",
+  "'{1}' is a real product — it takes live groups only. Demo groups belong on a demo product, which is offered to every client.":
+    "'{1}' منتج حقيقي — يقبل المجموعات الحقيقية فقط. المجموعات التجريبية تتبع منتجاً تجريبياً.",
+  "'{1}' is a demo product, and demo accounts are never funded from the wallet, so its groups take no minimum deposit.":
+    "'{1}' منتج تجريبي، والحسابات التجريبية لا تُموَّل من المحفظة، لذا لا تحمل مجموعاته حداً أدنى للإيداع.",
+  'A minimum deposit must be above zero. Leave it empty for none.':
+    'يجب أن يكون الحد الأدنى للإيداع أكبر من صفر. اتركه فارغاً لعدم تحديد حد.',
   'MT5 does not report a group called "{1}". Choose one from the list — if the group is new, the broker may not have granted this manager account access to it.':
     'لا يُبلغ MT5 عن مجموعة باسم "{1}". اختر مجموعة من القائمة.',
   '"{1}" is already attached to \'{2}\'.': '"{1}" مرتبطة بالفعل بـ \'{2}\'.',
@@ -873,12 +877,8 @@ export const SERVER_MESSAGES_AR: Readonly<Record<string, string>> = {
     'يوجد شركاء معيّنون تحت هذه الوكالة. انقلهم إلى وكالة أخرى أولاً، أو عطّلها بدلاً من ذلك.',
   'One of those products does not exist. Reload and try again.':
     'أحد هذه المنتجات غير موجود. أعد التحميل ثم حاول مرة أخرى.',
-  'The demo product is offered to every client automatically — agencies carry real products only.':
-    'يُعرض المنتج التجريبي على كل عميل تلقائياً — تحمل الوكالات المنتجات الحقيقية فقط.',
-  "Only one demo product can exist — '{1}' is it. It is offered to every client automatically, so edit that product instead of creating another.":
-    "لا يمكن أن يوجد إلا منتج تجريبي واحد، وهو '{1}'. عدّله بدلاً من إنشاء منتج آخر.",
-  'Only one demo product can exist — one already exists. It is offered to every client automatically, so edit that product instead of creating another.':
-    'لا يمكن أن يوجد إلا منتج تجريبي واحد، وهو موجود بالفعل. عدّله بدلاً من إنشاء منتج آخر.',
+  'Demo products are offered to every client automatically — agencies carry real products only.':
+    'تُعرض المنتجات التجريبية على كل عميل تلقائياً — تحمل الوكالات المنتجات الحقيقية فقط.',
 
   // ── profile ──────────────────────────────────────────────────────────────────
   'Client not found.': 'العميل غير موجود.',
@@ -954,12 +954,14 @@ export const SERVER_MESSAGES_AR: Readonly<Record<string, string>> = {
     'المنتج المختار لا يبيع مجموعة MT5 "{1}". اختر منتجاً يتضمنها، أو اربط المجموعة به أولاً.',
   'The MT5 group "{1}" is sold by more than one product ({2}). Choose which product this account is opened under.':
     'تُباع مجموعة MT5 "{1}" ضمن أكثر من منتج ({2}). اختر المنتج الذي سيُفتح هذا الحساب تحته.',
-  'New {1} accounts are not being opened online at the moment. Please contact support.':
-    'لا يتاح حالياً فتح حسابات جديدة من النوع «{1}» عبر الإنترنت. يُرجى التواصل مع الدعم.',
-  'You already have {1} {2} account, which is the maximum. Contact support if you need another.':
-    'لديك بالفعل {1} حساب من النوع «{2}»، وهو الحد الأقصى. تواصل مع الدعم إذا احتجت إلى حساب آخر.',
-  'You already have {1} {2} accounts, which is the maximum. Contact support if you need another.':
-    'لديك بالفعل {1} حسابات من النوع «{2}»، وهو الحد الأقصى. تواصل مع الدعم إذا احتجت إلى حساب آخر.',
+  "You already have {1} '{2}' account, the most one client may hold. Contact support if you need another.":
+    'لديك بالفعل {1} حساب من النوع «{2}»، وهو الحد الأقصى للعميل الواحد. تواصل مع الدعم إذا احتجت إلى حساب آخر.',
+  "You already have {1} '{2}' accounts, the most one client may hold. Contact support if you need another.":
+    'لديك بالفعل {1} حسابات من النوع «{2}»، وهو الحد الأقصى للعميل الواحد. تواصل مع الدعم إذا احتجت إلى حساب آخر.',
+  'The minimum transfer into this account is {1} {2}.':
+    'الحد الأدنى للتحويل إلى هذا الحساب هو {1} {2}.',
+  'minDeposit must be an amount, e.g. 100 or 250.50 (up to 8 decimals)':
+    'يجب أن تكون القيمة مبلغاً، مثل 100 أو 250.50 (حتى 8 خانات عشرية).',
   'A live account cannot be opened with a starting balance. Fund it from your wallet once it is open.':
     'لا يمكن فتح حساب حقيقي برصيد افتتاحي. موّله من محفظتك بعد فتحه.',
   'This account is not fully set up yet. Please contact support.':

@@ -111,8 +111,6 @@ beforeEach(() => {
 
 /** A complete, valid trading form — each test varies one field of it. */
 const baseTrading = {
-  maxLiveAccounts: 5,
-  maxDemoAccounts: 5,
   maxDemoDeposit: '1000000',
   /*
    * The commission cadence (0113), which replaced `ibMaxLevels` on this form.
@@ -379,8 +377,7 @@ describe('Trading settings', () => {
   it('returns defaults before anything is saved', async () => {
     const result = await service.getTrading();
 
-    expect(result.maxLiveAccounts).toBe(5);
-    expect(result.maxDemoAccounts).toBe(5);
+    expect(result.maxDemoDeposit).toBe('1000000');
     expect(result.updatedAt).toBeNull();
   });
 
@@ -392,12 +389,10 @@ describe('Trading settings', () => {
    * rule is a refusal to disable the last enabled one.
    */
 
-  it('accepts a cap of zero — it is a real setting, not an empty field', async () => {
-    // Zero stops new live accounts without touching the ones already open. A
-    // service that treated it as "unset" would quietly reopen the door.
-    const result = await service.setTrading({ ...baseTrading, maxLiveAccounts: 0 }, ACTOR);
-    expect(result.maxLiveAccounts).toBe(0);
-  });
+  /*
+   * The account caps that were tested here are per PRODUCT now (0201) — see
+   * `account-open-product-choice.spec.ts`.
+   */
 
   it('keeps the demo ceiling a string', async () => {
     const result = await service.setTrading(

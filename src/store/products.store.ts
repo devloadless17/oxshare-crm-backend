@@ -8,6 +8,7 @@ import {
   agencyProducts,
   ibAccounts,
   ibCommissionTypes,
+  tradingAccounts,
   tradingProductGroups,
   tradingProducts,
   users,
@@ -32,6 +33,18 @@ export interface ProductGroupRow {
   environment: 'live' | 'demo';
   mt5Group: string;
   currency: string;
+  /** The least a client may transfer in per transfer, in `currency` (0201). Live only. */
+  minDeposit: string | null;
+}
+
+function groupRow(row: typeof tradingProductGroups.$inferSelect): ProductGroupRow {
+  return {
+    id: row.id,
+    environment: row.environment,
+    mt5Group: row.mt5Group,
+    currency: row.currency,
+    minDeposit: row.minDeposit,
+  };
 }
 
 export interface ProductRow {
@@ -44,8 +57,8 @@ export interface ProductRow {
   descriptionAr: string | null;
   enabled: boolean;
   /**
-   * Fixed at creation. `demo` exists at most once and is offered globally;
-   * see the column comment in schema.ts for the full rule set.
+   * Fixed at creation. Every enabled `demo` product is offered globally; see
+   * the column comment in schema.ts for the full rule set.
    */
   type: 'real' | 'demo';
   /**
@@ -54,6 +67,8 @@ export interface ProductRow {
    */
   commissionTypeId: string | null;
   sortOrder: number;
+  /** How many accounts one client may hold under this product (0201). */
+  maxAccountsPerClient: number;
   groups: ProductGroupRow[];
 }
 
@@ -77,6 +92,10 @@ export interface OfferedGroup {
   productNameAr: string | null;
   mt5Group: string;
   currency: string;
+  /** The product's cap per client (0201). */
+  maxAccountsPerClient: number;
+  /** The group's minimum per transfer, or null for none (0201). */
+  minDeposit: string | null;
 }
 
 /**
@@ -132,14 +151,8 @@ export class ProductsStore {
       commissionTypeId: row.commissionTypeId,
       type: row.type,
       sortOrder: row.sortOrder,
-      groups: groups
-        .filter((group) => group.productId === row.id)
-        .map((group) => ({
-          id: group.id,
-          environment: group.environment,
-          mt5Group: group.mt5Group,
-          currency: group.currency,
-        })),
+      maxAccountsPerClient: row.maxAccountsPerClient,
+      groups: groups.filter((group) => group.productId === row.id).map(groupRow),
     }));
   }
 
@@ -186,6 +199,7 @@ export class ProductsStore {
     type: 'real' | 'demo';
     commissionTypeId: string | null;
     sortOrder: number | undefined;
+    maxAccountsPerClient: number;
   }): Promise<ProductRow> {
     const row = await this.db.transaction(async (tx) => {
       const [created] = await tx
@@ -219,13 +233,17 @@ export class ProductsStore {
       enabled: boolean;
       commissionTypeId: string | null;
       sortOrder: number | undefined;
+      /** Omitted keeps the stored cap — the list's on/off switch sends none. */
+      maxAccountsPerClient?: number;
     },
   ): Promise<ProductRow | null> {
+    const { maxAccountsPerClient, ...rest } = values;
     const row = await this.db.transaction(async (tx) => {
       const [updated] = await tx
         .update(tradingProducts)
         .set({
-          ...values,
+          ...rest,
+          ...(maxAccountsPerClient !== undefined ? { maxAccountsPerClient } : {}),
           /*
            * NO position given means the product STAYS where it is. The console
            * no longer asks for one (owner, 26 Sep 2026), and appending here
@@ -276,12 +294,7 @@ export class ProductsStore {
       .where(eq(tradingProductGroups.productId, productId))
       .orderBy(asc(tradingProductGroups.environment), asc(tradingProductGroups.currency));
 
-    return rows.map((row) => ({
-      id: row.id,
-      environment: row.environment,
-      mt5Group: row.mt5Group,
-      currency: row.currency,
-    }));
+    return rows.map(groupRow);
   }
 
   async addGroup(values: {
@@ -289,14 +302,54 @@ export class ProductsStore {
     environment: 'live' | 'demo';
     mt5Group: string;
     currency: string;
+    minDeposit?: string | null;
   }): Promise<ProductGroupRow> {
     const [row] = await this.db.insert(tradingProductGroups).values(values).returning();
-    return {
-      id: row.id,
-      environment: row.environment,
-      mt5Group: row.mt5Group,
-      currency: row.currency,
-    };
+    return groupRow(row);
+  }
+
+  /** Null when the group is not this product's, so the caller can 404. */
+  async setGroupMinDeposit(
+    productId: string,
+    groupId: string,
+    minDeposit: string | null,
+  ): Promise<ProductGroupRow | null> {
+    const [row] = await this.db
+      .update(tradingProductGroups)
+      .set({ minDeposit })
+      .where(
+        and(eq(tradingProductGroups.id, groupId), eq(tradingProductGroups.productId, productId)),
+      )
+      .returning();
+    return row ? groupRow(row) : null;
+  }
+
+  /**
+   * How many accounts this client holds under each product — the number
+   * `max_accounts_per_client` is compared with (0201).
+   *
+   * A CLOSED account does not count: it no longer occupies anything, and a
+   * client whose account the desk closed must be able to open another.
+   * Suspended ones do — they still exist on the broker's server.
+   */
+  async accountsHeld(userId: number): Promise<Map<string, number>> {
+    const rows = await this.db
+      .select({
+        productId: tradingAccounts.productId,
+        held: sql<number>`count(*)::int`,
+      })
+      .from(tradingAccounts)
+      .where(
+        and(
+          eq(tradingAccounts.userId, userId),
+          isNotNull(tradingAccounts.productId),
+          sql`${tradingAccounts.status} <> 'closed'`,
+        ),
+      )
+      .groupBy(tradingAccounts.productId);
+    return new Map(
+      rows.flatMap((row) => (row.productId ? [[row.productId, row.held] as const] : [])),
+    );
   }
 
   async removeGroup(productId: string, groupId: string): Promise<boolean> {
@@ -473,9 +526,10 @@ export class ProductsStore {
    * see the note on `trading_products` about the state such a flag would
    * create.
    *
-   * DEMO: the single demo product, for EVERYBODY. Practice accounts are not a
-   * commercial decision an agency makes, so the agency is never consulted —
-   * which is also why the demo product cannot be assigned to one.
+   * DEMO: every enabled demo product, for EVERYBODY (0201; 0088 allowed one).
+   * Practice accounts are not a commercial decision an agency makes, so the
+   * agency is never consulted — which is also why a demo product cannot be
+   * assigned to one.
    *
    * DISABLED products are excluded from every branch. A disabled product keeps
    * its open accounts trading and stops being sold, which is the same rule a
@@ -490,8 +544,10 @@ export class ProductsStore {
         productName: tradingProducts.name,
         productNameAr: tradingProducts.nameAr,
         sortOrder: tradingProducts.sortOrder,
+        maxAccountsPerClient: tradingProducts.maxAccountsPerClient,
         mt5Group: tradingProductGroups.mt5Group,
         currency: tradingProductGroups.currency,
+        minDeposit: tradingProductGroups.minDeposit,
       })
       .from(tradingProductGroups)
       .innerJoin(tradingProducts, eq(tradingProducts.id, tradingProductGroups.productId))
@@ -533,6 +589,8 @@ export class ProductsStore {
       productNameAr: row.productNameAr,
       mt5Group: row.mt5Group,
       currency: row.currency,
+      maxAccountsPerClient: row.maxAccountsPerClient,
+      minDeposit: row.minDeposit,
     }));
   }
 

@@ -168,6 +168,11 @@ export class SelfServiceGroups implements OnModuleInit {
     return await this.products.offeredTo(userId, environment);
   }
 
+  /** How many accounts this client holds under each product — what its cap counts (0201). */
+  async accountsHeld(userId: number): Promise<Map<string, number>> {
+    return await this.products.accountsHeld(userId);
+  }
+
   /**
    * Validate a client's chosen group, or pick the first they are offered.
    *

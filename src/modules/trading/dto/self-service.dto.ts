@@ -44,6 +44,30 @@ export class SelfServiceAccountTypeDto {
       'identifies which offer the client picked.',
   })
   productId: string;
+
+  @ApiProperty({
+    example: 5,
+    description: 'How many accounts one client may hold under this product (0201).',
+  })
+  maxAccounts: number;
+
+  @ApiProperty({
+    example: 1,
+    description:
+      'How many this client holds under the product now, closed ones excluded — at ' +
+      '`maxAccounts` the product cannot be opened again.',
+  })
+  heldAccounts: number;
+
+  @ApiProperty({
+    type: 'string',
+    nullable: true,
+    example: '100.00000000',
+    description:
+      'The least the client may move into an account of this type per transfer, in its ' +
+      'currency, as a decimal string (§6.1). Null = no minimum; always null on demo.',
+  })
+  minDeposit: string | null;
 }
 
 export class SelfServiceOfferDto {
@@ -65,12 +89,6 @@ export class SelfServiceOfferDto {
     description: 'The enabled leverage ladder — 500 means 1:500.',
   })
   leverages: number[];
-
-  @ApiProperty({ example: 3, description: 'The most live accounts a client may hold.' })
-  maxLiveAccounts: number;
-
-  @ApiProperty({ example: 3, description: 'The most demo accounts a client may hold.' })
-  maxDemoAccounts: number;
 
   @ApiProperty({
     type: 'string',

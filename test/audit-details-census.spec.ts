@@ -231,6 +231,8 @@ const WRITES_DETAILS: readonly string[] = [
   'product.delete',
   'product.group_attach',
   'product.group_detach',
+  // 0201: a group's minimum deposit before/after — no client data.
+  'product.group_update',
   'product.update',
   'rejection_reason.create',
   'rejection_reason.delete',

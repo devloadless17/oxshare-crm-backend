@@ -357,6 +357,14 @@ export class TradingController {
       // the page renders and the choice is still the broker's.
     }
 
+    /*
+     * The CAPS travel with the offer, per product (0201): the server counts
+     * what the client holds under each, by the same rule the create endpoint
+     * refuses on, so the portal never offers a product it would refuse and never
+     * has to count the accounts itself.
+     */
+    const held = await this.selfServiceGroups.accountsHeld(req.user.id);
+
     const describe = async (environment: 'live' | 'demo') =>
       (await this.selfServiceGroups.offeredTo(req.user.id, environment)).map((option) => ({
         group: option.mt5Group,
@@ -367,18 +375,14 @@ export class TradingController {
         // Sent back on create (0142): a group may back several products, so
         // the product is what identifies which offer the client picked.
         productId: option.productId,
+        maxAccounts: option.maxAccountsPerClient,
+        heldAccounts: held.get(option.productId) ?? 0,
+        minDeposit: option.minDeposit,
       }));
 
     const [liveTypes, demoTypes] = await Promise.all([describe('live'), describe('demo')]);
 
     /*
-     * The CAPS travel with the offer.
-     *
-     * The portal already knows how many accounts the client holds — it is
-     * rendering them — so sending the limits lets it stop offering a button
-     * that the create endpoint would refuse. Discovering a limit by pressing a
-     * button and reading a refusal is a poor way to learn what you are allowed.
-     *
      * `maxDemoDeposit` is here for the funding box's own hint and its `max`
      * attribute. It used to be a constant duplicated in the portal, which meant
      * the number the client was told and the number enforced could differ by a
@@ -396,8 +400,6 @@ export class TradingController {
       demoTypes,
       // From the ladder TABLE, not the settings row — see migration 0067.
       leverages: await this.selfServiceGroups.leverages(),
-      maxLiveAccounts: terms.maxLiveAccounts,
-      maxDemoAccounts: terms.maxDemoAccounts,
       maxDemoDeposit: terms.maxDemoDeposit,
     };
   }

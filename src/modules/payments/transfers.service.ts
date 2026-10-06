@@ -13,9 +13,11 @@ import { TRANSFER_STALE_MS } from './transfer-staleness';
 import {
   AuthorizationError,
   ConflictError,
+  FieldValidationError,
   NotFoundError,
   ValidationError,
 } from '../../common/errors/domain-errors';
+import { ACCOUNT_MIN_DEPOSIT } from '../../common/account-product';
 import { violatesConstraint } from '../../common/errors/pg-violation';
 import { CurrenciesService } from '../currencies/currencies.service';
 import { WalletService } from '../wallet/wallet.service';
@@ -104,6 +106,13 @@ export class TransfersService {
      * (UNIQUE `transfers_request_ref_uq`) instead of moving the money again.
      */
     requestRef?: string;
+    /**
+     * Hold a wallet→account transfer to the account's product minimum (0201).
+     * TRUE unless the caller says otherwise, so a new path is held by default;
+     * only an OPERATOR's own movement (`AdminMoneyService`) passes false — the
+     * minimum is a rule for clients, not for the desk's credits.
+     */
+    enforceProductMinimum?: boolean;
   }) {
     if (params.requestRef) {
       const existing = await this.findByRequestRef(params.requestRef);
@@ -232,6 +241,10 @@ export class TransfersService {
       );
     }
 
+    if (params.direction === 'wallet_to_account' && params.enforceProductMinimum !== false) {
+      await this.assertMeetsMinimum(account.id, amount, currency, decimals);
+    }
+
     /*
      * ── A PRE-FLIGHT CHECK, and deliberately NOT the authority ─────────────
      *
@@ -331,6 +344,35 @@ export class TransfersService {
         }
         throw error;
       });
+  }
+
+  /**
+   * Refuse a transfer INTO an account below its product minimum (0201).
+   *
+   * EVERY transfer, not only the first (the owner's ruling, 6 Oct 2026, taken
+   * knowing it refuses a small margin top-up). The minimum is the account's
+   * product group's (`ACCOUNT_MIN_DEPOSIT`), in the account's currency, which
+   * is the transfer's — they are checked equal before this runs. Before any
+   * hold, so a refusal moves nothing. Public for the deposit door, which routes
+   * a deposit to an account and must refuse it there rather than after the
+   * money has landed in the wallet.
+   */
+  async assertMeetsMinimum(
+    accountId: string,
+    amount: Decimal,
+    currency: string,
+    decimals: number,
+  ): Promise<void> {
+    const [row] = await this.db
+      .select({ minDeposit: ACCOUNT_MIN_DEPOSIT })
+      .from(tradingAccounts)
+      .where(eq(tradingAccounts.id, accountId))
+      .limit(1);
+    if (!row?.minDeposit || !amount.lessThan(row.minDeposit)) return;
+    const shown = `${new Decimal(row.minDeposit).toFixed(decimals)} ${currency}`;
+    throw new FieldValidationError(`The minimum transfer into this account is ${shown}.`, {
+      amount: `The minimum transfer into this account is ${shown}.`,
+    });
   }
 
   private async findByRequestRef(requestRef: string) {

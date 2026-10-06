@@ -17,6 +17,7 @@ import {
 import { Mt5AccountSyncService } from './mt5-account-sync.service';
 import { Mt5AccountsService } from './mt5-accounts.service';
 import { violatesConstraint } from '../../../common/errors/pg-violation';
+import { ProductsStore } from '../../../store/products.store';
 
 /**
  * Clamp demo funding to the configured ceiling.
@@ -53,7 +54,34 @@ export class Mt5OwnAccountsService {
     private readonly email: EmailService,
     private readonly accountSync: Mt5AccountSyncService,
     private readonly accounts: Mt5AccountsService,
+    private readonly products: ProductsStore,
   ) {}
+
+  /**
+   * A CAP on how many accounts a client may hold under one product (0201).
+   *
+   * Every account is a real row on the broker's server that somebody has to
+   * administer, and this endpoint is reachable by anyone with a session — a
+   * script could otherwise open thousands. The cap is the PRODUCT's
+   * (`max_accounts_per_client`); it replaced one cap per environment. Closed
+   * accounts do not count (`ProductsStore.accountsHeld`).
+   *
+   * Not a lock: two opens racing past it can both pass, as with the cap it
+   * replaced. The price is one account over a cap, never money.
+   */
+  private async assertUnderProductCap(userId: number, productId: string | null): Promise<void> {
+    // Unreachable from self-service (the offer names a product); nothing to count against.
+    if (!productId) return;
+    const product = (await this.products.listProducts()).find((row) => row.id === productId);
+    if (!product) return;
+    const held = (await this.products.accountsHeld(userId)).get(productId) ?? 0;
+    if (held >= product.maxAccountsPerClient) {
+      throw new ValidationError(
+        `You already have ${held} '${product.name}' account${held === 1 ? '' : 's'}, the most ` +
+          'one client may hold. Contact support if you need another.',
+      );
+    }
+  }
 
   /**
    * A CLIENT opening their own account.
@@ -115,45 +143,7 @@ export class Mt5OwnAccountsService {
 
     if (!client) throw new NotFoundError('Client not found.');
 
-    /*
-     * A CAP on how many a client may open, set by the operator.
-     *
-     * Every account is a real row on the broker's server that somebody has to
-     * administer, and this endpoint is reachable by anyone with a session — a
-     * script could otherwise open thousands. Counted per environment so a
-     * client experimenting with demos cannot lock themselves out of a live one.
-     *
-     * ZERO is a real setting and reads differently: nothing about the client's
-     * own account count explains it, so the message says the door is shut
-     * rather than that they have too many.
-     */
     const terms = await this.accounts.terms();
-    const cap = input.environment === 'live' ? terms.maxLiveAccounts : terms.maxDemoAccounts;
-
-    const existing = await this.db
-      .select({ id: tradingAccounts.id })
-      .from(tradingAccounts)
-      .where(
-        and(
-          eq(tradingAccounts.userId, client.id),
-          eq(tradingAccounts.environment, input.environment),
-        ),
-      );
-
-    if (cap === 0) {
-      throw new ValidationError(
-        `New ${input.environment} accounts are not being opened online at the moment. ` +
-          'Please contact support.',
-      );
-    }
-
-    if (existing.length >= cap) {
-      throw new ValidationError(
-        `You already have ${existing.length} ${input.environment} ` +
-          `account${existing.length === 1 ? '' : 's'}, which is the maximum. ` +
-          'Contact support if you need another.',
-      );
-    }
 
     /*
      * REFUSED rather than ignored on a live account.
@@ -181,6 +171,7 @@ export class Mt5OwnAccountsService {
 
     // Before the bridge, for the reason the admin path gives.
     const productId = await this.accounts.productForGroup(input.group, input.productId);
+    await this.assertUnderProductCap(client.id, productId);
 
     const created = await this.bridge.createAccount({
       group: input.group,
