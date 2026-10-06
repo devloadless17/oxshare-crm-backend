@@ -5,6 +5,7 @@ import { AdminAuditController } from './admin-audit.controller';
 import { AdminApiKeysController } from './admin-api-keys.controller';
 import { AdminAuthController } from './admin-auth.controller';
 import { AdminTagsController } from './admin-tags.controller';
+import { AcquisitionLinksController } from './acquisition-links.controller';
 import { AdminClientsController } from './admin-clients.controller';
 import { AdminClientIdentityController } from './admin-client-identity.controller';
 import { AdminClientIdentityService } from './admin-client-identity.service';
@@ -19,6 +20,8 @@ import { IpAllowlistGuard } from './guards/ip-allowlist.guard';
 import { AdminAuthService } from './admin-auth.service';
 import { AdminProfileService } from './admin-profile.service';
 import { AdminTagsService } from './admin-tags.service';
+import { AcquisitionLinksService } from './acquisition-links.service';
+import { AdminClientsBulkService } from './admin-clients-bulk.service';
 import { AdminClientsService } from './admin-clients.service';
 import { AdminComplianceService } from './admin-compliance.service';
 import { AdminRbacService } from './admin-rbac.service';
@@ -67,6 +70,8 @@ const ADMIN_SERVICES = [
   AdminComplianceService,
   AdminClientsService,
   AdminTagsService,
+  AcquisitionLinksService,
+  AdminClientsBulkService,
   AdminMoneyService,
   // Reads only, and only through StoreModule's StatsStore — no money service and
   // no audit writer, because it neither moves money nor names a client.
@@ -108,6 +113,7 @@ const ADMIN_SERVICES = [
     AdminClientsController,
     AdminClientIdentityController,
     AdminTagsController,
+    AcquisitionLinksController,
     AdminComplianceController,
     AdminRbacController,
     AdminAuditController,

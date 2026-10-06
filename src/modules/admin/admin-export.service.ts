@@ -233,6 +233,7 @@ export class AdminExportService {
       referredBy,
       referred: referredFilter(query.referred),
       registered: query.registered,
+      ids: query.ids,
       sort,
       order,
       // The whole point. Row-level visibility, in the WHERE clause.
@@ -535,7 +536,13 @@ export class AdminExportService {
   ];
 
   async tradingAccountBatch(
-    query: { userId?: number; environment?: string; status?: string; client?: string },
+    query: {
+      userId?: number;
+      environment?: string;
+      status?: string;
+      client?: string;
+      opened?: DateRange;
+    },
     actor: AuthenticatedAdmin,
     offset: number,
     limit: number,
@@ -771,7 +778,7 @@ export class AdminExportService {
   ];
 
   async ibApplicationBatch(
-    query: { status?: string },
+    query: { status?: string; range?: DateRange },
     actor: AuthenticatedAdmin,
     offset: number,
     limit: number,
@@ -780,6 +787,7 @@ export class AdminExportService {
 
     const { rows } = await this.ib.findPageWithUsers({
       status: query.status as IbApplicationExportRow['application']['status'] | undefined,
+      range: query.range,
       page: Math.floor(offset / limit) + 1,
       limit,
       scope: actor.clientScope,
@@ -880,6 +888,8 @@ export class AdminExportService {
 
 export interface ClientExportQuery {
   registered?: DateRange;
+  /** "Export selected": exactly these clients, still scoped and masked. */
+  ids?: number[];
   q?: string;
   type?: string;
   status?: string;

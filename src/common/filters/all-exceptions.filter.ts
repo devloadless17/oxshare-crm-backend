@@ -16,6 +16,8 @@ import {
   ConflictError,
   KycCorrectionRefusedError,
   TagChangeLeavesScopeError,
+  BulkLeavesScopeError,
+  BulkTargetChangedError,
   KycConfigStaleError,
   KycBuilderOutdatedError,
   ReferralCodeUnknownError,
@@ -83,6 +85,7 @@ const DOMAIN_STATUS = new Map<new (...args: never[]) => DomainError, HttpStatus>
   // A tag change that would hide the client from the admin making it: the
   // console asks "hand them over?" and resends confirmed. See the class.
   [TagChangeLeavesScopeError, HttpStatus.CONFLICT],
+  [BulkTargetChangedError, HttpStatus.CONFLICT],
   // Its own code (KYC_CORRECTION_REFUSED) but the same status: the caller
   // branches on the code, and 409 is still what happened.
   [KycCorrectionRefusedError, HttpStatus.CONFLICT],
@@ -450,7 +453,9 @@ export class AllExceptionsFilter implements ExceptionFilter {
         exception instanceof FieldValidationError ||
         exception instanceof ProfileLockedError ||
         exception instanceof EmailAlreadyRegisteredError ||
-        exception instanceof PhoneAlreadyRegisteredError
+        exception instanceof PhoneAlreadyRegisteredError ||
+        exception instanceof BulkLeavesScopeError ||
+        exception instanceof BulkTargetChangedError
           ? exception.fields
           : undefined;
       for (const [type, status] of DOMAIN_STATUS) {

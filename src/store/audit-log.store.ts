@@ -73,6 +73,7 @@ export const CLIENT_SUBJECT_TYPES = [
  * no territory over the client.
  */
 export const NON_CLIENT_SUBJECT_TYPES = [
+  'acquisition_link',
   'admin',
   'admin_invite',
   'agencies',
@@ -329,6 +330,31 @@ export class AuditLogStore {
       })
       .returning();
     return { ...row, details: row.details ?? undefined, ipAddress: row.ipAddress };
+  }
+
+  /**
+   * Many entries in ONE insert, inside the caller's transaction — a bulk change
+   * records one row per client it touched (so each client's history shows it)
+   * without one round trip each. Same columns as `record`.
+   */
+  async recordMany(data: readonly AuditWrite[], executor: Executor): Promise<void> {
+    if (data.length === 0) return;
+    const ipAddress = currentClientIp() ?? null;
+    for (let i = 0; i < data.length; i += 1000) {
+      await executor.insert(auditLog).values(
+        data.slice(i, i + 1000).map((entry) => ({
+          actorId: String(entry.actorId),
+          actorEmail: entry.actorEmail,
+          actorKind: entry.actorKind,
+          action: entry.action,
+          subjectType: entry.subjectType,
+          subjectId: String(entry.subjectId),
+          details: entry.details,
+          ipAddress: entry.ipAddress ?? ipAddress,
+          clientId: entry.clientId,
+        })),
+      );
+    }
   }
 
   async findAll(

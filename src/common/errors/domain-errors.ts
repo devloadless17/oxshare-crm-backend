@@ -338,6 +338,40 @@ export class TagChangeLeavesScopeError extends DomainError {
 }
 
 /**
+ * A BULK tag change would take `count` clients out of the actor's view, sent
+ * without the confirmation. → 409 `TAG_CHANGE_LEAVES_SCOPE`, the single change's
+ * code, with `fields.count` so the console can say how many.
+ */
+export class BulkLeavesScopeError extends TagChangeLeavesScopeError {
+  readonly fields: Record<string, string>;
+
+  constructor(count: number) {
+    const message =
+      `${count} of these clients would leave your territory: after this change you will no ` +
+      'longer see them. Send it again with confirmLeavesScope to hand them over.';
+    super(message, { fields: { count: String(count) } });
+    this.fields = { count: String(count) };
+  }
+}
+
+/**
+ * "Every client matching this filter" no longer matches the number the reader
+ * was shown — somebody registered, or was re-tagged, in between. → 409
+ * `BULK_TARGET_CHANGED`, with `fields.count` the number now, so the console
+ * asks again with the right figure rather than acting on clients nobody counted.
+ */
+export class BulkTargetChangedError extends DomainError {
+  readonly code = 'BULK_TARGET_CHANGED';
+  readonly fields: Record<string, string>;
+
+  constructor(count: number) {
+    const message = `This filter now matches ${count} client${count === 1 ? '' : 's'}. Check the number and try again.`;
+    super(message, { fields: { count: String(count) } });
+    this.fields = { count: String(count) };
+  }
+}
+
+/**
  * A correction to an APPROVED KYC submission was refused by the same rules that
  * govern submission — the value is impossible, in the future, or under 18. → 409
  *

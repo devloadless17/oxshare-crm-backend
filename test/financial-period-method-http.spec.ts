@@ -126,8 +126,8 @@ afterAll(async () => {
   await stopHttpTestApp(ctx);
 });
 
-const refs = (body: { items: { providerRef?: string | null }[] }) =>
-  body.items.map((i) => i.providerRef).sort();
+type Page = { items: { providerRef?: string | null }[] };
+const refs = (body: unknown) => (body as Page).items.map((i) => i.providerRef).sort();
 
 describe('the period', () => {
   it('includes exactly the viewer’s day — first and last second in, the neighbours out', async () => {
@@ -161,13 +161,11 @@ describe('the period', () => {
     const inside = await session
       .get(`${DESK}?state=pending&from=${encodeURIComponent(FROM)}&to=${encodeURIComponent(TO)}`)
       .expect(200);
-    expect(inside.body.items.map((i: { providerRef: string }) => i.providerRef)).toContain(
-      'w-today',
-    );
+    expect(refs(inside.body)).toContain('w-today');
     const outside = await session
       .get(`${DESK}?state=pending&from=2026-10-01&to=2026-10-02`)
       .expect(200);
-    expect(outside.body.items).toHaveLength(0);
+    expect((outside.body as Page).items).toHaveLength(0);
   });
 
   it('refuses a zoneless instant and a backwards period with a 400', async () => {

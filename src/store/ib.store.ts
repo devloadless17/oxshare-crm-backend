@@ -1,3 +1,4 @@
+import { type DateRange, withinRange } from '../common/date-range';
 import { accrualBeneficiarySql } from '../common/accrual-beneficiary';
 import {
   aliasedTable,
@@ -240,9 +241,14 @@ export class IbStore {
     /** R-2.5 server-side sort. Validated by `sortKey` before it gets here. */
     sort?: IbApplicationSortKey;
     order?: SortOrder;
+    /** When it was SUBMITTED — `[from, until)`, `common/date-range.ts`. Narrows the tabs too. */
+    range?: DateRange;
   }) {
     const scope = filter.scope ?? UNRESTRICTED;
-    const visible = clientScopePredicate(scope, users.id);
+    const visible = and(
+      clientScopePredicate(scope, users.id),
+      ...withinRange(ibApplications.submittedAt, filter.range),
+    );
 
     /*
      * In the WHERE clause, so it narrows the RESULT SET rather than the page.
@@ -718,6 +724,8 @@ export class IbStore {
     kind?: string;
     sort?: IbAccrualSortKey;
     order?: SortOrder;
+    /** When it ACCRUED — `[from, until)`, `common/date-range.ts`. */
+    range?: DateRange;
   }) {
     /*
      * Each accrual names TWO people, and the reader may hold territory over
@@ -790,6 +798,7 @@ export class IbStore {
         ? [eq(ibAccruals.clientUserId, filter.clientUserId), seesPerson(filter.clientUserId)]
         : []),
       ...(filter.status ? [eq(ibAccruals.status, filter.status as 'pending')] : []),
+      ...withinRange(ibAccruals.createdAt, filter.range),
       /* Validated against the column's own enum at the edge, so an
          unrecognised value is a 400 rather than a filter matching nothing. */
       ...(filter.kind ? [eq(ibAccruals.kind, filter.kind as 'commission')] : []),

@@ -1,14 +1,21 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
+  ArrayMaxSize,
+  IsArray,
+  IsBoolean,
   IsEmail,
   IsIn,
+  IsInt,
+  IsUUID,
+  Min,
+  ValidateNested,
   IsNotEmpty,
   IsOptional,
   IsString,
   Length,
   MaxLength,
 } from 'class-validator';
-import { Transform } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 
 // Request DTO for the client list actions.
 // See the note in ./auth.dto.ts for why this moved out of the controller.
@@ -181,4 +188,78 @@ export class SetClientReferrerDto {
   @IsString()
   @IsNotEmpty()
   referralCode: string;
+}
+
+/** The clients list's filter, as a bulk action's "all matching" target carries it. */
+export class BulkClientFilterDto {
+  @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(200) q?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() type?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() status?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() level?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() @MaxLength(100) country?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() emailVerified?: string;
+  @ApiPropertyOptional() @IsOptional() @IsString() kycStatus?: string;
+  @ApiPropertyOptional({ description: 'Tag slugs, comma-separated (ANY).' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(1400)
+  tag?: string;
+  @ApiPropertyOptional() @IsOptional() @IsInt() @Min(1) referredBy?: number;
+  @ApiPropertyOptional() @IsOptional() @IsString() referred?: string;
+  @ApiPropertyOptional({ description: 'Registered from (YYYY-MM-DD or ISO instant).' })
+  @IsOptional()
+  @IsString()
+  from?: string;
+  @ApiPropertyOptional({ description: 'Registered to.' }) @IsOptional() @IsString() to?: string;
+}
+
+/** Who a bulk action is for: picked rows, or every row matching a filter. */
+export class BulkTargetDto {
+  @ApiPropertyOptional({ type: [Number], description: 'Picked Portal IDs, at most 1000.' })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(1000)
+  @IsInt({ each: true })
+  ids?: number[];
+
+  @ApiPropertyOptional({ type: BulkClientFilterDto })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => BulkClientFilterDto)
+  filter?: BulkClientFilterDto;
+
+  @ApiPropertyOptional({ description: 'The count the reader was shown for `filter`.' })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  expectedCount?: number;
+}
+
+/** Add and/or remove tags on many clients at once. */
+export class BulkTagsDto {
+  @ApiProperty({ type: BulkTargetDto })
+  @ValidateNested()
+  @Type(() => BulkTargetDto)
+  target!: BulkTargetDto;
+
+  @ApiPropertyOptional({ type: [String] })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @IsUUID('all', { each: true })
+  add?: string[];
+
+  @ApiPropertyOptional({ type: [String] })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @IsUUID('all', { each: true })
+  remove?: string[];
+
+  @ApiPropertyOptional({
+    description: 'Hand clients to another desk: confirms the 409 that asked.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  confirmLeavesScope?: boolean;
 }

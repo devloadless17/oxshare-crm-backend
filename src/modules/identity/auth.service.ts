@@ -1,3 +1,5 @@
+import type { Executor } from '../../database/db';
+import { AcquisitionLinksStore } from '../../store/acquisition-links.store';
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { lockoutMessage } from '../../common/security/lockout-message';
 import { REGISTRATION_REQUIRED } from '../../common/kyc/identity-core';
@@ -194,6 +196,14 @@ export class AuthService {
      */
     @Optional()
     private readonly offered?: OfferedCountriesStore,
+    /*
+     * Sign-up links and partner tags (0195): the tags a new client ARRIVES
+     * with, written in the registration's own transaction. Optional for the
+     * positional reason above; absent, a client arrives with the country tag
+     * alone, as before.
+     */
+    @Optional()
+    private readonly acquisition?: AcquisitionLinksStore,
   ) {}
 
   // ─── Register ────────────────────────────────────────────────────────────────
@@ -271,35 +281,53 @@ export class AuthService {
     const verificationExpiry = new Date(Date.now() + EMAIL_VERIFICATION_TTL_MS);
 
     const referredByIbUserId = await this.resolveReferral(dto.referralCode);
+    const arrival = await this.resolveArrival(dto.acquisitionCode, referredByIbUserId);
 
-    const user = await this.users
-      .create({
-        email: dto.email.toLowerCase(),
-        passwordHash,
-        ...seeded,
-        firstName: seeded.firstName!,
-        lastName: seeded.lastName!,
-        type: 'individual',
-        status: 'active',
-        verificationLevel: 0,
-        emailVerified: false,
-        // Hashed, never the token — schema.ts. `emailVerificationConsumedAt` is
-        // absent rather than explicit: an INSERT gets NULL for free, which is
-        // exactly "outstanding".
-        emailVerificationTokenHash: hashEmailedToken(verificationToken),
-        emailVerificationExpiry: verificationExpiry,
-        referredByIbUserId,
-        // The language the portal was in when they signed up (X-OxShare-Locale):
-        // what every mail sent outside their own requests will be written in.
-        locale: requestLocale(),
-      })
-      .catch((error: unknown) => {
-        // Two sign-ups for one NEW address at the same moment: the unique index
-        // decides, and the loser gets the same plain answer as any taken address.
-        if (violatesConstraint(error, 'users_email_unique')) throw emailAlreadyRegistered();
-        if (violatesConstraint(error, 'users_phone_unique')) throw phoneAlreadyRegistered();
-        throw error;
-      });
+    const createUser = (tx?: Executor) =>
+      this.users
+        .create(
+          {
+            email: dto.email.toLowerCase(),
+            passwordHash,
+            ...seeded,
+            firstName: seeded.firstName!,
+            lastName: seeded.lastName!,
+            type: 'individual',
+            status: 'active',
+            verificationLevel: 0,
+            emailVerified: false,
+            // Hashed, never the token — schema.ts. `emailVerificationConsumedAt` is
+            // absent rather than explicit: an INSERT gets NULL for free, which is
+            // exactly "outstanding".
+            emailVerificationTokenHash: hashEmailedToken(verificationToken),
+            emailVerificationExpiry: verificationExpiry,
+            referredByIbUserId,
+            // The language the portal was in when they signed up (X-OxShare-Locale):
+            // what every mail sent outside their own requests will be written in.
+            locale: requestLocale(),
+            acquisitionLinkId: arrival.linkId,
+          },
+          tx,
+        )
+        .catch((error: unknown) => {
+          // Two sign-ups for one NEW address at the same moment: the unique index
+          // decides, and the loser gets the same plain answer as any taken address.
+          if (violatesConstraint(error, 'users_email_unique')) throw emailAlreadyRegistered();
+          if (violatesConstraint(error, 'users_phone_unique')) throw phoneAlreadyRegistered();
+          throw error;
+        });
+
+    /*
+     * The tags a client ARRIVES with (0195), in the account's own transaction:
+     * their sign-up link's, and their partner's own tags — so a partner's
+     * clients land in the partner's book. Copied once: moving the partner later
+     * moves nobody silently (the clients list's Replace tag does that, counted
+     * and audited). Their COUNTRY tag needs no write: it is derived (0193).
+     */
+    const user =
+      this.acquisition && (arrival.linkId || arrival.tagIds.length > 0)
+        ? await this.acquisition.signUp(createUser, arrival)
+        : await createUser();
 
     /*
      * A wallet in every enabled currency, before the email goes out.
@@ -394,6 +422,31 @@ export class AuthService {
    * unambiguous upper-case alphabet, and a client typing one off a screenshot
    * should not be defeated by their keyboard.
    */
+  /**
+   * What a sign-up arrives with: the link (when its code is live) and the
+   * union of the link's tags and the referring partner's own assigned tags.
+   * An unknown or dead link code is logged and IGNORED — never a refusal: a
+   * stale marketing link must not cost the broker a client.
+   */
+  private async resolveArrival(
+    code: string | undefined,
+    ibUserId: number | undefined,
+  ): Promise<{ linkId?: string; ownerAdminId?: string; ibUserId?: number; tagIds: string[] }> {
+    if (!this.acquisition) return { tagIds: [] };
+    const normalised = normaliseReferralCode(code);
+    const link = normalised ? await this.acquisition.resolveForSignup(normalised) : undefined;
+    if (normalised && !link) {
+      this.logger.warn(`Sign-up link code "${normalised}" is unknown or switched off; ignored.`);
+    }
+    const partnerTags = ibUserId ? await this.acquisition.partnerTagIds(ibUserId) : [];
+    return {
+      linkId: link?.linkId,
+      ownerAdminId: link?.ownerAdminId,
+      ibUserId: partnerTags.length > 0 ? ibUserId : undefined,
+      tagIds: [...new Set([...(link?.tagIds ?? []), ...partnerTags])],
+    };
+  }
+
   private async resolveReferral(code: string | undefined): Promise<number | undefined> {
     /*
      * NORMALISED, not merely trimmed — see `common/referral-code.ts`.

@@ -129,6 +129,7 @@
     "withdrawals.view",
     "links.view",
     "links.create",
-    "links.manage"
+    "links.manage",
+    "clients.bulk"
   ]
 }

@@ -1,3 +1,4 @@
+import { type DateRange, withinRange } from '../../common/date-range';
 import { Inject, Injectable } from '@nestjs/common';
 import Decimal from 'decimal.js';
 import {
@@ -723,6 +724,7 @@ export class AdminHoldingsService {
       withTotal?: string;
       sort?: string;
       order?: string;
+      opened?: DateRange;
     },
     actor: AuthenticatedAdmin,
   ) {
@@ -780,6 +782,7 @@ export class AdminHoldingsService {
       sort,
       order,
       scope: actor.clientScope,
+      opened: query.opened,
     });
     /*
      * MT5's holder is a person: a role that may not read a client's first name,
@@ -810,8 +813,10 @@ export class AdminHoldingsService {
     client?: string;
     q?: string;
     scope?: ClientScope;
+    /** When the account was OPENED — `[from, until)`, `common/date-range.ts`. */
+    opened?: DateRange;
   }): SQL[] {
-    const conditions: SQL[] = [];
+    const conditions: SQL[] = [...withinRange(tradingAccounts.createdAt, filter.opened)];
     /*
      * Accounts the MT5 sync found that no client owns (0166, `user_id` NULL).
      * `unassigned` is the operator's queue of accounts to assign.
@@ -883,6 +888,7 @@ export class AdminHoldingsService {
     sort: TradingAccountSortKey;
     order: SortOrder;
     scope?: ClientScope;
+    opened?: DateRange;
   }) {
     const db = this.db;
     const sortColumn: SQLWrapper = TRADING_ACCOUNT_SORT_COLUMNS[filter.sort];
@@ -1015,7 +1021,13 @@ export class AdminHoldingsService {
 
   /** One batch of trading accounts for a CSV export — see `walletExportBatch`. */
   async tradingAccountExportBatch(
-    query: { userId?: number; environment?: string; status?: string; client?: string },
+    query: {
+      userId?: number;
+      environment?: string;
+      status?: string;
+      client?: string;
+      opened?: DateRange;
+    },
     actor: AuthenticatedAdmin,
     offset: number,
     limit: number,

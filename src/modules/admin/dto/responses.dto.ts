@@ -3427,3 +3427,54 @@ export class AttentionResolvedDto {
   @ApiProperty({ description: 'Always false after a successful resolve.' })
   needsAttention: boolean;
 }
+
+/** A tag on a sign-up link. */
+@NoClientFields('a configuration shape: a tag on a link, no client-owned field')
+export class AcquisitionLinkTagDto {
+  @ApiProperty() id: string;
+  @ApiProperty() slug: string;
+  @ApiProperty() label: string;
+  @ApiPropertyOptional() color?: string;
+}
+
+/**
+ * An administrator's sign-up link (0195), with what it has brought — COUNTS,
+ * never who.
+ */
+@NoClientFields('a configuration shape with aggregate counts; no client is named')
+export class AcquisitionLinkDto {
+  @ApiProperty() id: string;
+  @ApiProperty({
+    description: 'Public code: the portal link is /join/<code>.',
+    example: 'K7M2Q9XA',
+  })
+  code: string;
+  @ApiProperty() name: string;
+  @ApiProperty({ description: 'The link to hand out: <PORTAL_URL>/join/<code>.' }) url: string;
+  @ApiProperty() ownerAdminId: string;
+  @ApiProperty() ownerName: string;
+  @ApiProperty({ description: 'False when the owner is suspended: the link then tags nobody.' })
+  ownerActive: boolean;
+  @ApiProperty({
+    description:
+      "False when none of the link's tags is in the owner's territory: the owner will not see the clients it brings.",
+  })
+  ownerSeesSignups: boolean;
+  @ApiProperty({ type: [AcquisitionLinkTagDto] }) tags: AcquisitionLinkTagDto[];
+  @ApiPropertyOptional({ type: String, nullable: true, format: 'date-time' })
+  disabledAt: Date | null;
+  @ApiProperty() createdAt: Date;
+  @ApiProperty({ description: 'Clients who signed up through it.' }) signups: number;
+  @ApiProperty({ description: 'Of whom verified (level 1 or above).' }) verified: number;
+  @ApiProperty({ description: 'Of whom have a successful deposit.' }) funded: number;
+}
+
+/** What a bulk tag change did — counts, never who. */
+@NoClientFields('aggregate counts of a bulk action; no client is named')
+export class BulkTagResultDto {
+  @ApiProperty({ description: 'Clients the action was asked about and may see.' }) matched: number;
+  @ApiProperty({ description: 'Of which actually changed.' }) changed: number;
+  @ApiProperty({ description: 'Of which already carried the change.' }) unchanged: number;
+  @ApiProperty({ description: 'Picked clients outside your territory — skipped, never touched.' })
+  skippedOutOfScope: number;
+}

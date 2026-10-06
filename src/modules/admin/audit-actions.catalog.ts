@@ -96,7 +96,13 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   },
   { action: 'client.activate', label: 'Client reactivated', group: 'Clients' },
   { action: 'client_tag.assign', label: 'Tag added to client', group: 'Clients' },
+  {
+    action: 'client.acquired',
+    label: 'Client signed up through a link or a partner',
+    group: 'Clients',
+  },
   { action: 'client_tag.unassign', label: 'Tag removed from client', group: 'Clients' },
+  { action: 'client_tag.bulk', label: 'Tags changed on many clients at once', group: 'Clients' },
 
   // ── Verification ──────────────────────────────────────────────────────────
   { action: 'kyc.approve', label: 'KYC approved', group: 'Verification' },
@@ -316,6 +322,13 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   { action: 'client_tag.create', label: 'Client tag created', group: 'Configuration' },
   { action: 'client_tag.update', label: 'Client tag renamed', group: 'Configuration' },
   { action: 'client_tag.delete', label: 'Client tag deleted', group: 'Configuration' },
+  { action: 'acquisition_link.create', label: 'Sign-up link created', group: 'Configuration' },
+  { action: 'acquisition_link.update', label: 'Sign-up link changed', group: 'Configuration' },
+  {
+    action: 'acquisition_link.disable',
+    label: 'Sign-up link switched off',
+    group: 'Configuration',
+  },
   { action: 'rejection_reason.create', label: 'Rejection reason added', group: 'Configuration' },
   { action: 'rejection_reason.update', label: 'Rejection reason reworded', group: 'Configuration' },
   { action: 'rejection_reason.delete', label: 'Rejection reason removed', group: 'Configuration' },

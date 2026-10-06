@@ -1,3 +1,4 @@
+import type { DateRange } from '../../common/date-range';
 import { ibAccountView } from './ib-views';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import { RejectionReasonsStore } from '../../store/rejection-reasons.store';
@@ -565,6 +566,7 @@ export class IbApplicationsService {
       q?: string;
       sort?: string;
       order?: string;
+      range?: DateRange;
     },
     scope: ClientScope,
   ) {
@@ -573,6 +575,7 @@ export class IbApplicationsService {
     const result = await this.ib.findPageWithUsers({
       id: filter.id,
       status: filter.status,
+      range: filter.range,
       page,
       limit,
       q: filter.q,
@@ -1410,6 +1413,7 @@ export class IbApplicationsService {
       q?: string;
       status?: string;
       kind?: string;
+      range?: DateRange;
     },
     scope: ClientScope,
   ) {
@@ -1419,6 +1423,7 @@ export class IbApplicationsService {
       page,
       limit,
       scope,
+      range: filter.range,
       id: filter.id,
       ibUserId: filter.ibUserId,
       clientUserId: filter.clientUserId,

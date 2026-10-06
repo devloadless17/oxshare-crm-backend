@@ -1069,9 +1069,13 @@ export class UsersStore {
     withTotal?: boolean;
     /** When they REGISTERED — `[from, until)`, `common/date-range.ts`. */
     registered?: DateRange;
+    /** Exactly these clients (picked rows, e.g. "export selected"). Scope still applies. */
+    ids?: readonly number[];
   }) {
     const db = this.db;
     const conditions: SQL[] = [...withinRange(users.createdAt, filter.registered)];
+    if (filter.ids)
+      conditions.push(filter.ids.length > 0 ? inArray(users.id, [...filter.ids]) : sql`false`);
     const sortKey: ClientSortKey = filter.sort ?? DEFAULT_CLIENT_SORT;
     const direction = filter.order ?? 'desc';
     const sortColumn: SQLWrapper = CLIENT_SORT_COLUMNS[sortKey];
@@ -1124,13 +1128,22 @@ export class UsersStore {
      * and reads `client_tag_assignments_tag_idx` / the composite primary key
      * directly.
      */
-    if (filter.tagSlug) {
+    // One slug or several, comma-separated, ANY of them (validated by the
+    // service: each exists, at most 20). Memberships (0193): a country tag
+    // matches on the client's country.
+    const slugs = (filter.tagSlug ?? '')
+      .split(',')
+      .map((slug) => slug.trim())
+      .filter((slug) => slug !== '');
+    if (slugs.length > 0) {
       conditions.push(
-        // Memberships (0193): a country tag matches on the client's country.
         sql`EXISTS (
           SELECT 1 FROM ${clientTagMemberships} ta
           JOIN ${clientTags} t ON t.id = ta.tag_id
-          WHERE ta.user_id = ${users.id} AND t.slug = ${filter.tagSlug}
+          WHERE ta.user_id = ${users.id} AND t.slug IN (${sql.join(
+            slugs.map((slug) => sql`${slug}`),
+            sql`, `,
+          )})
         )`,
       );
     }

@@ -688,7 +688,6 @@ describe('visibility at INVITE time runs the updateAdmin rulebook', () => {
       ['kyc.review'],
       undefined,
       ['tag-1'],
-      true,
     );
     expect(h.invites.create).toHaveBeenCalledWith(
       expect.objectContaining({ scopedTagIds: ['tag-1'] }),

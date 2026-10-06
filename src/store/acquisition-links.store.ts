@@ -2,6 +2,7 @@ import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db, Executor } from '../database/db';
+import { AuditLogStore } from './audit-log.store';
 import {
   acquisitionLinkTags,
   acquisitionLinks,
@@ -56,7 +57,10 @@ export interface SignupAttribution {
  */
 @Injectable()
 export class AcquisitionLinksStore {
-  constructor(@Inject(DRIZZLE_DB) private readonly db: Db) {}
+  constructor(
+    @Inject(DRIZZLE_DB) private readonly db: Db,
+    private readonly auditLog: AuditLogStore,
+  ) {}
 
   /** Every link, newest first, with its owner, tags and counts — ONE grouped read each. */
   async list(): Promise<AcquisitionLink[]> {
@@ -235,6 +239,48 @@ export class AcquisitionLinksStore {
       .from(clientTagAssignments)
       .where(eq(clientTagAssignments.userId, ibUserId));
     return rows.map((row) => row.tagId);
+  }
+
+  /**
+   * Create a client AND give them the tags they arrive with, in ONE
+   * transaction, with one `client.acquired` audit row: a client never exists
+   * without the book their link or partner put them in. `create` is the
+   * caller's insert (it maps its own constraint errors), run on `tx`.
+   */
+  async signUp<T extends { id: number; email: string }>(
+    create: (tx: Executor) => Promise<T>,
+    arrival: { linkId?: string; ownerAdminId?: string; ibUserId?: number; tagIds: string[] },
+  ): Promise<T> {
+    return this.db.transaction(async (tx: Executor) => {
+      const user = await create(tx);
+      await this.attach(user.id, arrival.tagIds, tx);
+      await this.auditLog.record(
+        {
+          actorId: user.id,
+          actorEmail: user.email,
+          actorKind: 'client',
+          action: 'client.acquired',
+          subjectType: 'user',
+          subjectId: user.id,
+          details: {
+            linkId: arrival.linkId ?? null,
+            ownerAdminId: arrival.ownerAdminId ?? null,
+            // A client id, under a CLIENT_ID_KEYS key, so a scoped reader is
+            // never shown an out-of-territory partner's Portal ID.
+            ibUserId: arrival.ibUserId ?? null,
+            tagIds: [...new Set(arrival.tagIds)],
+          },
+        },
+        tx,
+      );
+      return user;
+    });
+  }
+
+  /** `attach`, in a transaction of its own — for a write outside a sign-up. */
+  async attachNow(userId: number, tagIds: readonly string[]): Promise<void> {
+    if (tagIds.length === 0) return;
+    await this.db.transaction(async (tx: Executor) => this.attach(userId, tagIds, tx));
   }
 
   /** Attach tags to a client by the SYSTEM (assigned_by NULL), idempotently. */

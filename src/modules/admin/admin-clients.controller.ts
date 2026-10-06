@@ -11,20 +11,41 @@ import { Throttle } from '@nestjs/throttler';
 // @ApiTags('admin') is repeated on each class so Swagger still groups them as one
 // tag and the generated types.gen.ts is unchanged.
 
-import { Body, Controller, Get, Param, Patch, Query, Req, Res, UseGuards } from '@nestjs/common';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Query,
+  Req,
+  Res,
+  UseGuards,
+  UseInterceptors,
+} from '@nestjs/common';
 import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { Request, Response } from 'express';
 import { AdminClientsService } from './admin-clients.service';
+import { AdminClientsBulkService } from './admin-clients-bulk.service';
+import { Idempotent, IdempotencyInterceptor } from '../../common/security/idempotency.interceptor';
 import { AdminExportService, type ExportSeek } from './admin-export.service';
 import { AdminAuditService } from './admin-audit.service';
 import { exportFormat, streamCsv, EXPORT_RATE_LIMIT } from '../../common/export/export-response';
 import {
+  BulkTagsDto,
   ChangeClientEmailDto,
   ClientStatusDto,
   SetClientReferrerDto,
   UpdateClientProfileDto,
 } from './dto/requests/clients.dto';
-import { ClientAccountDto, ClientListResponseDto, ClientProfileDto } from './dto/responses.dto';
+import {
+  BulkTagResultDto,
+  ClientAccountDto,
+  ClientListResponseDto,
+  ClientProfileDto,
+} from './dto/responses.dto';
 import {
   PermissionsGuard,
   RequirePermissions,
@@ -46,7 +67,56 @@ export class AdminClientsController {
     private readonly clients: AdminClientsService,
     private readonly exports: AdminExportService,
     private readonly audit: AdminAuditService,
+    private readonly bulk: AdminClientsBulkService,
   ) {}
+
+  /**
+   * Add and/or remove tags on many clients at once — picked rows, or every
+   * client matching the list's filter (the count the reader saw rides along).
+   * One transaction, set-based; the rules are AdminClientsBulkService's.
+   * `Idempotency-Key` makes a retried click a replay, not a second change.
+   */
+  @Post('clients/bulk/tags')
+  @UseInterceptors(IdempotencyInterceptor)
+  @Idempotent()
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('clients.bulk')
+  @ApiCookieAuth()
+  @ApiOperation({ summary: 'Add/remove tags on many clients (picked, or all matching a filter)' })
+  @ApiOkResponse({ type: BulkTagResultDto })
+  @ScopedToClients(
+    'Targets resolve through UsersStore.findPage / visibleClientIds with actor.clientScope; picked ids outside it are skipped and counted.',
+  )
+  @Audited('client_tag.bulk')
+  bulkTags(@Body() dto: BulkTagsDto, @Req() req: Request & { admin: AuthenticatedAdmin }) {
+    const filter = dto.target.filter;
+    return this.bulk.bulkTags(
+      {
+        target: {
+          ids: dto.target.ids,
+          expectedCount: dto.target.expectedCount,
+          filter: filter && {
+            // Validated exactly as the list route validates its query.
+            q: searchQuery(filter.q),
+            type: enumQuery(filter.type, userTypeEnum.enumValues, 'type'),
+            status: enumQuery(filter.status, userStatusEnum.enumValues, 'status'),
+            level: filter.level,
+            country: searchQuery(filter.country, 'country'),
+            emailVerified: filter.emailVerified,
+            kycStatus: filter.kycStatus,
+            tag: filter.tag?.trim() || undefined,
+            referredBy: filter.referredBy,
+            referred: filter.referred,
+            registered: dateRangeQuery(filter.from, filter.to),
+          },
+        },
+        add: dto.add,
+        remove: dto.remove,
+        confirmLeavesScope: dto.confirmLeavesScope,
+      },
+      req.admin,
+    );
+  }
 
   // ── Clients (ADM-01 / ADM-14) ─────────────────────────────────────────────
   @Get('clients')
@@ -88,7 +158,12 @@ export class AdminClientsController {
     enum: kycStatusEnum.enumValues,
     description: '`not_started` matches clients with no submission row at all.',
   })
-  @ApiQuery({ name: 'tag', required: false, description: 'Tag SLUG, not id (ADM-14).' })
+  @ApiQuery({
+    name: 'tag',
+    required: false,
+    description:
+      'Tag SLUG, not id (ADM-14). Several, comma-separated: clients carrying ANY of them.',
+  })
   @ApiQuery({
     name: 'referredBy',
     required: false,
@@ -251,7 +326,12 @@ export class AdminClientsController {
     enum: kycStatusEnum.enumValues,
     description: '`not_started` matches clients with no submission row at all.',
   })
-  @ApiQuery({ name: 'tag', required: false, description: 'Tag SLUG, not id (ADM-14).' })
+  @ApiQuery({
+    name: 'tag',
+    required: false,
+    description:
+      'Tag SLUG, not id (ADM-14). Several, comma-separated: clients carrying ANY of them.',
+  })
   @ApiQuery({
     name: 'referredBy',
     required: false,
@@ -271,6 +351,12 @@ export class AdminClientsController {
   @ApiQuery({ name: 'sort', required: false, enum: Object.keys(CLIENT_SORT_COLUMNS) })
   @ApiQuery({ name: 'order', required: false, enum: ['asc', 'desc'] })
   @ApiDateRangeQueries('registration')
+  @ApiQuery({
+    name: 'ids',
+    required: false,
+    description:
+      'Export selected: Portal IDs, comma-separated, at most 1000. Narrows the file; scope and masking still apply.',
+  })
   @ScopedToClients(
     'AdminExportService.clientBatch → UsersStore.findPage with actor.clientScope, the same predicate on users.id the list applies.',
   )
@@ -298,6 +384,7 @@ export class AdminClientsController {
     @Query('order') order?: string,
     @Query('from') from?: string,
     @Query('to') to?: string,
+    @Query('ids') ids?: string,
   ) {
     const chosen = exportFormat(format);
     const query = {
@@ -320,6 +407,7 @@ export class AdminClientsController {
       // The Referrals page's filter, parsed by the list's own function.
       referred,
       registered: dateRangeQuery(from, to),
+      ids: exportIds(ids),
       sort,
       order,
     };
@@ -468,4 +556,18 @@ export class AdminClientsController {
   ) {
     return this.clients.setClientStatus(id, dto.status, req.admin);
   }
+}
+
+/** `?ids=` of "export selected": Portal IDs, comma-separated, at most 1000 — else a 400. */
+function exportIds(raw: string | undefined): number[] | undefined {
+  if (raw === undefined || raw.trim() === '') return undefined;
+  const parts = raw.split(',').map((part) => part.trim().replace(/^#/, ''));
+  if (parts.length > 1000 || parts.some((part) => !/^[1-9]\d{0,9}$/.test(part))) {
+    throw new BadRequestException({
+      code: 'VALIDATION_FAILED',
+      message: ['ids must be at most 1000 Portal IDs, separated by commas'],
+      fields: { ids: 'must be at most 1000 Portal IDs, separated by commas' },
+    });
+  }
+  return [...new Set(parts.map((part) => Number(part)))];
 }

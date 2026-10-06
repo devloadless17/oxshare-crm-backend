@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import {
   AuthorizationError,
   ConflictError,
@@ -23,6 +24,8 @@ export interface AcquisitionLinkView extends AcquisitionLink {
    * desk is a legitimate use.
    */
   ownerSeesSignups: boolean;
+  /** The link to hand out: `<PORTAL_URL>/join/<code>`, built here so no console guesses the host. */
+  url: string;
 }
 
 /**
@@ -42,6 +45,7 @@ export class AcquisitionLinksService {
     private readonly scopes: AdminClientScopesStore,
     private readonly admins: AdminsStore,
     private readonly audit: AdminAuditService,
+    private readonly config: ConfigService,
   ) {}
 
   async list(): Promise<AcquisitionLinkView[]> {
@@ -105,18 +109,17 @@ export class AcquisitionLinksService {
       await this.links.setDisabled(id, patch.disabled);
     }
     const after = await this.mustFind(id);
-    this.audit.record(
-      actor.id,
-      patch.disabled === true && before.disabledAt === null
-        ? 'acquisition_link.disable'
-        : 'acquisition_link.update',
-      'acquisition_link',
-      id,
-      {
+    if (patch.disabled === true && before.disabledAt === null) {
+      this.audit.record(actor.id, 'acquisition_link.disable', 'acquisition_link', id, {
         before: summary(before),
         after: summary(after),
-      },
-    );
+      });
+    } else {
+      this.audit.record(actor.id, 'acquisition_link.update', 'acquisition_link', id, {
+        before: summary(before),
+        after: summary(after),
+      });
+    }
     return this.view(after);
   }
 
@@ -197,8 +200,13 @@ export class AcquisitionLinksService {
     const owner = await this.admins.findById(link.ownerAdminId);
     const territory = await this.scopes.tagIdsFor(link.ownerAdminId);
     const seesAll = territory.length === 0 && (owner?.seesAllClients ?? false);
+    const portal = (this.config.get<string>('PORTAL_URL') ?? 'http://localhost:3000').replace(
+      /\/+$/,
+      '',
+    );
     return {
       ...link,
+      url: `${portal}/join/${link.code}`,
       ownerSeesSignups: seesAll || link.tags.some((tag) => territory.includes(tag.id)),
     };
   }

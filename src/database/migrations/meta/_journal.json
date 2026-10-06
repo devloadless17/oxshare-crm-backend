@@ -1380,6 +1380,13 @@
       "when": 1789142608750,
       "tag": "0195_acquisition_links",
       "breakpoints": true
+    },
+    {
+      "idx": 198,
+      "version": "7",
+      "when": 1789142708750,
+      "tag": "0196_grant_clients_bulk",
+      "breakpoints": true
     }
   ]
 }

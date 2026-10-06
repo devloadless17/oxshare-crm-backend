@@ -3,7 +3,7 @@ import { currentFieldMask } from '../common/logging/request-context';
 import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db, Executor } from '../database/db';
-import { clientTagAssignments, clientTagMemberships, clientTags } from '../database/schema';
+import { clientTagAssignments, clientTagMemberships, clientTags, users } from '../database/schema';
 import {
   clientScopePredicate,
   territoryCounts,
@@ -355,6 +355,132 @@ export class ClientTagsStore {
       .from(clientTagMemberships)
       .where(eq(clientTagMemberships.userId, userId));
     return rows.map((row) => row.tagId);
+  }
+
+  // ─── bulk (Slice 3, 6 Oct 2026) ───────────────────────────────────────────
+
+  /** Of these clients, the ones the reader may see (the rest are skipped, counted). */
+  async visibleClientIds(ids: readonly number[], scope: ClientScope): Promise<number[]> {
+    if (ids.length === 0) return [];
+    const visible = clientScopePredicate(scope, users.id);
+    const rows = await this.db
+      .select({ id: users.id })
+      .from(users)
+      .where(and(inArray(users.id, [...ids]), visible));
+    return rows.map((row) => row.id);
+  }
+
+  /**
+   * Add and remove tags on many clients in ONE transaction, SET-BASED: one
+   * DELETE and one INSERT whatever the count, never a loop of round trips.
+   *
+   * Under the same per-client advisory locks as a single change
+   * (`lockAssignments`), taken in id order in one statement, so a bulk change
+   * and a single change on the same client take turns and two bulks cannot
+   * deadlock. Judged under those locks:
+   *   - how many clients would LEAVE the actor's territory — refused unless
+   *     confirmed (`onLeaves` decides), measured on memberships so a country
+   *     desk keeps its clients;
+   *   - no client may end with more than `maxPerClient` chosen tags.
+   * Returns, per client, what actually changed — so the audit records only real
+   * changes, and a replay writes nothing.
+   */
+  async bulkChange(input: {
+    ids: readonly number[];
+    add: readonly string[];
+    remove: readonly string[];
+    scope: ClientScope;
+    /** Who is changing them — written as `assigned_by`, like a single change. */
+    actorId: string;
+    maxPerClient: number;
+    onLeaves: (count: number) => void;
+    onTooMany: (count: number) => void;
+    record: (
+      changes: { added: Map<number, string[]>; removed: Map<number, string[]> },
+      tx: Executor,
+    ) => Promise<void>;
+  }): Promise<{ added: Map<number, string[]>; removed: Map<number, string[]> }> {
+    const ids = [...new Set(input.ids)].sort((a, b) => a - b);
+    const idList = sql`ARRAY[${sql.join(
+      ids.map((id) => sql`${id}`),
+      sql`, `,
+    )}]::integer[]`;
+    const uuidArray = (values: readonly string[]) =>
+      values.length === 0
+        ? sql`ARRAY[]::uuid[]`
+        : sql`ARRAY[${sql.join(
+            values.map((v) => sql`${v}`),
+            sql`, `,
+          )}]::uuid[]`;
+    const add = uuidArray(input.add);
+    const remove = uuidArray(input.remove);
+
+    return this.db.transaction(async (tx: Executor) => {
+      await tx.execute(
+        sql`SELECT pg_advisory_xact_lock(${CLIENT_TAGS_LOCK_NAMESPACE}, hashtext(u::text))
+            FROM unnest(${idList}) AS u ORDER BY u`,
+      );
+
+      if (!input.scope.unrestricted) {
+        const territory = uuidArray(input.scope.tagIds);
+        const [leaving] = (
+          await tx.execute<{ n: number }>(sql`
+            WITH t(id) AS (SELECT unnest(${idList})),
+            after AS (
+              SELECT m.user_id, m.tag_id FROM ${clientTagMemberships} m
+               WHERE m.user_id = ANY(${idList}) AND NOT (m.tag_id = ANY(${remove}))
+              UNION ALL
+              SELECT t.id, a FROM t CROSS JOIN unnest(${add}) AS a
+            )
+            SELECT count(*)::int AS n FROM t
+             WHERE NOT EXISTS (
+               SELECT 1 FROM after WHERE after.user_id = t.id AND after.tag_id = ANY(${territory})
+             )`)
+        ).rows;
+        if ((leaving?.n ?? 0) > 0) input.onLeaves(leaving.n);
+      }
+
+      const [crowded] = (
+        await tx.execute<{ n: number }>(sql`
+          WITH after AS (
+            SELECT a.user_id, a.tag_id FROM ${clientTagAssignments} a
+             WHERE a.user_id = ANY(${idList}) AND NOT (a.tag_id = ANY(${remove}))
+            UNION
+            SELECT u, t FROM unnest(${idList}) AS u CROSS JOIN unnest(${add}) AS t
+          )
+          SELECT count(*)::int AS n FROM (
+            SELECT user_id FROM after GROUP BY user_id HAVING count(*) > ${input.maxPerClient}
+          ) over_cap`)
+      ).rows;
+      if ((crowded?.n ?? 0) > 0) input.onTooMany(crowded.n);
+
+      const removedRows = (
+        await tx.execute<{ user_id: number; tag_id: string }>(sql`
+          DELETE FROM ${clientTagAssignments}
+           WHERE user_id = ANY(${idList}) AND tag_id = ANY(${remove})
+          RETURNING user_id, tag_id`)
+      ).rows;
+      const addedRows = (
+        await tx.execute<{ user_id: number; tag_id: string }>(sql`
+          INSERT INTO ${clientTagAssignments} (user_id, tag_id, assigned_by)
+          SELECT u, t, ${input.actorId}::uuid FROM unnest(${idList}) AS u CROSS JOIN unnest(${add}) AS t
+          ON CONFLICT DO NOTHING
+          RETURNING user_id, tag_id`)
+      ).rows;
+
+      const group = (rows: { user_id: number; tag_id: string }[]) => {
+        const byClient = new Map<number, string[]>();
+        for (const row of rows) {
+          const list = byClient.get(row.user_id) ?? [];
+          list.push(row.tag_id);
+          byClient.set(row.user_id, list);
+        }
+        return byClient;
+      };
+      const changes = { added: group(addedRows), removed: group(removedRows) };
+      await input.record(changes, tx);
+      return changes;
+    });
   }
 
   /**

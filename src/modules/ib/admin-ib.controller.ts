@@ -1,3 +1,4 @@
+import { ApiDateRangeQueries, dateRangeQuery } from '../../common/date-range';
 import { Throttle } from '@nestjs/throttler';
 import {
   Body,
@@ -125,6 +126,7 @@ export class AdminIbController {
       "with every other filter and the reader's scope, so a record outside it answers an " +
       'empty page, like any filtered-out row. No status is implied.',
   })
+  @ApiDateRangeQueries('submitted')
   @ScopedToClients('IbStore.findPageWithUsers applies the predicate to ib_applications.user_id.')
   async list(
     @Req() req: Request & { admin: AuthenticatedAdmin },
@@ -135,10 +137,13 @@ export class AdminIbController {
     @Query('sort') sort?: string,
     @Query('order') order?: string,
     @Query('id') id?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
   ) {
     const result = await this.applications.list(
       {
         id: uuidQuery(id, 'id'),
+        range: dateRangeQuery(from, to),
         // `ib_application_status` is a Postgres enum, so an unrecognised value
         // would error in the database rather than at the edge.
         status: parseStatus(status),
@@ -199,6 +204,7 @@ export class AdminIbController {
   })
   @ApiQuery({ name: 'format', required: false, enum: ['csv'] })
   @ApiQuery({ name: 'status', required: false, enum: IB_APPLICATION_STATUSES })
+  @ApiDateRangeQueries('submitted')
   @ScopedToClients(
     'AdminExportService.ibApplicationBatch → IbStore.findPageWithUsers with actor.clientScope, the same predicate on users.id the queue applies.',
   )
@@ -208,9 +214,11 @@ export class AdminIbController {
     @Res() res: Response,
     @Query('format') format?: string,
     @Query('status') status?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
   ) {
     const chosen = exportFormat(format);
-    const query = { status: parseStatus(status) };
+    const query = { status: parseStatus(status), range: dateRangeQuery(from, to) };
 
     this.audit.record(req.admin.id, 'export.ib_applications', 'ib_applications', req.admin.id, {
       format: chosen,
@@ -356,6 +364,7 @@ export class AdminIbController {
       "with every other filter and the reader's scope, so a record outside it answers an " +
       'empty page, like any filtered-out row. No status is implied.',
   })
+  @ApiDateRangeQueries('accrued')
   @ScopedToClients(
     'IbStore.findAccrualsPage applies the predicate to the row BENEFICIARY — ' +
       'ib_accruals.client_user_id on a rebate, ib_user_id on a commission. Not ib_user_id ' +
@@ -364,6 +373,8 @@ export class AdminIbController {
   )
   async listAccruals(
     @Req() req: Request & { admin: AuthenticatedAdmin },
+    @Query('from') from?: string,
+    @Query('to') to?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('ibUserId', ClientRefPipe) ibUserId?: number,
@@ -378,6 +389,7 @@ export class AdminIbController {
     const result = await this.applications.listAccruals(
       {
         id: uuidQuery(id, 'id'),
+        range: dateRangeQuery(from, to),
         page: parsePositive(page),
         limit: parsePositive(limit),
         /*

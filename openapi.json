@@ -2480,6 +2480,24 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Earliest submitted time, inclusive: a date-time with offset (2026-10-06T00:00:00+03:00) or a date (YYYY-MM-DD, a UTC day).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -2524,6 +2542,24 @@
                 "approved",
                 "rejected"
               ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Earliest submitted time, inclusive: a date-time with offset (2026-10-06T00:00:00+03:00) or a date (YYYY-MM-DD, a UTC day).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
+            "schema": {
               "type": "string"
             }
           }
@@ -2651,6 +2687,24 @@
         "description": "Every accrual with the partner who earned it and the client whose deposit generated it. `totals` sums by status across the whole filtered set, as decimal strings (§6.1).",
         "operationId": "AdminIbController_listAccruals",
         "parameters": [
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Earliest accrued time, inclusive: a date-time with offset (2026-10-06T00:00:00+03:00) or a date (YYYY-MM-DD, a UTC day).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
+            "schema": {
+              "type": "string"
+            }
+          },
           {
             "name": "page",
             "required": false,
@@ -5877,6 +5931,24 @@
             }
           },
           {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Earliest opened time, inclusive: a date-time with offset (2026-10-06T00:00:00+03:00) or a date (YYYY-MM-DD, a UTC day).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "page",
             "required": false,
             "in": "query",
@@ -7920,6 +7992,43 @@
         ]
       }
     },
+    "/v1/admin/clients/bulk/tags": {
+      "post": {
+        "operationId": "AdminClientsController_bulkTags",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BulkTagsDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BulkTagResultDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Add/remove tags on many clients (picked, or all matching a filter)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/clients": {
       "get": {
         "operationId": "AdminClientsController_listClients",
@@ -8049,7 +8158,7 @@
             "name": "tag",
             "required": false,
             "in": "query",
-            "description": "Tag SLUG, not id (ADM-14).",
+            "description": "Tag SLUG, not id (ADM-14). Several, comma-separated: clients carrying ANY of them.",
             "schema": {
               "type": "string"
             }
@@ -8252,7 +8361,7 @@
             "name": "tag",
             "required": false,
             "in": "query",
-            "description": "Tag SLUG, not id (ADM-14).",
+            "description": "Tag SLUG, not id (ADM-14). Several, comma-separated: clients carrying ANY of them.",
             "schema": {
               "type": "string"
             }
@@ -8321,6 +8430,15 @@
             "required": false,
             "in": "query",
             "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "ids",
+            "required": false,
+            "in": "query",
+            "description": "Export selected: Portal IDs, comma-separated, at most 1000. Narrows the file; scope and masking still apply.",
             "schema": {
               "type": "string"
             }
@@ -8968,6 +9086,117 @@
           }
         ],
         "summary": "Detach a tag from a client (any tag, on a client you can see)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/acquisition-links": {
+      "get": {
+        "operationId": "AcquisitionLinksController_list",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AcquisitionLinkDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Sign-up links, with what each has brought (counts only)",
+        "tags": [
+          "admin"
+        ]
+      },
+      "post": {
+        "operationId": "AcquisitionLinksController_create",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateAcquisitionLinkDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AcquisitionLinkDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Create a sign-up link",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/acquisition-links/{id}": {
+      "patch": {
+        "operationId": "AcquisitionLinksController_update",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateAcquisitionLinkDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AcquisitionLinkDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Rename, re-tag, hand over, or switch a sign-up link off/on",
         "tags": [
           "admin"
         ]
@@ -12967,6 +13196,24 @@
               ],
               "type": "string"
             }
+          },
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Earliest opened time, inclusive: a date-time with offset (2026-10-06T00:00:00+03:00) or a date (YYYY-MM-DD, a UTC day).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -14155,6 +14402,11 @@
             "type": "string",
             "example": "K7M2PQR9",
             "maxLength": 50
+          },
+          "acquisitionCode": {
+            "type": "string",
+            "example": "K7M2Q9XA",
+            "maxLength": 32
           }
         },
         "required": [
@@ -22132,6 +22384,123 @@
           }
         }
       },
+      "BulkClientFilterDto": {
+        "type": "object",
+        "properties": {
+          "q": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "level": {
+            "type": "string"
+          },
+          "country": {
+            "type": "string"
+          },
+          "emailVerified": {
+            "type": "string"
+          },
+          "kycStatus": {
+            "type": "string"
+          },
+          "tag": {
+            "type": "string",
+            "description": "Tag slugs, comma-separated (ANY)."
+          },
+          "referredBy": {
+            "type": "number"
+          },
+          "referred": {
+            "type": "string"
+          },
+          "from": {
+            "type": "string",
+            "description": "Registered from (YYYY-MM-DD or ISO instant)."
+          },
+          "to": {
+            "type": "string",
+            "description": "Registered to."
+          }
+        }
+      },
+      "BulkTargetDto": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "description": "Picked Portal IDs, at most 1000.",
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          },
+          "filter": {
+            "$ref": "#/components/schemas/BulkClientFilterDto"
+          },
+          "expectedCount": {
+            "type": "number",
+            "description": "The count the reader was shown for `filter`."
+          }
+        }
+      },
+      "BulkTagsDto": {
+        "type": "object",
+        "properties": {
+          "target": {
+            "$ref": "#/components/schemas/BulkTargetDto"
+          },
+          "add": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "remove": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "confirmLeavesScope": {
+            "type": "boolean",
+            "description": "Hand clients to another desk: confirms the 409 that asked."
+          }
+        },
+        "required": [
+          "target"
+        ]
+      },
+      "BulkTagResultDto": {
+        "type": "object",
+        "properties": {
+          "matched": {
+            "type": "number",
+            "description": "Clients the action was asked about and may see."
+          },
+          "changed": {
+            "type": "number",
+            "description": "Of which actually changed."
+          },
+          "unchanged": {
+            "type": "number",
+            "description": "Of which already carried the change."
+          },
+          "skippedOutOfScope": {
+            "type": "number",
+            "description": "Picked clients outside your territory — skipped, never touched."
+          }
+        },
+        "required": [
+          "matched",
+          "changed",
+          "unchanged",
+          "skippedOutOfScope"
+        ]
+      },
       "ClientTagDto": {
         "type": "object",
         "properties": {
@@ -23336,6 +23705,146 @@
           "assignments",
           "stillVisible"
         ]
+      },
+      "AcquisitionLinkTagDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "color": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "slug",
+          "label"
+        ]
+      },
+      "AcquisitionLinkDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string",
+            "description": "Public code: the portal link is /join/<code>.",
+            "example": "K7M2Q9XA"
+          },
+          "name": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string",
+            "description": "The link to hand out: <PORTAL_URL>/join/<code>."
+          },
+          "ownerAdminId": {
+            "type": "string"
+          },
+          "ownerName": {
+            "type": "string"
+          },
+          "ownerActive": {
+            "type": "boolean",
+            "description": "False when the owner is suspended: the link then tags nobody."
+          },
+          "ownerSeesSignups": {
+            "type": "boolean",
+            "description": "False when none of the link's tags is in the owner's territory: the owner will not see the clients it brings."
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AcquisitionLinkTagDto"
+            }
+          },
+          "disabledAt": {
+            "type": "string",
+            "nullable": true,
+            "format": "date-time"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "signups": {
+            "type": "number",
+            "description": "Clients who signed up through it."
+          },
+          "verified": {
+            "type": "number",
+            "description": "Of whom verified (level 1 or above)."
+          },
+          "funded": {
+            "type": "number",
+            "description": "Of whom have a successful deposit."
+          }
+        },
+        "required": [
+          "id",
+          "code",
+          "name",
+          "url",
+          "ownerAdminId",
+          "ownerName",
+          "ownerActive",
+          "ownerSeesSignups",
+          "tags",
+          "createdAt",
+          "signups",
+          "verified",
+          "funded"
+        ]
+      },
+      "CreateAcquisitionLinkDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "What the desk calls it (\"O_F — Facebook campaign\")."
+          },
+          "ownerAdminId": {
+            "type": "string",
+            "description": "Who owns it; the caller when absent. Another administrator needs links.manage."
+          },
+          "tagIds": {
+            "description": "Tags a sign-up arrives with. Absent: the owner's own territory tags. Never a country tag.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "UpdateAcquisitionLinkDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "ownerAdminId": {
+            "type": "string",
+            "description": "Hand the link to another administrator (links.manage)."
+          },
+          "tagIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "disabled": {
+            "type": "boolean",
+            "description": "Switch the link off (tags nobody) or back on."
+          }
+        }
       },
       "KycDocumentDto": {
         "type": "object",

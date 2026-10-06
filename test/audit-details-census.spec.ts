@@ -128,6 +128,9 @@ const WRITTEN_BY_MIGRATIONS: Readonly<Record<string, string>> = {
  * into their transactions, not because they stopped writing.
  */
 const WRITES_DETAILS: readonly string[] = [
+  'acquisition_link.create',
+  'acquisition_link.disable',
+  'acquisition_link.update',
   'admin.avatar_change',
   'admin.invite',
   'admin.invite_accept',
@@ -149,6 +152,7 @@ const WRITES_DETAILS: readonly string[] = [
   'agency.update',
   'api_key.create',
   'api_key.revoke',
+  'client.acquired',
   'client.email_change',
   // `{ route }` only — the search that found them, never the typed address (D-82).
   'client.lookup_hidden_email',

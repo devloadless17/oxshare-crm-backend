@@ -1524,7 +1524,7 @@ required, enabled, hint?}`. It holds at most 8 fields with unique labels, and ea
 ## The Financial list at any size (0165, 29 Sep 2026)
 
 `GET /admin/transactions` and the withdrawals desk read the money union (`movementsCte`). At 160,000
-movements a sort by status, a search, or a desk admin who also sees new clients cost 0.5–1 s a page,
+movements a sort by status, a search, or a scoped desk admin cost 0.5–1 s a page,
 and every count grew with the book. Now each is 10–60 ms, and these rules keep it flat:
 
 - **Counts and sums come from STORED TOTALS**: `movement_daily_totals` (per UTC day) and
@@ -1544,9 +1544,9 @@ and every count grew with the book. Now each is 10–60 ms, and these rules keep
   union's output, a Portal ID search read every movement to find eight.
 - **Method names are looked up for the rows SHOWN** (`methodNamesOf`, after the page is cut), never
   inside the union: there they ran for every row a search or sort discarded.
-- **"Tags + new clients" scope is ONE anti-join** (`NOT EXISTS` a tag with none of mine). The OR of two
-  subqueries could not become a join and cost 0.9 s a page on every scoped list.
-  `client-scope-twin.spec.ts` pins the equivalence.
+- **Scope is ONE `EXISTS` over `client_tag_memberships`** since 0193 (the intake pool and its
+  anti-join are gone: every client carries their country tag). `client-scope-twin.spec.ts` pins the
+  SQL to its in-memory twin, country desks included.
 
 ## Validation
 
