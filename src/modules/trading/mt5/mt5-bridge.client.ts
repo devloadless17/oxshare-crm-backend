@@ -6,6 +6,14 @@ import {
   ValidationError,
 } from '../../../common/errors/domain-errors';
 
+/** One MT5 symbol and its folder path — the bridge's `GET /symbols`. */
+export interface Mt5Symbol {
+  symbol: string;
+  /** MT5's path, ending in the symbol: `Crypto\\BTCUSD`. */
+  path: string;
+  description: string;
+}
+
 export interface Mt5Group {
   name: string;
   currency: string;
@@ -232,6 +240,15 @@ export class Mt5BridgeClient {
 
   async listGroups(): Promise<Mt5Group[]> {
     return await this.request<Mt5Group[]>('GET', '/groups');
+  }
+
+  /**
+   * Every symbol with its folder path (0198). The bridge reads one symbol per
+   * round trip over the Web API before caching, so a large server needs far
+   * longer than the ordinary read timeout on a cold cache.
+   */
+  async listSymbols(): Promise<Mt5Symbol[]> {
+    return await this.request<Mt5Symbol[]>('GET', '/symbols', undefined, 10 * 60_000);
   }
 
   async createAccount(input: {

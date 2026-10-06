@@ -673,6 +673,47 @@ describe('calculate — the client’s rebate', () => {
   });
 });
 
+describe('calculate — symbols the type excludes (0198)', () => {
+  const EXCLUDING: CommissionTypeTerms = {
+    ...TYPE,
+    excludedPaths: ['Crypto'],
+    excludedSymbols: ['XAGUSD'],
+  };
+  const chain = [earner({ ibUserId: 1000001, depth: 1 })];
+  const on = (symbol: string, symbolPath: string | null): RevenueEvent => ({
+    ...DEAL,
+    terms: EXCLUDING,
+    symbol,
+    symbolPath,
+  });
+
+  it('pays no commission AND no rebate on a symbol in an excluded folder, and is done', () => {
+    const result = calculate(on('BTCUSD', 'Crypto\\BTCUSD'), chain, defaultLadder());
+    expect(result.accruals).toEqual([]);
+    expect(result.rebate).toBeUndefined();
+    expect(result.unpriceable).toBeUndefined();
+    expect(result.skippedReason).toMatch(/excluded folder crypto/i);
+  });
+
+  it('pays nothing on a single excluded symbol', () => {
+    const result = calculate(on('XAGUSD', 'Metals\\XAGUSD'), chain, defaultLadder());
+    expect(result.accruals).toEqual([]);
+    expect(result.rebate).toBeUndefined();
+  });
+
+  it('pays in full on everything else the type sells', () => {
+    const result = calculate(on('EURUSD', 'Forex\\Majors\\EURUSD'), chain, defaultLadder());
+    expect(result.accruals.map((a) => a.amount)).toEqual(['20.00000000']);
+    expect(result.rebate?.amount).toBe('3.00000000');
+  });
+
+  it('REFUSES (retry later) when folders are excluded and the symbol’s folder is unknown', () => {
+    const result = calculate(on('NEWCOIN', null), chain, defaultLadder());
+    expect(result.accruals).toEqual([]);
+    expect(result.unpriceable?.[0]).toMatch(/not known yet/);
+  });
+});
+
 describe('checkPlausible — the per-lot ceiling', () => {
   const chain = [
     earner({ ibUserId: 1000002, depth: 1, level: 2 }),

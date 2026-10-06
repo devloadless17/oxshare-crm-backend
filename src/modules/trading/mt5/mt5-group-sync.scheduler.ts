@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ScheduledJob } from '../../../common/scheduling/scheduled-job.decorator';
 import { Mt5GroupSyncService } from './mt5-group-sync.service';
+import { Mt5SymbolSyncService } from './mt5-symbol-sync.service';
 import { pendingMigrationHint } from '../../../common/logging/pending-migration';
 import { JobLeaseService } from '../../../common/scheduling/job-lease.service';
 
@@ -36,6 +37,8 @@ export class Mt5GroupSyncScheduler {
   constructor(
     private readonly groups: Mt5GroupSyncService,
     private readonly leases: JobLeaseService,
+    /** 0198 — the symbol list rides the same job; see `syncSymbols`. */
+    private readonly symbols: Mt5SymbolSyncService,
   ) {}
 
   @ScheduledJob('mt5.syncGroups')
@@ -47,7 +50,31 @@ export class Mt5GroupSyncScheduler {
      * counted when the estate grows. Every scheduled job on this platform now
      * runs once per tick; the exceptions were the ones people forget.
      */
-    await this.leases.run('mt5.syncGroups', 30 * 60_000, () => this.runOnce());
+    await this.leases.run('mt5.syncGroups', 30 * 60_000, async () => {
+      await this.runOnce();
+      await this.syncSymbols();
+    });
+  }
+
+  /**
+   * The symbol list (0198), after the groups and independently of them: a
+   * failure here leaves the previous list standing, dated, and never stops the
+   * group sync. Deals on a symbol the list has not seen yet wait for it only
+   * when their commission type excludes folders.
+   */
+  private async syncSymbols(): Promise<void> {
+    try {
+      const run = await this.symbols.sync();
+      if (run && run.removed > 0) {
+        this.logger.log(`MT5 symbols synced: ${run.onServer} on the server, ${run.removed} gone.`);
+      }
+    } catch (error) {
+      this.logger.warn(
+        'Could not sync the MT5 symbol list; the last known one still stands. ' +
+          `${error instanceof Error ? error.message : String(error)}` +
+          pendingMigrationHint(error),
+      );
+    }
   }
 
   private async runOnce(): Promise<void> {

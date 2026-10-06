@@ -39,6 +39,9 @@ export interface ProductCommissionTerms {
   /** Money per standard lot, decimal strings (§6.1). */
   commissionPerLot: string;
   rebatePerLot: string;
+  /** 0198 — folders and symbols this type pays nothing on. */
+  excludedPaths?: readonly string[];
+  excludedSymbols?: readonly string[];
 }
 
 /**
@@ -124,6 +127,9 @@ export interface CommissionAccrualPort {
     currency: string;
     /** The traded product's rate card — see `accrueForClosedPosition`. */
     terms: ProductCommissionTerms | null | undefined;
+    /** 0198 — the traded symbol and its MT5 folder path (null = not known yet). */
+    symbol?: string | null;
+    symbolPath?: string | null;
   }): Promise<number>;
 }
 

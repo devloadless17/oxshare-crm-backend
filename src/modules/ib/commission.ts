@@ -1,5 +1,6 @@
 import Decimal from 'decimal.js';
 import { money, toDecimal } from '../wallet/money';
+import { symbolExclusion } from '../../common/symbol-exclusion';
 
 /**
  * The commission engine's pure core — data in, data out.
@@ -200,11 +201,19 @@ export interface CommissionTypeTerms {
   enabled: boolean;
   commissionPerLot: string;
   rebatePerLot: string;
+  /** 0198 — folders this type pays nothing on (MT5 paths, e.g. `Crypto`). */
+  excludedPaths?: readonly string[];
+  /** 0198 — single symbols this type pays nothing on. */
+  excludedSymbols?: readonly string[];
 }
 
 /** What generated the earning a commission is a share of. */
 export interface RevenueEvent {
   currency: string;
+  /** 0198 — the traded symbol, checked against the type's exclusions. */
+  symbol?: string | null;
+  /** 0198 — that symbol's MT5 folder path, from the mirror. Null = not known yet. */
+  symbolPath?: string | null;
   /**
    * Where the event came from.
    *
@@ -423,6 +432,25 @@ export function calculate(
   const terms = event.terms;
   if (!terms.enabled) {
     return { accruals: [], skippedReason: `commission type '${terms.name}' is disabled` };
+  }
+
+  /*
+   * ── EXCLUDED SYMBOLS PAY NOBODY (0198) ───────────────────────────────────
+   *
+   * Neither partner commission nor the client's rebate. An excluded symbol is
+   * a CONFIGURED zero, so the trade is done; a symbol whose folder the CRM
+   * does not know yet is refused and retried, because guessing either way is
+   * wrong money — see `symbolExclusion`.
+   */
+  const exclusion = symbolExclusion(terms, event.symbol, event.symbolPath);
+  if (exclusion.excluded === 'unknown') {
+    return { accruals: [], unpriceable: [exclusion.reason] };
+  }
+  if (exclusion.excluded) {
+    return {
+      accruals: [],
+      skippedReason: `${exclusion.reason} ('${terms.name}') — no commission or rebate is paid`,
+    };
   }
 
   /*

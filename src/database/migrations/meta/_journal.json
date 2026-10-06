@@ -1408,6 +1408,13 @@
       "when": 1789143008750,
       "tag": "0199_payment_method_pay_to",
       "breakpoints": true
+    },
+    {
+      "idx": 202,
+      "version": "7",
+      "when": 1789143108750,
+      "tag": "0200_symbol_exclusions",
+      "breakpoints": true
     }
   ]
 }

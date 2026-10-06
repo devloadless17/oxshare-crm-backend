@@ -6405,6 +6405,62 @@
         ]
       }
     },
+    "/v1/admin/mt5-symbols": {
+      "get": {
+        "description": "From the local mirror (`mt5_symbols`), so it renders when the server is unreachable. Symbols the server stopped reporting are left out.",
+        "operationId": "AdminMt5SymbolsController_list",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Mt5SymbolListDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "MT5 symbols with their folders, as last synced",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/mt5-symbols/sync": {
+      "post": {
+        "description": "The same sync the scheduled MT5 job runs. Answers the refreshed list. Slow on a large server: the bridge reads one symbol per round trip, then caches the list.",
+        "operationId": "AdminMt5SymbolsController_sync",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Mt5SymbolListDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Re-read the symbol list from MT5 now",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/kyc/config": {
       "get": {
         "operationId": "KycController_getConfig",
@@ -17233,6 +17289,27 @@
             "example": "3.00000000",
             "description": "Money per standard lot returned to the trading CLIENT, before the introducer level’s share. A decimal string."
           },
+          "excludedPaths": {
+            "example": [
+              "Crypto",
+              "Forex\\Exotics"
+            ],
+            "description": "MT5 symbol FOLDERS this type pays nothing on — no commission, no rebate. A folder covers every symbol beneath it, including ones added later (0198).",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "excludedSymbols": {
+            "example": [
+              "BTCUSD"
+            ],
+            "description": "Single symbols this type pays nothing on — no commission, no rebate (0198).",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "sortOrder": {
             "type": "number",
             "example": 0
@@ -17260,6 +17337,8 @@
           "enabled",
           "commissionPerLot",
           "rebatePerLot",
+          "excludedPaths",
+          "excludedSymbols",
           "sortOrder",
           "productNames",
           "createdAt",
@@ -17287,6 +17366,20 @@
           "rebatePerLot": {
             "type": "string",
             "example": "3"
+          },
+          "excludedPaths": {
+            "description": "MT5 folder paths excluded from commission and rebate, e.g. \"Crypto\".",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "excludedSymbols": {
+            "description": "Symbols excluded from commission and rebate, e.g. \"BTCUSD\".",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           },
           "enabled": {
             "type": "boolean",
@@ -17323,6 +17416,20 @@
           },
           "rebatePerLot": {
             "type": "string"
+          },
+          "excludedPaths": {
+            "description": "MT5 folder paths excluded from commission and rebate, e.g. \"Crypto\".",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "excludedSymbols": {
+            "description": "Symbols excluded from commission and rebate, e.g. \"BTCUSD\".",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           },
           "enabled": {
             "type": "boolean"
@@ -21436,6 +21543,50 @@
           "products",
           "accountCount",
           "accountsOutsideScope"
+        ]
+      },
+      "Mt5SymbolDto": {
+        "type": "object",
+        "properties": {
+          "symbol": {
+            "type": "string",
+            "example": "BTCUSD"
+          },
+          "path": {
+            "type": "string",
+            "example": "Crypto\\BTCUSD",
+            "description": "MT5’s own path, backslash-separated, ending in the symbol itself."
+          },
+          "description": {
+            "type": "string",
+            "example": "Bitcoin vs US Dollar"
+          }
+        },
+        "required": [
+          "symbol",
+          "path",
+          "description"
+        ]
+      },
+      "Mt5SymbolListDto": {
+        "type": "object",
+        "properties": {
+          "symbols": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Mt5SymbolDto"
+            }
+          },
+          "lastSyncedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "When the server last confirmed the list. Null = never synced."
+          }
+        },
+        "required": [
+          "symbols",
+          "lastSyncedAt"
         ]
       },
       "KycDocumentPartDto": {

@@ -2188,6 +2188,19 @@ export const ibCommissionTypes = pgTable(
       .notNull()
       .default('0'),
     /** Money per standard lot for the CLIENT, before the introducer's share. */
+    /*
+     * 0198 — symbols this type pays NOTHING on, commission or rebate. Folder
+     * paths (MT5's, e.g. `Crypto`, `Forex\\Majors`) exclude everything beneath
+     * them; symbols exclude one instrument. See common/symbol-exclusion.ts.
+     */
+    excludedPaths: text('excluded_paths')
+      .array()
+      .notNull()
+      .default(sql`'{}'::text[]`),
+    excludedSymbols: text('excluded_symbols')
+      .array()
+      .notNull()
+      .default(sql`'{}'::text[]`),
     rebatePerLot: numeric('rebate_per_lot', { precision: 28, scale: 8 }).notNull().default('0'),
     /** The order the picker lists them in. Ties broken by name. */
     sortOrder: integer('sort_order').notNull().default(0),
@@ -3630,6 +3643,27 @@ export const mt5Groups = pgTable(
       .on(t.name)
       .where(sql`${t.removedAt} IS NULL`),
   ],
+);
+
+/**
+ * The CRM's copy of MT5's symbol list, with each symbol's FOLDER path (0198).
+ * What a commission type's folder exclusions are matched against, so pricing a
+ * deal never waits on the bridge. Synced with the groups; see
+ * Mt5SymbolSyncService.
+ */
+export const mt5Symbols = pgTable(
+  'mt5_symbols',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    symbol: varchar('symbol', { length: 50 }).notNull(),
+    /** MT5's path, ending in the symbol: `Forex\Majors\EURUSD`. */
+    path: varchar('path', { length: 255 }).notNull().default(''),
+    description: varchar('description', { length: 255 }).notNull().default(''),
+    firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).notNull().defaultNow(),
+    lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
+    removedAt: timestamp('removed_at', { withTimezone: true }),
+  },
+  (t) => [uniqueIndex('mt5_symbols_symbol_uq').on(sql`lower(${t.symbol})`)],
 );
 
 export const transactions = pgTable(

@@ -92,13 +92,15 @@ async function ingest(deal: {
    * the millisecond two inserts happened to land on.
    */
   secondsAgo?: number;
+  /** The traded symbol (0198 exclusions); EURUSD when the case does not care. */
+  symbol?: string;
 }): Promise<string> {
   const { rows } = await ctx.db.execute<{ id: string }>(sql`
     INSERT INTO mt5_deals
       (mt5_deal_id, login, symbol, action, entry, volume, price, profit, commission, swap,
        mt5_position_id, dealt_at)
     VALUES
-      (${deal.ticket}, ${deal.login}, 'EURUSD', ${deal.action ?? 0}, ${deal.entry ?? 1},
+      (${deal.ticket}, ${deal.login}, ${deal.symbol ?? 'EURUSD'}, ${deal.action ?? 0}, ${deal.entry ?? 1},
        ${deal.volume ?? '1.00000000'}, '1.08542000', '0', ${deal.commission}, ${deal.swap},
        ${deal.positionId ?? null},
        now() - ((${deal.secondsAgo ?? 0})::text || ' seconds')::interval)
@@ -1279,5 +1281,219 @@ describe('a trade the broker earned nothing on', () => {
     expect(accrual?.amount).toBe('20.00000000');
     expect(accrual?.ib_user_id).toBe(zeroPartnerId);
     expect(await isProcessed(opening)).toBe(true);
+  });
+});
+
+/**
+ * ── EXCLUDED SYMBOLS PAY NOBODY (0198) ──────────────────────────────────────
+ *
+ * A commission type may exclude MT5 symbol FOLDERS (matched against the CRM's
+ * `mt5_symbols` mirror, at any depth) and single SYMBOLS (matched by name, no
+ * mirror needed). A closing deal on an excluded symbol is DONE having paid no
+ * commission and no rebate. A deal whose folder the mirror does not know yet,
+ * on a type that excludes folders, is REFUSED and retried — guessing either way
+ * is wrong money — and is priced once the mirror learns the symbol.
+ */
+describe('a commission type can exclude symbols and folders (0198)', () => {
+  /** On a type excluding the folders `Crypto` and `Forex`. */
+  const FOLDER_LOGIN = '5000010';
+  /** On a type excluding the single symbol `btcusd` — lower case on purpose. */
+  const SYMBOL_LOGIN = '5000011';
+  let folderClientId: number;
+
+  async function mirror(symbol: string, path: string): Promise<void> {
+    await ctx.db.execute(sql`INSERT INTO mt5_symbols (symbol, path) VALUES (${symbol}, ${path})`);
+  }
+
+  async function rowsFor(dealRowId: string) {
+    const { rows } = await ctx.db.execute<{
+      kind: string;
+      amount: string;
+      ib_user_id: number;
+      client_user_id: number | null;
+    }>(sql`
+      SELECT kind, amount, ib_user_id, client_user_id FROM ib_accruals
+       WHERE source_type = 'deal' AND source_id = ${dealRowId}
+       ORDER BY kind
+    `);
+    return rows;
+  }
+
+  /** A closing deal of one lot, as every case here wants. */
+  function closeOn(ticket: string, login: string, symbol: string): Promise<string> {
+    return ingest({
+      ticket,
+      login,
+      symbol,
+      commission: '-10.00000000',
+      swap: '0.00000000',
+    });
+  }
+
+  beforeAll(async () => {
+    folderClientId = await makeUser('deal-folder-excl-client@oxshare-e2e.test');
+    const symbolClientId = await makeUser('deal-symbol-excl-client@oxshare-e2e.test');
+    await ctx.db.execute(sql`
+      UPDATE users SET referred_by_ib_user_id = ${partnerId}
+      WHERE id IN (${folderClientId}, ${symbolClientId})
+    `);
+
+    /* $10 a lot to the partners and $4 a lot of rebate pool, so a paying
+       trade here produces BOTH kinds of row — and an excluded one, neither. */
+    const folders = await seedProductTerms(ctx.db, {
+      name: 'Folder-excluding terms',
+      commissionPerLot: '10',
+      rebatePerLot: '4',
+    });
+    await ctx.db.execute(sql`
+      UPDATE ib_commission_types SET excluded_paths = ${'{Crypto,Forex}'}::text[]
+       WHERE id = ${folders.typeId}
+    `);
+    const symbols = await seedProductTerms(ctx.db, {
+      name: 'Symbol-excluding terms',
+      commissionPerLot: '10',
+      rebatePerLot: '4',
+    });
+    await ctx.db.execute(sql`
+      UPDATE ib_commission_types SET excluded_symbols = ${'{btcusd}'}::text[]
+       WHERE id = ${symbols.typeId}
+    `);
+
+    await ctx.db.execute(sql`
+      INSERT INTO trading_accounts (user_id, login, currency, product_id)
+      VALUES (${folderClientId}, ${FOLDER_LOGIN}, 'USD', ${folders.productId}),
+             (${symbolClientId}, ${SYMBOL_LOGIN}, 'USD', ${symbols.productId})
+    `);
+
+    /* The introducer's rung returns half the rebate pool to the client. */
+    await setLadderShares(ctx.db, [{ commission: '30', rebate: '50' }]);
+  });
+
+  afterAll(async () => {
+    await setLadderShares(ctx.db, [{ commission: '30' }]);
+    await ctx.db.execute(sql`DELETE FROM mt5_symbols`);
+  });
+
+  beforeEach(async () => {
+    await ctx.db.execute(sql`DELETE FROM mt5_symbols`);
+  });
+
+  it('pays no commission and no rebate on a symbol in an excluded folder, and marks it done', async () => {
+    await mirror('BTCUSD', 'Crypto\\BTCUSD');
+    const id = await closeOn('90500', FOLDER_LOGIN, 'BTCUSD');
+
+    const run = await deals.accruePending();
+
+    expect(run.failed).toBe(0);
+    expect(run.accrued).toBe(0);
+    expect(run.nothingOwed).toBe(1);
+    expect(await rowsFor(id)).toEqual([]);
+    expect(await isProcessed(id)).toBe(true);
+    /* Done, not deferred: nothing waits to be retried. */
+    expect((await retryState(id)).commission_attempts).toBe(0);
+    expect((await deals.accruePending()).examined).toBe(0);
+  });
+
+  it('still pays commission AND rebate on a symbol outside the excluded folders', async () => {
+    await mirror('XAUUSD', 'Metals\\XAUUSD');
+    const id = await closeOn('90501', FOLDER_LOGIN, 'XAUUSD');
+
+    const run = await deals.accruePending();
+
+    expect(run.accrued).toBe(1);
+    const rows = await rowsFor(id);
+    expect(rows.map((r) => r.kind)).toEqual(['commission', 'rebate']);
+    const [commission, rebate] = rows;
+    expect(commission.ib_user_id).toBe(partnerId);
+    expect(commission.amount).not.toBe('0.00000000');
+    /* Half of a $4 pool, to the trading client. */
+    expect(rebate.amount).toBe('2.00000000');
+    expect(rebate.client_user_id).toBe(folderClientId);
+    expect(await isProcessed(id)).toBe(true);
+  });
+
+  it('a folder rule excludes symbols at any depth beneath it, and only beneath it', async () => {
+    await mirror('EURUSD', 'Forex\\Majors\\EURUSD');
+    /* Shares a PREFIX with `Forex`, but is not inside it. */
+    await mirror('FXPLUS', 'ForexPlus\\FXPLUS');
+    const nested = await closeOn('90502', FOLDER_LOGIN, 'EURUSD');
+    const sibling = await closeOn('90503', FOLDER_LOGIN, 'FXPLUS');
+
+    const run = await deals.accruePending();
+
+    expect(run.nothingOwed).toBe(1);
+    expect(run.accrued).toBe(1);
+    expect(await rowsFor(nested)).toEqual([]);
+    expect(await isProcessed(nested)).toBe(true);
+    expect((await rowsFor(sibling)).map((r) => r.kind)).toEqual(['commission', 'rebate']);
+  });
+
+  it('a single-symbol rule needs no mirror row, and leaves other symbols paying', async () => {
+    /* `mt5_symbols` is empty: the symbol-only type must not wait on it. */
+    const excluded = await closeOn('90504', SYMBOL_LOGIN, 'BTCUSD');
+    const paying = await closeOn('90505', SYMBOL_LOGIN, 'ETHUSD');
+
+    const run = await deals.accruePending();
+
+    expect(run.failed).toBe(0);
+    expect(run.nothingOwed).toBe(1);
+    expect(run.accrued).toBe(1);
+    /* The rule says `btcusd`, the deal `BTCUSD`: names match case-insensitively. */
+    expect(await rowsFor(excluded)).toEqual([]);
+    expect(await isProcessed(excluded)).toBe(true);
+    expect((await rowsFor(paying)).map((r) => r.kind)).toEqual(['commission', 'rebate']);
+    expect(await isProcessed(paying)).toBe(true);
+  });
+
+  it('defers a deal whose folder is not known yet, and prices it once the mirror knows', async () => {
+    const id = await closeOn('90506', FOLDER_LOGIN, 'SOLUSD');
+
+    const first = await deals.accruePending();
+
+    expect(first.failed).toBe(1);
+    expect(first.nothingOwed).toBe(0);
+    expect(await rowsFor(id)).toEqual([]);
+    expect(await isProcessed(id)).toBe(false);
+    const state = await retryState(id);
+    expect(state.commission_attempts).toBe(1);
+    expect(state.commission_last_error).toMatch(/not known yet/);
+
+    /* The next symbol sync records it — in an excluded folder. */
+    await mirror('SOLUSD', 'Crypto\\Alt\\SOLUSD');
+    await makeDue(id);
+
+    const second = await deals.accruePending();
+
+    expect(second.failed).toBe(0);
+    expect(second.nothingOwed).toBe(1);
+    expect(await rowsFor(id)).toEqual([]);
+    expect(await isProcessed(id)).toBe(true);
+  });
+
+  it('a deferred deal whose folder turns out NOT to be excluded is paid in full', async () => {
+    const id = await closeOn('90507', FOLDER_LOGIN, 'US500');
+    expect((await deals.accruePending()).failed).toBe(1);
+
+    await mirror('US500', 'Indices\\US500');
+    await makeDue(id);
+    const run = await deals.accruePending();
+
+    expect(run.accrued).toBe(1);
+    expect((await rowsFor(id)).map((r) => r.kind)).toEqual(['commission', 'rebate']);
+    expect(await isProcessed(id)).toBe(true);
+  });
+
+  it('looks the symbol up case-insensitively, and matches folders case-insensitively', async () => {
+    /* The mirror spells it `btcusd` under `CRYPTO`; the deal says `BTCUSD`. */
+    await mirror('btcusd', 'CRYPTO\\btcusd');
+    const id = await closeOn('90508', FOLDER_LOGIN, 'BTCUSD');
+
+    const run = await deals.accruePending();
+
+    /* Found (not deferred), and inside the `Crypto` rule. */
+    expect(run.failed).toBe(0);
+    expect(run.nothingOwed).toBe(1);
+    expect(await rowsFor(id)).toEqual([]);
+    expect(await isProcessed(id)).toBe(true);
   });
 });

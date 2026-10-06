@@ -64,6 +64,8 @@ export class IbCommissionTypesService {
         enabled: ibCommissionTypes.enabled,
         commissionPerLot: ibCommissionTypes.commissionPerLot,
         rebatePerLot: ibCommissionTypes.rebatePerLot,
+        excludedPaths: ibCommissionTypes.excludedPaths,
+        excludedSymbols: ibCommissionTypes.excludedSymbols,
         sortOrder: ibCommissionTypes.sortOrder,
         createdAt: ibCommissionTypes.createdAt,
         updatedAt: ibCommissionTypes.updatedAt,
@@ -104,6 +106,8 @@ export class IbCommissionTypesService {
         description: emptyToNull(dto.description),
         commissionPerLot: dto.commissionPerLot,
         rebatePerLot: dto.rebatePerLot,
+        excludedPaths: cleanPaths(dto.excludedPaths),
+        excludedSymbols: cleanSymbols(dto.excludedSymbols),
         enabled: dto.enabled ?? true,
         sortOrder: dto.sortOrder ?? (await this.nextSortOrder()),
       })
@@ -123,6 +127,8 @@ export class IbCommissionTypesService {
       commissionPerLot: created.commissionPerLot,
       rebatePerLot: created.rebatePerLot,
       enabled: created.enabled,
+      excludedPaths: created.excludedPaths,
+      excludedSymbols: created.excludedSymbols,
     });
 
     return { ...created, productNames: [] };
@@ -160,6 +166,12 @@ export class IbCommissionTypesService {
           dto.description === undefined ? current.description : emptyToNull(dto.description),
         commissionPerLot: dto.commissionPerLot ?? current.commissionPerLot,
         rebatePerLot: dto.rebatePerLot ?? current.rebatePerLot,
+        excludedPaths:
+          dto.excludedPaths === undefined ? current.excludedPaths : cleanPaths(dto.excludedPaths),
+        excludedSymbols:
+          dto.excludedSymbols === undefined
+            ? current.excludedSymbols
+            : cleanSymbols(dto.excludedSymbols),
         enabled: dto.enabled ?? current.enabled,
         sortOrder: dto.sortOrder ?? current.sortOrder,
         updatedAt: new Date(),
@@ -181,12 +193,16 @@ export class IbCommissionTypesService {
         commissionPerLot: current.commissionPerLot,
         rebatePerLot: current.rebatePerLot,
         enabled: current.enabled,
+        excludedPaths: current.excludedPaths,
+        excludedSymbols: current.excludedSymbols,
       },
       after: {
         name: updated.name,
         commissionPerLot: updated.commissionPerLot,
         rebatePerLot: updated.rebatePerLot,
         enabled: updated.enabled,
+        excludedPaths: updated.excludedPaths,
+        excludedSymbols: updated.excludedSymbols,
       },
       /* Which products this re-prices from the next trade on. */
       products: current.productNames,
@@ -283,4 +299,32 @@ function violatesUniqueName(error: unknown): boolean {
     current = (current as { cause?: unknown }).cause;
   }
   return false;
+}
+
+/**
+ * 0198 — exclusion lists as stored: trimmed, separators as MT5 writes them
+ * (`\\`), no trailing separator, de-duplicated case-insensitively, sorted. The
+ * spelling an operator picked is kept; matching is case-insensitive anyway.
+ */
+function cleanPaths(values: readonly string[] | undefined): string[] {
+  return dedupe(
+    (values ?? []).map((v) =>
+      v
+        .trim()
+        .replace(/\//g, '\\')
+        .replace(/^\\+|\\+$/g, ''),
+    ),
+  );
+}
+
+function cleanSymbols(values: readonly string[] | undefined): string[] {
+  return dedupe((values ?? []).map((v) => v.trim()));
+}
+
+function dedupe(values: string[]): string[] {
+  const seen = new Map<string, string>();
+  for (const value of values) {
+    if (value && !seen.has(value.toLowerCase())) seen.set(value.toLowerCase(), value);
+  }
+  return [...seen.values()].sort((a, b) => a.localeCompare(b));
 }
