@@ -2032,6 +2032,18 @@ export class WithdrawalRowDto {
     'the provider operator\u2019s note about the record, not an attribute of the person',
   )
   providerNote?: string | null;
+  @ApiPropertyOptional({
+    type: PayToDetailDto,
+    isArray: true,
+    nullable: true,
+    description:
+      'What the rail SHOWED the client when they requested it (0202) — a copy, so a later ' +
+      'edit to the method never rewrites it. Null when it showed nothing.',
+  })
+  @NotClientField(
+    "the BROKER's own payout details as the withdraw form showed them, not anything about the client",
+  )
+  payToDetails?: PayToDetailDto[] | null;
   @NotClientField(
     'the nested person, whose own shape carries the marks \u2014 masked there, not here',
   )

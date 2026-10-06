@@ -23,6 +23,7 @@ import {
 } from '../../common/errors/domain-errors';
 import { systemSentenceArabic } from '../../common/i18n/reason-arabic';
 import { registerLabelTwins } from '../../common/i18n/localize-message';
+import { payToSnapshot, shownPayToFields } from '../../common/payments/pay-to-fields';
 
 /**
  * Which withdrawal lifecycle an approval follows — see `approve()`.
@@ -101,6 +102,7 @@ export class WithdrawalCommands {
         channelCode: withdrawalPaymentMethods.channelCode,
         countryRule: withdrawalPaymentMethods.countryRule,
         countryCodes: withdrawalPaymentMethods.countryCodes,
+        payToFields: withdrawalPaymentMethods.payToFields,
       })
       .from(withdrawalPaymentMethods)
       .where(eq(withdrawalPaymentMethods.enabled, true))
@@ -116,7 +118,14 @@ export class WithdrawalCommands {
     // The country rule decided WHETHER it is offered; it is the desk's configuration
     // and not part of what a client is sent (`WithdrawalMethodDto` does not name it).
     return offered.map(
-      ({ providerCode, channelCode, countryRule: _rule, countryCodes: _codes, ...method }) => {
+      ({
+        providerCode,
+        channelCode,
+        countryRule: _rule,
+        countryCodes: _codes,
+        payToFields,
+        ...method
+      }) => {
         const channel = this.providers.findChannel({ providerCode, channelCode }, 'payout');
         const destination = channel?.destination;
         return {
@@ -125,6 +134,8 @@ export class WithdrawalCommands {
           destinationNetwork: destination?.network ?? null,
           // The wallet currencies it pays out, or null for any (0173).
           currencies: !channel || channel.currencies === 'any' ? null : [...channel.currencies],
+          // What it tells the client (0202): shown details, on every payout route.
+          payToFields: shownPayToFields(payToFields, true),
         };
       },
     );
@@ -464,6 +475,8 @@ export class WithdrawalCommands {
      * reserved against a withdrawal that did not exist, invisible and
      * unreleasable.
      */
+    // What the rail tells the client (0202), recorded with the request.
+    const shownToClient = payToSnapshot(method.payToFields, true);
     return this.db.transaction(async (dbTx) => {
       const wallet = await this.wallets.getOrCreateWallet(userId, currency, 'main', dbTx);
       const [row] = await dbTx
@@ -494,6 +507,8 @@ export class WithdrawalCommands {
           channelCode: payoutRoute.channelCode,
           providerEnvironment: await this.records.environmentOf(payoutRoute.providerCode, dbTx),
           destination: destination === '' ? null : destination,
+          // What the rail told the client, as it read NOW; immutable from here (0199 trigger).
+          payToDetails: shownToClient.length > 0 ? shownToClient : null,
         })
         .returning();
 

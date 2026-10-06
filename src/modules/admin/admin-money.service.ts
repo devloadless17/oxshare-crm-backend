@@ -83,15 +83,16 @@ import type { AuthenticatedAdmin } from './guards/admin.guard';
  * Destructured by NAME rather than deleted from a copy, so the next deposit-only
  * column is an edit here rather than a silent leak.
  */
-function withdrawalResponse<
-  T extends { proofFilename?: unknown; proofDetails?: unknown; payToDetails?: unknown },
->(row: T, actor: AuthenticatedAdmin) {
+function withdrawalResponse<T extends { proofFilename?: unknown; proofDetails?: unknown }>(
+  row: T,
+  actor: AuthenticatedAdmin,
+) {
   // Both are an offline DEPOSIT's evidence: its receipt, and the details that
-  // identify the payment (0163). A withdrawal carries neither.
+  // identify the payment (0163). A withdrawal carries neither. `payToDetails`
+  // stays: since 0202 a withdrawal records what its rail told the client.
   const {
     proofFilename: _proofIsDepositOnly,
     proofDetails: _detailsAreDepositOnly,
-    payToDetails: _payToIsDepositOnly,
     /*
      * The payments core's columns a withdrawal response does not carry (0173):
      * a hosted deposit's page, expiry, received and asked amounts, and the

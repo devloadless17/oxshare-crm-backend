@@ -17860,6 +17860,13 @@
             "items": {
               "type": "string"
             }
+          },
+          "payToFields": {
+            "description": "What the rail tells the client, in order (0202) — where to collect cash, a reference to quote. Read-only for the client; the shown details only.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ShownPayToFieldDto"
+            }
           }
         },
         "required": [
@@ -17868,7 +17875,8 @@
           "nameAr",
           "destinationKind",
           "destinationNetwork",
-          "currencies"
+          "currencies",
+          "payToFields"
         ]
       },
       "RequestWithdrawalDto": {
@@ -18884,6 +18892,13 @@
             "example": 0,
             "description": "The order clients see the methods in."
           },
+          "payToFields": {
+            "description": "Every detail the rail shows the client on the withdraw form (0202), hidden ones included.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PayToFieldDto"
+            }
+          },
           "internalLabel": {
             "type": "string",
             "example": "Whish payouts",
@@ -18944,6 +18959,7 @@
           "countryRule",
           "countryCodes",
           "sortOrder",
+          "payToFields",
           "internalLabel",
           "builtIn",
           "inUse",
@@ -19022,6 +19038,13 @@
           "sortOrder": {
             "type": "number",
             "description": "Omitted puts it after the last one."
+          },
+          "payToFields": {
+            "description": "What the rail SHOWS the client on the withdraw form (0202) — where to collect cash, a reference to quote. Ordered; the whole list is replaced on save. Each request keeps what it was shown.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PayToFieldInputDto"
+            }
           }
         },
         "required": [
@@ -19076,6 +19099,13 @@
           },
           "sortOrder": {
             "type": "number"
+          },
+          "payToFields": {
+            "description": "What the rail SHOWS the client on the withdraw form (0202) — where to collect cash, a reference to quote. Ordered; the whole list is replaced on save. Each request keeps what it was shown.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PayToFieldInputDto"
+            }
           }
         }
       },
@@ -26391,6 +26421,45 @@
           "payer"
         ]
       },
+      "PayToDetailDto": {
+        "type": "object",
+        "properties": {
+          "fieldId": {
+            "type": "string",
+            "example": "f_p7d2k9m4qa"
+          },
+          "label": {
+            "type": "string",
+            "example": "Send to",
+            "description": "The label as shown."
+          },
+          "labelAr": {
+            "type": "string",
+            "nullable": true,
+            "example": "أرسل إلى",
+            "description": "The label in Arabic as shown, when the detail had one."
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "text",
+              "phone"
+            ],
+            "example": "phone"
+          },
+          "value": {
+            "type": "string",
+            "example": "+96170123456",
+            "description": "As shown. A phone is E.164."
+          }
+        },
+        "required": [
+          "fieldId",
+          "label",
+          "type",
+          "value"
+        ]
+      },
       "WithdrawalUserDto": {
         "type": "object",
         "properties": {
@@ -26562,6 +26631,14 @@
             "type": "string",
             "nullable": true,
             "description": "The payment provider OPERATOR’s own note on a refused payout (Rival adminNotes). Admin-only: the client is told a fixed sentence in rejectionReason. Null when none."
+          },
+          "payToDetails": {
+            "nullable": true,
+            "description": "What the rail SHOWED the client when they requested it (0202) — a copy, so a later edit to the method never rewrites it. Null when it showed nothing.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PayToDetailDto"
+            }
           },
           "user": {
             "$ref": "#/components/schemas/WithdrawalUserDto"
@@ -27327,45 +27404,6 @@
         "required": [
           "rows",
           "directions"
-        ]
-      },
-      "PayToDetailDto": {
-        "type": "object",
-        "properties": {
-          "fieldId": {
-            "type": "string",
-            "example": "f_p7d2k9m4qa"
-          },
-          "label": {
-            "type": "string",
-            "example": "Send to",
-            "description": "The label as shown."
-          },
-          "labelAr": {
-            "type": "string",
-            "nullable": true,
-            "example": "أرسل إلى",
-            "description": "The label in Arabic as shown, when the detail had one."
-          },
-          "type": {
-            "type": "string",
-            "enum": [
-              "text",
-              "phone"
-            ],
-            "example": "phone"
-          },
-          "value": {
-            "type": "string",
-            "example": "+96170123456",
-            "description": "As shown. A phone is E.164."
-          }
-        },
-        "required": [
-          "fieldId",
-          "label",
-          "type",
-          "value"
         ]
       },
       "AdminTransactionRowDto": {

@@ -845,6 +845,8 @@ export class TransactionQueries {
         needsAttention: transactions.needsAttention,
         attentionReason: transactions.attentionReason,
         providerNote: transactions.providerNote,
+        // What the rail told the client when they requested it (0202).
+        payToDetails: transactions.payToDetails,
         providerCode: transactions.providerCode,
         channelCode: transactions.channelCode,
         providerEnvironment: transactions.providerEnvironment,
@@ -1011,6 +1013,8 @@ export class TransactionQueries {
       needsAttention: r.needsAttention,
       attentionReason: r.attentionReason,
       providerNote: r.providerNote,
+      // What the rail told the client when they asked (0202).
+      payToDetails: r.payToDetails,
       user: {
         id: r.userId,
         portalId: r.userPortalId,

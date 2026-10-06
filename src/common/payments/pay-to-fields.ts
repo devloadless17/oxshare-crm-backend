@@ -169,7 +169,26 @@ export function normalisePayToFields(input: readonly PayToFieldInput[]): PayToFi
   return fields;
 }
 
-/** What a client is shown: the ENABLED details, and only on an offline route. */
+/** Every detail as the CONSOLE edits it — hidden ones included, absent text as null. */
+export function consolePayToFields(
+  fields: readonly PayToField[],
+): (ShownPayToField & { enabled: boolean })[] {
+  return fields.map((field) => ({
+    id: field.id,
+    label: field.label,
+    labelAr: field.labelAr ?? null,
+    type: field.type,
+    value: field.value,
+    enabled: field.enabled,
+    hint: field.hint ?? null,
+    hintAr: field.hintAr ?? null,
+  }));
+}
+
+/**
+ * What a client is shown: the ENABLED details, and only where they apply — a
+ * deposit method's on an offline route; a withdrawal method's always (0202).
+ */
 export function shownPayToFields(
   fields: readonly PayToField[],
   offline: boolean,
