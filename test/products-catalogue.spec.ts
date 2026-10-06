@@ -364,86 +364,98 @@ describe('agencies carry real products only', () => {
   });
 });
 
-describe('offeredTo: demo is global, live is agency-scoped', () => {
+describe('offeredTo: who sees which live products (owner, 6 Oct 2026)', () => {
+  /*
+   * Gold (the main partner's agency) sells Standard; Silver sells ECN; Raw has
+   * NO commission type. The sub-partner's own row says Silver on purpose — the
+   * MAIN partner's agency must win for everybody under him.
+   */
   async function fixture() {
-    const agencyId = await makeAgency('Gold');
-    const carriedId = await makeProduct('Standard');
-    const otherId = await makeProduct('ECN');
+    const gold = await makeAgency('Gold');
+    const silver = await makeAgency('Silver');
+    const standard = await makeProduct('Standard');
+    const ecn = await makeProduct('ECN');
+    const raw = await makeProduct('Raw');
     const demoId = await makeProduct('Demo A', 'demo');
-    await giveType(carriedId);
-    await giveType(otherId);
+    await giveType(standard);
+    await giveType(ecn);
+    for (const [id, env, group] of [
+      [standard, 'live', 'real\\Standard-USD'],
+      [ecn, 'live', 'real\\ECN-USD'],
+      [raw, 'live', 'real\\Raw-USD'],
+      [demoId, 'demo', 'demo\\Standard-USD'],
+    ] as const) {
+      await service.attachGroup(id, { environment: env, mt5Group: group }, TEST_ACTOR);
+    }
+    await service.setAgencyProducts(gold, [standard], TEST_ACTOR);
+    await service.setAgencyProducts(silver, [ecn], TEST_ACTOR);
 
-    await service.attachGroup(
-      carriedId,
-      { environment: 'live', mt5Group: 'real\\Standard-USD' },
-      TEST_ACTOR,
+    const main = await makePartner('main@offered.local', gold);
+    const sub = await makePartner('sub@offered.local', silver);
+    await ctx.db.execute(sql`UPDATE users SET referred_by_ib_user_id = ${main} WHERE id = ${sub}`);
+    await ctx.db.execute(
+      sql`UPDATE ib_accounts SET parent_ib_user_id = ${main}, level = 2 WHERE user_id = ${sub}`,
     );
-    await service.attachGroup(
-      otherId,
-      { environment: 'live', mt5Group: 'real\\Standard-EUR' },
-      TEST_ACTOR,
-    );
-    await service.attachGroup(
+    return {
+      main,
+      sub,
+      underMain: await makeUser('under-main@offered.local', main),
+      underSub: await makeUser('under-sub@offered.local', sub),
+      direct: await makeUser('direct@offered.local'),
       demoId,
-      { environment: 'demo', mt5Group: 'demo\\Standard-USD' },
-      TEST_ACTOR,
-    );
-    // The agency carries ONLY 'Standard' — and, pointedly, not the demo product.
-    await service.setAgencyProducts(agencyId, [carriedId], TEST_ACTOR);
-
-    const partnerId = await makePartner('partner@offered.local', agencyId);
-    const referredId = await makeUser('referred@offered.local', partnerId);
-    const directId = await makeUser('direct@offered.local');
-    return { referredId, directId, demoId, otherId };
+    };
   }
 
-  it('a LIVE product with no commission type is offered to nobody', async () => {
-    const { referredId, directId, otherId } = await fixture();
-    await ctx.db.execute(
-      sql`UPDATE trading_products SET commission_type_id = NULL WHERE id = ${otherId}`,
-    );
+  const groups = async (userId: number, env: 'live' | 'demo' = 'live') =>
+    (await store.offeredTo(userId, env)).map((o) => o.mt5Group).sort();
 
-    expect((await store.offeredTo(directId, 'live')).map((o) => o.mt5Group)).toEqual([
-      'real\\Standard-USD',
-    ]);
-    // Even inside an agency that carries it.
-    const [{ id: agencyId }] = await store.listAgencies();
-    await service.setAgencyProducts(agencyId, [otherId], TEST_ACTOR);
-    expect(await store.offeredTo(referredId, 'live')).toEqual([]);
-    // The demo offer never depended on a type.
-    expect((await store.offeredTo(directId, 'demo')).map((o) => o.mt5Group)).toEqual([
-      'demo\\Standard-USD',
-    ]);
+  it('an individual sees only live products with NO commission type', async () => {
+    const { direct } = await fixture();
+    expect(await groups(direct)).toEqual(['real\\Raw-USD']);
   });
 
-  it('a referred client gets their agency for LIVE and the demo product for DEMO', async () => {
-    const { referredId } = await fixture();
-
-    const live = await store.offeredTo(referredId, 'live');
-    expect(live.map((offer) => offer.mt5Group)).toEqual(['real\\Standard-USD']);
-
-    const demo = await store.offeredTo(referredId, 'demo');
-    expect(demo.map((offer) => offer.mt5Group)).toEqual(['demo\\Standard-USD']);
+  it('a main partner opening his own account sees only products with no commission type', async () => {
+    const { main } = await fixture();
+    expect(await groups(main)).toEqual(['real\\Raw-USD']);
   });
 
-  it('a direct client gets the full real catalogue for LIVE and the same demo set', async () => {
-    const { directId } = await fixture();
-
-    const live = await store.offeredTo(directId, 'live');
-    expect(live.map((offer) => offer.mt5Group).sort()).toEqual([
-      'real\\Standard-EUR',
-      'real\\Standard-USD',
-    ]);
-
-    const demo = await store.offeredTo(directId, 'demo');
-    expect(demo.map((offer) => offer.mt5Group)).toEqual(['demo\\Standard-USD']);
+  it('a sub-partner opening his own account sees his MAIN partner’s agency', async () => {
+    const { sub } = await fixture();
+    expect(await groups(sub)).toEqual(['real\\Standard-USD']);
   });
 
-  it('disabling the demo product closes the demo door for everybody', async () => {
-    const { referredId, demoId } = await fixture();
+  it('a client under the main partner sees the main partner’s agency', async () => {
+    const { underMain } = await fixture();
+    expect(await groups(underMain)).toEqual(['real\\Standard-USD']);
+  });
 
-    await ctx.db.execute(sql`UPDATE trading_products SET enabled = false WHERE id = ${demoId}`);
-    expect(await store.offeredTo(referredId, 'demo')).toEqual([]);
+  it('a client under a sub-partner sees the MAIN partner’s agency, not the sub-partner’s', async () => {
+    const { underSub } = await fixture();
+    expect(await groups(underSub)).toEqual(['real\\Standard-USD']);
+  });
+
+  it('inside a tree, an agency product with no commission type is not offered', async () => {
+    const { underMain } = await fixture();
+    const [gold] = (await store.listAgencies()).filter((a) => a.name === 'Gold');
+    const raw = (await service.listProducts()).find((p) => p.name === 'Raw')!.id;
+    const standard = (await service.listProducts()).find((p) => p.name === 'Standard')!.id;
+    await service.setAgencyProducts(gold.id, [standard, raw], TEST_ACTOR);
+    expect(await groups(underMain)).toEqual(['real\\Standard-USD']);
+  });
+
+  it('inside a tree whose main partner has no agency: every product with a type', async () => {
+    const { underMain, main } = await fixture();
+    await ctx.db.execute(sql`UPDATE ib_accounts SET agency_id = NULL WHERE user_id = ${main}`);
+    expect(await groups(underMain)).toEqual(['real\\ECN-USD', 'real\\Standard-USD']);
+  });
+
+  it('demo is the same for everybody, and disabling it closes it for everybody', async () => {
+    const f = await fixture();
+    for (const id of [f.direct, f.main, f.sub, f.underMain, f.underSub]) {
+      expect(await groups(id, 'demo')).toEqual(['demo\\Standard-USD']);
+    }
+    await ctx.db.execute(sql`UPDATE trading_products SET enabled = false WHERE id = ${f.demoId}`);
+    expect(await groups(f.underSub, 'demo')).toEqual([]);
   });
 });
 
@@ -871,7 +883,6 @@ describe('Arabic names and descriptions (0179)', () => {
       { environment: 'live', mt5Group: 'real\\Standard-USD' },
       TEST_ACTOR,
     );
-    await giveType(id);
     const client = await makeUser('arabic@offered.local');
     const [offer] = await store.offeredTo(client, 'live');
     expect(offer).toMatchObject({ productName: 'Standard', productNameAr: 'قياسي' });
