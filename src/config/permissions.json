@@ -301,24 +301,6 @@
       }
     ]
   },
-  "links": {
-    "moduleName": "Sign-up Links",
-    "description": "Links an administrator hands out: a client who signs up through one arrives carrying the link's tags, so they land in that administrator's book. A tag is a territory, so creating a link is deciding who will see the clients it brings — your own links may carry only tags from your own territory; links.manage covers everyone's.",
-    "permissions": [
-      {
-        "key": "links.view",
-        "label": "View Sign-up Links"
-      },
-      {
-        "key": "links.create",
-        "label": "Create & Edit Your Own Sign-up Links"
-      },
-      {
-        "key": "links.manage",
-        "label": "Create, Edit & Reassign Anyone's Sign-up Links"
-      }
-    ]
-  },
   "currencies": {
     "moduleName": "Currencies",
     "description": "Its own module rather than a corner of settings: a currency is a money object, and granting somebody the support email address should not also let them delete one.",

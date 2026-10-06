@@ -459,7 +459,7 @@ export class UsersStore {
   }
 
   async create(
-    data: Omit<User, 'id' | 'createdAt' | 'portalId'> & { acquisitionLinkId?: string },
+    data: Omit<User, 'id' | 'createdAt' | 'portalId'> & { signedUpViaAdminId?: string },
     executor?: Executor,
   ): Promise<User> {
     const [row] = await (executor ?? this.db).insert(users).values(data).returning();

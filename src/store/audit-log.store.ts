@@ -73,7 +73,6 @@ export const CLIENT_SUBJECT_TYPES = [
  * no territory over the client.
  */
 export const NON_CLIENT_SUBJECT_TYPES = [
-  'acquisition_link',
   'admin',
   'admin_invite',
   'agencies',

@@ -80,10 +80,10 @@ import {
   type AuthenticatedAdmin,
 } from './guards/admin.guard';
 import { ReconciliationService } from '../wallet/reconciliation.service';
-import { UuidParam, enumQuery, uuidQuery } from '../../common/query-params';
+import { UuidParam, enumQuery, searchQuery, uuidQuery } from '../../common/query-params';
 import { ApiDateRangeQueries, dateRangeQuery } from '../../common/date-range';
 import { ClientRefPipe } from '../../common/client-ref.pipe';
-import { transactionStateEnum } from '../../database/schema';
+import { ledgerEntryTypeEnum, transactionStateEnum } from '../../database/schema';
 import { NotClientScoped, ScopedToClients } from './guards/client-scope.decorator';
 import { Audited } from './guards/audited.decorator';
 import { AnnouncesChange } from '../../common/realtime/announces-change.decorator';
@@ -834,6 +834,73 @@ export class AdminMoneyController {
       );
     }
     return this.reconciliation.run();
+  }
+
+  /**
+   * The LEDGER as a file — `ledger.view`, the SAME key as the screen (an export
+   * must never be a way around one). Every entry the filters match, with the
+   * balance it produced, as the exact decimal strings the database holds
+   * (§6.1). Keyset-chained under one snapshot instant: the ledger never stops
+   * growing, and a reconciliation file with a row twice or a row missing is
+   * worse than none.
+   */
+  @Get('ledger/export')
+  @Throttle({ default: { ttl: 60_000, limit: EXPORT_RATE_LIMIT } })
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('ledger.view')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Export the filtered ledger as CSV',
+    description:
+      'The same filters as GET /admin/ledger, over every matching entry. Amounts and balances ' +
+      'are the exact decimal strings the ledger holds — never rounded (§6.1).',
+  })
+  @ApiOkResponse({
+    description: 'A CSV file. `Content-Disposition` names it `ledger-<YYYY-MM-DD>.csv`.',
+    content: { 'text/csv': { schema: { type: 'string', format: 'binary' } } },
+  })
+  @ApiQuery({ name: 'format', required: false, enum: ['csv'] })
+  @ApiQuery({ name: 'userId', required: false })
+  @ApiQuery({ name: 'q', required: false })
+  @ApiQuery({ name: 'walletId', required: false })
+  @ApiQuery({ name: 'entryType', required: false, enum: ledgerEntryTypeEnum.enumValues })
+  @ApiDateRangeQueries('posted')
+  @ScopedToClients(
+    'AdminExportService.ledgerBatch → WalletService.listEntriesForExport, the same clientScopePredicate on wallets.user_id the ledger applies.',
+  )
+  @Audited('export.ledger')
+  async exportLedger(
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+    @Res() res: Response,
+    @Query('format') format?: string,
+    @Query('userId', ClientRefPipe) userId?: number,
+    @Query('q') q?: string,
+    @Query('walletId') walletId?: string,
+    @Query('entryType') entryType?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    const chosen = exportFormat(format);
+    // Validated as the list validates, so the file refuses what the screen refuses.
+    const query = {
+      userId,
+      q: searchQuery(q),
+      walletId: uuidQuery(walletId, 'walletId'),
+      entryType: enumQuery(entryType, ledgerEntryTypeEnum.enumValues, 'entryType'),
+      range: dateRangeQuery(from, to),
+    };
+    this.audit.record(req.admin.id, 'export.ledger', 'wallet_list', req.admin.id, {
+      format: chosen,
+      filters: query,
+    });
+    const startedAt = new Date();
+    let after: { createdAt: string; id: string } | undefined;
+    await streamCsv(res, 'ledger', chosen, this.exports.ledgerColumns, async (_offset, limit) => {
+      const rows = await this.exports.ledgerBatch(query, req.admin, limit, startedAt, after);
+      const last = rows[rows.length - 1];
+      if (last) after = { createdAt: last.cursorCreatedAt, id: last.id };
+      return rows;
+    });
   }
 
   /*

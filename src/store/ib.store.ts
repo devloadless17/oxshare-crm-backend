@@ -8,6 +8,7 @@ import {
   desc,
   eq,
   inArray,
+  lte,
   or,
   sql,
   type SQLWrapper,
@@ -738,6 +739,13 @@ export class IbStore {
     order?: SortOrder;
     /** When it ACCRUED — `[from, until)`, `common/date-range.ts`. */
     range?: DateRange;
+    /**
+     * An EXPORT's snapshot instant: rows written after it are left out, so the
+     * offsets of later batches cannot shift under a commission accruing mid-file.
+     */
+    createdBefore?: Date;
+    /** `false` skips the count and the per-status sums — an export shows neither. */
+    withTotals?: boolean;
   }) {
     /*
      * Each accrual names TWO people, and the reader may hold territory over
@@ -811,6 +819,7 @@ export class IbStore {
         : []),
       ...(filter.status ? [eq(ibAccruals.status, filter.status as 'pending')] : []),
       ...withinRange(ibAccruals.createdAt, filter.range),
+      ...(filter.createdBefore ? [lte(ibAccruals.createdAt, filter.createdBefore)] : []),
       /* Validated against the column's own enum at the edge, so an
          unrecognised value is a 400 rather than a filter matching nothing. */
       ...(filter.kind ? [eq(ibAccruals.kind, filter.kind as 'commission')] : []),
@@ -961,6 +970,8 @@ export class IbStore {
      * presented on the ledger. The join cannot change the count: `ib_user_id`
      * is NOT NULL with a foreign key.
      */
+    if (filter.withTotals === false) return { rows, total: rows.length, totals: [] };
+
     const [{ value: total }] = await this.db
       .select({ value: count() })
       .from(ibAccruals)

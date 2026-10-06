@@ -355,6 +355,21 @@ export class BulkLeavesScopeError extends TagChangeLeavesScopeError {
 }
 
 /**
+ * Another administrator's sign-up link already uses this word. → 409
+ * `SIGNUP_LINK_TAKEN`, under the `slug` field, so the form says it where it was
+ * typed.
+ */
+export class SignupLinkTakenError extends DomainError {
+  readonly code = 'SIGNUP_LINK_TAKEN';
+  readonly fields: Record<string, string>;
+
+  constructor(message = 'Another administrator already uses this link. Choose another word.') {
+    super(message, { fields: { slug: message } });
+    this.fields = { slug: message };
+  }
+}
+
+/**
  * "Every client matching this filter" no longer matches the number the reader
  * was shown — somebody registered, or was re-tagged, in between. → 409
  * `BULK_TARGET_CHANGED`, with `fields.count` the number now, so the console

@@ -2682,6 +2682,116 @@
         ]
       }
     },
+    "/v1/admin/ib/accruals/export": {
+      "get": {
+        "description": "The same filters as GET /admin/ib/accruals, over every matching accrual.",
+        "operationId": "AdminIbController_exportAccruals",
+        "parameters": [
+          {
+            "name": "format",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "csv"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "ibUserId",
+            "required": false,
+            "in": "query",
+            "description": "Restrict to one partner.",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "clientUserId",
+            "required": false,
+            "in": "query",
+            "description": "Restrict to one client.",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "q",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "pending",
+                "confirmed",
+                "reversed"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "kind",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "commission",
+                "rebate"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Earliest accrued time, inclusive: a date-time with offset (2026-10-06T00:00:00+03:00) or a date (YYYY-MM-DD, a UTC day).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A CSV file. `Content-Disposition` names it `commissions-<YYYY-MM-DD>.csv`.",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Export the filtered commission ledger as CSV",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/ib/accruals": {
       "get": {
         "description": "Every accrual with the partner who earned it and the client whose deposit generated it. `totals` sums by status across the whole filtered set, as decimal strings (§6.1).",
@@ -9138,9 +9248,36 @@
         ]
       }
     },
-    "/v1/admin/acquisition-links": {
+    "/v1/admin/signup-links/me": {
       "get": {
-        "operationId": "AcquisitionLinksController_list",
+        "operationId": "SignupLinksController_mine",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MySignupLinkDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Your own sign-up link, the tags it gives, and what it has brought",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/signup-links": {
+      "get": {
+        "operationId": "SignupLinksController_list",
         "parameters": [],
         "responses": {
           "200": {
@@ -9150,7 +9287,7 @@
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/AcquisitionLinkDto"
+                    "$ref": "#/components/schemas/SignupLinkRowDto"
                   }
                 }
               }
@@ -9162,53 +9299,18 @@
             "cookie": []
           }
         ],
-        "summary": "Sign-up links, with what each has brought (counts only)",
-        "tags": [
-          "admin"
-        ]
-      },
-      "post": {
-        "operationId": "AcquisitionLinksController_create",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreateAcquisitionLinkDto"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AcquisitionLinkDto"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "cookie": []
-          }
-        ],
-        "summary": "Create a sign-up link",
+        "summary": "Every administrator’s sign-up link, with what it has brought",
         "tags": [
           "admin"
         ]
       }
     },
-    "/v1/admin/acquisition-links/{id}": {
+    "/v1/admin/signup-links/{adminId}": {
       "patch": {
-        "operationId": "AcquisitionLinksController_update",
+        "operationId": "SignupLinksController_rename",
         "parameters": [
           {
-            "name": "id",
+            "name": "adminId",
             "required": true,
             "in": "path",
             "schema": {
@@ -9221,7 +9323,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/UpdateAcquisitionLinkDto"
+                "$ref": "#/components/schemas/RenameSignupLinkDto"
               }
             }
           }
@@ -9232,7 +9334,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AcquisitionLinkDto"
+                  "$ref": "#/components/schemas/SignupLinkUrlDto"
                 }
               }
             }
@@ -9243,7 +9345,43 @@
             "cookie": []
           }
         ],
-        "summary": "Rename, re-tag, hand over, or switch a sign-up link off/on",
+        "summary": "Rename a sign-up link (your own, or anyone’s with admins.edit)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/signup-links/{adminId}/random": {
+      "post": {
+        "operationId": "SignupLinksController_randomize",
+        "parameters": [
+          {
+            "name": "adminId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignupLinkUrlDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Give a sign-up link a random word made by the server (the old word stops working)",
         "tags": [
           "admin"
         ]
@@ -12092,6 +12230,106 @@
         ]
       }
     },
+    "/v1/admin/ledger/export": {
+      "get": {
+        "description": "The same filters as GET /admin/ledger, over every matching entry. Amounts and balances are the exact decimal strings the ledger holds — never rounded (§6.1).",
+        "operationId": "AdminMoneyController_exportLedger",
+        "parameters": [
+          {
+            "name": "format",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "csv"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "userId",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "q",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "walletId",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "entryType",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "deposit",
+                "withdrawal",
+                "commission",
+                "rebate",
+                "payout",
+                "adjustment",
+                "transfer"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Earliest posted time, inclusive: a date-time with offset (2026-10-06T00:00:00+03:00) or a date (YYYY-MM-DD, a UTC day).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A CSV file. `Content-Disposition` names it `ledger-<YYYY-MM-DD>.csv`.",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Export the filtered ledger as CSV",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/ledger": {
       "get": {
         "operationId": "AdminMoneyController_listLedger",
@@ -12758,6 +12996,219 @@
           }
         ],
         "summary": "Totals over the filtered movement list, grouped per currency (amounts are strings)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/deposits/export": {
+      "get": {
+        "description": "The same filters as GET /admin/deposits, over every matching row. Amounts are the exact decimal strings the ledger holds (§6.1); the client's deposit details are a column.",
+        "operationId": "AdminFinancialController_exportDeskDeposits",
+        "parameters": [
+          {
+            "name": "format",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "csv"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "pending",
+                "approved",
+                "success",
+                "failure",
+                "rejected"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "required": false,
+            "in": "query",
+            "description": "A Portal ID, a phone, a name or an email — or a detail the client gave with the receipt.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Earliest created time, inclusive: a date-time with offset (2026-10-06T00:00:00+03:00) or a date (YYYY-MM-DD, a UTC day).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A CSV file. `Content-Disposition` names it `deposits-<YYYY-MM-DD>.csv`.",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Export the deposit desk as CSV",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/deposits": {
+      "get": {
+        "operationId": "AdminFinancialController_listDeskDeposits",
+        "parameters": [
+          {
+            "name": "state",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "pending",
+                "approved",
+                "success",
+                "failure",
+                "rejected"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "required": false,
+            "in": "query",
+            "description": "A Portal ID, a phone, a name or an email — or a detail the client gave with the receipt.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Earliest created time, inclusive: a date-time with offset (2026-10-06T00:00:00+03:00) or a date (YYYY-MM-DD, a UTC day).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "required": false,
+            "in": "query",
+            "description": "One deposit by its uuid — where a notification lands. No state is implied.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "description": "Legacy offset paging. Prefer cursor.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "required": false,
+            "in": "query",
+            "description": "Opaque keyset cursor (R-2.4).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sort",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "createdAt",
+                "amount",
+                "state"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "order",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminTransactionListResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "The deposit desk — deposits a person decides (amounts are strings)",
         "tags": [
           "admin"
         ]
@@ -16933,6 +17384,57 @@
           "hintAr"
         ]
       },
+      "ShownPayToFieldDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "example": "f_p7d2k9m4qa"
+          },
+          "label": {
+            "type": "string",
+            "example": "Send to"
+          },
+          "labelAr": {
+            "type": "string",
+            "nullable": true,
+            "example": "أرسل إلى",
+            "description": "The label in Arabic; null = not translated, show `label`."
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "text",
+              "phone"
+            ],
+            "example": "phone"
+          },
+          "value": {
+            "type": "string",
+            "example": "+96170123456",
+            "description": "The broker's value, shown read-only with a Copy button. A phone is E.164."
+          },
+          "hint": {
+            "type": "string",
+            "nullable": true,
+            "example": "Whish account in the name of OxShare."
+          },
+          "hintAr": {
+            "type": "string",
+            "nullable": true,
+            "description": "The hint in Arabic; null = not translated, show `hint`."
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "labelAr",
+          "type",
+          "value",
+          "hint",
+          "hintAr"
+        ]
+      },
       "PaymentMethodDto": {
         "type": "object",
         "properties": {
@@ -16985,6 +17487,13 @@
             "items": {
               "$ref": "#/components/schemas/AskedProofFieldDto"
             }
+          },
+          "payToFields": {
+            "description": "Where the client sends the money, in order — only the details shown to clients, and only for a method paid outside the platform. Read-only for the client.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ShownPayToFieldDto"
+            }
           }
         },
         "required": [
@@ -16998,7 +17507,8 @@
           "enabled",
           "sortOrder",
           "requiresProof",
-          "proofFields"
+          "proofFields",
+          "payToFields"
         ]
       },
       "DepositStateDto": {
@@ -17628,6 +18138,62 @@
           "enabled"
         ]
       },
+      "PayToFieldDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "example": "f_p7d2k9m4qa"
+          },
+          "label": {
+            "type": "string",
+            "example": "Send to"
+          },
+          "labelAr": {
+            "type": "string",
+            "nullable": true,
+            "example": "أرسل إلى",
+            "description": "The label in Arabic; null = not translated, show `label`."
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "text",
+              "phone"
+            ],
+            "example": "phone"
+          },
+          "value": {
+            "type": "string",
+            "example": "+96170123456",
+            "description": "The broker's value, shown read-only with a Copy button. A phone is E.164."
+          },
+          "hint": {
+            "type": "string",
+            "nullable": true,
+            "example": "Whish account in the name of OxShare."
+          },
+          "hintAr": {
+            "type": "string",
+            "nullable": true,
+            "description": "The hint in Arabic; null = not translated, show `hint`."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Shown to clients. A hidden detail is kept but never shown."
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "labelAr",
+          "type",
+          "value",
+          "hint",
+          "hintAr",
+          "enabled"
+        ]
+      },
       "AdminPaymentMethodDto": {
         "type": "object",
         "properties": {
@@ -17679,6 +18245,13 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/ProofFieldDto"
+            }
+          },
+          "payToFields": {
+            "description": "Every detail the method shows, hidden ones included. What an OFFLINE method SHOWS the client — where to send the money, e.g. the phone a transfer goes to or an account name. Ordered; the whole list is replaced on save. Shown only while the method is paid outside the platform. Each deposit records what it was shown.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PayToFieldDto"
             }
           },
           "ownMinAmount": {
@@ -17756,6 +18329,7 @@
           "sortOrder",
           "requiresProof",
           "proofFields",
+          "payToFields",
           "ownMinAmount",
           "countryRule",
           "countryCodes",
@@ -17819,6 +18393,62 @@
           "label",
           "type",
           "required",
+          "enabled"
+        ]
+      },
+      "PayToFieldInputDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "example": "f_p7d2k9m4qa",
+            "description": "Permanent; generated by the console."
+          },
+          "label": {
+            "type": "string",
+            "example": "Send to",
+            "maxLength": 60
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "text",
+              "phone"
+            ]
+          },
+          "value": {
+            "type": "string",
+            "example": "+96170123456",
+            "maxLength": 120
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Shown to clients."
+          },
+          "hint": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 160
+          },
+          "labelAr": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 60,
+            "example": "أرسل إلى",
+            "description": "Arabic for the portal’s Arabic readers. Optional; blank or null = not translated (the portal shows the English)."
+          },
+          "hintAr": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 160,
+            "description": "Arabic for the portal’s Arabic readers. Optional; blank or null = not translated (the portal shows the English)."
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "type",
+          "value",
           "enabled"
         ]
       },
@@ -17916,6 +18546,13 @@
             "items": {
               "$ref": "#/components/schemas/ProofFieldInputDto"
             }
+          },
+          "payToFields": {
+            "description": "What an OFFLINE method SHOWS the client — where to send the money, e.g. the phone a transfer goes to or an account name. Ordered; the whole list is replaced on save. Shown only while the method is paid outside the platform. Each deposit records what it was shown.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PayToFieldInputDto"
+            }
           }
         },
         "required": [
@@ -17996,6 +18633,13 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/ProofFieldInputDto"
+            }
+          },
+          "payToFields": {
+            "description": "What an OFFLINE method SHOWS the client — where to send the money, e.g. the phone a transfer goes to or an account name. Ordered; the whole list is replaced on save. Shown only while the method is paid outside the platform. Each deposit records what it was shown.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PayToFieldInputDto"
             }
           }
         }
@@ -23782,7 +24426,7 @@
           "stillVisible"
         ]
       },
-      "AcquisitionLinkTagDto": {
+      "SignupLinkTagDto": {
         "type": "object",
         "properties": {
           "id": {
@@ -23804,123 +24448,115 @@
           "label"
         ]
       },
-      "AcquisitionLinkDto": {
+      "MySignupLinkDto": {
         "type": "object",
         "properties": {
-          "id": {
-            "type": "string"
-          },
-          "code": {
+          "slug": {
             "type": "string",
-            "description": "Public code: the portal link is /join/<code>.",
-            "example": "K7M2Q9XA"
-          },
-          "name": {
-            "type": "string"
+            "example": "omar-farah"
           },
           "url": {
             "type": "string",
-            "description": "The link to hand out: <PORTAL_URL>/join/<code>."
-          },
-          "ownerAdminId": {
-            "type": "string"
-          },
-          "ownerName": {
-            "type": "string"
-          },
-          "ownerActive": {
-            "type": "boolean",
-            "description": "False when the owner is suspended: the link then tags nobody."
-          },
-          "ownerSeesSignups": {
-            "type": "boolean",
-            "description": "False when none of the link's tags is in the owner's territory: the owner will not see the clients it brings."
+            "description": "The link to hand out: <PORTAL_URL>/join/<slug>."
           },
           "tags": {
+            "description": "What a sign-up through it gets right now: your territory, minus countries.",
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/AcquisitionLinkTagDto"
+              "$ref": "#/components/schemas/SignupLinkTagDto"
             }
           },
-          "disabledAt": {
-            "type": "string",
-            "nullable": true,
-            "format": "date-time"
-          },
-          "createdAt": {
-            "format": "date-time",
-            "type": "string"
+          "addsNoTag": {
+            "type": "boolean",
+            "description": "True when the link gives no tag: you see every client, or only countries. Clients you bring are recorded as yours, not put in a book."
           },
           "signups": {
-            "type": "number",
-            "description": "Clients who signed up through it."
+            "type": "number"
           },
           "verified": {
-            "type": "number",
-            "description": "Of whom verified (level 1 or above)."
+            "type": "number"
           },
           "funded": {
-            "type": "number",
-            "description": "Of whom have a successful deposit."
+            "type": "number"
           }
         },
         "required": [
-          "id",
-          "code",
-          "name",
+          "slug",
           "url",
-          "ownerAdminId",
-          "ownerName",
-          "ownerActive",
-          "ownerSeesSignups",
           "tags",
-          "createdAt",
+          "addsNoTag",
           "signups",
           "verified",
           "funded"
         ]
       },
-      "CreateAcquisitionLinkDto": {
+      "SignupLinkRowDto": {
         "type": "object",
         "properties": {
-          "name": {
-            "type": "string",
-            "description": "What the desk calls it (\"O_F — Facebook campaign\")."
+          "adminId": {
+            "type": "string"
           },
-          "ownerAdminId": {
-            "type": "string",
-            "description": "Who owns it; the caller when absent. Another administrator needs links.manage."
-          },
-          "tagIds": {
-            "description": "Tags a sign-up arrives with. Absent: the owner's own territory tags. Never a country tag.",
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          }
-        }
-      },
-      "UpdateAcquisitionLinkDto": {
-        "type": "object",
-        "properties": {
           "name": {
             "type": "string"
           },
-          "ownerAdminId": {
-            "type": "string",
-            "description": "Hand the link to another administrator (links.manage)."
+          "slug": {
+            "type": "string"
           },
-          "tagIds": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
+          "url": {
+            "type": "string"
           },
-          "disabled": {
+          "active": {
             "type": "boolean",
-            "description": "Switch the link off (tags nobody) or back on."
+            "description": "A suspended administrator's link tags nobody."
+          },
+          "signups": {
+            "type": "number"
+          },
+          "verified": {
+            "type": "number"
+          },
+          "funded": {
+            "type": "number"
           }
-        }
+        },
+        "required": [
+          "adminId",
+          "name",
+          "slug",
+          "url",
+          "active",
+          "signups",
+          "verified",
+          "funded"
+        ]
+      },
+      "RenameSignupLinkDto": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string",
+            "example": "omar-farah",
+            "description": "Lowercase letters, digits, - and _; 3–32 characters. The old link stops working."
+          }
+        },
+        "required": [
+          "slug"
+        ]
+      },
+      "SignupLinkUrlDto": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug",
+          "url"
+        ]
       },
       "KycDocumentDto": {
         "type": "object",
@@ -26460,6 +27096,45 @@
           "directions"
         ]
       },
+      "PayToDetailDto": {
+        "type": "object",
+        "properties": {
+          "fieldId": {
+            "type": "string",
+            "example": "f_p7d2k9m4qa"
+          },
+          "label": {
+            "type": "string",
+            "example": "Send to",
+            "description": "The label as shown."
+          },
+          "labelAr": {
+            "type": "string",
+            "nullable": true,
+            "example": "أرسل إلى",
+            "description": "The label in Arabic as shown, when the detail had one."
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "text",
+              "phone"
+            ],
+            "example": "phone"
+          },
+          "value": {
+            "type": "string",
+            "example": "+96170123456",
+            "description": "As shown. A phone is E.164."
+          }
+        },
+        "required": [
+          "fieldId",
+          "label",
+          "type",
+          "value"
+        ]
+      },
       "AdminTransactionRowDto": {
         "type": "object",
         "properties": {
@@ -26546,6 +27221,14 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/ProofDetailDto"
+            }
+          },
+          "payToDetails": {
+            "nullable": true,
+            "description": "Where an OFFLINE deposit's client was told to send the money — the details the method showed when it was filed, e.g. the phone a transfer goes to (0199). A copy: the method may have changed since. Null otherwise.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PayToDetailDto"
             }
           },
           "walletId": {

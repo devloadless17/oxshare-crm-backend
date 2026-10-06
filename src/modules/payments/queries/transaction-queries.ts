@@ -1,4 +1,5 @@
 import { type ProofDetail } from '../../../common/payments/proof-fields';
+import { type PayToDetail } from '../../../common/payments/pay-to-fields';
 import { and, asc, desc, eq, sql, type SQL, type SQLWrapper, lte } from 'drizzle-orm';
 import {
   paymentProviders,
@@ -108,6 +109,8 @@ interface CombinedRow {
   proof_filename: string | null;
   /** The client's answers to an offline method's details (0163). */
   proof_details: ProofDetail[] | null;
+  /** What an offline method showed the client at filing (0199). */
+  pay_to_details: PayToDetail[] | null;
   rejection_reason: string | null;
   /** Its Arabic, written with it (0179). A transfer's `failure_reason_ar`. */
   rejection_reason_ar: string | null;
@@ -329,6 +332,8 @@ export interface AdminTransactionExportRow {
   destination: string | null;
   /** What the client gave to identify an offline payment (0163). */
   proofDetails: ProofDetail[] | null;
+  /** Where the client was told to send an offline deposit, as shown at filing (0199). */
+  payToDetails: PayToDetail[] | null;
   rejectionReason: string | null;
   userId: number;
   userPortalId: number;
@@ -479,6 +484,7 @@ function toMovementRow(row: AdminCombinedRow) {
     // the row it is deciding on. Null on every other movement.
     proofFilename: row.proof_filename,
     proofDetails: row.proof_details,
+    payToDetails: row.pay_to_details,
     createdAt: instantOf(row.created_at),
     settledAt: instantOrNull(row.settled_at),
     reviewedAt: instantOrNull(row.reviewed_at),
@@ -1265,6 +1271,7 @@ export class TransactionQueries {
           NULL::uuid,                             -- destination_trading_account_id
           NULL::varchar,                          -- proof_filename
           NULL::jsonb,                            -- proof_details
+          NULL::jsonb,                            -- pay_to_details
           NULL::text,                             -- rejection_reason: it cannot fail
           NULL::text,                             -- rejection_reason_ar
           NULL::uuid,                             -- reviewed_by
@@ -1367,6 +1374,7 @@ export class TransactionQueries {
           t.destination_trading_account_id,
           t.proof_filename,
           t.proof_details,
+          t.pay_to_details,
           t.rejection_reason,
           t.rejection_reason_ar,
           t.reviewed_by,
@@ -1428,6 +1436,7 @@ export class TransactionQueries {
           NULL::uuid,                             -- destination_trading_account_id
           NULL::varchar,                          -- proof_filename
           NULL::jsonb,                            -- proof_details
+          NULL::jsonb,                            -- pay_to_details
           /*
            * The transfer's failure reason lands in rejection_reason: both
            * answer "why did this not happen", and giving them one column means a
@@ -1503,6 +1512,7 @@ export class TransactionQueries {
           NULL::uuid,                             -- destination_trading_account_id
           NULL::varchar,                          -- proof_filename
           NULL::jsonb,                            -- proof_details
+          NULL::jsonb,                            -- pay_to_details
           NULL::text,                             -- rejection_reason: it cannot fail
           NULL::text,                             -- rejection_reason_ar
           NULL::uuid,                             -- reviewed_by

@@ -305,6 +305,70 @@ export class AdminIbController {
   // ── partners, once they exist ──────────────────────────────────────────────
 
   /**
+   * The COMMISSION LEDGER as a file — every accrual the filters match, with the
+   * partner who earned it and the client whose trade produced it. The SAME keys
+   * as the list (an export must never be a way around one), the same territory
+   * blanking, the field mask over the people that remain. Amounts, rates and
+   * bases are exact strings (§6.1).
+   */
+  @Get('accruals/export')
+  @Throttle({ default: { ttl: 60_000, limit: EXPORT_RATE_LIMIT } })
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('ib.view', 'ib.commissions.view')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Export the filtered commission ledger as CSV',
+    description: 'The same filters as GET /admin/ib/accruals, over every matching accrual.',
+  })
+  @ApiOkResponse({
+    description: 'A CSV file. `Content-Disposition` names it `commissions-<YYYY-MM-DD>.csv`.',
+    content: { 'text/csv': { schema: { type: 'string', format: 'binary' } } },
+  })
+  @ApiQuery({ name: 'format', required: false, enum: ['csv'] })
+  @ApiQuery({ name: 'ibUserId', required: false, description: 'Restrict to one partner.' })
+  @ApiQuery({ name: 'clientUserId', required: false, description: 'Restrict to one client.' })
+  @ApiQuery({ name: 'q', required: false })
+  @ApiQuery({ name: 'status', required: false, enum: ibAccrualStatusEnum.enumValues })
+  @ApiQuery({ name: 'kind', required: false, enum: ibAccrualKindEnum.enumValues })
+  @ApiDateRangeQueries('accrued')
+  @ScopedToClients(
+    'AdminExportService.accrualBatch → IbStore.findAccrualsPage with actor.clientScope — the same beneficiary predicate and out-of-territory blanking the list applies.',
+  )
+  @Audited('export.ib_accruals')
+  async exportAccruals(
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+    @Res() res: Response,
+    @Query('format') format?: string,
+    @Query('ibUserId', ClientRefPipe) ibUserId?: number,
+    @Query('clientUserId', ClientRefPipe) clientUserId?: number,
+    @Query('q') q?: string,
+    @Query('status') status?: string,
+    @Query('kind') kind?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    const chosen = exportFormat(format);
+    // Validated as the list validates, so the file refuses what the screen refuses.
+    const query = {
+      ibUserId,
+      clientUserId,
+      q,
+      status: enumQuery(status, ibAccrualStatusEnum.enumValues, 'status'),
+      kind: enumQuery(kind, ibAccrualKindEnum.enumValues, 'kind'),
+      range: dateRangeQuery(from, to),
+    };
+    this.audit.record(req.admin.id, 'export.ib_accruals', 'ib_partners', req.admin.id, {
+      format: chosen,
+      filters: query,
+    });
+    // ONE snapshot instant for the whole file — see `IbStore.findAccrualsPage`.
+    const startedAt = new Date();
+    await streamCsv(res, 'commissions', chosen, this.exports.accrualColumns, (offset, limit) =>
+      this.exports.accrualBatch(query, req.admin, offset, limit, startedAt),
+    );
+  }
+
+  /**
    * The COMMISSION LEDGER — every accrual, who earned it and who generated it.
    *
    * ## ⚠️ This read did not exist

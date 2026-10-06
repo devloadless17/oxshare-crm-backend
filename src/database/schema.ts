@@ -27,6 +27,7 @@ import {
 import type { Mt5GroupCommission } from '../common/mt5-group-terms';
 import type { FormPolicy } from '../common/kyc/identity-core';
 import type { ProofDetail, ProofField } from '../common/payments/proof-fields';
+import type { PayToDetail, PayToField } from '../common/payments/pay-to-fields';
 
 // Drizzle schema for the LIVE domain model, aligned with ARCHITECTURE §5 where
 // that section defines the table (users) and with the in-memory stores being
@@ -334,11 +335,11 @@ export const users = pgTable(
      */
     referredByIbUserId: integer('referred_by_ib_user_id'),
     /**
-     * The administrator's sign-up link this client came through (0195), or
-     * NULL. Written once at registration and never changed (trigger): which
-     * link brought a client is history, whatever happens to the link.
+     * The administrator whose sign-up link brought this client (0198), or NULL.
+     * Written once at registration and never changed (trigger): attribution is
+     * history, whatever later happens to the administrator's tags or link.
      */
-    acquisitionLinkId: uuid('acquisition_link_id').references(() => acquisitionLinks.id, {
+    signedUpViaAdminId: uuid('signed_up_via_admin_id').references(() => admins.id, {
       onDelete: 'restrict',
     }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -352,7 +353,7 @@ export const users = pgTable(
     /* "Which clients did this partner introduce?" — asked per partner by every
        commission calculation the engine will eventually run. */
     index('users_referred_by_idx').on(t.referredByIbUserId),
-    index('users_acquisition_link_idx').on(t.acquisitionLinkId),
+    index('users_signed_up_via_idx').on(t.signedUpViaAdminId),
     /*
      * The verification lookup, which is a by-token seek over the whole table.
      *
@@ -472,6 +473,15 @@ export const admins = pgTable(
      * 0193: every client carries their country tag, so none is untagged.)
      */
     seesAllClients: boolean('sees_all_clients').notNull().default(true),
+    /**
+     * This administrator's sign-up link, `/join/<signup_slug>` (0198): a
+     * readable word made from their name on creation, changeable on their
+     * profile. A sign-up through it gets their tags as they are at that moment
+     * (their territory, read live — never a copy). Unique; lowercase letters,
+     * digits, `-` and `_`, 3–32 (CHECK). The empty default is a placeholder: a
+     * BEFORE INSERT trigger always fills it from the name.
+     */
+    signupSlug: varchar('signup_slug', { length: 32 }).notNull().default(''),
     /*
      * Password recovery, INITIATED BY ANOTHER MASTER ADMIN — never self-service.
      * See DECISIONS D-44.
@@ -833,49 +843,6 @@ export const clientTagMemberships = pgView('client_tag_memberships', {
   assignedBy: uuid('assigned_by'),
   assignedAt: timestamp('assigned_at', { withTimezone: true }).notNull(),
 }).existing();
-
-/**
- * An administrator's SIGN-UP LINK (0195): `/join/<code>`. A client who signs up
- * through it arrives carrying the link's tags — and since a tag is a territory,
- * in the owner's book from the first second. A disabled link, or one whose owner
- * is suspended, tags nobody; the sign-up itself always goes through.
- */
-export const acquisitionLinks = pgTable(
-  'acquisition_links',
-  {
-    id: uuid('id').defaultRandom().primaryKey(),
-    /** Public, in the URL. Upper-case letters and digits (CHECK), unique. */
-    code: varchar('code', { length: 16 }).notNull().unique('acquisition_links_code_uq'),
-    name: varchar('name', { length: 100 }).notNull(),
-    /** RESTRICT: hand an administrator's links to somebody before deleting them. */
-    ownerAdminId: uuid('owner_admin_id')
-      .notNull()
-      .references(() => admins.id, { onDelete: 'restrict' }),
-    createdBy: uuid('created_by').notNull(),
-    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
-    disabledAt: timestamp('disabled_at', { withTimezone: true }),
-  },
-  (t) => [index('acquisition_links_owner_idx').on(t.ownerAdminId)],
-);
-
-/** What a sign-up through a link is tagged with. Never a country tag (trigger). */
-export const acquisitionLinkTags = pgTable(
-  'acquisition_link_tags',
-  {
-    linkId: uuid('link_id')
-      .notNull()
-      .references(() => acquisitionLinks.id, { onDelete: 'cascade' }),
-    // RESTRICT, like a territory: a tag on a live link cannot vanish under it.
-    tagId: uuid('tag_id')
-      .notNull()
-      .references(() => clientTags.id, { onDelete: 'restrict' }),
-  },
-  (t) => [
-    primaryKey({ columns: [t.linkId, t.tagId] }),
-    index('acquisition_link_tags_tag_idx').on(t.tagId),
-  ],
-);
 
 /**
  * Row-level client visibility: the tags whose clients this administrator may
@@ -2801,6 +2768,17 @@ export const paymentMethods = pgTable(
       .notNull()
       .default(sql`'[]'::jsonb`),
     /**
+     * What an OFFLINE method SHOWS the client — the phone the money goes to, an
+     * account name (0199). The return of the `pay_to`/`instructions` dropped in
+     * 0042 (note above). Ordered; each has a permanent id, a label, a type, the
+     * broker's value and `enabled`. Shown only while the method's deposit channel
+     * is paid outside the platform; rules in `common/payments/pay-to-fields.ts`.
+     */
+    payToFields: jsonb('pay_to_fields')
+      .$type<PayToField[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    /**
      * The route this method takes (0168): which provider moves the money and on
      * which of its declared channels. Fixed at creation — a trigger refuses any
      * change — so every transaction filed through the method stays true.
@@ -3753,6 +3731,13 @@ export const transactions = pgTable(
      * about money is never rewritten. Null on everything else.
      */
     proofDetails: jsonb('proof_details').$type<ProofDetail[]>(),
+    /**
+     * What the method SHOWED the client when this deposit was filed — where they
+     * were told to send the money (0199). A copy, so a number the admin changes
+     * later never rewrites which number this deposit went to. Immutable by
+     * trigger. Null on everything else.
+     */
+    payToDetails: jsonb('pay_to_details').$type<PayToDetail[]>(),
     rejectionReason: text('rejection_reason'),
     /** `rejection_reason` as an Arabic reader is shown it, written with it (0179). */
     rejectionReasonAr: text('rejection_reason_ar'),

@@ -128,9 +128,6 @@ const WRITTEN_BY_MIGRATIONS: Readonly<Record<string, string>> = {
  * into their transactions, not because they stopped writing.
  */
 const WRITES_DETAILS: readonly string[] = [
-  'acquisition_link.create',
-  'acquisition_link.disable',
-  'acquisition_link.update',
   'admin.avatar_change',
   'admin.invite',
   'admin.invite_accept',
@@ -141,6 +138,7 @@ const WRITES_DETAILS: readonly string[] = [
   'admin.profile_update',
   'admin.session_displaced',
   'admin.session_revoke',
+  'admin.signup_link_change',
   'admin.suspend',
   // 0191: an empty payload on enrolment, the target ADMIN's address on a reset — no client data.
   'admin.totp_enroll',

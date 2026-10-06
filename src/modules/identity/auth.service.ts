@@ -1,5 +1,6 @@
 import type { Executor } from '../../database/db';
-import { AcquisitionLinksStore } from '../../store/acquisition-links.store';
+import { SignupLinksStore } from '../../store/signup-links.store';
+import { normaliseSignupSlug } from '../../common/signup-slug';
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { lockoutMessage } from '../../common/security/lockout-message';
 import { REGISTRATION_REQUIRED } from '../../common/kyc/identity-core';
@@ -197,13 +198,13 @@ export class AuthService {
     @Optional()
     private readonly offered?: OfferedCountriesStore,
     /*
-     * Sign-up links and partner tags (0195): the tags a new client ARRIVES
+     * Sign-up links and partner tags (0198): the tags a new client ARRIVES
      * with, written in the registration's own transaction. Optional for the
      * positional reason above; absent, a client arrives with the country tag
      * alone, as before.
      */
     @Optional()
-    private readonly acquisition?: AcquisitionLinksStore,
+    private readonly signupLinks?: SignupLinksStore,
   ) {}
 
   // ─── Register ────────────────────────────────────────────────────────────────
@@ -305,7 +306,7 @@ export class AuthService {
             // The language the portal was in when they signed up (X-OxShare-Locale):
             // what every mail sent outside their own requests will be written in.
             locale: requestLocale(),
-            acquisitionLinkId: arrival.linkId,
+            signedUpViaAdminId: arrival.adminId,
           },
           tx,
         )
@@ -318,15 +319,17 @@ export class AuthService {
         });
 
     /*
-     * The tags a client ARRIVES with (0195), in the account's own transaction:
-     * their sign-up link's, and their partner's own tags — so a partner's
-     * clients land in the partner's book. Copied once: moving the partner later
-     * moves nobody silently (the clients list's Replace tag does that, counted
-     * and audited). Their COUNTRY tag needs no write: it is derived (0193).
+     * The tags a client ARRIVES with (0198), in the account's own transaction:
+     * the tags of the administrator whose link they followed — their territory
+     * AS IT IS NOW, read live — and their partner's own tags, so a partner's
+     * clients land in the partner's book. Copied once onto the client: moving
+     * the administrator or the partner later moves nobody silently (the clients
+     * list's Replace tag does that, counted and audited). Their COUNTRY tag
+     * needs no write: it is derived (0193).
      */
     const user =
-      this.acquisition && (arrival.linkId || arrival.tagIds.length > 0)
-        ? await this.acquisition.signUp(createUser, arrival)
+      this.signupLinks && (arrival.adminId || arrival.tagIds.length > 0)
+        ? await this.signupLinks.signUp(createUser, arrival)
         : await createUser();
 
     /*
@@ -423,25 +426,27 @@ export class AuthService {
    * should not be defeated by their keyboard.
    */
   /**
-   * What a sign-up arrives with: the link (when its code is live) and the
-   * union of the link's tags and the referring partner's own assigned tags.
-   * An unknown or dead link code is logged and IGNORED — never a refusal: a
-   * stale marketing link must not cost the broker a client.
+   * What a sign-up arrives with: the administrator whose link it was (when the
+   * word belongs to an ACTIVE administrator) with their tags as they are now,
+   * united with the referring partner's own assigned tags. An unknown, renamed
+   * or suspended link is logged and IGNORED — never a refusal: a stale link
+   * must not cost the broker a client.
    */
   private async resolveArrival(
     code: string | undefined,
     ibUserId: number | undefined,
-  ): Promise<{ linkId?: string; ownerAdminId?: string; ibUserId?: number; tagIds: string[] }> {
-    if (!this.acquisition) return { tagIds: [] };
-    const normalised = normaliseReferralCode(code);
-    const link = normalised ? await this.acquisition.resolveForSignup(normalised) : undefined;
-    if (normalised && !link) {
-      this.logger.warn(`Sign-up link code "${normalised}" is unknown or switched off; ignored.`);
+  ): Promise<{ adminId?: string; ibUserId?: number; tagIds: string[] }> {
+    if (!this.signupLinks) return { tagIds: [] };
+    const slug = normaliseSignupSlug(code);
+    const link = slug ? await this.signupLinks.resolve(slug) : undefined;
+    if (code && !link) {
+      this.logger.warn(
+        `Sign-up link "${slug ?? code}" belongs to no active administrator; ignored.`,
+      );
     }
-    const partnerTags = ibUserId ? await this.acquisition.partnerTagIds(ibUserId) : [];
+    const partnerTags = ibUserId ? await this.signupLinks.partnerTagIds(ibUserId) : [];
     return {
-      linkId: link?.linkId,
-      ownerAdminId: link?.ownerAdminId,
+      adminId: link?.adminId,
       ibUserId: partnerTags.length > 0 ? ibUserId : undefined,
       tagIds: [...new Set([...(link?.tagIds ?? []), ...partnerTags])],
     };

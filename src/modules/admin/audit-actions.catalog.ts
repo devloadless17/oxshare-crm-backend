@@ -322,13 +322,7 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   { action: 'client_tag.create', label: 'Client tag created', group: 'Configuration' },
   { action: 'client_tag.update', label: 'Client tag renamed', group: 'Configuration' },
   { action: 'client_tag.delete', label: 'Client tag deleted', group: 'Configuration' },
-  { action: 'acquisition_link.create', label: 'Sign-up link created', group: 'Configuration' },
-  { action: 'acquisition_link.update', label: 'Sign-up link changed', group: 'Configuration' },
-  {
-    action: 'acquisition_link.disable',
-    label: 'Sign-up link switched off',
-    group: 'Configuration',
-  },
+  { action: 'admin.signup_link_change', label: 'Sign-up link renamed', group: 'Configuration' },
   { action: 'rejection_reason.create', label: 'Rejection reason added', group: 'Configuration' },
   { action: 'rejection_reason.update', label: 'Rejection reason reworded', group: 'Configuration' },
   { action: 'rejection_reason.delete', label: 'Rejection reason removed', group: 'Configuration' },
@@ -795,6 +789,11 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
     label: 'Trading accounts exported',
     group: 'Exports',
   },
+  // The deposit desk's file (its own key, `deposits.view`), the ledger (the
+  // reconciliation record) and the commission ledger — 6 Oct 2026.
+  { action: 'export.deposits', label: 'Deposit requests exported', group: 'Exports' },
+  { action: 'export.ledger', label: 'Ledger exported', group: 'Exports' },
+  { action: 'export.ib_accruals', label: 'Commissions exported', group: 'Exports' },
 ] as const;
 
 /** Every action key, for the coverage test and for validating `?action=`. */

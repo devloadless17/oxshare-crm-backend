@@ -1394,6 +1394,20 @@
       "when": 1789142808750,
       "tag": "0197_partner_term_overrides",
       "breakpoints": true
+    },
+    {
+      "idx": 200,
+      "version": "7",
+      "when": 1789142908750,
+      "tag": "0198_signup_link_per_admin",
+      "breakpoints": true
+    },
+    {
+      "idx": 201,
+      "version": "7",
+      "when": 1789143008750,
+      "tag": "0199_payment_method_pay_to",
+      "breakpoints": true
     }
   ]
 }

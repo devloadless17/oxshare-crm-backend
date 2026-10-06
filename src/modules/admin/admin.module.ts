@@ -5,7 +5,7 @@ import { AdminAuditController } from './admin-audit.controller';
 import { AdminApiKeysController } from './admin-api-keys.controller';
 import { AdminAuthController } from './admin-auth.controller';
 import { AdminTagsController } from './admin-tags.controller';
-import { AcquisitionLinksController } from './acquisition-links.controller';
+import { SignupLinksController } from './signup-links.controller';
 import { AdminClientsController } from './admin-clients.controller';
 import { AdminClientIdentityController } from './admin-client-identity.controller';
 import { AdminClientIdentityService } from './admin-client-identity.service';
@@ -20,7 +20,7 @@ import { IpAllowlistGuard } from './guards/ip-allowlist.guard';
 import { AdminAuthService } from './admin-auth.service';
 import { AdminProfileService } from './admin-profile.service';
 import { AdminTagsService } from './admin-tags.service';
-import { AcquisitionLinksService } from './acquisition-links.service';
+import { SignupLinksService } from './signup-links.service';
 import { AdminClientsBulkService } from './admin-clients-bulk.service';
 import { AdminClientsService } from './admin-clients.service';
 import { AdminComplianceService } from './admin-compliance.service';
@@ -70,7 +70,7 @@ const ADMIN_SERVICES = [
   AdminComplianceService,
   AdminClientsService,
   AdminTagsService,
-  AcquisitionLinksService,
+  SignupLinksService,
   AdminClientsBulkService,
   AdminMoneyService,
   // Reads only, and only through StoreModule's StatsStore — no money service and
@@ -113,7 +113,7 @@ const ADMIN_SERVICES = [
     AdminClientsController,
     AdminClientIdentityController,
     AdminTagsController,
-    AcquisitionLinksController,
+    SignupLinksController,
     AdminComplianceController,
     AdminRbacController,
     AdminAuditController,

@@ -1,4 +1,4 @@
-import { AcquisitionLinksStore } from '../../store/acquisition-links.store';
+import { SignupLinksStore } from '../../store/signup-links.store';
 import { currentFieldMask } from '../../common/logging/request-context';
 import type { DateRange } from '../../common/date-range';
 import { Injectable } from '@nestjs/common';
@@ -296,7 +296,7 @@ export class AdminClientsService {
     /** The one write path for a client's identity — @Global ProfileModule. */
     private readonly profile: ClientProfileService,
     /** A partner's tags, copied onto a client recorded under them (0195). */
-    private readonly acquisition: AcquisitionLinksStore,
+    private readonly signupLinks: SignupLinksStore,
   ) {}
 
   // ─── Clients list (ADM-01 / ADM-14) ───────────────────────────────────────
@@ -1098,8 +1098,8 @@ export class AdminClientsService {
      * client lands in the partner's book. Only ADDS tags, so it can never take
      * the client out of anybody's view — nothing to confirm.
      */
-    const inherited = await this.acquisition.partnerTagIds(account.userId);
-    await this.acquisition.attachNow(userId, inherited);
+    const inherited = await this.signupLinks.partnerTagIds(account.userId);
+    await this.signupLinks.attachNow(userId, inherited);
 
     /*
      * `before` is always null here — that is what the 409 above guarantees — and

@@ -146,7 +146,11 @@ async function bootstrap() {
     //
     // ETag: the KYC form's version, read by the builder and sent back as
     // If-Match. Withheld, the builder would silently save without the check.
-    exposedHeaders: ['X-Request-Id', 'X-OxShare-CSRF', 'ETag'],
+    //
+    // Content-Disposition: an export's file name ("commissions-2026-10-06.csv").
+    // Withheld, every download fell back to a name the console made up from the
+    // route — on production, where the API is another host, always.
+    exposedHeaders: ['X-Request-Id', 'X-OxShare-CSRF', 'ETag', 'Content-Disposition'],
   });
 
   /*

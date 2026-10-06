@@ -14,7 +14,7 @@ import { TRANSACTION_KINDS } from '../../payments/transactions.service';
 import type { RejectionContext } from '../../../store/rejection-reasons.store';
 import { PROFILE_FIELD_KEYS } from '../../../common/profile/client-profile';
 import { TransactionDto } from '../../payments/dto/withdrawal.dto';
-import { ProofDetailDto } from '../../payments/dto/deposit.dto';
+import { PayToDetailDto, ProofDetailDto } from '../../payments/dto/deposit.dto';
 import { TransferDto } from '../../payments/dto/transfer.dto';
 
 // Response DTOs so /api/docs-json carries response schemas (API-CONTRACTS
@@ -2270,6 +2270,19 @@ export class AdminTransactionRowDto {
     'proof of a payment the CLIENT filed with the receipt; the desk must always see it to approve',
   )
   proofDetails?: ProofDetailDto[] | null;
+  @ApiPropertyOptional({
+    type: PayToDetailDto,
+    isArray: true,
+    nullable: true,
+    description:
+      "Where an OFFLINE deposit's client was told to send the money — the details the method " +
+      'showed when it was filed, e.g. the phone a transfer goes to (0199). A copy: the method ' +
+      'may have changed since. Null otherwise.',
+  })
+  @NotClientField(
+    "the BROKER's own payment details as shown on the deposit screen, not anything about the client",
+  )
+  payToDetails?: PayToDetailDto[] | null;
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty()
   walletId: string;
@@ -3428,45 +3441,53 @@ export class AttentionResolvedDto {
   needsAttention: boolean;
 }
 
-/** A tag on a sign-up link. */
-@NoClientFields('a configuration shape: a tag on a link, no client-owned field')
-export class AcquisitionLinkTagDto {
+/** A tag an administrator's sign-up link gives — from their territory, live. */
+@NoClientFields('a configuration shape: a tag, no client-owned field')
+export class SignupLinkTagDto {
   @ApiProperty() id: string;
   @ApiProperty() slug: string;
   @ApiProperty() label: string;
   @ApiPropertyOptional() color?: string;
 }
 
-/**
- * An administrator's sign-up link (0195), with what it has brought — COUNTS,
- * never who.
- */
-@NoClientFields('a configuration shape with aggregate counts; no client is named')
-export class AcquisitionLinkDto {
-  @ApiProperty() id: string;
+/** The caller's own sign-up link (0198). Counts, never who. */
+@NoClientFields("the calling administrator's link and aggregate counts; no client is named")
+export class MySignupLinkDto {
+  @ApiProperty({ example: 'omar-farah' }) slug: string;
+  @ApiProperty({ description: 'The link to hand out: <PORTAL_URL>/join/<slug>.' }) url: string;
   @ApiProperty({
-    description: 'Public code: the portal link is /join/<code>.',
-    example: 'K7M2Q9XA',
+    type: [SignupLinkTagDto],
+    description: 'What a sign-up through it gets right now: your territory, minus countries.',
   })
-  code: string;
-  @ApiProperty() name: string;
-  @ApiProperty({ description: 'The link to hand out: <PORTAL_URL>/join/<code>.' }) url: string;
-  @ApiProperty() ownerAdminId: string;
-  @ApiProperty() ownerName: string;
-  @ApiProperty({ description: 'False when the owner is suspended: the link then tags nobody.' })
-  ownerActive: boolean;
+  tags: SignupLinkTagDto[];
   @ApiProperty({
     description:
-      "False when none of the link's tags is in the owner's territory: the owner will not see the clients it brings.",
+      'True when the link gives no tag: you see every client, or only countries. Clients you bring are recorded as yours, not put in a book.',
   })
-  ownerSeesSignups: boolean;
-  @ApiProperty({ type: [AcquisitionLinkTagDto] }) tags: AcquisitionLinkTagDto[];
-  @ApiPropertyOptional({ type: String, nullable: true, format: 'date-time' })
-  disabledAt: Date | null;
-  @ApiProperty() createdAt: Date;
-  @ApiProperty({ description: 'Clients who signed up through it.' }) signups: number;
-  @ApiProperty({ description: 'Of whom verified (level 1 or above).' }) verified: number;
-  @ApiProperty({ description: 'Of whom have a successful deposit.' }) funded: number;
+  addsNoTag: boolean;
+  @ApiProperty() signups: number;
+  @ApiProperty() verified: number;
+  @ApiProperty() funded: number;
+}
+
+/** One administrator's sign-up link on the Admin users page. */
+@NoClientFields('a configuration shape with aggregate counts; no client is named')
+export class SignupLinkRowDto {
+  @ApiProperty() adminId: string;
+  @ApiProperty() name: string;
+  @ApiProperty() slug: string;
+  @ApiProperty() url: string;
+  @ApiProperty({ description: "A suspended administrator's link tags nobody." }) active: boolean;
+  @ApiProperty() signups: number;
+  @ApiProperty() verified: number;
+  @ApiProperty() funded: number;
+}
+
+/** A sign-up link after a rename. */
+@NoClientFields('a link; no client-owned field')
+export class SignupLinkUrlDto {
+  @ApiProperty() slug: string;
+  @ApiProperty() url: string;
 }
 
 /** What a bulk tag change did — counts, never who. */

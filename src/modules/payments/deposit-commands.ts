@@ -4,6 +4,7 @@ import { payerRedirectUrl, providerCallbackUrl } from './core/payer-urls';
 import { depositStateOf } from './core/deposit-state';
 import { Logger } from '@nestjs/common';
 import { readProofDetails } from '../../common/payments/proof-fields';
+import { payToSnapshot } from '../../common/payments/pay-to-fields';
 import Decimal from 'decimal.js';
 import { randomBytes } from 'crypto';
 import { and, desc, eq } from 'drizzle-orm';
@@ -153,6 +154,8 @@ export class DepositCommands {
     const namespace = depositNamespace(route, paymentMethod.key);
 
     const proofDetails = this.proofDetailsFor(paymentMethod, isGateway, params);
+    // What the client was told — where to send the money — as it reads NOW (0199).
+    const payToDetails = payToSnapshot(paymentMethod.payToFields, paymentMethod.offline);
 
     this.assertPayableScale(
       paymentMethod,
@@ -217,6 +220,8 @@ export class DepositCommands {
         proofFilename: params.proofFilename ?? null,
         // Each answer with its label AS ASKED; immutable from here (0163 trigger).
         proofDetails: proofDetails.length > 0 ? proofDetails : null,
+        // Where the client was told to send it; immutable from here (0199 trigger).
+        payToDetails: payToDetails.length > 0 ? payToDetails : null,
       })
       .returning();
 

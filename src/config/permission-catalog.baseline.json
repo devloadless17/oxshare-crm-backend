@@ -127,9 +127,6 @@
     "withdrawals.approve",
     "withdrawals.settle",
     "withdrawals.view",
-    "links.view",
-    "links.create",
-    "links.manage",
     "clients.bulk"
   ]
 }

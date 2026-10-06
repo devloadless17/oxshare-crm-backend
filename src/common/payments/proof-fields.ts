@@ -85,7 +85,7 @@ export const PROOF_FIELD_LIMITS = {
 export const PROOF_FIELD_ID_PATTERN = /^f_[0-9a-z]{6,16}$/;
 
 /** A line break, tab or other control character — an answer is one plain line. */
-function hasControlCharacter(text: string): boolean {
+export function hasControlCharacter(text: string): boolean {
   for (let i = 0; i < text.length; i += 1) {
     const code = text.charCodeAt(i);
     if (code < 0x20 || code === 0x7f) return true;

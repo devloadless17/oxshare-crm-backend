@@ -13,7 +13,10 @@ import { transferExecutorStubAs, transfersStubAs } from './transfer-chain-stub';
 import { gatewayStub } from './gateway-stub';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
 import { randomUUID } from 'node:crypto';
-import type { ProofFieldInputDto } from '../src/modules/payments/dto/payment-method.dto';
+import type {
+  PayToFieldInputDto,
+  ProofFieldInputDto,
+} from '../src/modules/payments/dto/payment-method.dto';
 import { UNRESTRICTED } from '../src/common/security/client-scope';
 import { clientPaymentMethodView } from '../src/modules/payments/payment-method-view';
 
@@ -462,5 +465,142 @@ describe('the details that identify an offline payment (0163)', () => {
     await expect(methods.update(METHOD, { proofFields: nine }, admin)).rejects.toMatchObject({
       fields: { proofFields: expect.stringMatching(/at most 8/) },
     });
+  });
+});
+
+describe('where the client pays an offline deposit (0199)', () => {
+  const METHOD = 'offline_pay_to';
+  const SEND_TO = 'f_sendto0001';
+  const NAME = 'f_name000001';
+  const OLD = 'f_oldpay0001';
+  const admin = { ...SYSTEM_ACTOR, id: ADMIN };
+  const PAY_TO: PayToFieldInputDto[] = [
+    { id: SEND_TO, label: 'Send to', type: 'phone', value: '+961 70 123 456', enabled: true },
+    { id: NAME, label: 'Account name', type: 'text', value: 'OxShare Ltd', enabled: true },
+    { id: OLD, label: 'Old number', type: 'phone', value: '+96171000000', enabled: false },
+  ];
+
+  beforeAll(async () => {
+    await methods.create(
+      {
+        key: METHOD,
+        name: 'Whish to phone',
+        currency: 'USD',
+        requiresProof: true,
+        payToFields: PAY_TO,
+      },
+      admin,
+    );
+  });
+
+  const shownTo = async (key: string) => {
+    const method = await methods.findOneForAdmin(key);
+    if (!method) throw new Error(`no method ${key}`);
+    return clientPaymentMethodView(method).payToFields;
+  };
+
+  async function payToOf(id: string) {
+    const { rows } = await ctx.db.execute<{ pay_to_details: unknown }>(
+      sql`SELECT pay_to_details FROM transactions WHERE id = ${id}`,
+    );
+    return rows[0]?.pay_to_details;
+  }
+
+  const file = (userId: number) =>
+    transactions.requestDeposit({
+      userId,
+      amount: '100',
+      currency: 'USD',
+      method: METHOD,
+      proofFilename: `${randomUUID()}.jpg`,
+    });
+
+  it('stores a phone as E.164, and refuses an empty value or a broken phone under its row', async () => {
+    expect((await methods.findOneForAdmin(METHOD))?.payToFields[0]?.value).toBe('+96170123456');
+    await expect(
+      methods.update(METHOD, { payToFields: [{ ...PAY_TO[1], value: '  ' }] }, admin),
+    ).rejects.toMatchObject({ fields: { 'payToFields.0.value': expect.any(String) } });
+    await expect(
+      methods.update(METHOD, { payToFields: [{ ...PAY_TO[0], value: '+961 7150' }] }, admin),
+    ).rejects.toMatchObject({ fields: { 'payToFields.0.value': expect.stringMatching(/short/) } });
+  });
+
+  it('shows a client the enabled details on an offline route, receipt or not, and none on a gateway', async () => {
+    const expected = [
+      {
+        id: SEND_TO,
+        label: 'Send to',
+        labelAr: null,
+        type: 'phone',
+        value: '+96170123456',
+        hint: null,
+        hintAr: null,
+      },
+      {
+        id: NAME,
+        label: 'Account name',
+        labelAr: null,
+        type: 'text',
+        value: 'OxShare Ltd',
+        hint: null,
+        hintAr: null,
+      },
+    ];
+    expect(await shownTo(METHOD)).toEqual(expected);
+    // A cash or bank method that takes no receipt still needs a destination.
+    await methods.update(METHOD, { requiresProof: false }, admin);
+    expect(await shownTo(METHOD)).toEqual(expected);
+    await methods.update(METHOD, { requiresProof: true }, admin);
+
+    // A hosted page is the destination; a number beside it would be a second one.
+    await ctx.db.execute(sql`
+      UPDATE payment_methods
+         SET pay_to_fields = '[{"id":"f_gate000001","label":"Send to","type":"text","value":"x","enabled":true}]'::jsonb
+       WHERE key = 'whish'
+    `);
+    expect(await shownTo('whish')).toEqual([]);
+    await ctx.db.execute(
+      sql`UPDATE payment_methods SET pay_to_fields = '[]'::jsonb WHERE key = 'whish'`,
+    );
+  });
+
+  it('records on the deposit what the client was shown, keeps it when the number changes, and never lets it change', async () => {
+    const userId = await makeClient('pay-to-kept@test.local');
+    const before = await file(userId);
+    const shownBefore = [
+      { fieldId: SEND_TO, label: 'Send to', type: 'phone', value: '+96170123456' },
+      { fieldId: NAME, label: 'Account name', type: 'text', value: 'OxShare Ltd' },
+    ];
+    expect(await payToOf(before.id)).toEqual(shownBefore);
+
+    await methods.update(
+      METHOD,
+      { payToFields: PAY_TO.map((f) => (f.id === SEND_TO ? { ...f, value: '+96171999888' } : f)) },
+      admin,
+    );
+    const after = await file(userId);
+    expect(await payToOf(before.id)).toEqual(shownBefore);
+    expect(await payToOf(after.id)).toContainEqual({
+      fieldId: SEND_TO,
+      label: 'Send to',
+      type: 'phone',
+      value: '+96171999888',
+    });
+
+    // The desk reads the copy, not the method as it is now.
+    const [row] = (
+      await transactions.listAllForAdmin({
+        scope: UNRESTRICTED,
+        q: before.reference.toLowerCase(),
+      })
+    ).items;
+    expect(row?.payToDetails?.[0]?.value).toBe('+96170123456');
+
+    await expect(
+      ctx.db.execute(
+        sql`UPDATE transactions SET pay_to_details = '[]'::jsonb WHERE id = ${before.id}`,
+      ),
+    ).rejects.toThrow();
+    await methods.update(METHOD, { payToFields: PAY_TO }, admin);
   });
 });

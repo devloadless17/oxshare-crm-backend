@@ -29,7 +29,7 @@ import { UsersStore } from '../../store/users.store';
 import { EmailService } from '../email/email.service';
 import { MoneyRuleError, NotFoundError, ValidationError } from '../../common/errors/domain-errors';
 import { AdminAuditService } from './admin-audit.service';
-import { assertActorCan } from '../../common/security/actor';
+import { assertActorCan, assertActorCanAny } from '../../common/security/actor';
 import { decodeCursor } from '../../common/pagination';
 import { enumQuery } from '../../common/query-params';
 import { ledgerEntryTypeEnum, tradingAccounts } from '../../database/schema';
@@ -83,15 +83,15 @@ import type { AuthenticatedAdmin } from './guards/admin.guard';
  * Destructured by NAME rather than deleted from a copy, so the next deposit-only
  * column is an edit here rather than a silent leak.
  */
-function withdrawalResponse<T extends { proofFilename?: unknown; proofDetails?: unknown }>(
-  row: T,
-  actor: AuthenticatedAdmin,
-) {
+function withdrawalResponse<
+  T extends { proofFilename?: unknown; proofDetails?: unknown; payToDetails?: unknown },
+>(row: T, actor: AuthenticatedAdmin) {
   // Both are an offline DEPOSIT's evidence: its receipt, and the details that
   // identify the payment (0163). A withdrawal carries neither.
   const {
     proofFilename: _proofIsDepositOnly,
     proofDetails: _detailsAreDepositOnly,
+    payToDetails: _payToIsDepositOnly,
     /*
      * The payments core's columns a withdrawal response does not carry (0173):
      * a hosted deposit's page, expiry, received and asked amounts, and the
@@ -1706,7 +1706,30 @@ export class AdminMoneyService {
      * answering a different question). See config/permissions.json.
      */
     assertActorCan(actor, 'transactions.view', 'list money movements');
+    return this.movementPage(query, actor);
+  }
 
+  /**
+   * THE DEPOSIT DESK — `GET /admin/deposits`: deposits a person decides (0168),
+   * on the desk's own key. `deposits.view` is what a deposit clerk is given,
+   * and the catalogue is explicit that they must NOT also be handed every
+   * movement on the platform (`transactions.view`). The desk read through
+   * `/admin/transactions` until 6 Oct 2026, so a clerk set up exactly as the
+   * catalogue says could open the page and load nothing. The desk's rows are
+   * FORCED here, whatever the caller passed.
+   */
+  async listDeskDeposits(
+    query: Parameters<AdminMoneyService['listTransactions']>[0],
+    actor: AuthenticatedAdmin,
+  ) {
+    assertActorCanAny(actor, ['deposits.view', 'transactions.view'], 'list deposit requests');
+    return this.movementPage({ ...query, direction: 'deposit', deskDecided: true }, actor);
+  }
+
+  private async movementPage(
+    query: Parameters<AdminMoneyService['listTransactions']>[0],
+    actor: AuthenticatedAdmin,
+  ) {
     // Sort validated BEFORE the cursor is decoded — `listWithdrawals` records
     // why the order matters.
     const sort = sortKey(
