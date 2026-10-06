@@ -1,4 +1,15 @@
-import { Body, Controller, Delete, Get, Param, Post, Put, Req, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  Put,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Request } from 'express';
 import { Admin } from '../../store/admins.store';
@@ -12,6 +23,7 @@ import {
   AvailableGroupDto,
   ProductDto,
   SetAgencyProductsDto,
+  UpdateProductGroupDto,
   UpsertAgencyDto,
   UpsertProductDto,
 } from './dto/catalogue.dto';
@@ -154,6 +166,28 @@ export class AdminCatalogueController {
     @Req() req: Request & { admin: Admin },
   ) {
     return this.catalogue.attachGroup(id, dto, req.admin);
+  }
+
+  @Patch('products/:id/groups/:groupId')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('settings.edit')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: "Set an attached group's minimum deposit",
+    description:
+      'The least a client may move into an account on this group per transfer, in the ' +
+      "group's currency; null clears it. Live groups only. Applies to the next transfer.",
+  })
+  @ApiOkResponse({ type: ProductDto })
+  @NotClientScoped('The product catalogue; contains no client data.')
+  @Audited('product.group_update')
+  updateGroup(
+    @Param('id') id: string,
+    @Param('groupId') groupId: string,
+    @Body() dto: UpdateProductGroupDto,
+    @Req() req: Request & { admin: Admin },
+  ) {
+    return this.catalogue.updateGroup(id, groupId, dto, req.admin);
   }
 
   @Delete('products/:id/groups/:groupId')

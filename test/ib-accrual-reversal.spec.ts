@@ -61,10 +61,11 @@ async function makeUser(email: string): Promise<number> {
 }
 
 /**
- * The product's rate card: $100 a lot to the partners and $100 a lot back to
- * the client (0140). Every trade here is ONE LOT, so a share of either figure
- * is the same number of dollars, and every amount asserted below reads as it
- * did when the rung was a percentage of $100 of revenue.
+ * The product's rate card: $10 a lot to the partners and $100 a lot back to
+ * the client (0140). Every trade here is ONE LOT. Since 0197 the level 1
+ * partner takes the whole $10 pool on their own client, whatever level 1's
+ * share says, so the $10.00 commissions asserted below are that pool; the
+ * rebate is still the rung's share of $100.
  */
 let terms: CommissionTypeTerms;
 
@@ -138,14 +139,16 @@ beforeAll(async () => {
 
   const seeded = await seedProductTerms(ctx.db, {
     name: 'Reversal terms',
-    commissionPerLot: '100',
+    // $10, not $100: since 0197 a level 1 partner takes the WHOLE pool on their own
+    // client, and $100 a lot would cross the $50-a-lot payout ceiling and be refused.
+    commissionPerLot: '10',
     rebatePerLot: '100',
   });
   terms = {
     id: seeded.typeId,
     name: 'Reversal terms',
     enabled: true,
-    commissionPerLot: '100.00000000',
+    commissionPerLot: '10.00000000',
     rebatePerLot: '100.00000000',
   };
 
@@ -310,8 +313,10 @@ describe('a REBATE is taken back from the client, not the partner', () => {
 
     expect(await walletOf(clientId, 'main')).toBe('5.00000000');
 
-    const [rebate] = await accrualRows();
-    expect(rebate.kind).toBe('rebate');
+    // Since 0197 the level 1 partner also takes the commission pool on this trade, so
+    // the rebate is picked by its kind rather than by position.
+    const rebate = (await accrualRows()).find((row) => row.kind === 'rebate');
+    if (!rebate) throw new Error('no rebate accrual was written');
 
     await commissions.reverseAccrual(rebate.id, 'trade cancelled', UNRESTRICTED);
 
@@ -321,7 +326,8 @@ describe('a REBATE is taken back from the client, not the partner', () => {
      * perfectly and takes the money from the introducer, who was never paid it.
      */
     expect(await walletOf(clientId, 'main')).toBe('0.00000000');
-    expect(await walletOf(partnerId, 'commission')).toBeNull();
+    // The partner's own $10 pool (0197) is untouched: a wrong reversal would leave 5.00.
+    expect(await walletOf(partnerId, 'commission')).toBe('10.00000000');
   });
 });
 

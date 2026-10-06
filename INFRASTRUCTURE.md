@@ -106,23 +106,22 @@ allowlist (Network access page).
 
 ## How code reaches production
 
-**Build once on `main`, promote on `production`.** Every push to `main` runs the checks AND builds the
-image in parallel (`cand-<content key>`); the image is stamped `tree-<content key>` only when the checks
-pass. A push to `production` then re-runs nothing: it finds the verified image for exactly that code and
-deploys it, in about 2 minutes. The content key (`.github/content-key.sh` in each repo) hashes the code,
-not the commit, so a release merge commit finds the image `main` built and a docs-only change keeps it.
-Code that never went through `main` (a direct hotfix) is checked and built in the production run itself:
-nothing ships that has not passed the checks.
+**CI on `main`, CI + CD on `production`** (the owner's rule, 6 Oct 2026). A push to `main` only verifies:
+audit, types, format, lint, build and the contract in one job, and the tests split into parallel shards
+(backend 12, admin 3, portal 2), merged so the coverage floors and the every-file-ran check still judge
+the whole suite. A push to `production` runs the same verification AND builds the Docker image at the
+same time; the deploy starts only when both have passed, so nothing reaches a server unverified. The
+image is tagged with the commit (`<repo>:<sha>`), so a rollback names exactly what it returns to.
 
-| Repo                     | Push to `main`                                              | Push to `production`                                                                | Server    |
-| ------------------------ | ----------------------------------------------------------- | ----------------------------------------------------------------------------------- | --------- |
-| `oxshare-crm-backend`    | checks (types, lint, the §11 money tests) ∥ build → promote | deploy `loadless/oxshare-crm-backend:tree-<key>` via `release.sh`                   | backend   |
-| `oxshare-crm-admin`      | checks ∥ build (API origin baked in) → promote              | deploy `loadless/oxshare-crm-admin:tree-<key>` (admin only)                         | frontends |
-| `oxshare-crm-client`     | checks ∥ build → promote                                    | deploy `loadless/oxshare-crm-portal:tree-<key>` (portal only)                       | frontends |
-| `oxshare-crm-mt5-bridge` | —                                                           | the Windows task "OxShare Deploy" polls every 2 min, builds and restarts the bridge | bridge    |
+| Repo                     | Push to `main`                   | Push to `production`                                                                | Server    |
+| ------------------------ | -------------------------------- | ----------------------------------------------------------------------------------- | --------- |
+| `oxshare-crm-backend`    | verify (checks ∥ 12 test shards) | verify ∥ build → deploy `loadless/oxshare-crm-backend:<sha>` via `release.sh`       | backend   |
+| `oxshare-crm-admin`      | verify (checks ∥ 3 test shards)  | verify ∥ build (API origin baked in) → deploy `loadless/oxshare-crm-admin:<sha>`    | frontends |
+| `oxshare-crm-client`     | verify (checks ∥ 2 test shards)  | verify ∥ build → deploy `loadless/oxshare-crm-portal:<sha>` (portal only)           | frontends |
+| `oxshare-crm-mt5-bridge` | —                                | the Windows task "OxShare Deploy" polls every 2 min, builds and restarts the bridge | bridge    |
 
-- Release flow: merge to `main`, wait for its pipeline to go green, then release to `production`. A
-  production push made while `main` is still checking that code simply waits for it.
+- Release flow: merge to `main` and let it go green, then push the same code to `production`; that run
+  verifies again and deploys. Release the backend first when the frontends need its new routes.
 - Pipelines: `.github/workflows/ci.yml` in each repo (DEPLOY-PLAYBOOK §1). `workflow_dispatch` redeploys.
 - `deploy.ps1` on Windows still contains the old backend block, switched off (`$deployBackend = $false`).
 

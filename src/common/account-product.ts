@@ -116,3 +116,27 @@ export const PRODUCT_NAME_AR = sql<string | null>`CASE
   WHEN ${PRODUCT_BY_ID.id} IS NOT NULL THEN ${PRODUCT_BY_ID.nameAr}
   ELSE ${PRODUCT_BY_GROUP.nameAr}
 END`;
+
+/**
+ * The MINIMUM a client's transfer into this account must reach (0201), or NULL.
+ *
+ * Read off the offer the account was opened on: its RECORDED product, and the
+ * group of that product the account sits in now (case-insensitively, as MT5
+ * groups match). Live groups only — the CHECK on the column says the same. An
+ * account with no recorded product, or whose group that product no longer
+ * sells, has no minimum: there is no offer left to hold it to, and the
+ * group-derived fallback above is for NAMING a legacy account, never for
+ * refusing money into it.
+ *
+ * The one definition, read by `TransfersService` (the refusal), the deposit
+ * door and the client's account list (the hint) alike. Needs no join: it is a
+ * correlated subquery over `trading_accounts`.
+ */
+export const ACCOUNT_MIN_DEPOSIT = sql<string | null>`(
+  SELECT g.min_deposit
+    FROM trading_product_groups AS g
+   WHERE g.product_id = "trading_accounts"."product_id"
+     AND lower(g.mt5_group) = lower("trading_accounts"."mt5_group")
+     AND g.environment = 'live'
+   LIMIT 1
+)`;

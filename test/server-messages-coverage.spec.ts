@@ -51,6 +51,10 @@ const DIRS = [
  * then add it.
  */
 const KNOWN_DYNAMIC = new Set([
+  'src/common/date-range.ts `${field} ${sentence}`', // "{1} must be a date …", "{1} must be after {2}"
+  'src/common/date-range.ts sentence',
+  'src/common/payments/pay-to-fields.ts first', // the pay-to sentences, each in the catalogue
+  'src/common/payments/pay-to-fields.ts errors',
   'src/modules/identity/auth.service.ts profileError', // client-profile.ts
   'src/modules/identity/auth.service.ts errors',
   'src/modules/identity/auth.service.ts lockoutMessage(lockedFor)', // lockout-message.ts

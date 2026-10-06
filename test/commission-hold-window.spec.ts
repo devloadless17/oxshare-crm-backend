@@ -363,8 +363,6 @@ describe('how the window is configured', () => {
     const corrupt = {
       getTrading: () =>
         Promise.resolve({
-          maxLiveAccounts: 5,
-          maxDemoAccounts: 5,
           maxDemoDeposit: '1000000',
           ibMaxLevels: 2,
           /* Below the floor: only reachable from a dump older than the CHECK. */

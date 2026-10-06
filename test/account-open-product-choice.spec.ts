@@ -120,6 +120,7 @@ beforeAll(async () => {
     } as unknown as EmailService,
     {} as Mt5AccountSyncService,
     accounts,
+    new ProductsStore(ctx.db),
   );
 }, 180_000);
 
@@ -272,5 +273,62 @@ describe('the name an opened account is given', () => {
       ADMIN,
     );
     expect(await storedName(opened.id)).toBe('Named Holder-4');
+  });
+});
+
+/*
+ * HOW MANY accounts one client may hold is the PRODUCT's (0201) — it replaced
+ * one cap per environment on `trading_settings`. Counted per product, closed
+ * accounts excluded, refused before MT5 is asked; the console is not held to it.
+ */
+describe("a product's cap on accounts per client", () => {
+  let holderId: number;
+  let cappedId: string;
+  let otherId: string;
+
+  beforeAll(async () => {
+    const { rows } = await ctx.db.execute<{ id: number }>(sql`
+      INSERT INTO users (email, password_hash, first_name, last_name)
+      VALUES ('open-cap@oxshare-e2e.test', 'x', 'Capped', 'Holder')
+      RETURNING id
+    `);
+    holderId = rows[0].id;
+    cappedId = await product('Choice Capped');
+    otherId = await product('Choice Other');
+    await sell(cappedId, 'real\\Capped', 5);
+    await sell(otherId, 'real\\Other', 5);
+    await ctx.db.execute(
+      sql`UPDATE trading_products SET max_accounts_per_client = 2 WHERE id = ${cappedId}`,
+    );
+  });
+
+  const open = (group: string, productId: string) =>
+    ownAccounts.createOwnAccount({ userId: holderId, environment: 'live', group, productId });
+
+  it('refuses the account past the cap, before MT5 — and other products stay open', async () => {
+    await open('real\\Capped', cappedId);
+    const second = await open('real\\Capped', cappedId);
+    createOnMt5.mockClear();
+
+    await expect(open('real\\Capped', cappedId)).rejects.toThrow(
+      /2 'Choice Capped' accounts, the most one client may hold/,
+    );
+    expect(createOnMt5).not.toHaveBeenCalled();
+
+    await expect(open('real\\Other', otherId)).resolves.toBeDefined();
+
+    // A CLOSED account frees its place.
+    await ctx.db.execute(
+      sql`UPDATE trading_accounts SET status = 'closed' WHERE id = ${second.id}`,
+    );
+    await expect(open('real\\Capped', cappedId)).resolves.toBeDefined();
+  });
+
+  it('does not hold the console to it', async () => {
+    const row = await accounts.createAccount(
+      { userId: holderId, group: 'real\\Capped', productId: cappedId, environment: 'live' },
+      ADMIN,
+    );
+    expect(await recordedProduct(row.id)).toBe(cappedId);
   });
 });

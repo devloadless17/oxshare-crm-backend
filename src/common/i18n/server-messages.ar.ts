@@ -851,17 +851,21 @@ export const SERVER_MESSAGES_AR: Readonly<Record<string, string>> = {
     'توجد طريقة سحب أخرى بالاسم الداخلي «{1}» مسبقاً.',
 
   // ── products and agencies ────────────────────────────────────────────────────
-  'The demo product cannot carry a commission type: practice trades never pay partner commission, so the type would look configured and pay nobody.':
-    'لا يمكن ربط المنتج التجريبي بنوع عمولة: فصفقات التدريب لا تدفع عمولات للشركاء.',
+  'A demo product cannot carry a commission type: practice trades never pay partner commission, so the type would look configured and pay nobody.':
+    'لا يمكن ربط منتج تجريبي بنوع عمولة: فصفقات التدريب لا تدفع عمولات للشركاء.',
   'Product not found.': 'المنتج غير موجود.',
   "A product's type is fixed when it is created. To change what is offered as demo, create the product you want and move the groups instead.":
     'يُحدَّد نوع المنتج عند إنشائه. لتغيير ما يُعرض كتجريبي، أنشئ المنتج المطلوب وانقل المجموعات إليه.',
   'This product is sold by {1}. Remove it from those agencies first, or disable it instead — disabling stops it being sold and leaves open accounts alone.':
     'تبيع هذا المنتج: {1}. أزله من تلك الوكالات أولاً، أو عطّله بدلاً من ذلك.',
-  "'{1}' is the demo product — it takes demo groups only. Attach live groups to a real product instead.":
-    "'{1}' هو المنتج التجريبي — يقبل المجموعات التجريبية فقط. اربط المجموعات الحقيقية بمنتج حقيقي.",
-  "'{1}' is a real product — it takes live groups only. Demo groups belong on the demo product, which is offered to every client.":
-    "'{1}' منتج حقيقي — يقبل المجموعات الحقيقية فقط. المجموعات التجريبية تتبع المنتج التجريبي.",
+  "'{1}' is a demo product — it takes demo groups only. Attach live groups to a real product instead.":
+    "'{1}' منتج تجريبي — يقبل المجموعات التجريبية فقط. اربط المجموعات الحقيقية بمنتج حقيقي.",
+  "'{1}' is a real product — it takes live groups only. Demo groups belong on a demo product, which is offered to every client.":
+    "'{1}' منتج حقيقي — يقبل المجموعات الحقيقية فقط. المجموعات التجريبية تتبع منتجاً تجريبياً.",
+  "'{1}' is a demo product, and demo accounts are never funded from the wallet, so its groups take no minimum deposit.":
+    "'{1}' منتج تجريبي، والحسابات التجريبية لا تُموَّل من المحفظة، لذا لا تحمل مجموعاته حداً أدنى للإيداع.",
+  'A minimum deposit must be above zero. Leave it empty for none.':
+    'يجب أن يكون الحد الأدنى للإيداع أكبر من صفر. اتركه فارغاً لعدم تحديد حد.',
   'MT5 does not report a group called "{1}". Choose one from the list — if the group is new, the broker may not have granted this manager account access to it.':
     'لا يُبلغ MT5 عن مجموعة باسم "{1}". اختر مجموعة من القائمة.',
   '"{1}" is already attached to \'{2}\'.': '"{1}" مرتبطة بالفعل بـ \'{2}\'.',
@@ -873,12 +877,8 @@ export const SERVER_MESSAGES_AR: Readonly<Record<string, string>> = {
     'يوجد شركاء معيّنون تحت هذه الوكالة. انقلهم إلى وكالة أخرى أولاً، أو عطّلها بدلاً من ذلك.',
   'One of those products does not exist. Reload and try again.':
     'أحد هذه المنتجات غير موجود. أعد التحميل ثم حاول مرة أخرى.',
-  'The demo product is offered to every client automatically — agencies carry real products only.':
-    'يُعرض المنتج التجريبي على كل عميل تلقائياً — تحمل الوكالات المنتجات الحقيقية فقط.',
-  "Only one demo product can exist — '{1}' is it. It is offered to every client automatically, so edit that product instead of creating another.":
-    "لا يمكن أن يوجد إلا منتج تجريبي واحد، وهو '{1}'. عدّله بدلاً من إنشاء منتج آخر.",
-  'Only one demo product can exist — one already exists. It is offered to every client automatically, so edit that product instead of creating another.':
-    'لا يمكن أن يوجد إلا منتج تجريبي واحد، وهو موجود بالفعل. عدّله بدلاً من إنشاء منتج آخر.',
+  'Demo products are offered to every client automatically — agencies carry real products only.':
+    'تُعرض المنتجات التجريبية على كل عميل تلقائياً — تحمل الوكالات المنتجات الحقيقية فقط.',
 
   // ── profile ──────────────────────────────────────────────────────────────────
   'Client not found.': 'العميل غير موجود.',
@@ -954,12 +954,14 @@ export const SERVER_MESSAGES_AR: Readonly<Record<string, string>> = {
     'المنتج المختار لا يبيع مجموعة MT5 "{1}". اختر منتجاً يتضمنها، أو اربط المجموعة به أولاً.',
   'The MT5 group "{1}" is sold by more than one product ({2}). Choose which product this account is opened under.':
     'تُباع مجموعة MT5 "{1}" ضمن أكثر من منتج ({2}). اختر المنتج الذي سيُفتح هذا الحساب تحته.',
-  'New {1} accounts are not being opened online at the moment. Please contact support.':
-    'لا يتاح حالياً فتح حسابات جديدة من النوع «{1}» عبر الإنترنت. يُرجى التواصل مع الدعم.',
-  'You already have {1} {2} account, which is the maximum. Contact support if you need another.':
-    'لديك بالفعل {1} حساب من النوع «{2}»، وهو الحد الأقصى. تواصل مع الدعم إذا احتجت إلى حساب آخر.',
-  'You already have {1} {2} accounts, which is the maximum. Contact support if you need another.':
-    'لديك بالفعل {1} حسابات من النوع «{2}»، وهو الحد الأقصى. تواصل مع الدعم إذا احتجت إلى حساب آخر.',
+  "You already have {1} '{2}' account, the most one client may hold. Contact support if you need another.":
+    'لديك بالفعل {1} حساب من النوع «{2}»، وهو الحد الأقصى للعميل الواحد. تواصل مع الدعم إذا احتجت إلى حساب آخر.',
+  "You already have {1} '{2}' accounts, the most one client may hold. Contact support if you need another.":
+    'لديك بالفعل {1} حسابات من النوع «{2}»، وهو الحد الأقصى للعميل الواحد. تواصل مع الدعم إذا احتجت إلى حساب آخر.',
+  'The minimum transfer into this account is {1} {2}.':
+    'الحد الأدنى للتحويل إلى هذا الحساب هو {1} {2}.',
+  'minDeposit must be an amount, e.g. 100 or 250.50 (up to 8 decimals)':
+    'يجب أن تكون القيمة مبلغاً، مثل 100 أو 250.50 (حتى 8 خانات عشرية).',
   'A live account cannot be opened with a starting balance. Fund it from your wallet once it is open.':
     'لا يمكن فتح حساب حقيقي برصيد افتتاحي. موّله من محفظتك بعد فتحه.',
   'This account is not fully set up yet. Please contact support.':
@@ -1049,4 +1051,37 @@ export const SERVER_MESSAGES_AR: Readonly<Record<string, string>> = {
   'This task ends only when its item is handled — open it and decide it there.':
     'لا تنتهي هذه المهمة إلا بمعالجة عنصرها. افتحه واتخذ القرار هناك.',
   'Write a question of up to 2000 characters.': 'اكتب سؤالاً لا يتجاوز 2000 حرف.',
+  // ── Added 6 Oct 2026: period filters, the two-level partner tree (0197), sign-up links, pay-to ──
+  'from must be a date or a date-time with its offset':
+    'يجب أن تكون قيمة «من» تاريخًا، أو تاريخًا ووقتًا مع فرق التوقيت.',
+  'to must be a date or a date-time with its offset':
+    'يجب أن تكون قيمة «إلى» تاريخًا، أو تاريخًا ووقتًا مع فرق التوقيت.',
+  '{1} must be a date (YYYY-MM-DD) or a date-time with its offset (2026-10-06T08:30:00+03:00)':
+    'يجب أن تكون قيمة {1} تاريخًا (YYYY-MM-DD) أو تاريخًا ووقتًا مع فرق التوقيت (2026-10-06T08:30:00+03:00).',
+  '{1} must be after {2}': 'يجب أن تكون قيمة {1} بعد {2}.',
+  'Commission share must be a percentage from 0 to 100, at most 4 decimals.':
+    'يجب أن تكون حصة العمولة نسبة مئوية من 0 إلى 100، بأربع منازل عشرية كحد أقصى.',
+  'Rebate share must be a percentage from 0 to 100, at most 4 decimals.':
+    'يجب أن تكون حصة الاسترداد نسبة مئوية من 0 إلى 100، بأربع منازل عشرية كحد أقصى.',
+  'The chosen parent is a sub-partner, and a sub-partner cannot have partners beneath them — the tree has two levels. Approve this application under a main partner, or with no parent.':
+    'الشريك الأعلى المختار شريك فرعي، ولا يمكن أن يكون تحت الشريك الفرعي شركاء، فللشجرة مستويان فقط. وافق على هذا الطلب تحت شريك رئيسي، أو من دون شريك أعلى.',
+  'This partner has no parent, so they are a main partner (level 1). To make them a sub-partner, reassign them under a main partner.':
+    'ليس لهذا الشريك شريك أعلى، لذا فهو شريك رئيسي (المستوى 1). لجعله شريكًا فرعيًا، انقله تحت شريك رئيسي.',
+  'This partner sits under another partner, so they are a sub-partner (level 2). To make them a main partner, remove their parent.':
+    'هذا الشريك تحت شريك آخر، لذا فهو شريك فرعي (المستوى 2). لجعله شريكًا رئيسيًا، أزل شريكه الأعلى.',
+  'Only a sub-partner has their own commission and rebate. A main partner takes the whole commission on their own clients and the rest on their sub-partners’.':
+    'وحده الشريك الفرعي له عمولة واسترداد خاصان به. يأخذ الشريك الرئيسي كامل العمولة على عملائه، والباقي على عملاء شركائه الفرعيين.',
+  'That partner is a sub-partner, and a sub-partner cannot have partners beneath them. Choose a main partner (level 1).':
+    'هذا الشريك شريك فرعي، ولا يمكن أن يكون تحت الشريك الفرعي شركاء. اختر شريكًا رئيسيًا (المستوى 1).',
+  'This partner has sub-partners of their own, so they cannot become a sub-partner. Move their sub-partners first.':
+    'لهذا الشريك شركاء فرعيون، لذا لا يمكن أن يصبح شريكًا فرعيًا. انقل شركاءه الفرعيين أولًا.',
+  'The partner tree has {1} levels: main partners (level 1) and their sub-partners (level 2). A deeper level cannot be added.':
+    'عدد مستويات شجرة الشركاء {1}: الشركاء الرئيسيون (المستوى 1) وشركاؤهم الفرعيون (المستوى 2). لا يمكن إضافة مستوى أعمق.',
+  'This phone number is already used by another OxShare account.':
+    'رقم الهاتف هذا مستخدم بالفعل في حساب OxShare آخر.',
+  'Another administrator already uses this link. Choose another word.':
+    'يستخدم مسؤول آخر هذا الرابط بالفعل. اختر كلمة أخرى.',
+  'A method can show at most {1} details.': 'يمكن أن تعرض الطريقة {1} تفاصيل كحد أقصى.',
+  'Enter what the client should see.': 'أدخل ما يجب أن يراه العميل.',
+  'Keep the value to {1} characters, on one line.': 'اجعل القيمة في حدود {1} حرفًا وعلى سطر واحد.',
 };

@@ -79,3 +79,6 @@ Thumbs.db
 # so the same gates run on every machine. Personal overrides are not.
 .claude/settings.local.json
 .vitest-result.json
+
+# Vitest shard reports (CI merges them in `verify`)
+.vitest-reports/

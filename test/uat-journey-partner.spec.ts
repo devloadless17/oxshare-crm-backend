@@ -586,8 +586,6 @@ describe('§14 J3 — step 5: confirming after the settlement window', () => {
   it('withholds everything while the window is still open', async () => {
     const admin = await actingAs(ctx, 'admin', MASTER);
     const set = await admin.put('/v1/admin/settings/trading', {
-      maxLiveAccounts: 5,
-      maxDemoAccounts: 5,
       maxDemoDeposit: '1000000.00',
       ibCommissionIntervalSeconds: HOLD_SECONDS,
     });

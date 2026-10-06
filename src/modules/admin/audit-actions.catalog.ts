@@ -364,6 +364,11 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
     label: 'MT5 group detached from a product',
     group: 'Configuration',
   },
+  {
+    action: 'product.group_update',
+    label: "A product group's minimum deposit changed",
+    group: 'Configuration',
+  },
   { action: 'agency.create', label: 'Agency created', group: 'Configuration' },
   { action: 'agency.update', label: 'Agency changed', group: 'Configuration' },
   { action: 'agency.delete', label: 'Agency deleted', group: 'Configuration' },

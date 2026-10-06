@@ -432,6 +432,12 @@ describe('by-id routes answer 404 for an out-of-scope client, never 403', () => 
       run: (s: Session, id: number) => s.patch(`/v1/admin/ib/partners/${id}/level`, { level: 2 }),
     },
     {
+      // 0197: a sub-partner's own commission and rebate shares.
+      signature: 'PATCH /admin/ib/partners/:userId/terms',
+      run: (s: Session, id: number) =>
+        s.patch(`/v1/admin/ib/partners/${id}/terms`, { commissionShare: '50', rebateShare: null }),
+    },
+    {
       signature: 'PATCH /admin/ib/partners/:userId/parent',
       run: (s: Session, id: number) =>
         s.patch(`/v1/admin/ib/partners/${id}/parent`, { parentIbUserId: null }),

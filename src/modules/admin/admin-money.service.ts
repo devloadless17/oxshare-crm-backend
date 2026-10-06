@@ -574,6 +574,8 @@ export class AdminMoneyService {
         direction: 'wallet_to_account',
         amount: params.amount,
         currency: account.currency,
+        // The desk's own credit: the product minimum is a rule for clients (0201).
+        enforceProductMinimum: false,
         /*
          * DERIVED FROM THE KEY, so a replay converges on ONE transfer. The
          * credit above was already idempotent on `reference`, but this leg was

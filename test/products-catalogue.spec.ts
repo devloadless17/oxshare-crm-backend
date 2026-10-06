@@ -17,11 +17,11 @@ import { UNRESTRICTED } from '../src/common/security/client-scope';
  *
  * Three rules, each with a database or service guarantee worth pinning:
  *
- *   1. At most ONE demo product — `trading_products_single_demo_uq` at the DB,
- *      a readable refusal at the service.
+ *   1. ANY number of demo products (0201 dropped 0088's one-demo index), and a
+ *      group's minimum deposit only on live groups (service + CHECK).
  *   2. Agencies carry REAL products only — refused on write, filtered on read.
  *   3. Demo offering is GLOBAL — `offeredTo(demo)` ignores the client's agency
- *      entirely and reads the single demo product.
+ *      entirely and reads every enabled demo product.
  */
 let ctx: MoneyTestContext;
 let store: ProductsStore;
@@ -143,27 +143,72 @@ describe('migration 0088', () => {
   });
 });
 
-describe('at most one demo product', () => {
-  it('is refused by the DATABASE — the guarantee a race cannot slip past', async () => {
-    await makeProduct('Demo A', 'demo');
+describe('any number of demo products (0201)', () => {
+  it('two demo products coexist, and every client is offered both', async () => {
+    const a = await makeProduct('Demo A', 'demo');
+    const b = await makeProduct('Demo B', 'demo');
+    // One group may back several products (0142).
+    for (const id of [a, b]) {
+      await service.attachGroup(
+        id,
+        { environment: 'demo', mt5Group: 'demo\\Standard-USD' },
+        TEST_ACTOR,
+      );
+    }
+
+    const client = await makeUser('two-demos@test.local');
+    const offered = await store.offeredTo(client, 'demo');
+    expect(offered.map((offer) => offer.productId).sort()).toEqual([a, b].sort());
+  });
+});
+
+describe("a group's minimum deposit (0201)", () => {
+  it('is stored on a live group, changed in place, and cleared with null', async () => {
+    const id = await makeProduct('Standard');
+    const attached = await service.attachGroup(
+      id,
+      { environment: 'live', mt5Group: 'real\\Standard-USD', minDeposit: '100' },
+      TEST_ACTOR,
+    );
+    const [group] = attached.groups;
+    expect(group.minDeposit).toBe('100.00000000');
+
+    const raised = await service.updateGroup(id, group.id, { minDeposit: '250.5' }, TEST_ACTOR);
+    expect(raised.groups[0].minDeposit).toBe('250.50000000');
+
+    const cleared = await service.updateGroup(id, group.id, { minDeposit: null }, TEST_ACTOR);
+    expect(cleared.groups[0].minDeposit).toBeNull();
+  });
+
+  it('refuses zero', async () => {
+    const id = await makeProduct('Standard');
+    await expect(
+      service.attachGroup(
+        id,
+        { environment: 'live', mt5Group: 'real\\Standard-USD', minDeposit: '0' },
+        TEST_ACTOR,
+      ),
+    ).rejects.toThrow(/above zero/);
+  });
+
+  it('is refused on a demo group — by the service and by the CHECK', async () => {
+    const demoId = await makeProduct('Demo A', 'demo');
+    await expect(
+      service.attachGroup(
+        demoId,
+        { environment: 'demo', mt5Group: 'demo\\Standard-USD', minDeposit: '10' },
+        TEST_ACTOR,
+      ),
+    ).rejects.toThrow(/no minimum deposit/);
 
     expect(
       await constraintViolatedBy(
-        ctx.db.execute(sql`INSERT INTO trading_products (name, type) VALUES ('Demo B', 'demo')`),
+        ctx.db.execute(sql`
+          INSERT INTO trading_product_groups (product_id, environment, mt5_group, currency, min_deposit)
+          VALUES (${demoId}, 'demo', 'demo\\X', 'USD', 10)
+        `),
       ),
-    ).toBe('trading_products_single_demo_uq');
-  });
-
-  it('is refused by the service with a sentence naming the existing one', async () => {
-    await makeProduct('Demo A', 'demo');
-
-    await expect(makeProduct('Demo B', 'demo')).rejects.toThrow(ValidationError);
-    await expect(makeProduct('Demo B', 'demo')).rejects.toThrow(/Demo A/);
-  });
-
-  it('a real product beside the demo one is fine', async () => {
-    await makeProduct('Demo A', 'demo');
-    await expect(makeProduct('Standard')).resolves.toBeDefined();
+    ).toBe('trading_product_groups_min_deposit_ck');
   });
 });
 

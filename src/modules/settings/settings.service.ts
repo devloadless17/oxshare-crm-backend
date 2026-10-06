@@ -255,8 +255,6 @@ export class SettingsService {
     const terms = tradingTermsFrom(row);
 
     return {
-      maxLiveAccounts: terms.maxLiveAccounts,
-      maxDemoAccounts: terms.maxDemoAccounts,
       maxDemoDeposit: terms.maxDemoDeposit,
       ibCommissionIntervalSeconds: terms.ibCommissionIntervalSeconds,
       updatedAt: row?.updatedAt.toISOString() ?? null,
@@ -278,8 +276,6 @@ export class SettingsService {
 
     const row = await this.store.setTrading(
       {
-        maxLiveAccounts: dto.maxLiveAccounts,
-        maxDemoAccounts: dto.maxDemoAccounts,
         maxDemoDeposit: dto.maxDemoDeposit,
         /*
          * The commission CADENCE (0113), which replaced the ladder ceiling on
@@ -322,13 +318,11 @@ export class SettingsService {
 
     /*
      * Every field here is a COMMERCIAL control, so every change is recorded
-     * with both sides. Raising the demo ceiling or the account cap is the kind
+     * with both sides. Raising the demo ceiling is the kind
      * of change that gets noticed a month later in the broker's own reporting,
      * and "who set this to a million and when" needs an answer.
      */
     const after: TradingSettingsDto = {
-      maxLiveAccounts: row.maxLiveAccounts,
-      maxDemoAccounts: row.maxDemoAccounts,
       maxDemoDeposit: row.maxDemoDeposit,
       ibCommissionIntervalSeconds: row.ibCommissionIntervalSeconds,
       updatedAt: row.updatedAt.toISOString(),
@@ -337,8 +331,6 @@ export class SettingsService {
 
     const changed: Record<string, { before: unknown; after: unknown }> = {};
     for (const field of [
-      'maxLiveAccounts',
-      'maxDemoAccounts',
       'maxDemoDeposit',
       /*
        * The cadence is audited for a sharper reason than the ceiling it
@@ -419,8 +411,6 @@ export class SettingsService {
       const current = await this.getTrading();
       await this.setTrading(
         {
-          maxLiveAccounts: current.maxLiveAccounts,
-          maxDemoAccounts: current.maxDemoAccounts,
           maxDemoDeposit: current.maxDemoDeposit,
           ibCommissionIntervalSeconds: seconds,
         },

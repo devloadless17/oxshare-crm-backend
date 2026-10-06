@@ -9,11 +9,25 @@ import {
   IsOptional,
   IsString,
   IsUUID,
+  Matches,
   Max,
   MaxLength,
   Min,
   MinLength,
+  ValidateIf,
 } from 'class-validator';
+
+/** An amount as typed: digits, up to 8 decimals. Above zero is the service's rule. */
+const MIN_DEPOSIT = /^\d{1,20}(\.\d{1,8})?$/;
+const MIN_DEPOSIT_MESSAGE = 'minDeposit must be an amount, e.g. 100 or 250.50 (up to 8 decimals)';
+const minDepositDoc = {
+  type: 'string' as const,
+  nullable: true,
+  example: '100',
+  description:
+    'The least a client may move into an account on this group per transfer, in the ' +
+    "group's currency (0201). Null = no minimum. Live groups only.",
+};
 
 /*
  * `SPREAD_MARKUP` stood here until 0140. The product's spread markup is gone —
@@ -42,6 +56,9 @@ export class ProductGroupDto {
       'Cached from MT5 when the group was attached. Anything a client is shown re-reads it live.',
   })
   currency: string;
+
+  @ApiProperty(minDepositDoc)
+  minDeposit: string | null;
 }
 
 @NoClientFields(
@@ -78,9 +95,9 @@ export class ProductDto {
   @ApiProperty({
     enum: ['real', 'demo'],
     description:
-      'Fixed at creation. At most ONE demo product exists; it is offered to every client for ' +
-      'demo accounts regardless of agency, and cannot be assigned to an agency. Real products ' +
-      'carry live groups, the demo product carries demo groups.',
+      'Fixed at creation. Any number of demo products may exist (0201); every enabled one is ' +
+      'offered to every client for demo accounts regardless of agency, and none can be ' +
+      'assigned to an agency. Real products carry live groups, demo products demo groups.',
   })
   type: 'real' | 'demo';
 
@@ -91,12 +108,22 @@ export class ProductDto {
     description:
       'The commission type this product pays partners on (0140) — the rate card whose per-lot ' +
       'amounts each level takes a share of. NULL means the product pays no partner ' +
-      'commission at all; the demo product never carries one.',
+      'commission at all; a demo product never carries one.',
   })
   commissionTypeId: string | null;
 
   @ApiProperty({ example: 0 })
   sortOrder: number;
+
+  @ApiProperty({
+    example: 5,
+    minimum: 1,
+    maximum: 100,
+    description:
+      'How many accounts one client may hold under this product (0201). Closed accounts do ' +
+      'not count.',
+  })
+  maxAccountsPerClient: number;
 
   @ApiProperty({ type: [ProductGroupDto] })
   groups: ProductGroupDto[];
@@ -165,6 +192,17 @@ export class UpsertProductDto {
   @Min(0)
   @Max(1000)
   sortOrder?: number;
+
+  /**
+   * OMITTED keeps the stored cap (5 on create): the list's on/off switch sends
+   * only name, description and enabled, and must not reset it.
+   */
+  @ApiPropertyOptional({ example: 5, minimum: 1, maximum: 100 })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  maxAccountsPerClient?: number;
 }
 
 export class AttachGroupDto {
@@ -185,6 +223,20 @@ export class AttachGroupDto {
   @MinLength(1)
   @MaxLength(100)
   mt5Group: string;
+
+  @ApiPropertyOptional(minDepositDoc)
+  @IsOptional()
+  @ValidateIf((_o, value) => value !== null)
+  @Matches(MIN_DEPOSIT, { message: MIN_DEPOSIT_MESSAGE })
+  minDeposit?: string | null;
+}
+
+/** `PATCH admin/products/:id/groups/:groupId` — a saved group's minimum (0201). */
+export class UpdateProductGroupDto {
+  @ApiProperty(minDepositDoc)
+  @ValidateIf((_o, value) => value !== null)
+  @Matches(MIN_DEPOSIT, { message: MIN_DEPOSIT_MESSAGE })
+  minDeposit: string | null;
 }
 
 /** One group the MT5 server reports, and whether a product already has it. */

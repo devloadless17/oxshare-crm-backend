@@ -138,4 +138,14 @@ export class TradingAccountDto {
 
   @ApiProperty({ format: 'date-time' })
   createdAt: Date;
+
+  @ApiProperty({
+    type: 'string',
+    nullable: true,
+    example: '100.00000000',
+    description:
+      'The least a transfer INTO this account must be, in its currency — its product group’s ' +
+      'minimum deposit (0201), as a decimal string. Null = no minimum (always on demo).',
+  })
+  minDeposit: string | null;
 }

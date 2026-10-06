@@ -39,8 +39,10 @@ export interface TradingTerms {
    * settings do not — it can be withdrawn without touching the accounts opened
    * on it, which a CSV in a singleton row could not express.
    */
-  maxLiveAccounts: number;
-  maxDemoAccounts: number;
+  /*
+   * `maxLiveAccounts` / `maxDemoAccounts` were here. How many accounts a client
+   * may hold is the PRODUCT's now (`max_accounts_per_client`, 0201).
+   */
   /** A decimal string, never a number — §6. */
   maxDemoDeposit: string;
   /*
@@ -122,8 +124,6 @@ export const DEFAULT_LEVERAGES = [50, 100, 200, 500];
 
 /** What the columns default to, for the case where there is no row at all. */
 export const DEFAULT_TRADING_TERMS: TradingTerms = {
-  maxLiveAccounts: 5,
-  maxDemoAccounts: 5,
   maxDemoDeposit: '1000000',
   /* HISTORICAL since 0113 — nothing reads it. Kept so the shape of a stored
      row and the shape of the defaults stay the same object. */
@@ -149,8 +149,6 @@ export function tradingTermsFrom(row: TradingSettingsRow | null): TradingTerms {
   if (!row) return DEFAULT_TRADING_TERMS;
 
   return {
-    maxLiveAccounts: row.maxLiveAccounts,
-    maxDemoAccounts: row.maxDemoAccounts,
     maxDemoDeposit: row.maxDemoDeposit,
     /*
      * Narrowed on the way OUT of the database, not on the way in. The CHECK

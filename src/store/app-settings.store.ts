@@ -61,8 +61,7 @@ export interface SmtpSettingsWrite {
  */
 export interface TradingSettingsRow {
   // `leverages` was here — the ladder is the `leverages` TABLE now (0067).
-  maxLiveAccounts: number;
-  maxDemoAccounts: number;
+  // The account caps were here — they are per product now (0201).
   /** A decimal string, never a number — see §6. */
   maxDemoDeposit: string;
   /** How deep a programme's ladder may reach. Narrow with `normaliseIbMaxLevels`. */
@@ -100,8 +99,6 @@ export interface TradingSettingsRow {
 }
 
 export interface TradingSettingsWrite {
-  maxLiveAccounts: number;
-  maxDemoAccounts: number;
   maxDemoDeposit: string;
   /**
    * ── NOT WRITTEN ANY MORE (0113) ─────────────────────────────────────────

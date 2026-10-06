@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import Decimal from 'decimal.js';
 import { NotFoundError, ValidationError } from '../../common/errors/domain-errors';
 import { ProductsStore, type AgencyRow, type ProductRow } from '../../store/products.store';
 import { AdminAuditService } from '../admin/admin-audit.service';
@@ -49,6 +50,7 @@ export class CatalogueService {
       type?: 'real' | 'demo';
       commissionTypeId?: string | null;
       sortOrder?: number;
+      maxAccountsPerClient?: number;
     },
     actor: Actor,
   ): Promise<ProductDto> {
@@ -56,31 +58,21 @@ export class CatalogueService {
     const commissionTypeId = await this.resolveCommissionType(type, input.commissionTypeId ?? null);
 
     /*
-     * At most one demo product. This check is the readable sentence; the
-     * partial unique index `trading_products_single_demo_uq` is the guarantee
-     * a concurrent create cannot slip past, hence the catch below translating
-     * the constraint into the same message.
+     * Any number of demo products (0201). 0088 allowed exactly one, through a
+     * partial unique index that is gone; every enabled demo product is offered
+     * to every client.
      */
-    if (type === 'demo') {
-      const existing = (await this.store.listProducts()).find((product) => product.type === 'demo');
-      if (existing) throw singleDemoError(existing.name);
-    }
-
-    const row = await this.store
-      .createProduct({
-        name: input.name.trim(),
-        nameAr: emptyToNull(input.nameAr),
-        description: emptyToNull(input.description),
-        descriptionAr: emptyToNull(input.descriptionAr),
-        enabled: input.enabled,
-        type,
-        commissionTypeId,
-        sortOrder: input.sortOrder,
-      })
-      .catch((error: unknown) => {
-        if (violatesSingleDemo(error)) throw singleDemoError();
-        throw error;
-      });
+    const row = await this.store.createProduct({
+      name: input.name.trim(),
+      nameAr: emptyToNull(input.nameAr),
+      description: emptyToNull(input.description),
+      descriptionAr: emptyToNull(input.descriptionAr),
+      enabled: input.enabled,
+      type,
+      commissionTypeId,
+      sortOrder: input.sortOrder,
+      maxAccountsPerClient: input.maxAccountsPerClient ?? DEFAULT_MAX_ACCOUNTS,
+    });
 
     this.audit.record(actor.id, 'product.create', 'trading_products', row.id, {
       name: row.name,
@@ -89,6 +81,7 @@ export class CatalogueService {
       enabled: row.enabled,
       type: row.type,
       commissionTypeId: row.commissionTypeId,
+      maxAccountsPerClient: row.maxAccountsPerClient,
     });
     return toProductDto(row);
   }
@@ -96,7 +89,7 @@ export class CatalogueService {
   /**
    * Which rate card a product may be put on.
    *
-   * The DEMO product never carries one: demo trades never accrue, so a type on
+   * A DEMO product never carries one: demo trades never accrue, so a type on
    * it is a number that looks configured and pays nobody — refused rather than
    * stored. A type that does not exist is refused with its id, because the
    * alternative is the foreign key answering with a 500.
@@ -108,7 +101,7 @@ export class CatalogueService {
     if (commissionTypeId === null) return null;
     if (type === 'demo') {
       throw new ValidationError(
-        'The demo product cannot carry a commission type: practice trades never pay partner ' +
+        'A demo product cannot carry a commission type: practice trades never pay partner ' +
           'commission, so the type would look configured and pay nobody.',
       );
     }
@@ -128,6 +121,7 @@ export class CatalogueService {
       type?: 'real' | 'demo';
       commissionTypeId?: string | null;
       sortOrder?: number;
+      maxAccountsPerClient?: number;
     },
     actor: Actor,
   ): Promise<ProductDto> {
@@ -171,6 +165,8 @@ export class CatalogueService {
       enabled: input.enabled,
       commissionTypeId,
       sortOrder: input.sortOrder,
+      // OMITTED keeps the cap: the list's on/off switch sends none.
+      maxAccountsPerClient: input.maxAccountsPerClient,
     });
     if (!row) throw new NotFoundError('Product not found.');
 
@@ -204,6 +200,8 @@ export class CatalogueService {
        */
       'commissionTypeId',
       'sortOrder',
+      // Who raised a cap, and when, is asked after an account-farming incident.
+      'maxAccountsPerClient',
     ] as const) {
       if (before[field] !== row[field])
         changed[field] = { before: before[field], after: row[field] };
@@ -288,12 +286,13 @@ export class CatalogueService {
 
   async attachGroup(
     productId: string,
-    input: { environment: 'live' | 'demo'; mt5Group: string },
+    input: { environment: 'live' | 'demo'; mt5Group: string; minDeposit?: string | null },
     actor: Actor,
   ): Promise<ProductDto> {
     const products = await this.store.listProducts();
     const product = products.find((candidate) => candidate.id === productId);
     if (!product) throw new NotFoundError('Product not found.');
+    const minDeposit = minDepositFor(product, input.minDeposit);
 
     /*
      * The group's environment must match the product's type. A demo group on a
@@ -304,14 +303,14 @@ export class CatalogueService {
      */
     if (product.type === 'demo' && input.environment !== 'demo') {
       throw new ValidationError(
-        `'${product.name}' is the demo product — it takes demo groups only. ` +
+        `'${product.name}' is a demo product — it takes demo groups only. ` +
           'Attach live groups to a real product instead.',
       );
     }
     if (product.type === 'real' && input.environment !== 'live') {
       throw new ValidationError(
         `'${product.name}' is a real product — it takes live groups only. ` +
-          'Demo groups belong on the demo product, which is offered to every client.',
+          'Demo groups belong on a demo product, which is offered to every client.',
       );
     }
 
@@ -382,6 +381,7 @@ export class CatalogueService {
       environment: input.environment,
       mt5Group: match.name,
       currency: match.currency,
+      minDeposit,
     });
 
     this.audit.record(actor.id, 'product.group_attach', 'trading_products', productId, {
@@ -389,10 +389,46 @@ export class CatalogueService {
       environment: input.environment,
       mt5Group: match.name,
       currency: match.currency,
+      minDeposit,
     });
 
     const groups = await this.store.groupsOf(productId);
     return toProductDto({ ...product, groups });
+  }
+
+  /**
+   * Change a saved group's minimum deposit without detaching it (0201).
+   *
+   * Applies to the next transfer: nothing already moved is revisited. Audited
+   * with both sides — a raised minimum refuses clients who could transfer
+   * yesterday, and "who set it, and when" is the first question they ask.
+   */
+  async updateGroup(
+    productId: string,
+    groupId: string,
+    input: { minDeposit: string | null },
+    actor: Actor,
+  ): Promise<ProductDto> {
+    const products = await this.store.listProducts();
+    const product = products.find((candidate) => candidate.id === productId);
+    if (!product) throw new NotFoundError('Product not found.');
+    const group = product.groups.find((candidate) => candidate.id === groupId);
+    if (!group) throw new NotFoundError('That group is not attached to this product.');
+
+    const minDeposit = minDepositFor(product, input.minDeposit);
+    const updated = await this.store.setGroupMinDeposit(productId, groupId, minDeposit);
+    if (!updated) throw new NotFoundError('That group is not attached to this product.');
+
+    if (!sameAmount(group.minDeposit, updated.minDeposit)) {
+      this.audit.record(actor.id, 'product.group_update', 'trading_products', productId, {
+        product: product.name,
+        mt5Group: group.mt5Group,
+        currency: group.currency,
+        minDeposit: { before: group.minDeposit, after: updated.minDeposit },
+      });
+    }
+
+    return toProductDto({ ...product, groups: await this.store.groupsOf(productId) });
   }
 
   async detachGroup(productId: string, groupId: string, actor: Actor): Promise<ProductDto> {
@@ -577,7 +613,7 @@ export class CatalogueService {
     );
     if (productIds.some((productId) => demoIds.has(productId))) {
       throw new ValidationError(
-        'The demo product is offered to every client automatically — agencies carry ' +
+        'Demo products are offered to every client automatically — agencies carry ' +
           'real products only.',
       );
     }
@@ -617,31 +653,43 @@ function toProductDto(row: ProductRow): ProductDto {
     type: row.type,
     commissionTypeId: row.commissionTypeId,
     sortOrder: row.sortOrder,
+    maxAccountsPerClient: row.maxAccountsPerClient,
     groups: row.groups,
   };
 }
 
-function singleDemoError(existingName?: string): ValidationError {
-  const carrier = existingName ? `'${existingName}' is it` : 'one already exists';
-  return new ValidationError(
-    `Only one demo product can exist — ${carrier}. It is offered to every client ` +
-      'automatically, so edit that product instead of creating another.',
-  );
+/** Two stored amounts are the same number, whatever their scale ('100' vs '100.00000000'). */
+function sameAmount(a: string | null, b: string | null): boolean {
+  if (a === null || b === null) return a === b;
+  return new Decimal(a).equals(b);
 }
 
+/** A new product's cap when the caller names none — the column's default. */
+const DEFAULT_MAX_ACCOUNTS = 5;
+
 /**
- * Did this insert hit `trading_products_single_demo_uq`? drizzle-orm wraps the
- * driver error and moves the original to `cause` (see `pgErrorCode` in
- * AllExceptionsFilter for the history), so the constraint name is found by
- * walking the chain rather than read off the top.
+ * A group's minimum deposit as it will be stored, or a refusal (0201).
+ *
+ * Null clears it. Above zero, because "at least 0" is no minimum and would read
+ * as one. Never on a demo group: demo accounts are not funded from the wallet,
+ * so a minimum there would look configured and hold nobody (the CHECK says the
+ * same).
  */
-function violatesSingleDemo(error: unknown): boolean {
-  for (let current: unknown = error, depth = 0; current && depth < 5; depth++) {
-    const constraint = (current as { constraint?: unknown }).constraint;
-    if (constraint === 'trading_products_single_demo_uq') return true;
-    current = (current as { cause?: unknown }).cause;
+function minDepositFor(
+  product: { name: string; type: 'real' | 'demo' },
+  minDeposit: string | null | undefined,
+): string | null {
+  if (minDeposit === undefined || minDeposit === null || minDeposit.trim() === '') return null;
+  if (product.type === 'demo') {
+    throw new ValidationError(
+      `'${product.name}' is a demo product, and demo accounts are never funded from the ` +
+        'wallet, so its groups take no minimum deposit.',
+    );
   }
-  return false;
+  if (!new Decimal(minDeposit).greaterThan(0)) {
+    throw new ValidationError('A minimum deposit must be above zero. Leave it empty for none.');
+  }
+  return minDeposit.trim();
 }
 
 function toAgencyDto(row: AgencyRow): AgencyDto {

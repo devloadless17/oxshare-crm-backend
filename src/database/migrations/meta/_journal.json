@@ -1415,6 +1415,13 @@
       "when": 1789143108750,
       "tag": "0200_symbol_exclusions",
       "breakpoints": true
+    },
+    {
+      "idx": 203,
+      "version": "7",
+      "when": 1789143208750,
+      "tag": "0201_product_limits",
+      "breakpoints": true
     }
   ]
 }

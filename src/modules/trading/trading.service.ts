@@ -14,6 +14,7 @@ import type { PositionDto } from './dto/position.dto';
 import {
   PRODUCT_BY_GROUP,
   PRODUCT_BY_ID,
+  ACCOUNT_MIN_DEPOSIT,
   PRODUCT_GROUP_JOIN_ON,
   PRODUCT_NAME,
   PRODUCT_NAME_AR,
@@ -269,6 +270,7 @@ export class TradingService {
         leverage: tradingAccounts.leverage,
         status: tradingAccounts.status,
         createdAt: tradingAccounts.createdAt,
+        minDeposit: ACCOUNT_MIN_DEPOSIT,
       })
       .from(tradingAccounts)
       // The recorded product first, the derived one behind it — see PRODUCT_NAME.
@@ -334,6 +336,7 @@ export class TradingService {
         leverage: tradingAccounts.leverage,
         status: tradingAccounts.status,
         createdAt: tradingAccounts.createdAt,
+        minDeposit: ACCOUNT_MIN_DEPOSIT,
       })
       .from(tradingAccounts)
       // The recorded product first, the derived one behind it — see PRODUCT_NAME.

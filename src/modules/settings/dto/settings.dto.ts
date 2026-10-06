@@ -185,12 +185,10 @@ export class TradingSettingsDto {
    * /admin/leverages` — because a rung needs to be withdrawn without touching
    * the accounts opened on it, and a list on this response had nowhere to say
    * so. See migration 0067.
+   *
+   * `maxLiveAccounts` / `maxDemoAccounts` were here too. How many accounts a
+   * client may hold is set on each PRODUCT now (0201).
    */
-  @ApiProperty({ example: 5, description: 'Live accounts one client may open themselves.' })
-  maxLiveAccounts: number;
-
-  @ApiProperty({ example: 5, description: 'Demo accounts one client may open themselves.' })
-  maxDemoAccounts: number;
 
   @ApiProperty({
     example: '1000000.00000000',
@@ -256,25 +254,10 @@ export class UpdateTradingSettingsDto {
    * dropped entry would remove a leverage from the offer with no trace.
    */
   /*
-   * ZERO IS ALLOWED and means "no new ones of this kind". It is not the same as
-   * switching self-service off, which is done by offering no groups: this stops
-   * new accounts while leaving existing ones tradeable.
-   *
-   * The ceiling is 100 rather than unbounded — an uncapped demo endpoint is a
-   * free account generator on the broker's own server, and "unlimited" is the
-   * value somebody picks when they have not thought about that.
+   * The two account caps were here. They are per PRODUCT now
+   * (`max_accounts_per_client`, 0201); this form no longer sends them, and the
+   * API refuses them as unknown properties.
    */
-  @ApiProperty({ example: 5, minimum: 0, maximum: 100 })
-  @IsInt()
-  @Min(0)
-  @Max(100)
-  maxLiveAccounts: number;
-
-  @ApiProperty({ example: 5, minimum: 0, maximum: 100 })
-  @IsInt()
-  @Min(0)
-  @Max(100)
-  maxDemoAccounts: number;
 
   /** A decimal string, never a number — §6. */
   @ApiProperty({ example: '1000000.00', description: 'Positive decimal string.' })

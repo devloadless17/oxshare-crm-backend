@@ -1496,14 +1496,10 @@ export const tradingSettings = pgTable(
      * to put `enabled`.
      */
     /*
-     * Per client, per environment. A cap of ZERO is meaningful and is not the
-     * same as self-service being off: it stops new accounts of that kind while
-     * leaving the ones a client already has alone. "Unlimited" is deliberately
-     * absent — an uncapped demo endpoint is a free account generator on the
-     * broker's own server.
+     * `max_live_accounts` / `max_demo_accounts` were here — one cap per
+     * environment for every client. They are per PRODUCT now
+     * (`trading_products.max_accounts_per_client`, 0201), which dropped them.
      */
-    maxLiveAccounts: integer('max_live_accounts').notNull().default(5),
-    maxDemoAccounts: integer('max_demo_accounts').notNull().default(5),
     /*
      * The largest opening balance a demo account may be given, as a decimal
      * string like every other money column here. Practice money, but it is
@@ -2304,11 +2300,12 @@ export const tradingProducts = pgTable(
     /**
      * `real` or `demo`, and the rules hang off it:
      *
-     * - At most ONE demo product exists (the partial unique index below), and
-     *   it is offered to EVERY client for demo accounts, agency or no agency.
-     * - Agencies carry real products only; the demo product cannot be assigned.
+     * - Any number of demo products may exist (0201; 0088 allowed one), and
+     *   every enabled one is offered to EVERY client for demo accounts, agency
+     *   or no agency.
+     * - Agencies carry real products only; a demo product cannot be assigned.
      * - A product's groups must match: live groups on real products, demo
-     *   groups on the demo product.
+     *   groups on demo products.
      * - The type is IMMUTABLE after creation — flipping real→demo would strand
      *   agency links, demo→real would silently withdraw the global demo offer.
      *   Migration 0088 was the one legitimate bulk conversion.
@@ -2342,15 +2339,20 @@ export const tradingProducts = pgTable(
     }),
     /** The order a client sees them in. Ties broken by name. */
     sortOrder: integer('sort_order').notNull().default(0),
+    /**
+     * How many accounts ONE client may hold under this product, 1–100 (0201).
+     *
+     * Counted over the client's accounts recorded on this product that are not
+     * closed. It replaced the two platform-wide caps on `trading_settings`.
+     * There is no zero: a product nobody may open is a DISABLED product. The
+     * admin path that opens accounts for a client is not held to it.
+     */
+    maxAccountsPerClient: integer('max_accounts_per_client').notNull().default(5),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    /* Max one demo product, enforced where a race cannot slip past it. The
-       service's readable refusal is the message; this is the guarantee. */
-    uniqueIndex('trading_products_single_demo_uq')
-      .on(t.type)
-      .where(sql`${t.type} = 'demo'`),
+    check('trading_products_max_accounts_ck', sql`${t.maxAccountsPerClient} BETWEEN 1 AND 100`),
     /* "Which products are sold on this type?" — asked before a type may be
        deleted or disabled, to name them in the refusal. */
     index('trading_products_commission_type_idx').on(t.commissionTypeId),
@@ -2381,9 +2383,25 @@ export const tradingProductGroups = pgTable(
      * a bridge round trip; anything a client is shown re-reads it live.
      */
     currency: varchar('currency', { length: 10 }).notNull(),
+    /**
+     * The least a client may move into an account opened on this product and
+     * group, per transfer, in the group's currency (0201). NULL = no minimum.
+     *
+     * Per group because a group IS one currency of the product, and there is no
+     * FX source to state one amount for several. Live groups only (CHECK): demo
+     * accounts are never funded from the wallet. Held by
+     * `TransfersService.request` for a client's transfer, and by the deposit
+     * door when a deposit is routed to the account; an operator's own movement
+     * is not held to it.
+     */
+    minDeposit: numeric('min_deposit', { precision: 28, scale: 8 }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
+    check(
+      'trading_product_groups_min_deposit_ck',
+      sql`${t.minDeposit} IS NULL OR (${t.minDeposit} > 0 AND ${t.environment} = 'live')`,
+    ),
     /*
      * A group may back SEVERAL products (0142) — but not the same product
      * twice. `trading_product_groups_group_unique` used to make it unique
