@@ -23,15 +23,16 @@ import {
  * paid nobody. None of these surface as errors — they surface as a balance
  * somebody has to claw back, or as one nobody ever receives.
  *
- * ## The model under test (0140)
+ * ## The model under test (0140, re-split 0197)
  *
- *     partner at level N  earns  lots × type.commissionPerLot × level_N.commissionShare / 100
- *     the trading client  gets   lots × type.rebatePerLot     × introducer.rebateShare  / 100
+ *     sub-partner (level 2)  earns  pool × (their override ?? level 2's share) / 100
+ *     level 1 partner        earns  pool × (100 − what the sub-partners took) / 100
+ *     the trading client     gets   rebate pool × (introducer's override ?? their level's) / 100
  *
- * The TYPE is the traded product's rate card; a LEVEL is a percentage of it,
- * keyed on the earner's own rung. The shares of the rungs in a chain are
- * INDEPENDENT — level 1 takes its full share on a sub-partner's client's trade
- * — which is 0114's rule kept, and several expectations below are shaped by it.
+ * The TYPE is the traded product's rate card. One commission pool is SPLIT down
+ * the chain: a level 1 partner takes all of it on their own clients and the rest
+ * on a sub-partner's (the owner, 6 Oct 2026). Level 1's own share on the ladder
+ * decides nothing.
  */
 
 /** The product's rate card: $10 a lot to the partners, $3 a lot back to the client. */
@@ -237,20 +238,27 @@ describe('resolveChain', () => {
 });
 
 describe('calculate — whose share applies', () => {
-  it('pays the introducer their rung’s share of the product’s commission', () => {
-    const result = calculate(DEAL, [earner({ ibUserId: 1000001, depth: 1 })], defaultLadder());
+  const SUB = 1000002;
+  const MAIN = 1000001;
+  const subChain = (over: Partial<ChainEntry> = {}) => [
+    earner({ ibUserId: SUB, depth: 1, level: 2, ...over }),
+    earner({ ibUserId: MAIN, depth: 2, level: 1 }),
+  ];
 
-    /* 70% of a $20 pool (2 lots × $10). */
+  it('pays a main partner 100% of the commission on their own client', () => {
+    const result = calculate(DEAL, [earner({ ibUserId: MAIN, depth: 1 })], defaultLadder());
+
+    /* The whole $20 pool (2 lots × $10). */
     expect(result.accruals).toEqual([
       {
-        ibUserId: 1000001,
+        ibUserId: MAIN,
         depth: 1,
         levelId: 'lvl-1',
         programId: undefined,
         commissionTypeId: 'type-standard',
-        rateValue: '70.0000',
+        rateValue: '100.0000',
         baseAmount: '20.00000000',
-        amount: '14.00000000',
+        amount: '20.00000000',
       },
     ]);
     expect(result.skippedReason).toBeUndefined();
@@ -258,106 +266,93 @@ describe('calculate — whose share applies', () => {
   });
 
   /*
-   * ── THE SHARES ARE INDEPENDENT, AND THAT IS 0114's RULE ─────────────────
+   * ── ONE POOL, SPLIT (0197) ──────────────────────────────────────────────
    *
-   * On a sub-partner's client's trade the sub takes their share AND the main
-   * partner takes their own in full. Nothing is carved out of anybody:
-   * recruiting must not reduce what the main partner earns.
+   * On a sub-partner's client's trade the sub takes their share and the main
+   * partner the rest: 30 / 70 at the default ladder, adding up to the pool.
    */
-  it('pays each earner from their OWN rung, independently of the others', () => {
-    const result = calculate(
-      DEAL,
-      [
-        earner({ ibUserId: 1000002, depth: 1, level: 2 }),
-        earner({ ibUserId: 1000001, depth: 2, level: 1 }),
-      ],
-      defaultLadder(),
-    );
+  it('splits a sub-partner’s client’s commission: the sub their share, the main the rest', () => {
+    const result = calculate(DEAL, subChain(), defaultLadder());
 
     expect(result.accruals.map((a) => [a.ibUserId, a.depth, a.rateValue, a.amount])).toEqual([
-      [1000002, 1, '30.0000', '6.00000000'],
-      [1000001, 2, '70.0000', '14.00000000'],
+      [SUB, 1, '30.0000', '6.00000000'],
+      [MAIN, 2, '70.0000', '14.00000000'],
     ]);
   });
 
-  /*
-   * The rung is a property of the PARTNER, not of the trade. A level 1
-   * partner is paid the same on their own client's trade (depth 1) and on a
-   * sub-partner's (depth 2): the depth is recorded, the share does not move.
-   */
-  it('pays a rung the same wherever in the chain the trade happened', () => {
-    const own = calculate(
-      DEAL,
-      [earner({ ibUserId: 1000001, depth: 1, level: 1 })],
-      defaultLadder(),
-    );
-    const below = calculate(
-      DEAL,
-      [
-        earner({ ibUserId: 1000002, depth: 1, level: 2 }),
-        earner({ ibUserId: 1000001, depth: 2, level: 1 }),
-      ],
-      defaultLadder(),
-    );
-
-    const mainOwn = own.accruals.find((a) => a.ibUserId === 1000001);
-    const mainBelow = below.accruals.find((a) => a.ibUserId === 1000001);
-    expect(mainOwn?.amount).toBe('14.00000000');
-    expect(mainBelow?.amount).toBe('14.00000000');
-    expect(mainOwn?.depth).toBe(1);
-    expect(mainBelow?.depth).toBe(2);
-  });
-
-  /*
-   * The arrangement this deployment ran before 0140 — "$10 to the main partner,
-   * $3 to the sub" — is a 100% / 30% ladder on a $10 type. Pinned so the
-   * conversion has a number to be checked against, and because the sum being
-   * MORE than the type's figure is the model working, not a fault.
-   */
-  it('reproduces the old $10 main / $3 sub arrangement with 100% and 30%', () => {
+  it('pays the sub-partner their OWN share when one is set, and the main the rest', () => {
     const result = calculate(
-      { ...DEAL, lots: '1' },
-      [
-        earner({ ibUserId: 1000004, depth: 1, level: 2 }),
-        earner({ ibUserId: 1000005, depth: 2, level: 1 }),
-      ],
-      ladderOf(
-        level({ level: 1, commissionShare: '100.0000' }),
-        level({ level: 2, commissionShare: '30.0000' }),
-      ),
+      DEAL,
+      subChain({ commissionShareOverride: '50.0000' }),
+      defaultLadder(),
     );
 
-    expect(result.accruals.map((a) => [a.ibUserId, a.amount])).toEqual([
-      [1000004, '3.00000000'],
-      [1000005, '10.00000000'],
+    expect(result.accruals.map((a) => [a.ibUserId, a.rateValue, a.amount])).toEqual([
+      [SUB, '50.0000', '10.00000000'],
+      [MAIN, '50.0000', '10.00000000'],
     ]);
+  });
+
+  it('a sub-partner set to 0% leaves the whole commission to the main partner', () => {
+    const result = calculate(DEAL, subChain({ commissionShareOverride: '0' }), defaultLadder());
+
+    expect(result.accruals.map((a) => [a.ibUserId, a.amount])).toEqual([[MAIN, '20.00000000']]);
+    expect(result.skippedReason).toMatch(/no share/);
+  });
+
+  it('a sub-partner set to 100% leaves the main partner nothing, and says so', () => {
+    const result = calculate(DEAL, subChain({ commissionShareOverride: '100' }), defaultLadder());
+
+    expect(result.accruals.map((a) => [a.ibUserId, a.amount])).toEqual([[SUB, '20.00000000']]);
+    expect(result.skippedReason).toMatch(/take the whole commission/);
+  });
+
+  it('ignores level 1’s own share on the ladder — the main partner takes the rest', () => {
+    const ladder = ladderOf(
+      level({ level: 1, commissionShare: '10.0000' }),
+      level({ level: 2, commissionShare: '30.0000' }),
+    );
+
+    expect(
+      calculate(DEAL, [earner({ ibUserId: MAIN, depth: 1 })], ladder).accruals[0]?.amount,
+    ).toBe('20.00000000');
+    expect(calculate(DEAL, subChain(), ladder).accruals.map((a) => a.amount)).toEqual([
+      '6.00000000',
+      '14.00000000',
+    ]);
+  });
+
+  it('never pays more than the pool across the chain', () => {
+    for (const share of ['0', '30', '50', '99.9999', '100']) {
+      const result = calculate(DEAL, subChain({ commissionShareOverride: share }), defaultLadder());
+      const total = result.accruals.reduce((sum, a) => sum.plus(a.amount), new Decimal(0));
+      expect(total.toFixed(8)).toBe('20.00000000');
+    }
   });
 
   it('scales with volume, because every term is per lot', () => {
     const half = calculate(
       { ...DEAL, lots: '0.5' },
-      [earner({ ibUserId: 1000001, depth: 1 })],
+      [earner({ ibUserId: MAIN, depth: 1 })],
       defaultLadder(),
     );
-    const ten = calculate(
-      { ...DEAL, lots: '10' },
-      [earner({ ibUserId: 1000001, depth: 1 })],
-      defaultLadder(),
-    );
+    const ten = calculate({ ...DEAL, lots: '10' }, subChain(), defaultLadder());
 
-    expect(half.accruals[0]?.amount).toBe('3.50000000');
-    expect(ten.accruals[0]?.amount).toBe('70.00000000');
+    expect(half.accruals[0]?.amount).toBe('5.00000000');
+    expect(ten.accruals.map((a) => a.amount)).toEqual(['30.00000000', '70.00000000']);
   });
 
-  it('keeps full precision on a fractional share', () => {
+  it('keeps full precision on a fractional share, and the rest to the eighth decimal', () => {
     const result = calculate(
       { ...DEAL, lots: '1' },
-      [earner({ ibUserId: 1000001, depth: 1 })],
-      ladderOf(level({ level: 1, commissionShare: '33.3333' })),
+      subChain({ commissionShareOverride: '33.3333' }),
+      defaultLadder(),
     );
 
-    expect(result.accruals[0]?.amount).toBe('3.33333000');
-    expect(result.accruals[0]?.rateValue).toBe('33.3333');
+    expect(result.accruals.map((a) => [a.rateValue, a.amount])).toEqual([
+      ['33.3333', '3.33333000'],
+      ['66.6667', '6.66667000'],
+    ]);
   });
 
   /*
@@ -369,13 +364,13 @@ describe('calculate — whose share applies', () => {
       DEAL,
       [
         earner({ ibUserId: 1000003, depth: 1, level: 3 }),
-        earner({ ibUserId: 1000002, depth: 2, level: 2 }),
-        earner({ ibUserId: 1000001, depth: 3, level: 1 }),
+        earner({ ibUserId: SUB, depth: 2, level: 2 }),
+        earner({ ibUserId: MAIN, depth: 3, level: 1 }),
       ],
       defaultLadder(),
     );
 
-    expect(result.accruals.map((a) => a.ibUserId)).toEqual([1000002, 1000001]);
+    expect(result.accruals.map((a) => a.ibUserId)).toEqual([SUB, MAIN]);
     expect(result.skippedReason).toMatch(/level 3/);
     expect(result.unpriceable).toBeUndefined();
   });
@@ -383,7 +378,7 @@ describe('calculate — whose share applies', () => {
   it('pays nothing under a disabled level, and says why', () => {
     const result = calculate(
       DEAL,
-      [earner({ ibUserId: 1000001, depth: 1 })],
+      [earner({ ibUserId: MAIN, depth: 1 })],
       ladderOf(level({ level: 1, enabled: false })),
     );
 
@@ -391,19 +386,18 @@ describe('calculate — whose share applies', () => {
     expect(result.skippedReason).toMatch(/disabled/);
   });
 
-  it('pays nothing on a rung whose share is zero', () => {
+  it('a disabled sub-partner level leaves the whole commission to the main partner', () => {
     const result = calculate(
       DEAL,
-      [earner({ ibUserId: 1000001, depth: 1 })],
-      ladderOf(level({ level: 1, commissionShare: '0.0000' })),
+      subChain(),
+      ladderOf(level({ level: 1 }), level({ level: 2, enabled: false })),
     );
 
-    expect(result.accruals).toEqual([]);
-    expect(result.skippedReason).toMatch(/no share/);
+    expect(result.accruals.map((a) => [a.ibUserId, a.amount])).toEqual([[MAIN, '20.00000000']]);
   });
 
   it('refuses to take a share of a deposit, whatever the ladder says', () => {
-    const result = calculate(DEPOSIT, [earner({ ibUserId: 1000001, depth: 1 })], defaultLadder());
+    const result = calculate(DEPOSIT, [earner({ ibUserId: MAIN, depth: 1 })], defaultLadder());
 
     expect(result.accruals).toEqual([]);
     expect(result.rebate).toBeUndefined();
@@ -421,8 +415,8 @@ describe('calculate — whose share applies', () => {
   it('skips a leg that rounds to nothing rather than writing an empty accrual', () => {
     const result = calculate(
       { ...DEAL, lots: '0.0001' },
-      [earner({ ibUserId: 1000001, depth: 1 })],
-      ladderOf(level({ level: 1, commissionShare: '0.0001' })),
+      [earner({ ibUserId: SUB, depth: 1, level: 2, commissionShareOverride: '0.0001' })],
+      defaultLadder(),
     );
 
     expect(result.accruals).toEqual([]);
@@ -595,15 +589,40 @@ describe('calculate — the client’s rebate', () => {
     expect(result.accruals).toHaveLength(1);
   });
 
-  it('pays the client and no partner when the rung’s commission share is zero', () => {
+  it('pays the client and no partner when a lone sub-partner takes no commission', () => {
     const result = calculate(
       DEAL,
-      [earner({ ibUserId: 1000001, depth: 1 })],
-      ladderOf(level({ level: 1, commissionShare: '0.0000', rebateShare: '100.0000' })),
+      [earner({ ibUserId: 1000002, depth: 1, level: 2 })],
+      ladderOf(level({ level: 2, commissionShare: '0.0000', rebateShare: '100.0000' })),
     );
 
     expect(result.accruals).toEqual([]);
     expect(result.rebate?.amount).toBe('6.00000000');
+  });
+
+  /* 0197 — a sub-partner's own rebate for their clients. */
+  it('pays a sub-partner’s client the rebate set for that sub-partner', () => {
+    const result = calculate(
+      DEAL,
+      [
+        earner({ ibUserId: 1000002, depth: 1, level: 2, rebateShareOverride: '80.0000' }),
+        earner({ ibUserId: 1000001, depth: 2, level: 1 }),
+      ],
+      defaultLadder(),
+    );
+
+    expect(result.rebate?.rateValue).toBe('80.0000');
+    expect(result.rebate?.amount).toBe('4.80000000');
+  });
+
+  it('a sub-partner’s rebate set to 0 returns nothing to their clients', () => {
+    const result = calculate(
+      DEAL,
+      [earner({ ibUserId: 1000002, depth: 1, level: 2, rebateShareOverride: '0' })],
+      defaultLadder(),
+    );
+
+    expect(result.rebate).toBeUndefined();
   });
 
   it('pays no rebate when the type returns nothing to the client', () => {
@@ -651,6 +670,47 @@ describe('calculate — the client’s rebate', () => {
 
     expect(result.rebate).toBeUndefined();
     expect(result.accruals.map((a) => a.ibUserId)).toEqual([1000001]);
+  });
+});
+
+describe('calculate — symbols the type excludes (0198)', () => {
+  const EXCLUDING: CommissionTypeTerms = {
+    ...TYPE,
+    excludedPaths: ['Crypto'],
+    excludedSymbols: ['XAGUSD'],
+  };
+  const chain = [earner({ ibUserId: 1000001, depth: 1 })];
+  const on = (symbol: string, symbolPath: string | null): RevenueEvent => ({
+    ...DEAL,
+    terms: EXCLUDING,
+    symbol,
+    symbolPath,
+  });
+
+  it('pays no commission AND no rebate on a symbol in an excluded folder, and is done', () => {
+    const result = calculate(on('BTCUSD', 'Crypto\\BTCUSD'), chain, defaultLadder());
+    expect(result.accruals).toEqual([]);
+    expect(result.rebate).toBeUndefined();
+    expect(result.unpriceable).toBeUndefined();
+    expect(result.skippedReason).toMatch(/excluded folder crypto/i);
+  });
+
+  it('pays nothing on a single excluded symbol', () => {
+    const result = calculate(on('XAGUSD', 'Metals\\XAGUSD'), chain, defaultLadder());
+    expect(result.accruals).toEqual([]);
+    expect(result.rebate).toBeUndefined();
+  });
+
+  it('pays in full on everything else the type sells', () => {
+    const result = calculate(on('EURUSD', 'Forex\\Majors\\EURUSD'), chain, defaultLadder());
+    expect(result.accruals.map((a) => a.amount)).toEqual(['20.00000000']);
+    expect(result.rebate?.amount).toBe('3.00000000');
+  });
+
+  it('REFUSES (retry later) when folders are excluded and the symbol’s folder is unknown', () => {
+    const result = calculate(on('NEWCOIN', null), chain, defaultLadder());
+    expect(result.accruals).toEqual([]);
+    expect(result.unpriceable?.[0]).toMatch(/not known yet/);
   });
 });
 
@@ -719,8 +779,8 @@ describe('the numbers', () => {
   it('rounds a half up at the eighth decimal rather than truncating', () => {
     const result = calculate(
       { ...DEAL, lots: '1', terms: { ...TYPE, commissionPerLot: '0.00000015' } },
-      [earner({ ibUserId: 1000001, depth: 1 })],
-      ladderOf(level({ level: 1, commissionShare: '50.0000' })),
+      [earner({ ibUserId: 1000002, depth: 1, level: 2, commissionShareOverride: '50.0000' })],
+      defaultLadder(),
     );
 
     /* 0.000000075 → 0.00000008, not 0.00000007. */

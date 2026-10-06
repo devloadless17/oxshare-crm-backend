@@ -1,8 +1,9 @@
-import { and, asc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { currentFieldMask } from '../common/logging/request-context';
 import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db, Executor } from '../database/db';
-import { clientTagAssignments, clientTags } from '../database/schema';
+import { clientTagAssignments, clientTagMemberships, clientTags, users } from '../database/schema';
 import {
   clientScopePredicate,
   territoryCounts,
@@ -15,6 +16,11 @@ export interface ClientTag {
   label: string;
   color?: string;
   description?: string;
+  /**
+   * Set on a COUNTRY tag (0193): its clients are those whose country it is,
+   * derived — it is never assigned, renamed or deleted, only recoloured.
+   */
+  countryCode?: string;
   createdAt: Date;
 }
 
@@ -55,6 +61,7 @@ type TagColumns = {
   label: string;
   color: string | null;
   description: string | null;
+  countryCode: string | null;
   createdAt: Date;
 };
 
@@ -64,8 +71,20 @@ const toTag = (r: TagColumns): ClientTag => ({
   label: r.label,
   color: r.color ?? undefined,
   description: r.description ?? undefined,
+  countryCode: r.countryCode ?? undefined,
   createdAt: r.createdAt,
 });
+
+/**
+ * A COUNTRY tag on a client IS the client's country (0193), so a reader whose
+ * role hides `client.country` is shown none: the chip would spell out the very
+ * field the mask withholds (found by `field-mask-matrix.spec.ts`). Read from
+ * the request's mask, like every other masked READ — the RBAC-03 interceptor
+ * cannot know a tag's label is a country. Undefined (no condition) otherwise.
+ */
+function countryTagsReadable() {
+  return currentFieldMask().includes('client.country') ? isNull(clientTags.countryCode) : undefined;
+}
 
 /**
  * ADM-14 client labels.
@@ -108,7 +127,7 @@ export class ClientTagsStore {
    * listed the tag.
    */
   async findAllWithCounts(scope: ClientScope): Promise<ClientTagWithCount[]> {
-    const counts = territoryCounts(scope, clientTagAssignments.userId);
+    const counts = territoryCounts(scope, clientTagMemberships.userId);
     const rows = await this.db
       .select({
         id: clientTags.id,
@@ -116,6 +135,7 @@ export class ClientTagsStore {
         label: clientTags.label,
         color: clientTags.color,
         description: clientTags.description,
+        countryCode: clientTags.countryCode,
         createdAt: clientTags.createdAt,
         // LEFT JOIN + count of the joined key, so a tag nobody carries reports
         // 0 rather than vanishing from the list. The scope splits the count
@@ -125,7 +145,7 @@ export class ClientTagsStore {
         clientsOutsideScope: counts.outside,
       })
       .from(clientTags)
-      .leftJoin(clientTagAssignments, eq(clientTagAssignments.tagId, clientTags.id))
+      .leftJoin(clientTagMemberships, eq(clientTagMemberships.tagId, clientTags.id))
       .groupBy(clientTags.id)
       .orderBy(asc(clientTags.label));
 
@@ -212,13 +232,14 @@ export class ClientTagsStore {
         label: clientTags.label,
         color: clientTags.color,
         description: clientTags.description,
+        countryCode: clientTags.countryCode,
         createdAt: clientTags.createdAt,
-        assignedBy: clientTagAssignments.assignedBy,
-        assignedAt: clientTagAssignments.assignedAt,
+        assignedBy: clientTagMemberships.assignedBy,
+        assignedAt: clientTagMemberships.assignedAt,
       })
-      .from(clientTagAssignments)
-      .innerJoin(clientTags, eq(clientTags.id, clientTagAssignments.tagId))
-      .where(eq(clientTagAssignments.userId, userId))
+      .from(clientTagMemberships)
+      .innerJoin(clientTags, eq(clientTags.id, clientTagMemberships.tagId))
+      .where(and(eq(clientTagMemberships.userId, userId), countryTagsReadable()))
       .orderBy(asc(clientTags.label));
     return rows.map((row) => ({
       ...toTag(row),
@@ -240,17 +261,18 @@ export class ClientTagsStore {
 
     const rows = await this.db
       .select({
-        userId: clientTagAssignments.userId,
+        userId: clientTagMemberships.userId,
         id: clientTags.id,
         slug: clientTags.slug,
         label: clientTags.label,
         color: clientTags.color,
         description: clientTags.description,
+        countryCode: clientTags.countryCode,
         createdAt: clientTags.createdAt,
       })
-      .from(clientTagAssignments)
-      .innerJoin(clientTags, eq(clientTags.id, clientTagAssignments.tagId))
-      .where(inArray(clientTagAssignments.userId, [...userIds]))
+      .from(clientTagMemberships)
+      .innerJoin(clientTags, eq(clientTags.id, clientTagMemberships.tagId))
+      .where(and(inArray(clientTagMemberships.userId, [...userIds]), countryTagsReadable()))
       .orderBy(asc(clientTags.label));
 
     for (const row of rows) {
@@ -272,9 +294,9 @@ export class ClientTagsStore {
    * entry for a no-op rather than recording an event that did not happen.
    */
   /**
-   * `assignedBy: null` is the SYSTEM assigning — registration attaching the
-   * intake tag (D-60). The column was nullable from day one; the signature
-   * just never admitted it.
+   * `assignedBy: null` is the SYSTEM assigning — registration attaching a
+   * sign-up link's or a partner's tags. Never a country tag: those are derived,
+   * and a trigger refuses one here (0193).
    */
   async assign(
     userId: number,
@@ -322,13 +344,143 @@ export class ClientTagsStore {
     );
   }
 
-  /** The ids of the tags a client carries — what a tag change is judged on. */
+  /**
+   * The ids of the tags a client carries — what a tag change is judged on.
+   * MEMBERSHIPS, the derived country tag included: a country desk must be
+   * told it keeps the client after an owner tag is removed.
+   */
   async tagIdsForClient(userId: number, executor?: Executor): Promise<string[]> {
     const rows = await (executor ?? this.db)
-      .select({ tagId: clientTagAssignments.tagId })
-      .from(clientTagAssignments)
-      .where(eq(clientTagAssignments.userId, userId));
+      .select({ tagId: clientTagMemberships.tagId })
+      .from(clientTagMemberships)
+      .where(eq(clientTagMemberships.userId, userId));
     return rows.map((row) => row.tagId);
+  }
+
+  // ─── bulk (Slice 3, 6 Oct 2026) ───────────────────────────────────────────
+
+  /** Of these clients, the ones the reader may see (the rest are skipped, counted). */
+  async visibleClientIds(ids: readonly number[], scope: ClientScope): Promise<number[]> {
+    if (ids.length === 0) return [];
+    const visible = clientScopePredicate(scope, users.id);
+    const rows = await this.db
+      .select({ id: users.id })
+      .from(users)
+      .where(and(inArray(users.id, [...ids]), visible));
+    return rows.map((row) => row.id);
+  }
+
+  /**
+   * Add and remove tags on many clients in ONE transaction, SET-BASED: one
+   * DELETE and one INSERT whatever the count, never a loop of round trips.
+   *
+   * Under the same per-client advisory locks as a single change
+   * (`lockAssignments`), taken in id order in one statement, so a bulk change
+   * and a single change on the same client take turns and two bulks cannot
+   * deadlock. Judged under those locks:
+   *   - how many clients would LEAVE the actor's territory — refused unless
+   *     confirmed (`onLeaves` decides), measured on memberships so a country
+   *     desk keeps its clients;
+   *   - no client may end with more than `maxPerClient` chosen tags.
+   * Returns, per client, what actually changed — so the audit records only real
+   * changes, and a replay writes nothing.
+   */
+  async bulkChange(input: {
+    ids: readonly number[];
+    add: readonly string[];
+    remove: readonly string[];
+    scope: ClientScope;
+    /** Who is changing them — written as `assigned_by`, like a single change. */
+    actorId: string;
+    maxPerClient: number;
+    onLeaves: (count: number) => void;
+    onTooMany: (count: number) => void;
+    record: (
+      changes: { added: Map<number, string[]>; removed: Map<number, string[]> },
+      tx: Executor,
+    ) => Promise<void>;
+  }): Promise<{ added: Map<number, string[]>; removed: Map<number, string[]> }> {
+    const ids = [...new Set(input.ids)].sort((a, b) => a - b);
+    const idList = sql`ARRAY[${sql.join(
+      ids.map((id) => sql`${id}`),
+      sql`, `,
+    )}]::integer[]`;
+    const uuidArray = (values: readonly string[]) =>
+      values.length === 0
+        ? sql`ARRAY[]::uuid[]`
+        : sql`ARRAY[${sql.join(
+            values.map((v) => sql`${v}`),
+            sql`, `,
+          )}]::uuid[]`;
+    const add = uuidArray(input.add);
+    const remove = uuidArray(input.remove);
+
+    return this.db.transaction(async (tx: Executor) => {
+      await tx.execute(
+        sql`SELECT pg_advisory_xact_lock(${CLIENT_TAGS_LOCK_NAMESPACE}, hashtext(u::text))
+            FROM unnest(${idList}) AS u ORDER BY u`,
+      );
+
+      if (!input.scope.unrestricted) {
+        const territory = uuidArray(input.scope.tagIds);
+        const [leaving] = (
+          await tx.execute<{ n: number }>(sql`
+            WITH t(id) AS (SELECT unnest(${idList})),
+            after AS (
+              SELECT m.user_id, m.tag_id FROM ${clientTagMemberships} m
+               WHERE m.user_id = ANY(${idList}) AND NOT (m.tag_id = ANY(${remove}))
+              UNION ALL
+              SELECT t.id, a FROM t CROSS JOIN unnest(${add}) AS a
+            )
+            SELECT count(*)::int AS n FROM t
+             WHERE NOT EXISTS (
+               SELECT 1 FROM after WHERE after.user_id = t.id AND after.tag_id = ANY(${territory})
+             )`)
+        ).rows;
+        if ((leaving?.n ?? 0) > 0) input.onLeaves(leaving.n);
+      }
+
+      const [crowded] = (
+        await tx.execute<{ n: number }>(sql`
+          WITH after AS (
+            SELECT a.user_id, a.tag_id FROM ${clientTagAssignments} a
+             WHERE a.user_id = ANY(${idList}) AND NOT (a.tag_id = ANY(${remove}))
+            UNION
+            SELECT u, t FROM unnest(${idList}) AS u CROSS JOIN unnest(${add}) AS t
+          )
+          SELECT count(*)::int AS n FROM (
+            SELECT user_id FROM after GROUP BY user_id HAVING count(*) > ${input.maxPerClient}
+          ) over_cap`)
+      ).rows;
+      if ((crowded?.n ?? 0) > 0) input.onTooMany(crowded.n);
+
+      const removedRows = (
+        await tx.execute<{ user_id: number; tag_id: string }>(sql`
+          DELETE FROM ${clientTagAssignments}
+           WHERE user_id = ANY(${idList}) AND tag_id = ANY(${remove})
+          RETURNING user_id, tag_id`)
+      ).rows;
+      const addedRows = (
+        await tx.execute<{ user_id: number; tag_id: string }>(sql`
+          INSERT INTO ${clientTagAssignments} (user_id, tag_id, assigned_by)
+          SELECT u, t, ${input.actorId}::uuid FROM unnest(${idList}) AS u CROSS JOIN unnest(${add}) AS t
+          ON CONFLICT DO NOTHING
+          RETURNING user_id, tag_id`)
+      ).rows;
+
+      const group = (rows: { user_id: number; tag_id: string }[]) => {
+        const byClient = new Map<number, string[]>();
+        for (const row of rows) {
+          const list = byClient.get(row.user_id) ?? [];
+          list.push(row.tag_id);
+          byClient.set(row.user_id, list);
+        }
+        return byClient;
+      };
+      const changes = { added: group(addedRows), removed: group(removedRows) };
+      await input.record(changes, tx);
+      return changes;
+    });
   }
 
   /**
@@ -340,12 +492,12 @@ export class ClientTagsStore {
    * The SAME predicate the lists use, negated in the WHERE clause.
    */
   async countClientsForTagOutside(tagId: string, scope: ClientScope): Promise<number> {
-    const visible = clientScopePredicate(scope, clientTagAssignments.userId);
+    const visible = clientScopePredicate(scope, clientTagMemberships.userId);
     if (visible === undefined) return 0;
     const [row] = await this.db
       .select({ n: sql<number>`count(*)::int` })
-      .from(clientTagAssignments)
-      .where(and(eq(clientTagAssignments.tagId, tagId), sql`NOT (${visible})`));
+      .from(clientTagMemberships)
+      .where(and(eq(clientTagMemberships.tagId, tagId), sql`NOT (${visible})`));
     return row?.n ?? 0;
   }
 
@@ -353,8 +505,8 @@ export class ClientTagsStore {
   async countClientsForTag(tagId: string): Promise<number> {
     const [row] = await this.db
       .select({ n: sql<number>`count(*)::int` })
-      .from(clientTagAssignments)
-      .where(eq(clientTagAssignments.tagId, tagId));
+      .from(clientTagMemberships)
+      .where(eq(clientTagMemberships.tagId, tagId));
     return row?.n ?? 0;
   }
 }

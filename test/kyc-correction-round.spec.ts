@@ -1,4 +1,5 @@
 import { ALL_PERMISSIONS } from './support/all-permissions';
+import { uniqueTestPhone } from './support/registration';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { eq, getTableColumns, sql } from 'drizzle-orm';
@@ -35,7 +36,10 @@ const COMPLETE_PROFILE = {
   firstName: 'Round',
   lastName: 'Trip',
   dateOfBirth: '1990-01-01',
-  phone: '+961 70 123 456',
+  // A fresh number per spread: one client per phone (0194).
+  get phone(): string {
+    return uniqueTestPhone();
+  },
   nationality: 'Lebanese',
   country: 'Lebanon',
   // Required to verify, by the platform (the identity core, 26 Sep 2026).
@@ -129,6 +133,7 @@ describe('a step stores what it asks for, and nothing else', () => {
         step: 'personal',
         data: {
           ...COMPLETE_PROFILE,
+          phone: '+961 70 123 456',
           __docChoice__document: 'passport',
           __docChoice__address: 'utilityBill',
           customField_1790263652846: '[object Object]',
@@ -381,11 +386,13 @@ describe('0136 takes the form debris out of personal_info', () => {
 
   it('removes UI state, stringified files and copies of custom answers — and keeps answers', async () => {
     const { id } = await newClient('migration');
+    // One snapshot: `phone` is a getter, and the assertion compares this exact copy.
+    const answers = { ...COMPLETE_PROFILE };
     await ctx.db.db.insert(kycSubmissions).values({
       userId: id,
       status: 'rejected',
       personalInfo: {
-        ...COMPLETE_PROFILE,
+        ...answers,
         __docChoice__document: 'passport',
         customField_1790263652846: '[object Object]',
         customField_1790263641710: 'Acme Ltd',
@@ -400,7 +407,7 @@ describe('0136 takes the form debris out of personal_info', () => {
     });
 
     await ctx.db.db.execute(sql.raw(migration));
-    expect((await stored(id)).personalInfo).toEqual(COMPLETE_PROFILE);
+    expect((await stored(id)).personalInfo).toEqual(answers);
     // The custom step keeps its own answers — they were only ever COPIED.
     expect((await stored(id)).stepData['source-of-funds']).toMatchObject({
       customField_1790263641710: 'Acme Ltd',

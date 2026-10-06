@@ -1,7 +1,9 @@
 import { Injectable } from '@nestjs/common';
+import type { DateRange } from '../../common/date-range';
 import { decodeCursor, type CursorPosition } from '../../common/pagination';
 import { DEFAULT_AUDIT_SORT } from '../../store/audit-log.store';
 import { formatProofDetails } from '../../common/payments/proof-fields';
+import { formatPayToDetails } from '../../common/payments/pay-to-fields';
 import { maskAuditRow } from '../../common/security/audit-detail-fields';
 import { UsersStore, clientSortKey, clientSortOrder } from '../../store/users.store';
 import { ClientTagsStore } from '../../store/client-tags.store';
@@ -15,6 +17,8 @@ import { maskForExport } from '../../common/security/mask-by-shape';
 import { ClientRowDto, KycSubmissionDto } from './dto/responses.dto';
 import {
   FinancialExportRowDto,
+  IbAccrualExportRowDto,
+  LedgerExportRowDto,
   IbApplicationExportRowDto,
   IbPartnerExportRowDto,
   TradingAccountExportRowDto,
@@ -27,6 +31,7 @@ import {
   type AdminTransactionExportRow,
 } from '../payments/transactions.service';
 import { AdminHoldingsService } from './admin-holdings.service';
+import { WalletService } from '../wallet/wallet.service';
 import type { AuthenticatedAdmin } from './guards/admin.guard';
 import type { CsvColumn } from '../../common/export/csv';
 import {
@@ -93,6 +98,27 @@ export interface ExportSeek {
   done?: boolean;
 }
 
+/** What `GET /admin/ledger/export` filters by — the list's own filters. */
+export interface LedgerExportQuery {
+  walletId?: string;
+  userId?: number;
+  q?: string;
+  entryType?: Awaited<ReturnType<WalletService['listEntriesForExport']>>[number]['entryType'];
+  range?: DateRange;
+}
+export type LedgerExportRow = Awaited<ReturnType<WalletService['listEntriesForExport']>>[number];
+
+/** What `GET /admin/ib/accruals/export` filters by — the list's own filters. */
+export interface IbAccrualExportQuery {
+  ibUserId?: number;
+  clientUserId?: number;
+  q?: string;
+  status?: string;
+  kind?: string;
+  range?: DateRange;
+}
+export type IbAccrualExportRow = Awaited<ReturnType<IbStore['findAccrualsPage']>>['rows'][number];
+
 @Injectable()
 export class AdminExportService {
   constructor(
@@ -112,6 +138,8 @@ export class AdminExportService {
      * one after it.
      */
     private readonly holdings: AdminHoldingsService,
+    /** The ledger's row source — APPENDED, for the positional-construction reason above. */
+    private readonly wallets: WalletService,
   ) {}
 
   // ── Clients ───────────────────────────────────────────────────────────────
@@ -231,6 +259,8 @@ export class AdminExportService {
       kycStatus: kycStatusFilter(query.kycStatus),
       referredBy,
       referred: referredFilter(query.referred),
+      registered: query.registered,
+      ids: query.ids,
       sort,
       order,
       // The whole point. Row-level visibility, in the WHERE clause.
@@ -295,7 +325,7 @@ export class AdminExportService {
   ];
 
   async withdrawalBatch(
-    query: { state?: string },
+    query: { state?: string; range?: DateRange },
     actor: AuthenticatedAdmin,
     offset: number,
     limit: number,
@@ -306,6 +336,7 @@ export class AdminExportService {
     const rows = await this.transactions.listForExport({
       startedAt,
       state: query.state,
+      range: query.range,
       offset,
       limit,
       scope: actor.clientScope,
@@ -363,6 +394,8 @@ export class AdminExportService {
     { header: 'Destination', value: (r) => r.destination },
     // What the client gave to identify an offline payment (0163): `Label: value; …`.
     { header: 'Deposit details', value: (r) => formatProofDetails(r.proofDetails) },
+    // Where the client was told to send it, as shown at filing (0199).
+    { header: 'Payment details shown', value: (r) => formatPayToDetails(r.payToDetails) },
     { header: 'Rejection / failure reason', value: (r) => r.rejectionReason },
     { header: 'Created at', value: (r) => r.createdAt },
     { header: 'Settled at', value: (r) => r.settledAt },
@@ -384,6 +417,40 @@ export class AdminExportService {
     after?: { createdAt: string; id: string },
   ): Promise<AdminTransactionExportRow[]> {
     assertActorCan(actor, 'transactions.view', 'export financial transactions');
+    return this.movementBatch(query, actor, limit, startedAt, after);
+  }
+
+  /**
+   * The DEPOSIT DESK's file — `GET /admin/deposits/export`. Its own key
+   * (`deposits.view`, or the platform-wide `transactions.view`): a deposit
+   * clerk is given the desk and must NOT be handed every movement on the
+   * platform (config/permissions.json, "deposits"). The desk's own rows are
+   * FORCED here, whatever the caller passed: deposits a person decides (0168).
+   */
+  async deskDepositBatch(
+    query: Omit<AdminMovementsFilter, 'scope'>,
+    actor: AuthenticatedAdmin,
+    limit: number,
+    startedAt: Date,
+    after?: { createdAt: string; id: string },
+  ): Promise<AdminTransactionExportRow[]> {
+    assertActorCanAny(actor, ['deposits.view', 'transactions.view'], 'export deposit requests');
+    return this.movementBatch(
+      { ...query, direction: 'deposit', deskDecided: true },
+      actor,
+      limit,
+      startedAt,
+      after,
+    );
+  }
+
+  private async movementBatch(
+    query: Omit<AdminMovementsFilter, 'scope'>,
+    actor: AuthenticatedAdmin,
+    limit: number,
+    startedAt: Date,
+    after?: { createdAt: string; id: string },
+  ): Promise<AdminTransactionExportRow[]> {
     const rows = await this.transactions.listAllForExport({
       ...query,
       limit,
@@ -400,6 +467,115 @@ export class AdminExportService {
      * that shifts every later value under the wrong heading.
      */
     return maskForExport(FinancialExportRowDto, rows, actor.fieldMask);
+  }
+
+  // ── The ledger (ADM-13) ───────────────────────────────────────────────────
+
+  /**
+   * The document a reconciliation is done from: every entry with the balance it
+   * produced. Amounts and balances are the exact STRINGS the database holds
+   * (§6.1) — a CSV is the output most likely to be re-imported into something
+   * that does arithmetic on it.
+   */
+  readonly ledgerColumns: readonly CsvColumn<LedgerExportRow>[] = [
+    { header: 'Entry ID', value: (r) => r.id },
+    { header: 'Posted at', value: (r) => r.createdAt },
+    { header: 'Wallet Number', value: (r) => r.walletNumber },
+    { header: 'Currency', value: (r) => r.currency },
+    { header: 'Portal ID', value: (r) => r.userPortalId },
+    {
+      header: 'Client',
+      value: (r) => [r.userFirstName, r.userLastName].filter(Boolean).join(' ') || null,
+    },
+    { header: 'Client email', value: (r) => r.userEmail },
+    { header: 'Entry type', value: (r) => r.entryType },
+    { header: 'Amount', value: (r) => r.amount },
+    { header: 'Balance after', value: (r) => r.balanceAfter },
+    { header: 'Reference type', value: (r) => r.referenceType },
+    { header: 'Reference ID', value: (r) => r.referenceId },
+  ];
+
+  /** The ledger, scoped and filtered exactly as `GET /admin/ledger` — keyset-chained. */
+  async ledgerBatch(
+    query: LedgerExportQuery,
+    actor: AuthenticatedAdmin,
+    limit: number,
+    /** The export run's snapshot instant — the SAME value on every batch. */
+    startedAt: Date,
+    /** The previous batch's last row; the keyset the next batch seeks from. */
+    after?: { createdAt: string; id: string },
+  ): Promise<LedgerExportRow[]> {
+    assertActorCan(actor, 'ledger.view', 'export the ledger');
+    const rows = await this.wallets.listEntriesForExport({
+      ...query,
+      scope: actor.clientScope,
+      limit,
+      startedAt,
+      after,
+    });
+    return maskForExport(LedgerExportRowDto, rows, actor.fieldMask);
+  }
+
+  // ── Commissions and rebates (the accrual ledger) ──────────────────────────
+
+  /**
+   * Every accrual with both people it concerns. The partner is who EARNED (the
+   * beneficiary on a commission); the client is whose trade produced it (the
+   * beneficiary on a rebate). Amounts, rates and bases are exact strings.
+   */
+  readonly accrualColumns: readonly CsvColumn<IbAccrualExportRow>[] = [
+    { header: 'Accrual ID', value: (r) => r.accrual.id },
+    { header: 'Accrued at', value: (r) => r.accrual.createdAt },
+    { header: 'Kind', value: (r) => r.accrual.kind },
+    { header: 'Status', value: (r) => r.accrual.status },
+    { header: 'Partner Portal ID', value: (r) => r.partner.portalId },
+    {
+      header: 'Partner',
+      value: (r) => [r.partner.firstName, r.partner.lastName].filter(Boolean).join(' ') || null,
+    },
+    { header: 'Partner email', value: (r) => r.partner.email },
+    { header: 'Client Portal ID', value: (r) => r.client.portalId },
+    {
+      header: 'Client',
+      value: (r) => [r.client.firstName, r.client.lastName].filter(Boolean).join(' ') || null,
+    },
+    { header: 'Client email', value: (r) => r.client.email },
+    { header: 'Terms', value: (r) => r.termsName },
+    { header: 'Depth', value: (r) => r.accrual.depth },
+    { header: 'Rate', value: (r) => r.accrual.rateValue },
+    { header: 'Base amount', value: (r) => r.accrual.baseAmount },
+    { header: 'Amount', value: (r) => r.accrual.amount },
+    { header: 'Currency', value: (r) => r.accrual.currency },
+    { header: 'Confirmed at', value: (r) => r.accrual.confirmedAt },
+    { header: 'Source', value: (r) => r.accrual.sourceType },
+    { header: 'Source ID', value: (r) => r.accrual.sourceId },
+  ];
+
+  /**
+   * The commission list as a file — the SAME store read as the screen, so the
+   * territory blanking of an out-of-scope person comes with it; then the field
+   * mask over the people that remain. Paged by offset under a snapshot bound
+   * (`createdBefore`), so a commission accruing mid-export cannot shift a row
+   * across a batch boundary. No totals per batch: a file shows none.
+   */
+  async accrualBatch(
+    query: IbAccrualExportQuery,
+    actor: AuthenticatedAdmin,
+    offset: number,
+    limit: number,
+    /** The export run's snapshot instant — the SAME value on every batch. */
+    startedAt: Date,
+  ): Promise<IbAccrualExportRow[]> {
+    assertActorCanAny(actor, ['ib.view', 'ib.commissions.view'], 'export commissions');
+    const { rows } = await this.ib.findAccrualsPage({
+      ...query,
+      page: Math.floor(offset / limit) + 1,
+      limit,
+      scope: actor.clientScope,
+      createdBefore: startedAt,
+      withTotals: false,
+    });
+    return maskForExport(IbAccrualExportRowDto, rows, actor.fieldMask);
   }
 
   // ── Wallets ───────────────────────────────────────────────────────────────
@@ -532,7 +708,13 @@ export class AdminExportService {
   ];
 
   async tradingAccountBatch(
-    query: { userId?: number; environment?: string; status?: string; client?: string },
+    query: {
+      userId?: number;
+      environment?: string;
+      status?: string;
+      client?: string;
+      opened?: DateRange;
+    },
     actor: AuthenticatedAdmin,
     offset: number,
     limit: number,
@@ -610,7 +792,7 @@ export class AdminExportService {
    * so is an audited act.
    */
   async kycBatch(
-    query: { status?: string; q?: string },
+    query: { status?: string; q?: string; range?: DateRange },
     actor: AuthenticatedAdmin,
     offset: number,
     limit: number,
@@ -620,6 +802,7 @@ export class AdminExportService {
     const { items } = await this.kyc.findPageWithUsers({
       status: query.status as KycExportRow['status'] | undefined,
       q: query.q,
+      range: query.range,
       page: Math.floor(offset / limit) + 1,
       limit,
       scope: actor.clientScope,
@@ -673,6 +856,7 @@ export class AdminExportService {
       actorId?: string;
       subjectId?: string;
       q?: string;
+      range?: DateRange;
     },
     actor: AuthenticatedAdmin,
     offset: number,
@@ -716,6 +900,7 @@ export class AdminExportService {
       actorId: query.actorId,
       subjectId: query.subjectId,
       q: query.q,
+      range: query.range,
       // D-54: the export follows the same scope as the list — an export is not
       // a lesser act, and it would otherwise be the way around the filter.
       scope: actor.clientScope,
@@ -765,7 +950,7 @@ export class AdminExportService {
   ];
 
   async ibApplicationBatch(
-    query: { status?: string },
+    query: { status?: string; range?: DateRange },
     actor: AuthenticatedAdmin,
     offset: number,
     limit: number,
@@ -774,6 +959,7 @@ export class AdminExportService {
 
     const { rows } = await this.ib.findPageWithUsers({
       status: query.status as IbApplicationExportRow['application']['status'] | undefined,
+      range: query.range,
       page: Math.floor(offset / limit) + 1,
       limit,
       scope: actor.clientScope,
@@ -873,6 +1059,9 @@ export class AdminExportService {
 // a presentational change to a screen silently reshape an audit artefact.
 
 export interface ClientExportQuery {
+  registered?: DateRange;
+  /** "Export selected": exactly these clients, still scoped and masked. */
+  ids?: number[];
   q?: string;
   type?: string;
   status?: string;

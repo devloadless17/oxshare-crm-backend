@@ -106,7 +106,6 @@ beforeAll(async () => {
     // The seeded clients carry no tags, so they are UNTRIAGED. Without this the
     // desk cannot see them and every assertion below is a 404 that proves
     // nothing about ordering.
-    seesUntriaged: true,
     status: 'active',
   });
   rival = ctx.app.get(RivalClient);

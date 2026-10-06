@@ -1,3 +1,4 @@
+import { ApiDateRangeQueries, dateRangeQuery } from '../../common/date-range';
 import { Throttle } from '@nestjs/throttler';
 // Part of the `admin` controller surface, split by concern.
 //
@@ -103,6 +104,7 @@ export class AdminComplianceController {
   @ApiQuery({ name: 'limit', required: false })
   @ApiQuery({ name: 'sort', required: false, enum: Object.keys(KYC_SORT_COLUMNS) })
   @ApiQuery({ name: 'order', required: false, enum: ['asc', 'desc'] })
+  @ApiDateRangeQueries('submitted')
   @ScopedToClients('KycStore.findPageWithUsers applies the predicate to kyc_submissions.user_id.')
   listKyc(
     @Req() req: Request & { admin: AuthenticatedAdmin },
@@ -112,6 +114,8 @@ export class AdminComplianceController {
     @Query('limit') limit?: string,
     @Query('sort') sort?: string,
     @Query('order') order?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
   ) {
     return this.compliance.listKyc(
       {
@@ -125,6 +129,7 @@ export class AdminComplianceController {
          */
         status: enumQuery(status, [...kycStatusEnum.enumValues, NEEDS_REVIEW], 'status'),
         q: searchQuery(q),
+        range: dateRangeQuery(from, to),
         page,
         limit,
         // Validated in the service against KYC_SORT_COLUMNS — the one place the
@@ -185,6 +190,7 @@ export class AdminComplianceController {
   })
   @ApiQuery({ name: 'format', required: false, enum: ['csv'] })
   @ApiQuery({ name: 'status', required: false, enum: kycStatusEnum.enumValues })
+  @ApiDateRangeQueries('submitted')
   @ApiQuery({
     name: 'q',
     required: false,
@@ -200,11 +206,14 @@ export class AdminComplianceController {
     @Query('format') format?: string,
     @Query('status') status?: string,
     @Query('q') q?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
   ) {
     const chosen = exportFormat(format);
     const query = {
       status: enumQuery(status, kycStatusEnum.enumValues, 'status'),
       q: searchQuery(q),
+      range: dateRangeQuery(from, to),
     };
 
     this.audit.record(req.admin.id, 'export.kyc', 'kyc_queue', req.admin.id, {

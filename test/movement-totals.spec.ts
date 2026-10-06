@@ -1,3 +1,4 @@
+import { dateRangeQuery } from '../src/common/date-range';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ConfigService } from '@nestjs/config';
 import {
@@ -32,15 +33,20 @@ import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './mone
 let ctx: MoneyTestContext;
 let service: TransactionsService;
 let tagA: string;
+let tagB: string;
 let clientA: number;
 
-/** Territory tag A, with and without new clients; new clients alone. */
+/**
+ * Territory tag A, tag B, and both — which holds every client. Since 0193 only
+ * tags grant sight (there is no "new clients" grant any more), so B carries a
+ * tag of its own for a territory to be able to see it.
+ */
 const scopes = (): Record<string, ClientScope> => ({
-  onlyA: { unrestricted: false, tagIds: [tagA], includesUntriaged: false },
-  aAndNew: { unrestricted: false, tagIds: [tagA], includesUntriaged: true },
-  newOnly: { unrestricted: false, tagIds: [], includesUntriaged: true },
+  onlyA: { unrestricted: false, tagIds: [tagA] },
+  aAndB: { unrestricted: false, tagIds: [tagA, tagB] },
+  onlyB: { unrestricted: false, tagIds: [tagB] },
 });
-const EVERYTHING = { from: '2000-01-01', to: '2999-12-31' };
+const EVERYTHING = dateRangeQuery('2000-01-01', '2999-12-31');
 
 async function q(text: string, values: unknown[] = []) {
   return (await ctx.pool.query(text, values)).rows as Record<string, unknown>[];
@@ -101,8 +107,8 @@ const FILTERS: Omit<AdminMovementsFilter, 'scope'>[] = [
   { direction: 'withdrawal' },
   { state: 'pending' },
   { kind: 'transfer' },
-  { from: '2026-03-02', to: '2026-03-02' },
-  { from: '2026-03-01', to: '2026-03-01', direction: 'deposit', state: 'success' },
+  dateRangeQuery('2026-03-02', '2026-03-02'),
+  { ...dateRangeQuery('2026-03-01', '2026-03-01'), direction: 'deposit', state: 'success' },
 ];
 
 /** Every stored-totals path against the live rows, for every filter. */
@@ -110,11 +116,14 @@ async function expectTotalsAreTheRows() {
   let compared = 0;
   for (const filter of FILTERS) {
     const label = JSON.stringify(filter);
-    const liveRange = { from: filter.from ?? EVERYTHING.from, to: filter.to ?? EVERYTHING.to };
+    const liveRange = {
+      from: filter.from ?? EVERYTHING.from,
+      until: filter.until ?? EVERYTHING.until,
+    };
 
     // The whole book: daily totals vs the rows, seen through a territory holding everyone.
     const daily = { ...filter, scope: UNRESTRICTED };
-    const everyone = { ...filter, ...liveRange, scope: scopes().aAndNew };
+    const everyone = { ...filter, ...liveRange, scope: scopes().aAndB };
     expect(movementTotalsSource(daily)).toBe('daily');
     expect(movementTotalsSource(everyone)).toBeUndefined();
     expect(await read(daily), `daily ${label}`).toEqual(await read(everyone));
@@ -164,18 +173,25 @@ beforeAll(async () => {
   const a = await client('totals-a@example.com');
   const b = await client('totals-b@example.com');
   clientA = a.id;
-  // A carries territory tag A; B carries no tag, so B is a "new client".
+  // A carries territory tag A, B carries tag B.
   [{ id: tagA }] = (await q(
     `INSERT INTO client_tags (slug, label) VALUES ('totals-a', 'Totals A') RETURNING id`,
+  )) as { id: string }[];
+  [{ id: tagB }] = (await q(
+    `INSERT INTO client_tags (slug, label) VALUES ('totals-b', 'Totals B') RETURNING id`,
   )) as { id: string }[];
   const [{ id: adminId }] = await q(
     `INSERT INTO admins (email, password_hash, name) VALUES ('totals-admin@example.com', 'x', 'Totals') RETURNING id`,
   );
-  await q(`INSERT INTO client_tag_assignments (user_id, tag_id, assigned_by) VALUES ($1, $2, $3)`, [
-    a.id,
-    tagA,
-    adminId,
-  ]);
+  for (const [userId, tagId] of [
+    [a.id, tagA],
+    [b.id, tagB],
+  ] as const) {
+    await q(
+      `INSERT INTO client_tag_assignments (user_id, tag_id, assigned_by) VALUES ($1, $2, $3)`,
+      [userId, tagId, adminId],
+    );
+  }
 
   // Seconds either side of a UTC midnight, so a day boundary is exercised.
   await tx(a.id, a.usd, 'deposit', 'success', 'USD', '100.12345678', '2026-03-01T23:59:59Z');
@@ -249,5 +265,19 @@ describe('the stored totals (0165) are the live rows, counted', () => {
       const success = summary.rows.find((r) => r.state === 'success');
       expect(success?.total).toBe('100.12345679');
     }
+  });
+
+  it('a viewer’s own day (not on UTC midnights) is read from the rows, never the UTC-day totals', () => {
+    // "2 March" for a Beirut viewer: 1 March 21:00 UTC → 2 March 21:00 UTC.
+    const beirut = {
+      scope: UNRESTRICTED,
+      ...dateRangeQuery('2026-03-02T00:00:00+03:00', '2026-03-03T00:00:00+03:00'),
+    };
+    expect(movementTotalsSource(beirut)).toBeUndefined();
+    // And the UTC-day answer for the same calendar date is a different set —
+    // which is why the totals must not be used for it.
+    expect(
+      movementTotalsSource({ scope: UNRESTRICTED, ...dateRangeQuery('2026-03-02', '2026-03-02') }),
+    ).toBe('daily');
   });
 });

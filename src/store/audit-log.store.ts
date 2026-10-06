@@ -1,3 +1,4 @@
+import { type DateRange, withinRange } from '../common/date-range';
 import {
   and,
   asc,
@@ -330,6 +331,31 @@ export class AuditLogStore {
     return { ...row, details: row.details ?? undefined, ipAddress: row.ipAddress };
   }
 
+  /**
+   * Many entries in ONE insert, inside the caller's transaction — a bulk change
+   * records one row per client it touched (so each client's history shows it)
+   * without one round trip each. Same columns as `record`.
+   */
+  async recordMany(data: readonly AuditWrite[], executor: Executor): Promise<void> {
+    if (data.length === 0) return;
+    const ipAddress = currentClientIp() ?? null;
+    for (let i = 0; i < data.length; i += 1000) {
+      await executor.insert(auditLog).values(
+        data.slice(i, i + 1000).map((entry) => ({
+          actorId: String(entry.actorId),
+          actorEmail: entry.actorEmail,
+          actorKind: entry.actorKind,
+          action: entry.action,
+          subjectType: entry.subjectType,
+          subjectId: String(entry.subjectId),
+          details: entry.details,
+          ipAddress: entry.ipAddress ?? ipAddress,
+          clientId: entry.clientId,
+        })),
+      );
+    }
+  }
+
   async findAll(
     filter: {
       page?: number;
@@ -413,6 +439,8 @@ export class AuditLogStore {
        * came from is worse than one that stops early.
        */
       unclampedLimit?: boolean;
+      /** When it happened — `[from, until)`, `common/date-range.ts`. */
+      range?: DateRange;
       /**
        * `false` skips the `count()` — an export pages by cursor and never shows
        * a total, and counting the filtered set once per 1,000-row batch is a
@@ -430,7 +458,7 @@ export class AuditLogStore {
     const direction = filter.order ?? 'desc';
     const sortColumn: SQLWrapper = AUDIT_SORT_COLUMNS[sortKey];
 
-    const conditions: SQL[] = [];
+    const conditions: SQL[] = [...withinRange(auditLog.createdAt, filter.range)];
     if (filter.action) conditions.push(eq(auditLog.action, filter.action));
     if (filter.subjectType) conditions.push(eq(auditLog.subjectType, filter.subjectType));
     if (filter.actorId) conditions.push(eq(auditLog.actorId, filter.actorId));

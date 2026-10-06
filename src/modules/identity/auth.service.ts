@@ -1,3 +1,6 @@
+import type { Executor } from '../../database/db';
+import { SignupLinksStore } from '../../store/signup-links.store';
+import { normaliseSignupSlug } from '../../common/signup-slug';
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { lockoutMessage } from '../../common/security/lockout-message';
 import { REGISTRATION_REQUIRED } from '../../common/kyc/identity-core';
@@ -28,6 +31,7 @@ import {
   AuthenticationError,
   AuthorizationError,
   EmailAlreadyRegisteredError,
+  PhoneAlreadyRegisteredError,
   EmailCodeInvalidError,
   FieldValidationError,
   EmailNotVerifiedError,
@@ -57,7 +61,7 @@ import { PasswordService } from '../../common/security/password.service';
 import { AVATAR_BUCKET, StoredFilesService } from '../../common/uploads/stored-files.service';
 import { LoginAttemptsService } from '../../common/security/login-attempts.service';
 import { localizeMessage } from '../../common/i18n/localize-message';
-import { isUniqueViolation } from '../../common/errors/pg-violation';
+import { violatesConstraint } from '../../common/errors/pg-violation';
 import {
   isTokenKind,
   TOKEN_ALGORITHM,
@@ -115,6 +119,10 @@ const EMAIL_TAKEN =
 
 function emailAlreadyRegistered(): EmailAlreadyRegisteredError {
   return new EmailAlreadyRegisteredError(EMAIL_TAKEN, { email: EMAIL_TAKEN });
+}
+
+function phoneAlreadyRegistered(): PhoneAlreadyRegisteredError {
+  return new PhoneAlreadyRegisteredError();
 }
 
 @Injectable()
@@ -175,8 +183,7 @@ export class AuthService {
      * Tells every admin screen that the client list moved when somebody
      * registers — data only, no bell. A registration is not a task (the admin
      * notification rule, migration 0140): nobody has to DO anything because a
-     * client signed up, and "new / untriaged" is already a derived state the
-     * client list shows. What the intake desk needs is for that list to be
+     * client signed up. What a country desk needs is for its client list to be
      * current, which is exactly what `resource.changed` delivers.
      *
      * OPTIONAL for the positional-constructor reason the parameters above
@@ -190,6 +197,14 @@ export class AuthService {
      */
     @Optional()
     private readonly offered?: OfferedCountriesStore,
+    /*
+     * Sign-up links and partner tags (0198): the tags a new client ARRIVES
+     * with, written in the registration's own transaction. Optional for the
+     * positional reason above; absent, a client arrives with the country tag
+     * alone, as before.
+     */
+    @Optional()
+    private readonly signupLinks?: SignupLinksStore,
   ) {}
 
   // ─── Register ────────────────────────────────────────────────────────────────
@@ -255,6 +270,8 @@ export class AuthService {
     if (profileError) {
       throw new FieldValidationError(profileError, errors);
     }
+    // One client per phone number (0194) — told on the field, like a taken address.
+    if (profile.values.phone) await this.assertPhoneAvailable(profile.values.phone);
     // A blank optional field is simply not stored — there is nothing to clear yet.
     const seeded = Object.fromEntries(
       Object.entries(profile.values).filter(([, value]) => value !== null),
@@ -265,34 +282,55 @@ export class AuthService {
     const verificationExpiry = new Date(Date.now() + EMAIL_VERIFICATION_TTL_MS);
 
     const referredByIbUserId = await this.resolveReferral(dto.referralCode);
+    const arrival = await this.resolveArrival(dto.acquisitionCode, referredByIbUserId);
 
-    const user = await this.users
-      .create({
-        email: dto.email.toLowerCase(),
-        passwordHash,
-        ...seeded,
-        firstName: seeded.firstName!,
-        lastName: seeded.lastName!,
-        type: 'individual',
-        status: 'active',
-        verificationLevel: 0,
-        emailVerified: false,
-        // Hashed, never the token — schema.ts. `emailVerificationConsumedAt` is
-        // absent rather than explicit: an INSERT gets NULL for free, which is
-        // exactly "outstanding".
-        emailVerificationTokenHash: hashEmailedToken(verificationToken),
-        emailVerificationExpiry: verificationExpiry,
-        referredByIbUserId,
-        // The language the portal was in when they signed up (X-OxShare-Locale):
-        // what every mail sent outside their own requests will be written in.
-        locale: requestLocale(),
-      })
-      .catch((error: unknown) => {
-        // Two sign-ups for one NEW address at the same moment: the unique index
-        // decides, and the loser gets the same plain answer as any taken address.
-        if (isUniqueViolation(error)) throw emailAlreadyRegistered();
-        throw error;
-      });
+    const createUser = (tx?: Executor) =>
+      this.users
+        .create(
+          {
+            email: dto.email.toLowerCase(),
+            passwordHash,
+            ...seeded,
+            firstName: seeded.firstName!,
+            lastName: seeded.lastName!,
+            type: 'individual',
+            status: 'active',
+            verificationLevel: 0,
+            emailVerified: false,
+            // Hashed, never the token — schema.ts. `emailVerificationConsumedAt` is
+            // absent rather than explicit: an INSERT gets NULL for free, which is
+            // exactly "outstanding".
+            emailVerificationTokenHash: hashEmailedToken(verificationToken),
+            emailVerificationExpiry: verificationExpiry,
+            referredByIbUserId,
+            // The language the portal was in when they signed up (X-OxShare-Locale):
+            // what every mail sent outside their own requests will be written in.
+            locale: requestLocale(),
+            signedUpViaAdminId: arrival.adminId,
+          },
+          tx,
+        )
+        .catch((error: unknown) => {
+          // Two sign-ups for one NEW address at the same moment: the unique index
+          // decides, and the loser gets the same plain answer as any taken address.
+          if (violatesConstraint(error, 'users_email_unique')) throw emailAlreadyRegistered();
+          if (violatesConstraint(error, 'users_phone_unique')) throw phoneAlreadyRegistered();
+          throw error;
+        });
+
+    /*
+     * The tags a client ARRIVES with (0198), in the account's own transaction:
+     * the tags of the administrator whose link they followed — their territory
+     * AS IT IS NOW, read live — and their partner's own tags, so a partner's
+     * clients land in the partner's book. Copied once onto the client: moving
+     * the administrator or the partner later moves nobody silently (the clients
+     * list's Replace tag does that, counted and audited). Their COUNTRY tag
+     * needs no write: it is derived (0193).
+     */
+    const user =
+      this.signupLinks && (arrival.adminId || arrival.tagIds.length > 0)
+        ? await this.signupLinks.signUp(createUser, arrival)
+        : await createUser();
 
     /*
      * A wallet in every enabled currency, before the email goes out.
@@ -305,12 +343,9 @@ export class AuthService {
     await this.walletProvisioning?.openAllEnabledWallets(user.id);
 
     /*
-     * Registration deliberately does NOT tag the client — D-60, final form.
-     * "New / untriaged" is the DERIVED state of carrying no tag assignments,
-     * honoured by `clientScopePredicate` for admins holding the
-     * `sees_untriaged` grant. A materialised intake tag was tried and reverted
-     * (migrations 0055–0057): stored derived state needed guards to stay true
-     * and still allowed an orphan class the derived state cannot express.
+     * The client already carries their COUNTRY tag (0193): it is derived from
+     * `users.country`, which registration requires, so there is nothing to
+     * write — and nothing that could drift from the country they gave.
      */
 
     /*
@@ -363,6 +398,11 @@ export class AuthService {
     if (!(await this.emailAvailable(email))) throw emailAlreadyRegistered();
   }
 
+  /** Refused under the phone field when another client already holds the number (E.164). */
+  private async assertPhoneAvailable(phone: string): Promise<void> {
+    if (await this.users.findIdByPhone(phone)) throw phoneAlreadyRegistered();
+  }
+
   /**
    * A referral code to the partner who owns it, or undefined.
    *
@@ -385,6 +425,33 @@ export class AuthService {
    * unambiguous upper-case alphabet, and a client typing one off a screenshot
    * should not be defeated by their keyboard.
    */
+  /**
+   * What a sign-up arrives with: the administrator whose link it was (when the
+   * word belongs to an ACTIVE administrator) with their tags as they are now,
+   * united with the referring partner's own assigned tags. An unknown, renamed
+   * or suspended link is logged and IGNORED — never a refusal: a stale link
+   * must not cost the broker a client.
+   */
+  private async resolveArrival(
+    code: string | undefined,
+    ibUserId: number | undefined,
+  ): Promise<{ adminId?: string; ibUserId?: number; tagIds: string[] }> {
+    if (!this.signupLinks) return { tagIds: [] };
+    const slug = normaliseSignupSlug(code);
+    const link = slug ? await this.signupLinks.resolve(slug) : undefined;
+    if (code && !link) {
+      this.logger.warn(
+        `Sign-up link "${slug ?? code}" belongs to no active administrator; ignored.`,
+      );
+    }
+    const partnerTags = ibUserId ? await this.signupLinks.partnerTagIds(ibUserId) : [];
+    return {
+      adminId: link?.adminId,
+      ibUserId: partnerTags.length > 0 ? ibUserId : undefined,
+      tagIds: [...new Set([...(link?.tagIds ?? []), ...partnerTags])],
+    };
+  }
+
   private async resolveReferral(code: string | undefined): Promise<number | undefined> {
     /*
      * NORMALISED, not merely trimmed — see `common/referral-code.ts`.

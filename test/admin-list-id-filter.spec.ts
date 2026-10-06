@@ -147,7 +147,6 @@ beforeAll(async () => {
       role: 'sub_admin',
       roleId: scopedRole.id,
       permissions: [],
-      seesUntriaged: false,
       status: 'active',
     })
     .returning();

@@ -1,3 +1,4 @@
+import { ApiDateRangeQueries, dateRangeQuery } from '../../common/date-range';
 import { Throttle } from '@nestjs/throttler';
 import {
   Body,
@@ -45,6 +46,7 @@ import {
   IB_APPLICATION_STATUSES,
   IB_PARTNER_STATUSES,
   ReassignIbParentDto,
+  SetIbTermsDto,
   RejectIbApplicationDto,
   SetIbActiveDto,
   type IbApplicationStatusDto,
@@ -125,6 +127,7 @@ export class AdminIbController {
       "with every other filter and the reader's scope, so a record outside it answers an " +
       'empty page, like any filtered-out row. No status is implied.',
   })
+  @ApiDateRangeQueries('submitted')
   @ScopedToClients('IbStore.findPageWithUsers applies the predicate to ib_applications.user_id.')
   async list(
     @Req() req: Request & { admin: AuthenticatedAdmin },
@@ -135,10 +138,13 @@ export class AdminIbController {
     @Query('sort') sort?: string,
     @Query('order') order?: string,
     @Query('id') id?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
   ) {
     const result = await this.applications.list(
       {
         id: uuidQuery(id, 'id'),
+        range: dateRangeQuery(from, to),
         // `ib_application_status` is a Postgres enum, so an unrecognised value
         // would error in the database rather than at the edge.
         status: parseStatus(status),
@@ -199,6 +205,7 @@ export class AdminIbController {
   })
   @ApiQuery({ name: 'format', required: false, enum: ['csv'] })
   @ApiQuery({ name: 'status', required: false, enum: IB_APPLICATION_STATUSES })
+  @ApiDateRangeQueries('submitted')
   @ScopedToClients(
     'AdminExportService.ibApplicationBatch → IbStore.findPageWithUsers with actor.clientScope, the same predicate on users.id the queue applies.',
   )
@@ -208,9 +215,11 @@ export class AdminIbController {
     @Res() res: Response,
     @Query('format') format?: string,
     @Query('status') status?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
   ) {
     const chosen = exportFormat(format);
-    const query = { status: parseStatus(status) };
+    const query = { status: parseStatus(status), range: dateRangeQuery(from, to) };
 
     this.audit.record(req.admin.id, 'export.ib_applications', 'ib_applications', req.admin.id, {
       format: chosen,
@@ -296,6 +305,70 @@ export class AdminIbController {
   // ── partners, once they exist ──────────────────────────────────────────────
 
   /**
+   * The COMMISSION LEDGER as a file — every accrual the filters match, with the
+   * partner who earned it and the client whose trade produced it. The SAME keys
+   * as the list (an export must never be a way around one), the same territory
+   * blanking, the field mask over the people that remain. Amounts, rates and
+   * bases are exact strings (§6.1).
+   */
+  @Get('accruals/export')
+  @Throttle({ default: { ttl: 60_000, limit: EXPORT_RATE_LIMIT } })
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('ib.view', 'ib.commissions.view')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Export the filtered commission ledger as CSV',
+    description: 'The same filters as GET /admin/ib/accruals, over every matching accrual.',
+  })
+  @ApiOkResponse({
+    description: 'A CSV file. `Content-Disposition` names it `commissions-<YYYY-MM-DD>.csv`.',
+    content: { 'text/csv': { schema: { type: 'string', format: 'binary' } } },
+  })
+  @ApiQuery({ name: 'format', required: false, enum: ['csv'] })
+  @ApiQuery({ name: 'ibUserId', required: false, description: 'Restrict to one partner.' })
+  @ApiQuery({ name: 'clientUserId', required: false, description: 'Restrict to one client.' })
+  @ApiQuery({ name: 'q', required: false })
+  @ApiQuery({ name: 'status', required: false, enum: ibAccrualStatusEnum.enumValues })
+  @ApiQuery({ name: 'kind', required: false, enum: ibAccrualKindEnum.enumValues })
+  @ApiDateRangeQueries('accrued')
+  @ScopedToClients(
+    'AdminExportService.accrualBatch → IbStore.findAccrualsPage with actor.clientScope — the same beneficiary predicate and out-of-territory blanking the list applies.',
+  )
+  @Audited('export.ib_accruals')
+  async exportAccruals(
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+    @Res() res: Response,
+    @Query('format') format?: string,
+    @Query('ibUserId', ClientRefPipe) ibUserId?: number,
+    @Query('clientUserId', ClientRefPipe) clientUserId?: number,
+    @Query('q') q?: string,
+    @Query('status') status?: string,
+    @Query('kind') kind?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    const chosen = exportFormat(format);
+    // Validated as the list validates, so the file refuses what the screen refuses.
+    const query = {
+      ibUserId,
+      clientUserId,
+      q,
+      status: enumQuery(status, ibAccrualStatusEnum.enumValues, 'status'),
+      kind: enumQuery(kind, ibAccrualKindEnum.enumValues, 'kind'),
+      range: dateRangeQuery(from, to),
+    };
+    this.audit.record(req.admin.id, 'export.ib_accruals', 'ib_partners', req.admin.id, {
+      format: chosen,
+      filters: query,
+    });
+    // ONE snapshot instant for the whole file — see `IbStore.findAccrualsPage`.
+    const startedAt = new Date();
+    await streamCsv(res, 'commissions', chosen, this.exports.accrualColumns, (offset, limit) =>
+      this.exports.accrualBatch(query, req.admin, offset, limit, startedAt),
+    );
+  }
+
+  /**
    * The COMMISSION LEDGER — every accrual, who earned it and who generated it.
    *
    * ## ⚠️ This read did not exist
@@ -356,6 +429,7 @@ export class AdminIbController {
       "with every other filter and the reader's scope, so a record outside it answers an " +
       'empty page, like any filtered-out row. No status is implied.',
   })
+  @ApiDateRangeQueries('accrued')
   @ScopedToClients(
     'IbStore.findAccrualsPage applies the predicate to the row BENEFICIARY — ' +
       'ib_accruals.client_user_id on a rebate, ib_user_id on a commission. Not ib_user_id ' +
@@ -364,6 +438,8 @@ export class AdminIbController {
   )
   async listAccruals(
     @Req() req: Request & { admin: AuthenticatedAdmin },
+    @Query('from') from?: string,
+    @Query('to') to?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('ibUserId', ClientRefPipe) ibUserId?: number,
@@ -378,6 +454,7 @@ export class AdminIbController {
     const result = await this.applications.listAccruals(
       {
         id: uuidQuery(id, 'id'),
+        range: dateRangeQuery(from, to),
         page: parsePositive(page),
         limit: parsePositive(limit),
         /*
@@ -699,6 +776,36 @@ export class AdminIbController {
         req.admin.clientScope,
         req.admin,
       ),
+      req.admin.clientScope,
+    );
+  }
+
+  /**
+   * A sub-partner's own commission and rebate — 0197, the owner's rule.
+   * Same grant as moving their level: both decide what they are paid.
+   */
+  @Patch('partners/:userId/terms')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('ib.partners.edit')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Set a sub-partner’s own commission and rebate shares',
+    description:
+      'Sub-partners only. `commissionShare` is their percentage of the product’s commission; ' +
+      'the main partner above them takes the rest (100 − it). `rebateShare` is what their ' +
+      'CLIENTS get back of the product’s rebate. Null = level 2’s share; an absent key is left ' +
+      'unchanged. Applies from the next trade.',
+  })
+  @ApiOkResponse({ type: IbAccountDto })
+  @ScopedToClients('Acts on one client’s partner account; out-of-scope 404s like a missing one.')
+  @Audited('ib.terms_change')
+  async setTerms(
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+    @Param('userId', ClientRefPipe) userId: number,
+    @Body() dto: SetIbTermsDto,
+  ) {
+    return this.applications.accountViewFor(
+      await this.applications.setTerms(userId, dto, req.admin.clientScope, req.admin),
       req.admin.clientScope,
     );
   }

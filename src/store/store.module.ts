@@ -11,6 +11,7 @@ import { PaymentProviderExchangesStore } from './payment-provider-exchanges.stor
 import { ProductsStore } from './products.store';
 import { ClientIdentityStore } from './client-identity.store';
 import { ClientTagsStore } from './client-tags.store';
+import { SignupLinksStore } from './signup-links.store';
 import { DepositProofsStore } from './deposit-proofs.store';
 import { AdminsStore, InvitesStore } from './admins.store';
 import { AuditLogStore } from './audit-log.store';
@@ -41,6 +42,7 @@ const STORES = [
   ProductsStore,
   ClientIdentityStore,
   ClientTagsStore,
+  SignupLinksStore,
   DepositProofsStore,
   InvitesStore,
   AuditLogStore,

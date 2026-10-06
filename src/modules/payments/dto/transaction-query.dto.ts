@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform, Type } from 'class-transformer';
 import { IsArray, IsIn, IsInt, IsOptional, IsString, Matches, Max, Min } from 'class-validator';
+import { DATE_OR_INSTANT } from '../../../common/date-range';
 import { transactionStateEnum, transactionDirectionEnum } from '../../../database/schema';
 import { TransactionDto } from './withdrawal.dto';
 
@@ -50,9 +51,6 @@ export const CLIENT_TRANSACTION_KINDS = [
   'rebate',
 ] as const;
 export type ClientTransactionKind = (typeof CLIENT_TRANSACTION_KINDS)[number];
-
-/** `YYYY-MM-DD`, matching what the portal's date-range picker holds. */
-const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 /**
  * How a client narrows, orders and pages their own transaction history.
@@ -123,22 +121,24 @@ export class ListTransactionsQueryDto {
   currency?: string;
 
   /**
-   * INCLUSIVE at both ends, by DATE PART.
-   *
-   * `date-range.ts` in the portal records why this is not negotiable: comparing
-   * a timestamp against an end date parsed as midnight excludes almost the whole
-   * final day — the "my newest transaction vanished when I set an end date" bug.
-   * The service compares date parts so there is no end-of-day arithmetic to get
-   * wrong.
+   * The period, as `common/date-range.ts` reads it: a date-time with its offset
+   * (`to` EXCLUSIVE — the portal sends the viewer's own day boundaries) or a
+   * date (a UTC day, `to` inclusive of the whole day).
    */
-  @ApiPropertyOptional({ example: '2026-08-01', description: 'Inclusive, YYYY-MM-DD.' })
+  @ApiPropertyOptional({
+    example: '2026-08-01T00:00:00+03:00',
+    description: 'Inclusive start: a date-time with offset, or YYYY-MM-DD.',
+  })
   @IsOptional()
-  @Matches(DATE_PATTERN, { message: 'from must be a YYYY-MM-DD date' })
+  @Matches(DATE_OR_INSTANT, { message: 'from must be a date or a date-time with its offset' })
   from?: string;
 
-  @ApiPropertyOptional({ example: '2026-08-31', description: 'Inclusive, YYYY-MM-DD.' })
+  @ApiPropertyOptional({
+    example: '2026-09-01T00:00:00+03:00',
+    description: 'End: a date-time with offset (exclusive), or YYYY-MM-DD (that whole day).',
+  })
   @IsOptional()
-  @Matches(DATE_PATTERN, { message: 'to must be a YYYY-MM-DD date' })
+  @Matches(DATE_OR_INSTANT, { message: 'to must be a date or a date-time with its offset' })
   to?: string;
 
   @ApiPropertyOptional({ enum: TRANSACTION_SORT_FIELDS, default: 'createdAt' })

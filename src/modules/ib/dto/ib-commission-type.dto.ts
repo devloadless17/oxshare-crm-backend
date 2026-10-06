@@ -1,6 +1,17 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { NoClientFields } from '../../../common/security/client-field.decorator';
-import { IsBoolean, IsInt, IsOptional, IsString, Length, Matches, Max, Min } from 'class-validator';
+import {
+  ArrayMaxSize,
+  IsArray,
+  IsBoolean,
+  IsInt,
+  IsOptional,
+  IsString,
+  Length,
+  Matches,
+  Max,
+  Min,
+} from 'class-validator';
 
 /**
  * An amount per lot — money, so eight places (§6.1), as a decimal STRING.
@@ -57,6 +68,22 @@ export class IbCommissionTypeDto {
   })
   rebatePerLot: string;
 
+  @ApiProperty({
+    type: [String],
+    example: ['Crypto', 'Forex\\Exotics'],
+    description:
+      'MT5 symbol FOLDERS this type pays nothing on — no commission, no rebate. A folder ' +
+      'covers every symbol beneath it, including ones added later (0198).',
+  })
+  excludedPaths: string[];
+
+  @ApiProperty({
+    type: [String],
+    example: ['BTCUSD'],
+    description: 'Single symbols this type pays nothing on — no commission, no rebate (0198).',
+  })
+  excludedSymbols: string[];
+
   @ApiProperty({ example: 0 })
   sortOrder: number;
 
@@ -97,6 +124,28 @@ export class CreateIbCommissionTypeDto {
   @Matches(AMOUNT_PER_LOT, { message: `rebatePerLot ${AMOUNT_PER_LOT_MESSAGE}` })
   rebatePerLot: string;
 
+  @ApiPropertyOptional({
+    type: [String],
+    description: 'MT5 folder paths excluded from commission and rebate, e.g. "Crypto".',
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(2000)
+  @IsString({ each: true })
+  @Length(1, 255, { each: true })
+  excludedPaths?: string[];
+
+  @ApiPropertyOptional({
+    type: [String],
+    description: 'Symbols excluded from commission and rebate, e.g. "BTCUSD".',
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(5000)
+  @IsString({ each: true })
+  @Length(1, 50, { each: true })
+  excludedSymbols?: string[];
+
   @ApiPropertyOptional({ default: true })
   @IsOptional()
   @IsBoolean()
@@ -135,6 +184,28 @@ export class UpdateIbCommissionTypeDto {
   @IsString()
   @Matches(AMOUNT_PER_LOT, { message: `rebatePerLot ${AMOUNT_PER_LOT_MESSAGE}` })
   rebatePerLot?: string;
+
+  @ApiPropertyOptional({
+    type: [String],
+    description: 'MT5 folder paths excluded from commission and rebate, e.g. "Crypto".',
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(2000)
+  @IsString({ each: true })
+  @Length(1, 255, { each: true })
+  excludedPaths?: string[];
+
+  @ApiPropertyOptional({
+    type: [String],
+    description: 'Symbols excluded from commission and rebate, e.g. "BTCUSD".',
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(5000)
+  @IsString({ each: true })
+  @Length(1, 50, { each: true })
+  excludedSymbols?: string[];
 
   @ApiPropertyOptional()
   @IsOptional()

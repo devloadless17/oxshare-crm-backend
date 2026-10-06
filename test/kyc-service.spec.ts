@@ -147,6 +147,8 @@ function build(options: { stored?: KycSubmission; user?: User } = {}) {
     findById: vi.fn(() => Promise.resolve(profileRow)),
     findByIdForUpdate: vi.fn(() => Promise.resolve(profileRow)),
     update: vi.fn(() => Promise.resolve(profileRow)),
+    // Nobody else holds the number (0194).
+    findIdByPhone: vi.fn(() => Promise.resolve(undefined)),
   };
   const email = { sendKycDecisionEmail: vi.fn().mockResolvedValue(undefined) };
   const db = {

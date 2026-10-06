@@ -96,7 +96,13 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   },
   { action: 'client.activate', label: 'Client reactivated', group: 'Clients' },
   { action: 'client_tag.assign', label: 'Tag added to client', group: 'Clients' },
+  {
+    action: 'client.acquired',
+    label: 'Client signed up through a link or a partner',
+    group: 'Clients',
+  },
   { action: 'client_tag.unassign', label: 'Tag removed from client', group: 'Clients' },
+  { action: 'client_tag.bulk', label: 'Tags changed on many clients at once', group: 'Clients' },
 
   // ── Verification ──────────────────────────────────────────────────────────
   { action: 'kyc.approve', label: 'KYC approved', group: 'Verification' },
@@ -316,6 +322,7 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   { action: 'client_tag.create', label: 'Client tag created', group: 'Configuration' },
   { action: 'client_tag.update', label: 'Client tag renamed', group: 'Configuration' },
   { action: 'client_tag.delete', label: 'Client tag deleted', group: 'Configuration' },
+  { action: 'admin.signup_link_change', label: 'Sign-up link renamed', group: 'Configuration' },
   { action: 'rejection_reason.create', label: 'Rejection reason added', group: 'Configuration' },
   { action: 'rejection_reason.update', label: 'Rejection reason reworded', group: 'Configuration' },
   { action: 'rejection_reason.delete', label: 'Rejection reason removed', group: 'Configuration' },
@@ -484,6 +491,8 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
    * looks wrong, and the level is what decides the rate.
    */
   { action: 'ib.level_change', label: 'Partner level changed', group: 'Compliance' },
+  // 0197 — a sub-partner's own commission / rebate shares, before and after.
+  { action: 'ib.terms_change', label: 'Sub-partner commission changed', group: 'Compliance' },
   {
     action: 'ib.program_change',
     label: 'Partner moved to another commission programme',
@@ -780,6 +789,11 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
     label: 'Trading accounts exported',
     group: 'Exports',
   },
+  // The deposit desk's file (its own key, `deposits.view`), the ledger (the
+  // reconciliation record) and the commission ledger — 6 Oct 2026.
+  { action: 'export.deposits', label: 'Deposit requests exported', group: 'Exports' },
+  { action: 'export.ledger', label: 'Ledger exported', group: 'Exports' },
+  { action: 'export.ib_accruals', label: 'Commissions exported', group: 'Exports' },
 ] as const;
 
 /** Every action key, for the coverage test and for validating `?action=`. */

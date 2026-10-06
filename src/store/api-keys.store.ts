@@ -26,8 +26,6 @@ export interface ApiKeyRow {
   createdBy: string | null;
   /** The creator's territory, snapshot at creation. `null`/`[]` = unrestricted. */
   scopedTagIds: string[] | null;
-  /** The creator's intake grant, snapshot with the territory (D-60). */
-  seesUntriaged: boolean;
   /** The creator's all-clients grant, snapshot with the territory (0154). */
   seesAllClients: boolean;
   /** The creator's effective field mask, snapshot at creation (0155). */
@@ -51,7 +49,6 @@ export interface ApiKeyCreate {
   createdBy: string;
   /** The creator's territory, snapshot at creation — see the row comment. */
   scopedTagIds: string[] | null;
-  seesUntriaged: boolean;
   seesAllClients: boolean;
   maskedFields: string[];
   expiresAt: Date | null;
@@ -90,20 +87,16 @@ export class ApiKeysStore {
       .from(apiKeys)
       .where(and(eq(apiKeys.createdBy, adminId), isNull(apiKeys.revokedAt)));
     for (const key of keys) {
-      const own = scopeOf(key.scopedTagIds ?? [], key.seesUntriaged, key.seesAllClients);
+      const own = scopeOf(key.scopedTagIds ?? [], key.seesAllClients);
       const seesAll = own.unrestricted && ceiling.unrestricted;
       const ownTags = own.unrestricted ? [...ceiling.tagIds] : [...own.tagIds];
       const allowedTags = ceiling.unrestricted ? ownTags : ceiling.tagIds;
       const tags = seesAll ? null : ownTags.filter((tagId) => allowedTags.includes(tagId));
-      const intake =
-        (own.unrestricted || own.includesUntriaged === true) &&
-        (ceiling.unrestricted || ceiling.includesUntriaged === true);
       await this.db
         .update(apiKeys)
         .set({
           seesAllClients: seesAll,
           scopedTagIds: tags,
-          seesUntriaged: intake,
           maskedFields: [...new Set([...(key.maskedFields ?? []), ...mask])],
           permissions: key.permissions.filter((p) => held.has(normalizePermissionKey(p))),
         })
@@ -178,7 +171,6 @@ export class ApiKeysStore {
         permissions: apiKeys.permissions,
         createdBy: apiKeys.createdBy,
         scopedTagIds: apiKeys.scopedTagIds,
-        seesUntriaged: apiKeys.seesUntriaged,
         seesAllClients: apiKeys.seesAllClients,
         maskedFields: apiKeys.maskedFields,
         expiresAt: apiKeys.expiresAt,

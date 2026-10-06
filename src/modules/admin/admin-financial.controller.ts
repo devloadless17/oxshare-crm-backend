@@ -31,7 +31,8 @@ import {
   RequirePermissions,
   type AuthenticatedAdmin,
 } from './guards/admin.guard';
-import { dateQuery, enumQuery, searchQuery, uuidQuery } from '../../common/query-params';
+import { enumQuery, searchQuery, uuidQuery } from '../../common/query-params';
+import { ApiDateRangeQueries, dateRangeQuery } from '../../common/date-range';
 import { ClientRefPipe } from '../../common/client-ref.pipe';
 import { transactionDirectionEnum, transactionStateEnum } from '../../database/schema';
 import { ScopedToClients } from './guards/client-scope.decorator';
@@ -71,8 +72,7 @@ function FinancialFilterQueries() {
         'A Portal ID (digits, matched exactly) or free text over the client’s email and name — ' +
         'the one client search every queue shares.',
     }),
-    ApiQuery({ name: 'from', required: false, description: 'Inclusive, YYYY-MM-DD.' }),
-    ApiQuery({ name: 'to', required: false, description: 'Inclusive, YYYY-MM-DD.' }),
+    ApiDateRangeQueries(),
     ApiQuery({
       name: 'attention',
       required: false,
@@ -88,6 +88,13 @@ function FinancialFilterQueries() {
         'a record outside it answers an empty result. No state is implied.',
     }),
     ApiQuery({
+      name: 'method',
+      required: false,
+      description:
+        'Payment method keys, comma-separated — deposit or withdrawal methods. Only payments ' +
+        'have a method, so a transfer never matches. At most 50.',
+    }),
+    ApiQuery({
       name: 'decidedBy',
       required: false,
       enum: ['desk'],
@@ -95,6 +102,43 @@ function FinancialFilterQueries() {
         'Only movements a person decides: deposits paid outside the platform and every ' +
         'withdrawal. A deposit on a provider’s hosted page is settled by the provider. (0168)',
     }),
+  );
+}
+
+const METHOD_KEY = /^[A-Za-z0-9_.-]{1,100}$/;
+
+/** `?method=a,b` → the keys, or a 400 naming the parameter. */
+function methodKeysQuery(raw: string | undefined): string[] | undefined {
+  const keys = [
+    ...new Set(
+      (raw ?? '')
+        .split(',')
+        .map((k) => k.trim())
+        .filter(Boolean),
+    ),
+  ];
+  if (keys.length === 0) return undefined;
+  if (keys.length > 50 || !keys.every((k) => METHOD_KEY.test(k))) {
+    throw new BadRequestException({
+      code: 'VALIDATION_FAILED',
+      message: ['method must be up to 50 comma-separated payment method keys'],
+      fields: { method: 'must be up to 50 comma-separated payment method keys' },
+    });
+  }
+  return keys;
+}
+
+/** The deposit desk's filters — its rows are fixed (deposits a person decides). */
+function DeskDepositQueries() {
+  return applyDecorators(
+    ApiQuery({ name: 'state', required: false, enum: transactionStateEnum.enumValues }),
+    ApiQuery({
+      name: 'q',
+      required: false,
+      description:
+        'A Portal ID, a phone, a name or an email — or a detail the client gave with the receipt.',
+    }),
+    ApiDateRangeQueries(),
   );
 }
 
@@ -110,6 +154,7 @@ interface RawFilterParams {
   to?: string;
   attention?: string;
   decidedBy?: string;
+  method?: string;
   id?: string;
 }
 
@@ -173,11 +218,11 @@ export class AdminFinancialController {
       userId: raw.userId,
       currency,
       q: searchQuery(raw.q),
-      from: dateQuery(raw.from, 'from'),
-      to: dateQuery(raw.to, 'to'),
+      ...dateRangeQuery(raw.from, raw.to),
       // `true` or absent — anything else is a 400, like every enum filter here.
       attention: enumQuery(raw.attention, ['true'] as const, 'attention') ? true : undefined,
       deskDecided: enumQuery(raw.decidedBy, ['desk'] as const, 'decidedBy') ? true : undefined,
+      methods: methodKeysQuery(raw.method),
       id: uuidQuery(raw.id, 'id'),
     };
   }
@@ -242,6 +287,7 @@ export class AdminFinancialController {
     @Query('to') to?: string,
     @Query('attention') attention?: string,
     @Query('decidedBy') decidedBy?: string,
+    @Query('method') method?: string,
     @Query('id') id?: string,
   ) {
     const chosen = exportFormat(format);
@@ -256,6 +302,7 @@ export class AdminFinancialController {
       to,
       attention,
       decidedBy,
+      method,
       id,
     });
 
@@ -316,6 +363,7 @@ export class AdminFinancialController {
     @Query('to') to?: string,
     @Query('attention') attention?: string,
     @Query('decidedBy') decidedBy?: string,
+    @Query('method') method?: string,
     @Query('id') id?: string,
   ) {
     return this.money.transactionsSummary(
@@ -330,8 +378,128 @@ export class AdminFinancialController {
         to,
         attention,
         decidedBy,
+        method,
         id,
       }),
+      req.admin,
+    );
+  }
+
+  // ── The deposit desk (`/approvals/deposits`) — on its OWN key ────────────
+  /*
+   * Deposits a PERSON decides (0168): offline payments a client declared with a
+   * receipt. A deposit clerk holds `deposits.view` and must not be handed every
+   * movement on the platform (`transactions.view`) — config/permissions.json,
+   * "deposits". The desk read through `/admin/transactions` until 6 Oct 2026, so
+   * a clerk set up exactly as the catalogue says loaded nothing, and had no file
+   * at all. Either key admits; the rows are forced to the desk's in the service.
+   */
+  @Get('deposits/export')
+  @Throttle({ default: { ttl: 60_000, limit: EXPORT_RATE_LIMIT } })
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('deposits.view', 'transactions.view')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Export the deposit desk as CSV',
+    description:
+      'The same filters as GET /admin/deposits, over every matching row. Amounts are the exact ' +
+      "decimal strings the ledger holds (§6.1); the client's deposit details are a column.",
+  })
+  @ApiOkResponse({
+    description: 'A CSV file. `Content-Disposition` names it `deposits-<YYYY-MM-DD>.csv`.',
+    content: { 'text/csv': { schema: { type: 'string', format: 'binary' } } },
+  })
+  @ApiQuery({ name: 'format', required: false, enum: ['csv'] })
+  @DeskDepositQueries()
+  @ScopedToClients(
+    'AdminExportService.deskDepositBatch → TransactionsService.listAllForExport, the same per-arm clientScopePredicate the list applies inside the union.',
+  )
+  @Audited('export.deposits')
+  async exportDeskDeposits(
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+    @Res() res: Response,
+    @Query('format') format?: string,
+    @Query('state') state?: string,
+    @Query('q') q?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    const chosen = exportFormat(format);
+    const query = await this.filters({
+      direction: 'deposit',
+      decidedBy: 'desk',
+      state,
+      q,
+      from,
+      to,
+    });
+    this.audit.record(req.admin.id, 'export.deposits', 'transaction_list', req.admin.id, {
+      format: chosen,
+      filters: query,
+    });
+    // Keyset-chained under one snapshot instant — see `exportTransactions`.
+    const startedAt = new Date();
+    let after: { createdAt: string; id: string } | undefined;
+    await streamCsv(res, 'deposits', chosen, this.exports.transactionColumns, async (_o, limit) => {
+      const rows = await this.exports.deskDepositBatch(query, req.admin, limit, startedAt, after);
+      const last = rows[rows.length - 1];
+      if (last) after = { createdAt: last.cursorCreatedAt, id: last.id };
+      return rows;
+    });
+  }
+
+  @Get('deposits')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('deposits.view', 'transactions.view')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'The deposit desk — deposits a person decides (amounts are strings)',
+  })
+  @ApiOkResponse({ type: AdminTransactionListResponseDto })
+  @DeskDepositQueries()
+  @ApiQuery({ name: 'page', required: false, description: 'Legacy offset paging. Prefer cursor.' })
+  @ApiQuery({ name: 'limit', required: false })
+  @ApiQuery({ name: 'cursor', required: false, description: 'Opaque keyset cursor (R-2.4).' })
+  @ApiQuery({ name: 'sort', required: false, enum: Object.keys(ADMIN_TRANSACTION_SORT_COLUMNS) })
+  @ApiQuery({ name: 'order', required: false, enum: ['asc', 'desc'] })
+  @ApiQuery({
+    name: 'id',
+    required: false,
+    description: 'One deposit by its uuid — where a notification lands. No state is implied.',
+  })
+  @ScopedToClients(
+    'AdminMoneyService.listDeskDeposits → TransactionsService.listAllForAdmin, the per-arm clientScopePredicate the Financial list applies.',
+  )
+  async listDeskDeposits(
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+    @Query('state') state?: string,
+    @Query('q') q?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('id') id?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('cursor') cursor?: string,
+    @Query('sort') sort?: string,
+    @Query('order') order?: string,
+  ) {
+    return this.money.listDeskDeposits(
+      {
+        ...(await this.filters({
+          direction: 'deposit',
+          decidedBy: 'desk',
+          state,
+          q,
+          from,
+          to,
+          id,
+        })),
+        page,
+        limit,
+        cursor,
+        sort,
+        order,
+      },
       req.admin,
     );
   }
@@ -379,6 +547,7 @@ export class AdminFinancialController {
     @Query('to') to?: string,
     @Query('attention') attention?: string,
     @Query('decidedBy') decidedBy?: string,
+    @Query('method') method?: string,
     @Query('id') id?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
@@ -399,6 +568,7 @@ export class AdminFinancialController {
           to,
           attention,
           decidedBy,
+          method,
           id,
         })),
         page,

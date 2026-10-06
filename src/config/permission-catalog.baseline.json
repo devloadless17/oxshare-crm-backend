@@ -126,6 +126,7 @@
     "wallets.view",
     "withdrawals.approve",
     "withdrawals.settle",
-    "withdrawals.view"
+    "withdrawals.view",
+    "clients.bulk"
   ]
 }

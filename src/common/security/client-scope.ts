@@ -1,5 +1,5 @@
 import { sql, type SQL, type SQLWrapper } from 'drizzle-orm';
-import { clientTagAssignments } from '../../database/schema';
+import { clientTagMemberships } from '../../database/schema';
 
 /**
  * Row-level client visibility: which clients an administrator may see at all.
@@ -32,54 +32,44 @@ import { clientTagAssignments } from '../../database/schema';
 export interface ClientScope {
   /** True when this actor sees every client — the explicit grant (0154). */
   unrestricted: boolean;
-  tagIds: readonly string[];
   /**
-   * D-60 — this scoped actor also sees the INTAKE pool: clients with no tag
-   * assignments at all. "Untriaged" is the derived state of carrying no tags
-   * (deliberately not a tag — see the schema note on `admins.sees_untriaged`),
-   * so the grant is a flag beside the territory list, not another tagId.
-   * Meaningless when `unrestricted` is true. Optional so hand-built fixtures
-   * stay valid; absent reads as false.
+   * The territory: a client carrying ANY of these tags is visible. A tag here
+   * may be a chosen tag (an owner's book, "O_F") or a COUNTRY tag (a desk);
+   * membership of either is read from `client_tag_memberships` (0193).
    */
-  includesUntriaged?: boolean;
+  tagIds: readonly string[];
 }
 
 /**
  * Every client. What an administrator holding the explicit `sees_all_clients`
  * grant resolves to — never, since 0154, what an empty territory resolves to.
  */
-export const UNRESTRICTED: ClientScope = Object.freeze({
-  unrestricted: true,
-  tagIds: [],
-  includesUntriaged: false,
-});
+export const UNRESTRICTED: ClientScope = Object.freeze({ unrestricted: true, tagIds: [] });
 
 /**
  * The one resolution of an administrator's (or invite's, or key's) sight.
  *
  * TAGS RESTRICT, ONLY THE FLAG GRANTS (migration 0154):
  *
- *   territory tags present         → only those tags (+ new clients if granted)
+ *   territory tags present         → only clients carrying one of those tags
  *   no tags,  seesAllClients       → every client
- *   no tags, !seesAllClients       → new clients only if granted, otherwise none
+ *   no tags, !seesAllClients       → no client
  *
  * An empty territory used to mean UNRESTRICTED (D-10), which made the widest
- * sight in the system the result of an absence: clearing an admin's last tag
- * silently promoted them to every client, and "new clients only" could not be
- * expressed. A row carrying tags is restricted whatever the flag says, so
- * nothing can widen by accident.
+ * sight in the system the result of an absence. A row carrying tags is
+ * restricted whatever the flag says, so nothing can widen by accident.
  *
- * Every argument is REQUIRED. A default that is right for one caller and wrong
- * for another is how the intake grant was once lost in two paths; the caller
- * holds the row, so the caller passes the flags.
+ * D-60's intake grant ("also sees clients with no tag") is gone since 0193:
+ * every client carries their country tag, so no client is untagged — a desk
+ * that should see new clients from a country holds that country's tag.
+ *
+ * Both arguments are REQUIRED: the caller holds the row, so the caller passes
+ * the flag. A default right for one caller and wrong for another is how a grant
+ * was once lost in two paths.
  */
-export function scopeOf(
-  tagIds: readonly string[],
-  includesUntriaged: boolean,
-  seesAllClients: boolean,
-): ClientScope {
-  if (tagIds.length > 0) return { unrestricted: false, tagIds, includesUntriaged };
-  return seesAllClients ? UNRESTRICTED : { unrestricted: false, tagIds: [], includesUntriaged };
+export function scopeOf(tagIds: readonly string[], seesAllClients: boolean): ClientScope {
+  if (tagIds.length > 0) return { unrestricted: false, tagIds };
+  return seesAllClients ? UNRESTRICTED : { unrestricted: false, tagIds: [] };
 }
 
 /**
@@ -88,80 +78,43 @@ export function scopeOf(
  *
  * Takes the COLUMN holding the client's id, so one helper serves `users.id`,
  * `kyc_submissions.user_id`, `transactions.user_id` and `wallets.user_id`.
- * That is what makes "apply the scope" a single call at each of the nine
- * surfaces rather than nine hand-written predicates that drift apart.
+ * That is what makes "apply the scope" a single call at each surface rather
+ * than hand-written predicates that drift apart.
  *
  * Returning `undefined` rather than `sql\`true\`` is what lets every call site
  * read `and(...conditions, clientScopePredicate(scope, users.id))` with no
- * branch — Drizzle's `and` drops undefined. A branch at each call site is a
- * branch each call site can get backwards.
+ * branch — Drizzle's `and` drops undefined.
  *
  * `EXISTS`, not a join: a join multiplies rows the moment a client carries two
  * scoped tags, which would silently duplicate them in a paginated list and
- * corrupt the keyset seek. `EXISTS` short-circuits on the first match and reads
- * `client_tag_assignments_pkey` directly.
+ * corrupt the keyset seek.
  *
- * Fully parameterised. Never string interpolation — the tag ids come from the
- * database rather than from a request, but a predicate that would be injectable
- * if its inputs ever changed source is a trap left for someone else.
+ * It reads `client_tag_memberships` (0193), the view of assigned tags UNION ALL
+ * the country tag derived from `users.country`. Postgres inlines the view and
+ * pushes the user id into both branches: the assigned branch reads
+ * `client_tag_assignments_pkey`, the derived one a users-pk → countries →
+ * `client_tags_country_code_uq` lookup. A country territory therefore costs one
+ * index probe per row, like a chosen tag.
+ *
+ * Fully parameterised. Never string interpolation.
  */
 export function clientScopePredicate(
   scope: ClientScope,
   clientIdColumn: SQLWrapper,
 ): SQL | undefined {
   if (scope.unrestricted) return undefined;
-
-  /*
-   * D-60 — the intake branch: a client with NO tag assignments at all is in
-   * the intake pool, and this actor has been granted sight of it. Derived, not
-   * stored: "untriaged" cannot drift, cannot be deleted, and a client whose
-   * last tag is removed RETURNS here rather than becoming invisible to every
-   * scoped admin — the orphan class the materialised-tag design allowed.
-   *
-   * No territory tags: the "new clients only" admin (intake granted) or the
-   * admin who sees no clients at all — both real configurations since 0154.
-   * (An empty `IN ()` would also be a SQL syntax error.)
-   */
-  if (scope.tagIds.length === 0) {
-    return scope.includesUntriaged
-      ? sql`NOT EXISTS (
-          SELECT 1 FROM ${clientTagAssignments} intake_a
-          WHERE intake_a.user_id = ${clientIdColumn}
-        )`
-      : sql`false`;
-  }
+  // No territory and no grant: sees no client. (An empty `IN ()` would also
+  // be a SQL syntax error.)
+  if (scope.tagIds.length === 0) return sql`false`;
 
   const tagList = sql.join(
     scope.tagIds.map((id) => sql`${id}::uuid`),
     sql`, `,
   );
-
-  if (!scope.includesUntriaged) {
-    return sql`EXISTS (
-      SELECT 1 FROM ${clientTagAssignments} scope_a
-      WHERE scope_a.user_id = ${clientIdColumn}
-        AND scope_a.tag_id IN (${tagList})
-    )`;
-  }
-
-  /*
-   * Territory tags AND new clients, stated as what is HIDDEN: a client who
-   * carries some tag, but none of this actor's. Written as the obvious
-   * `(has a territory tag OR has no tag)` it is the same set — pinned by
-   * `test/client-scope-twin.spec.ts` — but an OR of two subqueries is one
-   * Postgres cannot turn into a join, so it probed both for every row of
-   * every list: ~0.9 s for one Financial page at 160,000 movements (29 Sep
-   * 2026). A single NOT EXISTS becomes an anti-join the planner can run
-   * either way round — by index for a page, by hash for a count (7× faster).
-   */
-  return sql`NOT EXISTS (
-    SELECT 1 FROM ${clientTagAssignments} other_a
-    WHERE other_a.user_id = ${clientIdColumn}
-      AND NOT EXISTS (
-        SELECT 1 FROM ${clientTagAssignments} scope_a
-        WHERE scope_a.user_id = other_a.user_id
-          AND scope_a.tag_id IN (${tagList})
-      )
+  return sql`EXISTS (
+    SELECT 1 FROM ${clientTagMemberships} scope_m
+    WHERE scope_m.user_id = ${clientIdColumn}
+      AND scope_m.tag_id IN (${tagList})
   )`;
 }
 
@@ -169,20 +122,16 @@ export function clientScopePredicate(
  * Would this actor see a client carrying exactly `tagIds`? The in-memory twin
  * of `clientScopePredicate`.
  *
- * It exists for the one question the SQL predicate cannot answer: a tag set
- * that is not stored yet. "If this tag is added or removed, does the client
- * stay in the actor's view?" has to be decided BEFORE the write, which is why
- * `AdminTagsService` asks it here rather than re-reading afterwards.
+ * `tagIds` must be the client's MEMBERSHIPS — the derived country tag
+ * included (`ClientTagsStore.tagIdsForClient` returns exactly that) — or a
+ * country desk would be told it cannot see its own client.
  *
- * Two definitions of visibility are a drift waiting to happen, so this one is
- * pinned to the other: `test/client-scope-twin.spec.ts` evaluates both over a
- * matrix of scopes and tag sets against real Postgres and fails on any
- * disagreement. Change one and that spec makes you change the other.
+ * It exists for the one question the SQL predicate cannot answer: a tag set
+ * that is not stored yet ("if this tag is removed, does the client stay in the
+ * actor's view?"). `test/client-scope-twin.spec.ts` pins it to the SQL.
  */
 export function seesClientWithTags(scope: ClientScope, tagIds: readonly string[]): boolean {
   if (scope.unrestricted) return true;
-  // The intake branch: no assignments at all, and the grant to see them.
-  if (tagIds.length === 0) return scope.includesUntriaged === true;
   return tagIds.some((tagId) => scope.tagIds.includes(tagId));
 }
 

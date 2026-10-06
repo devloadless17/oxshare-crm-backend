@@ -68,7 +68,6 @@ beforeAll(async () => {
     role: 'master_admin',
     roleId: masterRole.id,
     permissions: ALL_PERMISSIONS,
-    seesUntriaged: false,
     status: 'active',
   });
 
@@ -87,7 +86,6 @@ beforeAll(async () => {
       permissions: [],
       // Restricted from intake so the untagged out-of-scope client is genuinely
       // out of reach — this file is about territory, not the intake pool.
-      seesUntriaged: false,
       status: 'active',
     })
     .returning();

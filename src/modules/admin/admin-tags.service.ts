@@ -18,6 +18,7 @@ import {
   ValidationError,
 } from '../../common/errors/domain-errors';
 import { seesClientWithTags } from '../../common/security/client-scope';
+import { countryByName } from '../../common/kyc/country-options';
 import { AdminAuditService } from './admin-audit.service';
 import { assertActorCan, assertActorCanAny } from '../../common/security/actor';
 import type { AuthenticatedAdmin } from './guards/admin.guard';
@@ -104,6 +105,14 @@ export class AdminTagsService {
     if (await this.tags.findBySlug(slug)) {
       throw new ConflictError(`A tag named "${label}" already exists.`);
     }
+    // A country is already a tag every client of it carries (0193); a second,
+    // hand-assigned "Lebanon" would be a lookalike that drifts from the truth.
+    const country = countryByName(label);
+    if (country) {
+      throw new ConflictError(
+        `"${country.name}" is already a country tag: every client living there carries it.`,
+      );
+    }
 
     const tag = await this.tags.create({
       slug,
@@ -125,6 +134,15 @@ export class AdminTagsService {
 
     const tag = await this.tags.findById(id);
     if (!tag) throw new NotFoundError('Tag not found.');
+    // A country tag is named by its country (0193); only its colour is the desk's.
+    const renames = patch.label !== undefined && patch.label.trim() !== tag.label;
+    const redescribes =
+      patch.description !== undefined && (patch.description ?? '') !== (tag.description ?? '');
+    if (tag.countryCode && (renames || redescribes)) {
+      throw new ValidationError(
+        `"${tag.label}" is a country tag and is named by its country. Only its colour can change.`,
+      );
+    }
 
     /*
      * The LABEL is editable; the SLUG is not.
@@ -149,6 +167,11 @@ export class AdminTagsService {
 
     const tag = await this.tags.findById(id);
     if (!tag) throw new NotFoundError('Tag not found.');
+    if (tag.countryCode) {
+      throw new ConflictError(
+        `"${tag.label}" is a country tag. It follows every client living there and cannot be deleted.`,
+      );
+    }
 
     /*
      * A tag that is somebody's TERRITORY cannot be deleted.
@@ -266,8 +289,7 @@ export class AdminTagsService {
    * client over impossible. The second protected against a real risk — the
    * client vanishing mid-task, looking like a bug — and that risk is now met
    * by the confirmation instead of a flat refusal. It also ignored the "new
-   * clients" grant: removing the last tag returns a client to intake, which an
-   * admin holding the grant still sees, so there was nothing to protect.
+   * clients" grant (gone since 0193: every client carries their country tag).
    */
   async unassign(
     clientId: number,
@@ -304,6 +326,13 @@ export class AdminTagsService {
     actor: AuthenticatedAdmin,
     confirmed: boolean,
   ): Promise<ClientTagChange> {
+    // Derived from the client's country (0193) — a trigger refuses it too.
+    if (tag.countryCode) {
+      throw new ValidationError(
+        `"${tag.label}" is a country tag: a client carries it while they live there. ` +
+          "Change the client's country instead.",
+      );
+    }
     const { changed, stillVisible } = await this.db.transaction(async (tx: Executor) => {
       await this.tags.lockAssignments(clientId, tx);
 
@@ -357,10 +386,6 @@ export class AdminTagsService {
       }
     }
     /*
-     * Nothing else to do for intake — D-60, final form. "Untriaged" is the
-     * DERIVED state of carrying no tags, so an assignment ends it by existing,
-     * and removing the last tag returns the client to it.
-     *
      * After a hand-off the client is outside the actor's territory, so nothing
      * more about them is returned — not even the tags just written.
      */

@@ -420,7 +420,7 @@ describe('the reversal obeys the reader’s TERRITORY, on the column it actually
     const result = await scopedCommissions.reverseAccrual(
       commission.id,
       'in territory',
-      scopeOf([partnerOnlyTagId], false, false),
+      scopeOf([partnerOnlyTagId], false),
     );
 
     expect(result.status).toBe('reversed');
@@ -442,7 +442,7 @@ describe('the reversal obeys the reader’s TERRITORY, on the column it actually
       scopedCommissions.reverseAccrual(
         rebate.id,
         'out of territory',
-        scopeOf([partnerOnlyTagId], false, false),
+        scopeOf([partnerOnlyTagId], false),
       ),
       // Exactly a missing accrual's answer — code and message — never "not your client".
     ).rejects.toMatchObject({ code: 'NOT_FOUND', message: 'Accrual not found.' });
@@ -463,11 +463,7 @@ describe('the reversal obeys the reader’s TERRITORY, on the column it actually
     const rebate = (await accrualRows()).find((r) => r.kind === 'rebate')!;
 
     await expect(
-      scopedCommissions.reverseAccrual(
-        rebate.id,
-        'probe',
-        scopeOf([partnerOnlyTagId], false, false),
-      ),
+      scopedCommissions.reverseAccrual(rebate.id, 'probe', scopeOf([partnerOnlyTagId], false)),
     ).rejects.toThrow(/not found/i);
   });
 
@@ -487,11 +483,7 @@ describe('the reversal obeys the reader’s TERRITORY, on the column it actually
 
     // The scoped reader must still be refused, not told "already done".
     await expect(
-      scopedCommissions.reverseAccrual(
-        rebate.id,
-        'probe',
-        scopeOf([partnerOnlyTagId], false, false),
-      ),
+      scopedCommissions.reverseAccrual(rebate.id, 'probe', scopeOf([partnerOnlyTagId], false)),
       // Exactly a missing accrual's answer — code and message — never "not your client".
     ).rejects.toMatchObject({ code: 'NOT_FOUND', message: 'Accrual not found.' });
   });

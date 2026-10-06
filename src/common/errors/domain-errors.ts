@@ -130,6 +130,27 @@ export class EmailAlreadyRegisteredError extends DomainError {
 }
 
 /**
+ * A phone number another client already holds. → 409 `PHONE_ALREADY_REGISTERED`,
+ * with the sentence under `phone`.
+ *
+ * One client per number (the buyer's rule, 6 Oct 2026): staff find a client BY
+ * phone, which only works if a number names one person. Enforced by the
+ * partial unique index `users_phone_unique` (0194); every writer checks first
+ * so the answer lands on the field, and maps the index's refusal to this on a
+ * race. The other holder is never named — they may be outside the reader's
+ * territory.
+ */
+export class PhoneAlreadyRegisteredError extends DomainError {
+  readonly code = 'PHONE_ALREADY_REGISTERED';
+  readonly fields: Record<string, string>;
+
+  constructor(message = 'This phone number is already used by another OxShare account.') {
+    super(message, { fields: { phone: message } });
+    this.fields = { phone: message };
+  }
+}
+
+/**
  * The verification link's 24 hours are up. → 400 `VERIFICATION_TOKEN_EXPIRED`
  *
  * A distinct subclass ONLY so it carries a distinct `code`, exactly as
@@ -314,6 +335,55 @@ export class ConflictError extends DomainError {
  */
 export class TagChangeLeavesScopeError extends DomainError {
   readonly code = 'TAG_CHANGE_LEAVES_SCOPE';
+}
+
+/**
+ * A BULK tag change would take `count` clients out of the actor's view, sent
+ * without the confirmation. → 409 `TAG_CHANGE_LEAVES_SCOPE`, the single change's
+ * code, with `fields.count` so the console can say how many.
+ */
+export class BulkLeavesScopeError extends TagChangeLeavesScopeError {
+  readonly fields: Record<string, string>;
+
+  constructor(count: number) {
+    const message =
+      `${count} of these clients would leave your territory: after this change you will no ` +
+      'longer see them. Send it again with confirmLeavesScope to hand them over.';
+    super(message, { fields: { count: String(count) } });
+    this.fields = { count: String(count) };
+  }
+}
+
+/**
+ * Another administrator's sign-up link already uses this word. → 409
+ * `SIGNUP_LINK_TAKEN`, under the `slug` field, so the form says it where it was
+ * typed.
+ */
+export class SignupLinkTakenError extends DomainError {
+  readonly code = 'SIGNUP_LINK_TAKEN';
+  readonly fields: Record<string, string>;
+
+  constructor(message = 'Another administrator already uses this link. Choose another word.') {
+    super(message, { fields: { slug: message } });
+    this.fields = { slug: message };
+  }
+}
+
+/**
+ * "Every client matching this filter" no longer matches the number the reader
+ * was shown — somebody registered, or was re-tagged, in between. → 409
+ * `BULK_TARGET_CHANGED`, with `fields.count` the number now, so the console
+ * asks again with the right figure rather than acting on clients nobody counted.
+ */
+export class BulkTargetChangedError extends DomainError {
+  readonly code = 'BULK_TARGET_CHANGED';
+  readonly fields: Record<string, string>;
+
+  constructor(count: number) {
+    const message = `This filter now matches ${count} client${count === 1 ? '' : 's'}. Check the number and try again.`;
+    super(message, { fields: { count: String(count) } });
+    this.fields = { count: String(count) };
+  }
 }
 
 /**

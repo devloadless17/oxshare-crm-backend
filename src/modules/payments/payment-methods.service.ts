@@ -30,6 +30,7 @@ import type { Actor } from '../../common/security/actor';
 import type { CreatePaymentMethodDto, UpdatePaymentMethodDto } from './dto/payment-method.dto';
 import { PaymentProviderRegistry } from './providers/payment-provider-registry';
 import { normaliseProofFields } from '../../common/payments/proof-fields';
+import { normalisePayToFields } from '../../common/payments/pay-to-fields';
 import { arabicText } from '../../common/dto/arabic-text';
 import { registerLabelTwins } from '../../common/i18n/localize-message';
 import {
@@ -72,6 +73,11 @@ export type ClientPaymentMethod = PaymentMethodRow & {
   /** Decimal strings (§6.1). The same figures `requestDeposit` enforces. */
   minAmount: string;
   maxAmount: string;
+  /**
+   * Paid outside the platform — its deposit channel is one the desk confirms
+   * (0199). Decides whether its `payToFields` are shown and recorded.
+   */
+  offline: boolean;
 };
 
 /**
@@ -303,7 +309,7 @@ export class PaymentMethodsService {
     const floor = this.providers.findChannel(row, 'deposit')?.minimumAmount;
     const minAmount =
       floor !== undefined && toDecimal(floor).greaterThan(min) ? toDecimal(floor).toFixed(8) : min;
-    return { ...row, minAmount, maxAmount: max };
+    return { ...row, minAmount, maxAmount: max, offline: this.providers.isDeskDecided(row) };
   }
 
   /**
@@ -511,6 +517,7 @@ export class PaymentMethodsService {
         ownMinAmount,
         ownMaxAmount,
         proofFields: normaliseProofFields(dto.proofFields ?? []),
+        payToFields: normalisePayToFields(dto.payToFields ?? []),
         ...(normaliseCountryRule(dto.countryRule, dto.countryCodes) ?? {}),
         providerCode: route.providerCode,
         channelCode: route.channelCode,
@@ -536,6 +543,7 @@ export class PaymentMethodsService {
       ownMinAmount: row.ownMinAmount,
       ownMaxAmount: row.ownMaxAmount,
       proofFields: row.proofFields,
+      payToFields: row.payToFields,
     });
     return row;
   }
@@ -595,6 +603,8 @@ export class PaymentMethodsService {
     }
     const proofFields =
       dto.proofFields !== undefined ? normaliseProofFields(dto.proofFields) : undefined;
+    const payToFields =
+      dto.payToFields !== undefined ? normalisePayToFields(dto.payToFields) : undefined;
     const countryRule = normaliseCountryRule(dto.countryRule, dto.countryCodes);
     const [row] = await this.db
       .update(paymentMethods)
@@ -610,6 +620,7 @@ export class PaymentMethodsService {
         ...(dto.ownMinAmount !== undefined ? { ownMinAmount: dto.ownMinAmount } : {}),
         ...(dto.ownMaxAmount !== undefined ? { ownMaxAmount: dto.ownMaxAmount } : {}),
         ...(proofFields !== undefined ? { proofFields } : {}),
+        ...(payToFields !== undefined ? { payToFields } : {}),
         ...(countryRule ?? {}),
         updatedBy: adminId,
         updatedAt: new Date(),
@@ -646,6 +657,10 @@ export class PaymentMethodsService {
     // The questions clients are asked: a list, compared as a whole.
     if (JSON.stringify(current.proofFields) !== JSON.stringify(row.proofFields)) {
       changed['proofFields'] = { before: current.proofFields, after: row.proofFields };
+    }
+    // Where clients are told to send the money (0199): a list, compared as a whole.
+    if (JSON.stringify(current.payToFields) !== JSON.stringify(row.payToFields)) {
+      changed['payToFields'] = { before: current.payToFields, after: row.payToFields };
     }
     // Who it is offered to (0178), compared as a whole.
     if (

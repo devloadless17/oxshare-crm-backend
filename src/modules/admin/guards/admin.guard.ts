@@ -440,7 +440,7 @@ export class AdminAuthenticator {
     return {
       ...identity,
       permissions,
-      clientScope: scopeOf(row.scopedTagIds ?? [], row.seesUntriaged, row.seesAllClients),
+      clientScope: scopeOf(row.scopedTagIds ?? [], row.seesAllClients),
       // The creator's mask, snapshot on the key (0155) — never empty by kind.
       fieldMask: this.clientFields.expand(row.maskedFields ?? []),
     };

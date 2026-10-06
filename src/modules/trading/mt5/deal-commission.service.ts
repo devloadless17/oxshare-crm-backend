@@ -20,6 +20,7 @@ import {
   mt5Deals,
   tradingAccounts,
   tradingProducts,
+  mt5Symbols,
 } from '../../../database/schema';
 import { LEDGER_REFERENCE } from '../../../database/ledger-reference';
 import { ALERT_KINDS, raiseAlert } from '../../../common/logging/alerts';
@@ -453,6 +454,14 @@ export class DealCommissionService {
           commissionTypeEnabled: ibCommissionTypes.enabled,
           commissionPerLot: ibCommissionTypes.commissionPerLot,
           rebatePerLot: ibCommissionTypes.rebatePerLot,
+          /*
+           * 0198 — the symbol, its folder from the CRM's symbol mirror (null
+           * when the mirror has not seen it), and what the type excludes.
+           */
+          symbol: mt5Deals.symbol,
+          symbolPath: mt5Symbols.path,
+          excludedPaths: ibCommissionTypes.excludedPaths,
+          excludedSymbols: ibCommissionTypes.excludedSymbols,
         })
         .from(mt5Deals)
         /*
@@ -478,6 +487,8 @@ export class DealCommissionService {
          */
         .leftJoin(tradingProducts, eq(tradingProducts.id, tradingAccounts.productId))
         .leftJoin(ibCommissionTypes, eq(ibCommissionTypes.id, tradingProducts.commissionTypeId))
+        // Case-insensitive, as MT5 is — see `mt5_symbols_symbol_uq`.
+        .leftJoin(mt5Symbols, sql`lower(${mt5Symbols.symbol}) = lower(${mt5Deals.symbol})`)
         /*
          * ── OPEN LEGS ARE EXCLUDED HERE, NOT SKIPPED IN THE LOOP ──────────────
          *
@@ -760,6 +771,8 @@ export class DealCommissionService {
                 enabled: deal.commissionTypeEnabled ?? false,
                 commissionPerLot: deal.commissionPerLot ?? '0',
                 rebatePerLot: deal.rebatePerLot ?? '0',
+                excludedPaths: deal.excludedPaths ?? [],
+                excludedSymbols: deal.excludedSymbols ?? [],
               };
       /*
        * ── ZERO REVENUE DOES NOT MEAN NOBODY IS OWED ANYTHING ───────────────
@@ -779,6 +792,8 @@ export class DealCommissionService {
           lots: deal.volume,
           terms,
           currency: deal.currency,
+          symbol: deal.symbol,
+          symbolPath: deal.symbolPath,
         });
 
         /*

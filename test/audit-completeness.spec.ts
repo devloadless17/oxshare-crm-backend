@@ -2,7 +2,7 @@ import { ALL_PERMISSIONS } from './support/all-permissions';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { actingAs, startHttpTestApp, stopHttpTestApp, type HttpTestContext } from './http-setup';
 import { PasswordService } from '../src/common/security/password.service';
-import { admins, auditLog, roles, users } from '../src/database/schema';
+import { admins, auditLog, roles, users, ibLevels } from '../src/database/schema';
 import { desc, eq } from 'drizzle-orm';
 
 /**
@@ -312,18 +312,27 @@ describe('recorded: the feature modules', () => {
      * was green for a reason unrelated to the gap it claimed to describe, which
      * is the hazard of `it.fails`: any throw counts.
      *
-     * Levels 1 and 2 are SEEDED, so this creates rung 3. It needed a settings
-     * change first until 0113 removed the ceiling; now the IB Levels page is
-     * the only thing that decides depth. Created DISABLED so no other suite's
-     * chain starts paying on a rung this test invented.
+     * Levels 1 and 2 are SEEDED, and since 0197 the tree has two levels, so
+     * there is no rung 3 to add. Level 2 is removed and re-created through the
+     * API with its own shares — the create that is audited — and nothing else
+     * in this file stands on it.
      */
+    const [seeded] = await ctx.db.db.select().from(ibLevels).where(eq(ibLevels.level, 2));
+    await ctx.db.db.delete(ibLevels).where(eq(ibLevels.level, 2));
     const res = await session.post('/v1/admin/ib-levels', {
-      level: 3,
+      level: 2,
       name: `Audit Level ${Date.now() % 100000}`,
       /* A SHARE of the product's commission type — the only shape since 0140. */
       commissionShare: '1.5',
-      enabled: false,
+      rebateShare: seeded?.rebateShare ?? '0',
+      enabled: seeded?.enabled ?? true,
     });
+    if (seeded) {
+      await ctx.db.db
+        .update(ibLevels)
+        .set({ name: seeded.name, commissionShare: seeded.commissionShare })
+        .where(eq(ibLevels.level, 2));
+    }
     expect([200, 201]).toContain(res.status);
 
     expect(await waitForCount('ib_level.create', before + 1)).toBe(before + 1);

@@ -1,3 +1,4 @@
+import { type DateRange, withinRange } from '../common/date-range';
 import { accrualBeneficiarySql } from '../common/accrual-beneficiary';
 import {
   aliasedTable,
@@ -7,6 +8,7 @@ import {
   desc,
   eq,
   inArray,
+  lte,
   or,
   sql,
   type SQLWrapper,
@@ -38,6 +40,9 @@ export interface IbChainNode {
   parentIbUserId: number | null;
   active: boolean;
   level: number;
+  /** 0197 — this partner's own shares, overriding their level's. Null = the level's. */
+  commissionShareOverride: string | null;
+  rebateShareOverride: string | null;
 }
 
 export type IbApplicationStatus = (typeof ibApplications.status.enumValues)[number];
@@ -240,9 +245,14 @@ export class IbStore {
     /** R-2.5 server-side sort. Validated by `sortKey` before it gets here. */
     sort?: IbApplicationSortKey;
     order?: SortOrder;
+    /** When it was SUBMITTED — `[from, until)`, `common/date-range.ts`. Narrows the tabs too. */
+    range?: DateRange;
   }) {
     const scope = filter.scope ?? UNRESTRICTED;
-    const visible = clientScopePredicate(scope, users.id);
+    const visible = and(
+      clientScopePredicate(scope, users.id),
+      ...withinRange(ibApplications.submittedAt, filter.range),
+    );
 
     /*
      * In the WHERE clause, so it narrows the RESULT SET rather than the page.
@@ -376,8 +386,8 @@ export class IbStore {
   }
 
   /** How many partners sit directly beneath this one — the `maxDirectPartners` check. */
-  async countDirectPartners(parentUserId: number): Promise<number> {
-    const [{ value }] = await this.db
+  async countDirectPartners(parentUserId: number, executor?: Executor): Promise<number> {
+    const [{ value }] = await (executor ?? this.db)
       .select({ value: count() })
       .from(ibAccounts)
       .where(eq(ibAccounts.parentIbUserId, parentUserId));
@@ -517,30 +527,39 @@ export class IbStore {
     const result = await (executor ?? this.db).execute(sql`
       WITH RECURSIVE chain AS (
         SELECT a.user_id, a.parent_ib_user_id, a.active, a.level,
+               a.commission_share_override, a.rebate_share_override,
                1 AS depth, ARRAY[a.user_id] AS path
           FROM ${ibAccounts} a
          WHERE a.user_id = ${userId}
         UNION ALL
         SELECT p.user_id, p.parent_ib_user_id, p.active, p.level,
+               p.commission_share_override, p.rebate_share_override,
                c.depth + 1, c.path || p.user_id
           FROM ${ibAccounts} p
           JOIN chain c ON p.user_id = c.parent_ib_user_id
          WHERE ${bound}
            AND NOT p.user_id = ANY(c.path)
       )
-      SELECT user_id, parent_ib_user_id, active, level FROM chain ORDER BY depth
+      SELECT user_id, parent_ib_user_id, active, level,
+             commission_share_override::text AS commission_share_override,
+             rebate_share_override::text AS rebate_share_override
+        FROM chain ORDER BY depth
     `);
     const rows = result.rows as unknown as {
       user_id: number;
       parent_ib_user_id: number | null;
       active: boolean;
       level: number;
+      commission_share_override: string | null;
+      rebate_share_override: string | null;
     }[];
     return rows.map((row) => ({
       userId: row.user_id,
       parentIbUserId: row.parent_ib_user_id,
       active: row.active,
       level: row.level,
+      commissionShareOverride: row.commission_share_override,
+      rebateShareOverride: row.rebate_share_override,
     }));
   }
 
@@ -718,6 +737,15 @@ export class IbStore {
     kind?: string;
     sort?: IbAccrualSortKey;
     order?: SortOrder;
+    /** When it ACCRUED — `[from, until)`, `common/date-range.ts`. */
+    range?: DateRange;
+    /**
+     * An EXPORT's snapshot instant: rows written after it are left out, so the
+     * offsets of later batches cannot shift under a commission accruing mid-file.
+     */
+    createdBefore?: Date;
+    /** `false` skips the count and the per-status sums — an export shows neither. */
+    withTotals?: boolean;
   }) {
     /*
      * Each accrual names TWO people, and the reader may hold territory over
@@ -790,6 +818,8 @@ export class IbStore {
         ? [eq(ibAccruals.clientUserId, filter.clientUserId), seesPerson(filter.clientUserId)]
         : []),
       ...(filter.status ? [eq(ibAccruals.status, filter.status as 'pending')] : []),
+      ...withinRange(ibAccruals.createdAt, filter.range),
+      ...(filter.createdBefore ? [lte(ibAccruals.createdAt, filter.createdBefore)] : []),
       /* Validated against the column's own enum at the edge, so an
          unrecognised value is a 400 rather than a filter matching nothing. */
       ...(filter.kind ? [eq(ibAccruals.kind, filter.kind as 'commission')] : []),
@@ -940,6 +970,8 @@ export class IbStore {
      * presented on the ledger. The join cannot change the count: `ib_user_id`
      * is NOT NULL with a foreign key.
      */
+    if (filter.withTotals === false) return { rows, total: rows.length, totals: [] };
+
     const [{ value: total }] = await this.db
       .select({ value: count() })
       .from(ibAccruals)
@@ -1063,7 +1095,17 @@ export class IbStore {
      * programme stays assignable only so a historical value can be corrected;
      * nothing on the live path writes it.
      */
-    patch: Partial<Pick<IbAccountRow, 'level' | 'programId' | 'parentIbUserId' | 'active'>>,
+    patch: Partial<
+      Pick<
+        IbAccountRow,
+        | 'level'
+        | 'programId'
+        | 'parentIbUserId'
+        | 'active'
+        | 'commissionShareOverride'
+        | 'rebateShareOverride'
+      >
+    >,
     executor?: Executor,
   ): Promise<IbAccountRow | undefined> {
     const [row] = await (executor ?? this.db)

@@ -122,7 +122,6 @@ beforeAll(async () => {
         role: 'sub_admin',
         roleId: scopedRole.id,
         permissions: ['clients.view', 'apikeys.create'],
-        seesUntriaged: false,
       },
       {
         email: KEY_OWNER.email,

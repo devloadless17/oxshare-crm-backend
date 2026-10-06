@@ -1,3 +1,4 @@
+import { DATE_OR_INSTANT } from '../../../common/date-range';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
@@ -59,6 +60,20 @@ export class AdminNotificationsQueryDto {
   @IsString()
   @MaxLength(100)
   q?: string;
+
+  @ApiPropertyOptional({
+    description: 'Raised at or after: a date-time with offset, or YYYY-MM-DD (a UTC day).',
+  })
+  @IsOptional()
+  @Matches(DATE_OR_INSTANT, { message: 'from must be a date or a date-time with its offset' })
+  from?: string;
+
+  @ApiPropertyOptional({
+    description: 'End: a date-time with offset (exclusive), or YYYY-MM-DD (that whole day).',
+  })
+  @IsOptional()
+  @Matches(DATE_OR_INSTANT, { message: 'to must be a date or a date-time with its offset' })
+  to?: string;
 
   @ApiPropertyOptional({ description: 'Opaque keyset cursor (R-2.4).' })
   @IsOptional()

@@ -18,6 +18,8 @@ import { DealCommissionService } from './mt5/deal-commission.service';
 import { DealCommissionScheduler } from './mt5/deal-commission.scheduler';
 import { Mt5GroupSyncService } from './mt5/mt5-group-sync.service';
 import { Mt5GroupSyncScheduler } from './mt5/mt5-group-sync.scheduler';
+import { Mt5SymbolSyncService } from './mt5/mt5-symbol-sync.service';
+import { AdminMt5SymbolsController } from './mt5/admin-mt5-symbols.controller';
 import { Mt5AccountDirectoryService } from './mt5/mt5-account-directory.service';
 import { Mt5AccountDirectoryScheduler } from './mt5/mt5-account-directory.scheduler';
 import { AdminMt5GroupsController } from './mt5/admin-mt5-groups.controller';
@@ -80,6 +82,7 @@ import { Mt5LivePublisher } from './mt5/live-snapshot';
     Mt5WebhooksController,
     Mt5AccountsController,
     AdminMt5GroupsController,
+    AdminMt5SymbolsController,
   ],
   providers: [
     TradingService,
@@ -107,6 +110,7 @@ import { Mt5LivePublisher } from './mt5/live-snapshot';
     DealCommissionScheduler,
     Mt5GroupSyncService,
     Mt5GroupSyncScheduler,
+    Mt5SymbolSyncService,
     /* Every MT5 account in the CRM, the unowned ones with no client (0166). */
     Mt5AccountDirectoryService,
     Mt5AccountDirectoryScheduler,

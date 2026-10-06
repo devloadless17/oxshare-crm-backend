@@ -16,6 +16,9 @@ import {
   ConflictError,
   KycCorrectionRefusedError,
   TagChangeLeavesScopeError,
+  BulkLeavesScopeError,
+  BulkTargetChangedError,
+  SignupLinkTakenError,
   KycConfigStaleError,
   KycBuilderOutdatedError,
   ReferralCodeUnknownError,
@@ -27,6 +30,7 @@ import {
   FieldValidationError,
   ProfileLockedError,
   EmailAlreadyRegisteredError,
+  PhoneAlreadyRegisteredError,
   MailNotConfiguredError,
   AssistantBusyError,
   AssistantCapacityError,
@@ -82,6 +86,8 @@ const DOMAIN_STATUS = new Map<new (...args: never[]) => DomainError, HttpStatus>
   // A tag change that would hide the client from the admin making it: the
   // console asks "hand them over?" and resends confirmed. See the class.
   [TagChangeLeavesScopeError, HttpStatus.CONFLICT],
+  [BulkTargetChangedError, HttpStatus.CONFLICT],
+  [SignupLinkTakenError, HttpStatus.CONFLICT],
   // Its own code (KYC_CORRECTION_REFUSED) but the same status: the caller
   // branches on the code, and 409 is still what happened.
   [KycCorrectionRefusedError, HttpStatus.CONFLICT],
@@ -94,6 +100,8 @@ const DOMAIN_STATUS = new Map<new (...args: never[]) => DomainError, HttpStatus>
   // Sign-up with a taken address — the portal puts it under the email FIELD and
   // offers sign-in and a password reset. See the class.
   [EmailAlreadyRegisteredError, HttpStatus.CONFLICT],
+  // A number another client holds — on the phone FIELD, wherever it was typed.
+  [PhoneAlreadyRegisteredError, HttpStatus.CONFLICT],
   [ReferralCodeUnknownError, HttpStatus.BAD_REQUEST],
   [ReferralSelfError, HttpStatus.BAD_REQUEST],
   [ReferralPartnerInactiveError, HttpStatus.BAD_REQUEST],
@@ -446,7 +454,11 @@ export class AllExceptionsFilter implements ExceptionFilter {
       const fields =
         exception instanceof FieldValidationError ||
         exception instanceof ProfileLockedError ||
-        exception instanceof EmailAlreadyRegisteredError
+        exception instanceof EmailAlreadyRegisteredError ||
+        exception instanceof PhoneAlreadyRegisteredError ||
+        exception instanceof BulkLeavesScopeError ||
+        exception instanceof SignupLinkTakenError ||
+        exception instanceof BulkTargetChangedError
           ? exception.fields
           : undefined;
       for (const [type, status] of DOMAIN_STATUS) {

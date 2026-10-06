@@ -138,6 +138,7 @@ const WRITES_DETAILS: readonly string[] = [
   'admin.profile_update',
   'admin.session_displaced',
   'admin.session_revoke',
+  'admin.signup_link_change',
   'admin.suspend',
   // 0191: an empty payload on enrolment, the target ADMIN's address on a reset — no client data.
   'admin.totp_enroll',
@@ -149,6 +150,7 @@ const WRITES_DETAILS: readonly string[] = [
   'agency.update',
   'api_key.create',
   'api_key.revoke',
+  'client.acquired',
   'client.email_change',
   // `{ route }` only — the search that found them, never the typed address (D-82).
   'client.lookup_hidden_email',
@@ -173,9 +175,12 @@ const WRITES_DETAILS: readonly string[] = [
   'deposit.settle_late',
   'export.audit_log',
   'export.clients',
+  'export.deposits',
+  'export.ib_accruals',
   'export.ib_applications',
   'export.ib_partners',
   'export.kyc',
+  'export.ledger',
   'export.trading_accounts',
   'export.transactions',
   'export.wallets',
@@ -187,6 +192,8 @@ const WRITES_DETAILS: readonly string[] = [
   'ib.parent_change',
   'ib.partners.suspend',
   'ib.reject',
+  // 0197: percentages before/after — no client data.
+  'ib.terms_change',
   'ib_commission_type.create',
   'ib_commission_type.delete',
   'ib_commission_type.update',

@@ -14,6 +14,7 @@ import {
   numeric,
   pgEnum,
   pgTable,
+  pgView,
   primaryKey,
   smallint,
   text,
@@ -26,6 +27,7 @@ import {
 import type { Mt5GroupCommission } from '../common/mt5-group-terms';
 import type { FormPolicy } from '../common/kyc/identity-core';
 import type { ProofDetail, ProofField } from '../common/payments/proof-fields';
+import type { PayToDetail, PayToField } from '../common/payments/pay-to-fields';
 
 // Drizzle schema for the LIVE domain model, aligned with ARCHITECTURE §5 where
 // that section defines the table (users) and with the in-memory stores being
@@ -283,7 +285,16 @@ export const users = pgTable(
      * step now reads and writes these columns, and `personal_info` keeps only
      * answers to fields a broker invented.
      */
-    country: varchar('country', { length: 100 }),
+    /**
+     * The country of residence, by the platform's English name. NOT NULL with a
+     * foreign key to `countries` (0193): every client has a country, so every
+     * client carries a country TAG (derived — see `client_tag_memberships`).
+     * "Unknown" (ZZ) only for an import that has none.
+     */
+    country: varchar('country', { length: 100 })
+      .notNull()
+      .default('Unknown')
+      .references(() => countries.name, { onUpdate: 'cascade', onDelete: 'restrict' }),
     phone: varchar('phone', { length: 32 }),
     dateOfBirth: date('date_of_birth', { mode: 'string' }),
     nationality: varchar('nationality', { length: 100 }),
@@ -323,6 +334,14 @@ export const users = pgTable(
      * reference at module scope.
      */
     referredByIbUserId: integer('referred_by_ib_user_id'),
+    /**
+     * The administrator whose sign-up link brought this client (0198), or NULL.
+     * Written once at registration and never changed (trigger): attribution is
+     * history, whatever later happens to the administrator's tags or link.
+     */
+    signedUpViaAdminId: uuid('signed_up_via_admin_id').references(() => admins.id, {
+      onDelete: 'restrict',
+    }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -334,6 +353,7 @@ export const users = pgTable(
     /* "Which clients did this partner introduce?" — asked per partner by every
        commission calculation the engine will eventually run. */
     index('users_referred_by_idx').on(t.referredByIbUserId),
+    index('users_signed_up_via_idx').on(t.signedUpViaAdminId),
     /*
      * The verification lookup, which is a by-token seek over the whole table.
      *
@@ -355,6 +375,12 @@ export const users = pgTable(
      * token are unaffected.
      */
     uniqueIndex('users_email_verification_token_hash_idx').on(t.emailVerificationTokenHash),
+    /*
+     * One client per phone number (0194, the buyer's rule): staff find a client
+     * BY phone. Nulls do not collide. Its trigram twin `users_phone_trgm_idx`
+     * lives in the migration only, like 0010's and 0157's.
+     */
+    uniqueIndex('users_phone_unique').on(t.phone),
   ],
 );
 
@@ -440,25 +466,22 @@ export const admins = pgTable(
      */
     maskedFields: jsonb('masked_fields').$type<string[]>(),
     /**
-     * D-60 — sees the intake pool: clients with NO tag assignments yet.
-     *
-     * "Untriaged" is a DERIVED state (has no tags), never a tag — materialising
-     * it was tried and reverted (migrations 0055–0057): stored derived state
-     * needed three guards to stay true, and still allowed an orphan class
-     * (remove a client's last tag and nobody scoped could see them). Under the
-     * derived model every client is ALWAYS either in a territory or in intake.
-     *
-     * Only meaningful for a SCOPED admin — an unrestricted admin sees everything
-     * regardless. Honoured as an OR-branch in `clientScopePredicate`.
-     */
-    seesUntriaged: boolean('sees_untriaged').notNull().default(true),
-    /**
      * Sees EVERY client — the explicit grant (0154). Territory tags restrict and
-     * only this grants: with no tags and this false, an admin sees new clients
-     * (if `seesUntriaged`) or none. An empty territory used to mean everyone,
-     * which made the widest sight the result of an absence.
+     * only this grants: with no tags and this false, an admin sees no client.
+     * An empty territory used to mean everyone, which made the widest sight the
+     * result of an absence. (D-60's intake grant, `sees_untriaged`, went with
+     * 0193: every client carries their country tag, so none is untagged.)
      */
     seesAllClients: boolean('sees_all_clients').notNull().default(true),
+    /**
+     * This administrator's sign-up link, `/join/<signup_slug>` (0198): a
+     * readable word made from their name on creation, changeable on their
+     * profile. A sign-up through it gets their tags as they are at that moment
+     * (their territory, read live — never a copy). Unique; lowercase letters,
+     * digits, `-` and `_`, 3–32 (CHECK). The empty default is a placeholder: a
+     * BEFORE INSERT trigger always fills it from the name.
+     */
+    signupSlug: varchar('signup_slug', { length: 32 }).notNull().default(''),
     /*
      * Password recovery, INITIATED BY ANOTHER MASTER ADMIN — never self-service.
      * See DECISIONS D-44.
@@ -583,8 +606,6 @@ export const adminInvites = pgTable(
      * in words rather than leaving to inference.
      */
     scopedTagIds: jsonb('scoped_tag_ids').$type<string[]>(),
-    /** D-60 — intake grant chosen at invite time, for the same window reason. */
-    seesUntriaged: boolean('sees_untriaged').notNull().default(true),
     /** Sees every client, chosen at invite time (0154). See `admins.sees_all_clients`. */
     seesAllClients: boolean('sees_all_clients').notNull().default(true),
     invitedBy: uuid('invited_by').notNull(),
@@ -671,8 +692,6 @@ export const apiKeys = pgTable(
      * exactly the reasoning behind `admin_invites.scoped_tag_ids`.
      */
     scopedTagIds: jsonb('scoped_tag_ids').$type<string[]>(),
-    /** The creator's intake grant, snapshot with the territory above (D-60). */
-    seesUntriaged: boolean('sees_untriaged').notNull().default(true),
     /** The creator's all-clients grant, snapshot with the territory (0154). */
     seesAllClients: boolean('sees_all_clients').notNull().default(true),
     /**
@@ -721,6 +740,18 @@ export const apiKeys = pgTable(
 // ── Client tagging & segmentation (ADM-14, DECISIONS D-15) ───────────────────
 
 /**
+ * The countries the platform knows (0193): ISO code + the English name stored
+ * on `users.country`. The same list as `WORLD_COUNTRIES`
+ * (common/kyc/country-options.ts), plus ZZ "Unknown" for imports —
+ * `test/countries-table.spec.ts` fails the day the package and this table
+ * disagree. The anchor of both `users.country` and every country tag.
+ */
+export const countries = pgTable('countries', {
+  code: char('code', { length: 2 }).primaryKey(),
+  name: varchar('name', { length: 100 }).notNull().unique('countries_name_uq'),
+});
+
+/**
  * Arbitrary client labels. The "country tag" half of ADM-14 is `users.country`,
  * which already exists and is indexed; this is the "general tags/labels" half.
  *
@@ -744,10 +775,22 @@ export const clientTags = pgTable(
     /** Chip colour token for the admin UI. Presentation, hence nullable. */
     color: varchar('color', { length: 32 }),
     description: text('description'),
+    /**
+     * Set on a COUNTRY tag (0193) — one per country, created by the migration.
+     * Its clients are DERIVED from `users.country`, never assigned: a trigger
+     * refuses one in `client_tag_assignments`, and another refuses deleting it
+     * or changing its country or slug. Colour stays editable.
+     */
+    countryCode: char('country_code', { length: 2 }).references(() => countries.code, {
+      onDelete: 'restrict',
+    }),
     createdBy: uuid('created_by'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [uniqueIndex('client_tags_slug_uq').on(t.slug)],
+  (t) => [
+    uniqueIndex('client_tags_slug_uq').on(t.slug),
+    uniqueIndex('client_tags_country_code_uq').on(t.countryCode),
+  ],
 );
 
 export const clientTagAssignments = pgTable(
@@ -783,6 +826,23 @@ export const clientTagAssignments = pgTable(
     index('client_tag_assignments_tag_idx').on(t.tagId, t.userId),
   ],
 );
+
+/**
+ * THE tags a client carries (0193): every assigned tag, plus the country tag
+ * derived from `users.country`. Read-only, defined in SQL by the migration;
+ * every question of the form "which tags does this client carry" or "which
+ * clients carry this tag" — the scope predicate, the chips, the counts, the
+ * `?tag=` filter — reads THIS, so a country tag can never be counted by one
+ * screen and missed by another. Writes go to `client_tag_assignments`.
+ * `assigned_by` is NULL and `assigned_at` is the client's creation on a derived
+ * row.
+ */
+export const clientTagMemberships = pgView('client_tag_memberships', {
+  userId: integer('user_id').notNull(),
+  tagId: uuid('tag_id').notNull(),
+  assignedBy: uuid('assigned_by'),
+  assignedAt: timestamp('assigned_at', { withTimezone: true }).notNull(),
+}).existing();
 
 /**
  * Row-level client visibility: the tags whose clients this administrator may
@@ -2128,6 +2188,19 @@ export const ibCommissionTypes = pgTable(
       .notNull()
       .default('0'),
     /** Money per standard lot for the CLIENT, before the introducer's share. */
+    /*
+     * 0198 — symbols this type pays NOTHING on, commission or rebate. Folder
+     * paths (MT5's, e.g. `Crypto`, `Forex\\Majors`) exclude everything beneath
+     * them; symbols exclude one instrument. See common/symbol-exclusion.ts.
+     */
+    excludedPaths: text('excluded_paths')
+      .array()
+      .notNull()
+      .default(sql`'{}'::text[]`),
+    excludedSymbols: text('excluded_symbols')
+      .array()
+      .notNull()
+      .default(sql`'{}'::text[]`),
     rebatePerLot: numeric('rebate_per_lot', { precision: 28, scale: 8 }).notNull().default('0'),
     /** The order the picker lists them in. Ties broken by name. */
     sortOrder: integer('sort_order').notNull().default(0),
@@ -2705,6 +2778,17 @@ export const paymentMethods = pgTable(
      */
     proofFields: jsonb('proof_fields')
       .$type<ProofField[]>()
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    /**
+     * What an OFFLINE method SHOWS the client — the phone the money goes to, an
+     * account name (0199). The return of the `pay_to`/`instructions` dropped in
+     * 0042 (note above). Ordered; each has a permanent id, a label, a type, the
+     * broker's value and `enabled`. Shown only while the method's deposit channel
+     * is paid outside the platform; rules in `common/payments/pay-to-fields.ts`.
+     */
+    payToFields: jsonb('pay_to_fields')
+      .$type<PayToField[]>()
       .notNull()
       .default(sql`'[]'::jsonb`),
     /**
@@ -3561,6 +3645,27 @@ export const mt5Groups = pgTable(
   ],
 );
 
+/**
+ * The CRM's copy of MT5's symbol list, with each symbol's FOLDER path (0198).
+ * What a commission type's folder exclusions are matched against, so pricing a
+ * deal never waits on the bridge. Synced with the groups; see
+ * Mt5SymbolSyncService.
+ */
+export const mt5Symbols = pgTable(
+  'mt5_symbols',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    symbol: varchar('symbol', { length: 50 }).notNull(),
+    /** MT5's path, ending in the symbol: `Forex\Majors\EURUSD`. */
+    path: varchar('path', { length: 255 }).notNull().default(''),
+    description: varchar('description', { length: 255 }).notNull().default(''),
+    firstSeenAt: timestamp('first_seen_at', { withTimezone: true }).notNull().defaultNow(),
+    lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull().defaultNow(),
+    removedAt: timestamp('removed_at', { withTimezone: true }),
+  },
+  (t) => [uniqueIndex('mt5_symbols_symbol_uq').on(sql`lower(${t.symbol})`)],
+);
+
 export const transactions = pgTable(
   'transactions',
   {
@@ -3660,6 +3765,13 @@ export const transactions = pgTable(
      * about money is never rewritten. Null on everything else.
      */
     proofDetails: jsonb('proof_details').$type<ProofDetail[]>(),
+    /**
+     * What the method SHOWED the client when this deposit was filed — where they
+     * were told to send the money (0199). A copy, so a number the admin changes
+     * later never rewrites which number this deposit went to. Immutable by
+     * trigger. Null on everything else.
+     */
+    payToDetails: jsonb('pay_to_details').$type<PayToDetail[]>(),
     rejectionReason: text('rejection_reason'),
     /** `rejection_reason` as an Arabic reader is shown it, written with it (0179). */
     rejectionReasonAr: text('rejection_reason_ar'),
@@ -4717,6 +4829,14 @@ export const ibAccounts = pgTable(
      * because terms are chosen by it again.
      */
     level: integer('level').notNull().default(1),
+    /*
+     * 0197 — this partner's OWN terms, overriding their level's. NULL = the
+     * level's. Set on sub-partners (level 2): their share of the commission
+     * (level 1 above them takes the rest) and what their clients get back of
+     * the rebate. Percentages, 0..100.
+     */
+    commissionShareOverride: numeric('commission_share_override', { precision: 12, scale: 4 }),
+    rebateShareOverride: numeric('rebate_share_override', { precision: 12, scale: 4 }),
     /** NULL means they deal with the broker directly — the top of a chain. */
     parentIbUserId: integer('parent_ib_user_id'),
     /**

@@ -110,6 +110,18 @@ export class RegisterDto {
   @IsString()
   @MaxLength(50)
   referralCode?: string;
+
+  /**
+   * An administrator's sign-up link code (0195) — `/join/<code>` on the portal.
+   * The client arrives carrying the link's tags, i.e. in that administrator's
+   * book. Unknown, switched off, or owned by a suspended administrator: the
+   * sign-up goes through with the country tag only — never refused.
+   */
+  @ApiPropertyOptional({ example: 'K7M2Q9XA', maxLength: 32 })
+  @IsOptional()
+  @IsString()
+  @MaxLength(32)
+  acquisitionCode?: string;
 }
 
 export class LoginDto {

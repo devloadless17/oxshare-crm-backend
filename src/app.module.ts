@@ -67,6 +67,7 @@ import { HealthModule } from './modules/health/health.module';
 import { SecurityModule } from './common/security/security.module';
 import { CsrfGuard } from './common/security/csrf.guard';
 import { RedisThrottlerStorage } from './common/security/redis-throttler.storage';
+import { PlatformDefaults } from './database/platform-defaults';
 
 @Module({
   imports: [
@@ -186,6 +187,8 @@ import { RedisThrottlerStorage } from './common/security/redis-throttler.storage
     AssistantModule,
   ],
   providers: [
+    // What every database starts with, production included: the KYC form and rejection reasons.
+    PlatformDefaults,
     // The one place domain errors become HTTP responses, and where an
     // unexpected error is logged in full but answered generically.
     { provide: APP_FILTER, useClass: AllExceptionsFilter },

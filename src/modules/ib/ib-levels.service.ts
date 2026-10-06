@@ -13,7 +13,7 @@ import {
   territoryCounts,
   type ClientScope,
 } from '../../common/security/client-scope';
-import { ABSOLUTE_IB_MAX_LEVELS } from '../../common/ib-levels';
+import { ABSOLUTE_IB_MAX_LEVELS, IB_TREE_MAX_LEVELS } from '../../common/ib-levels';
 import type { CreateIbLevelDto, IbLevelDto, UpdateIbLevelDto } from './dto/ib-level.dto';
 
 type Db = ReturnType<typeof getDb>;
@@ -127,7 +127,7 @@ export class IbLevelsService {
    * the form keeps one contract for "how deep may I go".
    */
   limits(): { maxLevels: number; absoluteMaxLevels: number } {
-    return { maxLevels: ABSOLUTE_IB_MAX_LEVELS, absoluteMaxLevels: ABSOLUTE_IB_MAX_LEVELS };
+    return { maxLevels: IB_TREE_MAX_LEVELS, absoluteMaxLevels: IB_TREE_MAX_LEVELS };
   }
 
   async findOne(level: number, scope: ClientScope): Promise<IbLevelDto | null> {
@@ -148,6 +148,13 @@ export class IbLevelsService {
    * reach. Saving it would be accepting a share that silently pays nobody.
    */
   private assertLevelIsReachable(level: number): void {
+    // The owner's rule (6 Oct 2026): main partners and their sub-partners, no deeper.
+    if (level > IB_TREE_MAX_LEVELS) {
+      throw new ValidationError(
+        `The partner tree has ${IB_TREE_MAX_LEVELS} levels: main partners (level 1) and their ` +
+          'sub-partners (level 2). A deeper level cannot be added.',
+      );
+    }
     if (level > ABSOLUTE_IB_MAX_LEVELS) {
       throw new ValidationError(
         `Level ${level} is deeper than the commission engine walks (${ABSOLUTE_IB_MAX_LEVELS}), ` +

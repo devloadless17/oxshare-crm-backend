@@ -1,6 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
+import { type DateRange, withinRange } from '../../common/date-range';
 import Decimal from 'decimal.js';
-import { and, count, desc, eq, isNotNull, or, sql } from 'drizzle-orm';
+import { and, count, desc, eq, isNotNull, lte, or, sql, type SQL } from 'drizzle-orm';
 import type { getDb } from '../../database/db';
 import {
   currencies,
@@ -583,54 +584,14 @@ export class WalletService {
     limit?: string | number;
     /** Keyset position — R-2.4. When present, `page` is ignored. */
     cursor?: CursorPosition;
+    /** When posted — `[from, until)`, `common/date-range.ts`. */
+    range?: DateRange;
   }) {
     const page = Math.max(1, filter.page ?? 1);
     const limit = pageSize(filter.limit);
     const db = this.db;
 
-    const conditions = [];
-    if (filter.walletId) conditions.push(eq(ledgerEntries.walletId, filter.walletId));
-    if (filter.entryType) conditions.push(eq(ledgerEntries.entryType, filter.entryType));
-    if (filter.userId) conditions.push(eq(wallets.userId, filter.userId));
-    /*
-     * The owner, by what the screen now SHOWS. This list gained a named Client
-     * column and kept a uuid-only filter, so half the screen spoke in names and
-     * the other half in ids — the same defect as the wallets desk, left behind
-     * on the first pass.
-     *
-     * ⚠️ The expression is character-for-character the one `users.store.ts`
-     * searches on, and must stay that way: a leading wildcard cannot use a
-     * b-tree, so this is served by the pg_trgm GIN index, and Postgres uses that
-     * index ONLY when the query matches what it was built on.
-     *
-     * ⚠️⚠️ `isNotNull(users.id)` IS NOT REDUNDANT, and leaving it out cost the
-     * index. This join is LEFT — an entry whose client row has gone must still
-     * appear, because `ledger_entries` is append-only and a reconciliation that
-     * silently drops rows is worse than one naming an id it cannot resolve.
-     *
-     * Postgres will convert a LEFT join to an INNER one, and so start from the
-     * trigram index on `users`, only when it can PROVE the filter rejects a
-     * NULL-extended row. The expression above is `coalesce`d, so for a missing
-     * client it evaluates to `'  '` — a real string, not NULL — and the proof
-     * fails. The plan then hash-joins every user in the table and filters
-     * afterwards: measured on 20,000 clients, 40,065 buffers and a full pass,
-     * against five matching rows.
-     *
-     * This says the thing the coalesce hid. A search by name cannot match an
-     * entry with no client anyway, so it changes no result — it only tells the
-     * planner what is already true. `test/search-at-scale.spec.ts` is what
-     * caught it and is what will catch its removal.
-     */
-    if (filter.q?.trim()) {
-      conditions.push(isNotNull(users.id));
-      conditions.push(clientIdentitySearch(filter.q));
-    }
-
-    // In the WHERE clause. The ADM-13 ledger is the screen used FOR
-    // reconciliation, so a row silently excluded after the fact would be worse
-    // here than almost anywhere — the predicate goes into the query itself.
-    const scoped = clientScopePredicate(filter.scope ?? UNRESTRICTED, wallets.userId);
-    if (scoped) conditions.push(scoped);
+    const conditions = this.entryConditions(filter);
     /*
      * Keyset seek — R-2.4. The ledger is append-only and never stops growing, so
      * it reaches OFFSET depth faster than any other list here. It is also the
@@ -731,6 +692,117 @@ export class WalletService {
    * balance, to the cent. Exposed so the admin ledger view and CI can both
    * assert it.
    */
+  /**
+   * WHICH entries a ledger read covers — the list and the export alike, so the
+   * file can never filter differently from the screen it came from.
+   */
+  private entryConditions(filter: {
+    walletId?: string;
+    userId?: number;
+    q?: string;
+    entryType?: LedgerEntryType;
+    scope?: ClientScope;
+    range?: DateRange;
+  }): SQL[] {
+    const conditions: SQL[] = [...withinRange(ledgerEntries.createdAt, filter.range)];
+    if (filter.walletId) conditions.push(eq(ledgerEntries.walletId, filter.walletId));
+    if (filter.entryType) conditions.push(eq(ledgerEntries.entryType, filter.entryType));
+    if (filter.userId) conditions.push(eq(wallets.userId, filter.userId));
+    /*
+     * The owner, by what the screen now SHOWS. This list gained a named Client
+     * column and kept a uuid-only filter, so half the screen spoke in names and
+     * the other half in ids — the same defect as the wallets desk, left behind
+     * on the first pass.
+     *
+     * ⚠️ The expression is character-for-character the one `users.store.ts`
+     * searches on, and must stay that way: a leading wildcard cannot use a
+     * b-tree, so this is served by the pg_trgm GIN index, and Postgres uses that
+     * index ONLY when the query matches what it was built on.
+     *
+     * ⚠️⚠️ `isNotNull(users.id)` IS NOT REDUNDANT, and leaving it out cost the
+     * index. This join is LEFT — an entry whose client row has gone must still
+     * appear, because `ledger_entries` is append-only and a reconciliation that
+     * silently drops rows is worse than one naming an id it cannot resolve.
+     *
+     * Postgres will convert a LEFT join to an INNER one, and so start from the
+     * trigram index on `users`, only when it can PROVE the filter rejects a
+     * NULL-extended row. The expression above is `coalesce`d, so for a missing
+     * client it evaluates to `'  '` — a real string, not NULL — and the proof
+     * fails. The plan then hash-joins every user in the table and filters
+     * afterwards: measured on 20,000 clients, 40,065 buffers and a full pass,
+     * against five matching rows.
+     *
+     * This says the thing the coalesce hid. A search by name cannot match an
+     * entry with no client anyway, so it changes no result — it only tells the
+     * planner what is already true. `test/search-at-scale.spec.ts` is what
+     * caught it and is what will catch its removal.
+     */
+    if (filter.q?.trim()) {
+      conditions.push(isNotNull(users.id));
+      conditions.push(clientIdentitySearch(filter.q));
+    }
+
+    // In the WHERE clause. The ADM-13 ledger is the screen used FOR
+    // reconciliation, so a row silently excluded after the fact would be worse
+    // here than almost anywhere — the predicate goes into the query itself.
+    const scoped = clientScopePredicate(filter.scope ?? UNRESTRICTED, wallets.userId);
+    if (scoped) conditions.push(scoped);
+    return conditions;
+  }
+
+  /**
+   * The ledger as a FILE — `GET /admin/ledger/export`, every matching entry.
+   *
+   * Keyset-chained under ONE snapshot instant: the ledger never stops growing,
+   * and an OFFSET over it would put a boundary row in the file twice or skip
+   * one — the worst failure for the document a reconciliation is done from.
+   * No count: a file shows no total, and counting per batch is a scan each.
+   */
+  async listEntriesForExport(filter: {
+    walletId?: string;
+    userId?: number;
+    q?: string;
+    entryType?: LedgerEntryType;
+    scope?: ClientScope;
+    range?: DateRange;
+    limit: number;
+    /** The export's snapshot instant — the SAME value on every batch. */
+    startedAt: Date;
+    /** The previous batch's last row; the keyset the next batch seeks from. */
+    after?: { createdAt: string; id: string };
+  }) {
+    const conditions = this.entryConditions(filter);
+    conditions.push(lte(ledgerEntries.createdAt, filter.startedAt));
+    if (filter.after) {
+      conditions.push(
+        sql`(${ledgerEntries.createdAt}, ${ledgerEntries.id}) < (${filter.after.createdAt}::timestamptz, ${filter.after.id}::uuid)`,
+      );
+    }
+    return this.db
+      .select({
+        cursorCreatedAt: sql<string>`${ledgerEntries.createdAt}::text`,
+        id: ledgerEntries.id,
+        createdAt: ledgerEntries.createdAt,
+        walletNumber: wallets.walletNumber,
+        currency: wallets.currency,
+        entryType: ledgerEntries.entryType,
+        amount: ledgerEntries.amount,
+        balanceAfter: ledgerEntries.balanceAfter,
+        referenceType: ledgerEntries.referenceType,
+        referenceId: ledgerEntries.referenceId,
+        userPortalId: users.id,
+        userFirstName: users.firstName,
+        userLastName: users.lastName,
+        userEmail: users.email,
+      })
+      .from(ledgerEntries)
+      .innerJoin(wallets, eq(ledgerEntries.walletId, wallets.id))
+      .leftJoin(users, eq(users.id, wallets.userId))
+      .where(and(...conditions))
+      .orderBy(desc(ledgerEntries.createdAt), desc(ledgerEntries.id))
+      .limit(filter.limit);
+  }
+
   async reconcile(walletId: string) {
     const db = this.db;
     const [wallet] = await db.select().from(wallets).where(eq(wallets.id, walletId)).limit(1);

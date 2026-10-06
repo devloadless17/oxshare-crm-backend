@@ -231,7 +231,6 @@ beforeAll(async () => {
       permissions: [],
       // Restricted from intake, so the union client (untagged) is genuinely
       // out of reach — this file's scope tests are about territory.
-      seesUntriaged: false,
       status: 'active',
     })
     .returning();

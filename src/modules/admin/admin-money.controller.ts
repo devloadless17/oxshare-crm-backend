@@ -80,9 +80,10 @@ import {
   type AuthenticatedAdmin,
 } from './guards/admin.guard';
 import { ReconciliationService } from '../wallet/reconciliation.service';
-import { UuidParam, enumQuery, uuidQuery } from '../../common/query-params';
+import { UuidParam, enumQuery, searchQuery, uuidQuery } from '../../common/query-params';
+import { ApiDateRangeQueries, dateRangeQuery } from '../../common/date-range';
 import { ClientRefPipe } from '../../common/client-ref.pipe';
-import { transactionStateEnum } from '../../database/schema';
+import { ledgerEntryTypeEnum, transactionStateEnum } from '../../database/schema';
 import { NotClientScoped, ScopedToClients } from './guards/client-scope.decorator';
 import { Audited } from './guards/audited.decorator';
 import { AnnouncesChange } from '../../common/realtime/announces-change.decorator';
@@ -163,6 +164,7 @@ export class AdminMoneyController {
   })
   @ApiQuery({ name: 'format', required: false, enum: ['csv'] })
   @ApiQuery({ name: 'state', required: false, enum: transactionStateEnum.enumValues })
+  @ApiDateRangeQueries('requested')
   @ScopedToClients(
     'AdminExportService.withdrawalBatch → TransactionsService.listForExport, the same clientScopePredicate on transactions.user_id the queue applies.',
   )
@@ -172,16 +174,21 @@ export class AdminMoneyController {
     @Res() res: Response,
     @Query('format') format?: string,
     @Query('state') state?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
   ) {
     const chosen = exportFormat(format);
     // Validated against the schema's own enum, exactly as the list route does,
     // so an unrecognised state is a 400 rather than a database error or a file
     // that is silently empty.
-    const query = { state: enumQuery(state, transactionStateEnum.enumValues, 'state') };
+    const query = {
+      state: enumQuery(state, transactionStateEnum.enumValues, 'state'),
+      range: dateRangeQuery(from, to),
+    };
 
     this.audit.record(req.admin.id, 'export.withdrawals', 'withdrawal_queue', req.admin.id, {
       format: chosen,
-      filters: query,
+      filters: { state: query.state, from: query.range.from, until: query.range.until },
     });
 
     /*
@@ -238,6 +245,7 @@ export class AdminMoneyController {
       "filter and the reader's scope, so a record outside it answers an empty page, like any " +
       'filtered-out row. No state is implied: a handled record is still returned.',
   })
+  @ApiDateRangeQueries('requested')
   @ScopedToClients(
     'TransactionsService.listForAdmin applies the predicate to transactions.user_id.',
   )
@@ -251,10 +259,13 @@ export class AdminMoneyController {
     @Query('sort') sort?: string,
     @Query('order') order?: string,
     @Query('id') id?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
   ) {
     return this.money.listWithdrawals(
       {
         id: uuidQuery(id, 'id'),
+        range: dateRangeQuery(from, to),
         // `transactions.service.ts` compared this against a Postgres enum column
         // behind a cast, so an unrecognised value came back as a 500 carrying a
         // database error. Checked against the schema's own value list instead.
@@ -825,6 +836,73 @@ export class AdminMoneyController {
     return this.reconciliation.run();
   }
 
+  /**
+   * The LEDGER as a file — `ledger.view`, the SAME key as the screen (an export
+   * must never be a way around one). Every entry the filters match, with the
+   * balance it produced, as the exact decimal strings the database holds
+   * (§6.1). Keyset-chained under one snapshot instant: the ledger never stops
+   * growing, and a reconciliation file with a row twice or a row missing is
+   * worse than none.
+   */
+  @Get('ledger/export')
+  @Throttle({ default: { ttl: 60_000, limit: EXPORT_RATE_LIMIT } })
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('ledger.view')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Export the filtered ledger as CSV',
+    description:
+      'The same filters as GET /admin/ledger, over every matching entry. Amounts and balances ' +
+      'are the exact decimal strings the ledger holds — never rounded (§6.1).',
+  })
+  @ApiOkResponse({
+    description: 'A CSV file. `Content-Disposition` names it `ledger-<YYYY-MM-DD>.csv`.',
+    content: { 'text/csv': { schema: { type: 'string', format: 'binary' } } },
+  })
+  @ApiQuery({ name: 'format', required: false, enum: ['csv'] })
+  @ApiQuery({ name: 'userId', required: false })
+  @ApiQuery({ name: 'q', required: false })
+  @ApiQuery({ name: 'walletId', required: false })
+  @ApiQuery({ name: 'entryType', required: false, enum: ledgerEntryTypeEnum.enumValues })
+  @ApiDateRangeQueries('posted')
+  @ScopedToClients(
+    'AdminExportService.ledgerBatch → WalletService.listEntriesForExport, the same clientScopePredicate on wallets.user_id the ledger applies.',
+  )
+  @Audited('export.ledger')
+  async exportLedger(
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+    @Res() res: Response,
+    @Query('format') format?: string,
+    @Query('userId', ClientRefPipe) userId?: number,
+    @Query('q') q?: string,
+    @Query('walletId') walletId?: string,
+    @Query('entryType') entryType?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    const chosen = exportFormat(format);
+    // Validated as the list validates, so the file refuses what the screen refuses.
+    const query = {
+      userId,
+      q: searchQuery(q),
+      walletId: uuidQuery(walletId, 'walletId'),
+      entryType: enumQuery(entryType, ledgerEntryTypeEnum.enumValues, 'entryType'),
+      range: dateRangeQuery(from, to),
+    };
+    this.audit.record(req.admin.id, 'export.ledger', 'wallet_list', req.admin.id, {
+      format: chosen,
+      filters: query,
+    });
+    const startedAt = new Date();
+    let after: { createdAt: string; id: string } | undefined;
+    await streamCsv(res, 'ledger', chosen, this.exports.ledgerColumns, async (_offset, limit) => {
+      const rows = await this.exports.ledgerBatch(query, req.admin, limit, startedAt, after);
+      const last = rows[rows.length - 1];
+      if (last) after = { createdAt: last.cursorCreatedAt, id: last.id };
+      return rows;
+    });
+  }
+
   /*
    * `ledger.view`, NOT `withdrawals.view` — ADM-13.
    *
@@ -854,6 +932,7 @@ export class AdminMoneyController {
       'still applies: this cannot reach a client outside the actor’s territory.',
   })
   @ApiOkResponse({ type: LedgerListResponseDto })
+  @ApiDateRangeQueries('posted')
   @ScopedToClients('WalletService.listEntries applies the predicate to wallets.user_id.')
   listLedger(
     @Req() req: Request & { admin: AuthenticatedAdmin },
@@ -864,6 +943,8 @@ export class AdminMoneyController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('cursor') cursor?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
   ) {
     return this.money.listLedger(
       {
@@ -882,6 +963,7 @@ export class AdminMoneyController {
         page,
         limit,
         cursor,
+        range: dateRangeQuery(from, to),
       },
       req.admin,
     );

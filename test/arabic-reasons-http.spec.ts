@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { uniqueTestPhone } from './support/registration';
 import { randomUUID } from 'node:crypto';
 import { eq, sql } from 'drizzle-orm';
 import { ALL_PERMISSIONS } from './support/all-permissions';
@@ -102,7 +103,7 @@ beforeAll(async () => {
         lastName: 'Khalil',
         dateOfBirth: '1990-04-12',
         nationality: 'Lebanese',
-        phone: '+96170123456',
+        phone: uniqueTestPhone(),
         country: 'Lebanon',
         address: 'Hamra Street 12',
         city: 'Beirut',

@@ -4,6 +4,7 @@ import type {
   PaymentMethodRow,
 } from './payment-methods.service';
 import { askedProofFields } from '../../common/payments/proof-fields';
+import { shownPayToFields } from '../../common/payments/pay-to-fields';
 
 /**
  * A deposit method as the console reads it — exactly the fields
@@ -57,6 +58,17 @@ export function adminPaymentMethodView(row: AdminPaymentMethod) {
       hint: field.hint ?? null,
       hintAr: field.hintAr ?? null,
     })),
+    // Every shown detail, hidden ones included (0199).
+    payToFields: row.payToFields.map((field) => ({
+      id: field.id,
+      label: field.label,
+      labelAr: field.labelAr ?? null,
+      type: field.type,
+      value: field.value,
+      enabled: field.enabled,
+      hint: field.hint ?? null,
+      hintAr: field.hintAr ?? null,
+    })),
   };
 }
 
@@ -75,5 +87,7 @@ export function clientPaymentMethodView(row: ClientPaymentMethod) {
     maxAmount: row.maxAmount,
     // Only what the client is ASKED: shown fields, and only for an offline method.
     proofFields: askedProofFields(row.proofFields, row.requiresProof),
+    // Where to send the money: shown details, and only for an offline route (0199).
+    payToFields: shownPayToFields(row.payToFields, row.offline),
   };
 }

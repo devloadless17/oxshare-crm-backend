@@ -1,3 +1,6 @@
+import { SignupLinksStore } from '../../store/signup-links.store';
+import { currentFieldMask } from '../../common/logging/request-context';
+import type { DateRange } from '../../common/date-range';
 import { Injectable } from '@nestjs/common';
 import { UsersStore, clientSortKey, clientSortOrder, type User } from '../../store/users.store';
 import { IbStore } from '../../store/ib.store';
@@ -206,16 +209,56 @@ export function clientLevelFilter(value: string | undefined): number | undefined
 }
 
 /** An unknown `?tag=` is a 400, never an empty page or file (R-2.5). Shared by list and export. */
+/**
+ * The slugs of a `?tag=` filter: one slug, or several separated by commas —
+ * any of them (OR). AND would be the other plausible reading, and is what a
+ * territory never means, so the filter reads like the scope does.
+ */
+export function tagSlugsOf(raw: string | undefined): string[] {
+  if (!raw) return [];
+  return [
+    ...new Set(
+      raw
+        .split(',')
+        .map((slug) => slug.trim())
+        .filter((slug) => slug !== ''),
+    ),
+  ];
+}
+
+/** The clients list's filter parameters, as the routes receive them. */
+export interface ClientListFilterQuery {
+  q?: string;
+  type?: string;
+  status?: string;
+  level?: string;
+  country?: string;
+  emailVerified?: string;
+  kycStatus?: string;
+  tag?: string;
+  referredBy?: number;
+  referred?: string;
+  registered?: DateRange;
+}
+
 export async function assertClientTagExists(
   tags: Pick<ClientTagsStore, 'findBySlug'>,
-  slug: string | undefined,
+  raw: string | undefined,
 ): Promise<void> {
-  if (!slug) return;
-  const tag = await tags.findBySlug(slug);
-  if (!tag) {
-    throw new ValidationError(
-      `There is no client tag "${slug}". Check the tag list for the current names.`,
-    );
+  const slugs = tagSlugsOf(raw);
+  if (slugs.length > 20) throw new ValidationError('Filter by at most 20 tags at once.');
+  for (const slug of slugs) {
+    const tag = await tags.findBySlug(slug);
+    if (!tag) {
+      throw new ValidationError(
+        `There is no client tag "${slug}". Check the tag list for the current names.`,
+      );
+    }
+    // A country tag IS the client's country (0193): filtering by it answers "is
+    // this client from X?" one guess at a time — the refusal `?country=` makes.
+    if (tag.countryCode && currentFieldMask().includes('client.country')) {
+      throw new ValidationError('Cannot filter by country: that field is hidden from your role.');
+    }
   }
 }
 
@@ -252,9 +295,59 @@ export class AdminClientsService {
     private readonly ib: IbStore,
     /** The one write path for a client's identity — @Global ProfileModule. */
     private readonly profile: ClientProfileService,
+    /** A partner's tags, copied onto a client recorded under them (0195). */
+    private readonly signupLinks: SignupLinksStore,
   ) {}
 
   // ─── Clients list (ADM-01 / ADM-14) ───────────────────────────────────────
+
+  /**
+   * The clients list's FILTER, normalised and validated — ONE definition for
+   * the list and for "every client matching this filter" (the bulk actions),
+   * so a bulk change can never reach a set the screen did not show.
+   */
+  async filterOf(query: ClientListFilterQuery) {
+    // An unknown tag slug is a 400, NOT an empty page (R-2.5): a typo'd segment
+    // returning zero clients reads as "nobody is in this segment".
+    await assertClientTagExists(this.tags, query.tag);
+    return {
+      q: query.q?.trim() || undefined,
+      type: query.type,
+      status: query.status,
+      // An unparseable ?level= used to become NaN and silently return nothing.
+      level: clientLevelFilter(query.level),
+      country: query.country?.trim() || undefined,
+      emailVerified: emailVerifiedFilter(query.emailVerified),
+      kycStatus: kycStatusFilter(query.kycStatus),
+      tagSlug: query.tag,
+      referredBy: query.referredBy,
+      referred: referredFilter(query.referred),
+      registered: query.registered,
+    };
+  }
+
+  /**
+   * Every client matching the list's filter that the actor may see, up to
+   * `cap` — the target of a bulk action. `total` says how many matched in all,
+   * so the caller can refuse a set larger than it acts on, and compare it with
+   * the count the reader was shown.
+   */
+  async clientIdsMatching(
+    query: ClientListFilterQuery,
+    actor: AuthenticatedAdmin,
+    cap: number,
+  ): Promise<{ ids: number[]; total: number }> {
+    assertActorCan(actor, 'clients.view', 'list clients');
+    const { rows, total } = await this.users.findPage({
+      page: 1,
+      limit: cap,
+      withTotal: true,
+      ...(await this.filterOf(query)),
+      scope: actor.clientScope,
+    });
+    return { ids: rows.map((row) => row.id), total: total ?? rows.length };
+  }
+
   async listClients(
     query: {
       page?: string;
@@ -273,6 +366,7 @@ export class AdminClientsService {
       referred?: string;
       sort?: string;
       order?: string;
+      registered?: DateRange;
     },
     actor: AuthenticatedAdmin,
   ) {
@@ -289,9 +383,6 @@ export class AdminClientsService {
 
     const page = Math.max(1, parseInt(query.page ?? '1', 10) || 1);
     const limit = pageSize(query.limit);
-
-    // An unparseable ?level= used to become NaN and silently return nothing.
-    const level = clientLevelFilter(query.level);
 
     /*
      * Cursor first, offset for one more release — R-2.4 / R-8.2.
@@ -322,8 +413,6 @@ export class AdminClientsService {
      * returning zero clients reads as "nobody is in this segment", which is a
      * statement about the client base rather than about the URL.
      */
-    await assertClientTagExists(this.tags, query.tag);
-
     /*
      * ⚠️ A MALFORMED referredBy is REFUSED, never ignored, and that is the
      * whole reason it is validated here rather than passed through.
@@ -343,8 +432,7 @@ export class AdminClientsService {
      * instead.
      */
     // Validated as a Portal ID at the edge (ClientRefPipe), which refuses a
-    // malformed value loudly rather than ignoring it.
-    const referredBy = query.referredBy;
+    // malformed value loudly rather than ignoring it — see `filterOf`.
 
     const { rows, total } = await this.users.findPage({
       page,
@@ -354,16 +442,7 @@ export class AdminClientsService {
       // Counting is a full scan of the filtered set. Requested explicitly, or
       // implied by the legacy offset caller, which renders a page count.
       withTotal: query.withTotal === 'true' || (!query.cursor && query.page !== undefined),
-      q: query.q?.trim() || undefined,
-      type: query.type,
-      status: query.status,
-      level,
-      country: query.country?.trim() || undefined,
-      emailVerified: emailVerifiedFilter(query.emailVerified),
-      kycStatus: kycStatusFilter(query.kycStatus),
-      tagSlug: query.tag,
-      referredBy,
-      referred: referredFilter(query.referred),
+      ...(await this.filterOf(query)),
       sort,
       order,
       // Row-level visibility, applied in the WHERE clause. An out-of-scope
@@ -1015,6 +1094,14 @@ export class AdminClientsService {
     const updated = (await this.users.update(userId, { referredByIbUserId: account.userId }))!;
 
     /*
+     * The partner's own tags come with them, exactly as at sign-up (0195): the
+     * client lands in the partner's book. Only ADDS tags, so it can never take
+     * the client out of anybody's view — nothing to confirm.
+     */
+    const inherited = await this.signupLinks.partnerTagIds(account.userId);
+    await this.signupLinks.attachNow(userId, inherited);
+
+    /*
      * `before` is always null here — that is what the 409 above guarantees — and
      * it is recorded anyway. An audit row that omits the prior value on the
      * grounds that it is known cannot be read back as evidence of what it was,
@@ -1025,6 +1112,7 @@ export class AdminClientsService {
       before: null,
       after: account.userId,
       referralCode: code,
+      tagIdsInherited: inherited,
     });
 
     /*

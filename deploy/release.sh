@@ -27,6 +27,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 touch release.env
+chmod 600 release.env # release state belongs to the deploy user alone, like .env
 # shellcheck disable=SC1091
 . ./release.env
 ACTIVE=${ACTIVE:-none}
@@ -45,6 +46,7 @@ forget_failed() { # <colour>
 }
 save() {
   printf 'ACTIVE=%s\nBLUE_TAG=%s\nGREEN_TAG=%s\n' "$ACTIVE" "${BLUE_TAG:-}" "${GREEN_TAG:-}" > release.env.next
+  chmod 600 release.env.next
   mv -f release.env.next release.env
 }
 

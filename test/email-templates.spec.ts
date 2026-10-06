@@ -162,10 +162,10 @@ describe('every email shares one design', () => {
 
 describe('the logo follows the environment that sends the mail', () => {
   it('is served by the portal EmailService is configured with', () => {
-    setEmailLogoOrigin('https://oxshareportal.loadless.site');
+    setEmailLogoOrigin('https://portal.oxshare.com');
     try {
       expect(adminInvite('Ann', 'https://a.test/i?t=T').html).toContain(
-        'src="https://oxshareportal.loadless.site/email/oxshare-logo-v1.png"',
+        'src="https://portal.oxshare.com/email/oxshare-logo-v1.png"',
       );
     } finally {
       setEmailLogoOrigin('http://localhost:3000');

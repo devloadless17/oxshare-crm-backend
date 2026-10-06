@@ -14,7 +14,8 @@ import { WalletsStore } from '../src/store/wallets.store';
 import type { EmailService } from '../src/modules/email/email.service';
 import { scopeOf, UNRESTRICTED } from '../src/common/security/client-scope';
 import type { Actor } from '../src/common/security/actor';
-import { auditStubAs } from './audit-stub';
+import type { AdminAuditService } from '../src/modules/admin/admin-audit.service';
+import { auditStub, auditStubAs } from './audit-stub';
 import { notificationsStubAs } from './notifications-stub';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
 
@@ -30,6 +31,12 @@ let ctx: MoneyTestContext;
 let service: IbApplicationsService;
 let store: IbStore;
 let users: UsersStore;
+/**
+ * The service's audit writer, kept so a case can read what it was asked to
+ * record — the sub-partner terms change (0197) is the first case here whose
+ * audit row is part of the behaviour under test.
+ */
+const audit = auditStub();
 
 /**
  * A stand-in for EmailService, so the decision emails are OBSERVABLE.
@@ -53,7 +60,7 @@ beforeAll(async () => {
     new IbLevelsService(ctx.db, auditStubAs()),
     new ClientVisibilityService(users),
     email,
-    auditStubAs(),
+    audit as unknown as AdminAuditService,
     notificationsStubAs(),
     /*
      * A REAL store on the test database, not a stub. The agency checks read it
@@ -162,7 +169,7 @@ beforeEach(async () => {
   // Territory rows reference users; clear them (and the tags) before the users
   // they point at — the scope test below assigns a tag to a partner.
   await ctx.db.execute(sql`DELETE FROM client_tag_assignments`);
-  await ctx.db.execute(sql`DELETE FROM client_tags`);
+  await ctx.db.execute(sql`DELETE FROM client_tags WHERE country_code IS NULL`);
   /*
    * Wallets reference users with ON DELETE RESTRICT, so they go first.
    *
@@ -359,77 +366,116 @@ describe('how deep the ladder may go', () => {
    * a decision the IB Levels page already expresses — remove the rung and it
    * stops paying.
    *
-   * What replaces those cases is the bound that is REAL: the commission engine
-   * walks a fixed number of rungs, so a level deeper than that could never be
-   * reached by any trade. Saving one would be accepting a rate that silently
-   * pays nobody, which is the failure the old ceiling was groping at.
+   * ── AND NOW THE TREE IS FIXED AT TWO (0197, the owner's rule, 6 Oct 2026) ──
+   *
+   * Main partners (level 1) and their sub-partners (level 2), no deeper. The
+   * three cases that stood here — a third level accepted, a level no partner
+   * stands on accepted, a level past the engine's walk refused — became one
+   * rule: anything past level 2 is refused, with the sentence that says why.
    */
   afterEach(async () => {
+    // Belt and braces: nothing below should be able to create one.
     await ctx.db.execute(sql`DELETE FROM ib_levels WHERE level > 2`);
   });
 
-  it('accepts a third level with no ceiling to raise first', async () => {
-    const created = await levels().create(
-      { level: 3, name: 'Three Deep', commissionShare: '10' },
-      REVIEWER,
-    );
+  it('refuses a third level — the tree is main partners and sub-partners only', async () => {
+    await expect(
+      levels().create({ level: 3, name: 'Three Deep', commissionShare: '10' }, REVIEWER),
+    ).rejects.toThrow(/partner tree has 2 levels/i);
 
-    expect(created.level).toBe(3);
+    const { rows } = await ctx.db.execute<{ n: number }>(
+      sql`SELECT count(*)::int n FROM ib_levels WHERE level > 2`,
+    );
+    expect(rows[0].n).toBe(0);
   });
 
   /*
-   * The one refusal left, and it is structural rather than commercial: past
-   * `MAX_CHAIN_DEPTH` the walk stops, so nobody standing there is ever paid.
+   * A level past the engine's walk is refused by the same two-level rule
+   * first: the sentence an operator reads is the business rule, not an
+   * implementation limit.
    */
-  it('refuses a level deeper than the commission engine walks', async () => {
+  it('refuses a level deeper than the engine walks with the same two-level sentence', async () => {
     await expect(
       levels().create({ level: 11, name: 'Unreachable', commissionShare: '10' }, REVIEWER),
-    ).rejects.toThrow(/deeper than the commission engine walks/i);
+    ).rejects.toThrow(/main partners \(level 1\) and their sub-partners \(level 2\)/i);
   });
 
   /*
-   * A rung nobody can reach is refused; a rung nobody is STANDING on is fine.
-   * Configuring depth ahead of recruiting into it is the ordinary case.
+   * The form reads its "how deep may I go" from `limits()`, so the cap it
+   * offers is the cap the service enforces.
    */
-  it('accepts a level no partner stands on yet', async () => {
-    const created = await levels().create(
-      { level: 4, name: 'Room To Grow', commissionShare: '5' },
-      REVIEWER,
-    );
-
-    expect(created.partnerCount).toBe(0);
+  it('reports two levels as the limit the form offers', () => {
+    expect(levels().limits()).toEqual({ maxLevels: 2, absoluteMaxLevels: 2 });
   });
 });
 
 describe('moving a partner onto different terms', () => {
   /*
-   * A partner's rung is written at approval from their parent's, which is right
-   * in the ordinary case and cannot be right in every one. Without this the
-   * number was decided once by the shape of the tree on one particular
-   * afternoon.
+   * ── THE LEVEL IS THE POSITION (0197) ─────────────────────────────────────
+   *
+   * `changeLevel` used to move a partner onto any configured, enabled rung.
+   * Since the tree became two levels the rung decides which SIDE of the split
+   * a partner is paid — level 1 takes the rest, level 2 their own share — so a
+   * label that disagrees with the position pays the wrong side. A partner with
+   * no parent is level 1, one with a parent is level 2, and moving them is
+   * "Reassign parent", which re-levels them.
    */
-  it('changes the level a partner is paid on', async () => {
-    const userId = await makeClient('level-move@test.local');
-    await store.createAccount({ userId, level: 1, referralCode: 'LVLMOVE1' });
+  async function mainAndSub(prefix: string): Promise<{ main: number; sub: number }> {
+    const main = await makeClient(`${prefix}-main@test.local`);
+    const sub = await makeClient(`${prefix}-sub@test.local`);
+    await store.createAccount({ userId: main, level: 1, referralCode: `${prefix}M`.slice(0, 8) });
+    await store.createAccount({
+      userId: sub,
+      level: 2,
+      parentIbUserId: main,
+      referralCode: `${prefix}S`.slice(0, 8),
+    });
+    return { main, sub };
+  }
 
-    const updated = await service.changeLevel(userId, 2, UNRESTRICTED, REVIEWER);
+  it('refuses to move a main partner onto level 2 — they have no parent', async () => {
+    const { main } = await mainAndSub('LVMAIN');
 
-    expect(updated.level).toBe(2);
+    await expect(service.changeLevel(main, 2, UNRESTRICTED, REVIEWER)).rejects.toThrow(
+      /no parent, so they are a main partner \(level 1\)/i,
+    );
+    expect((await store.findAccount(main))?.level).toBe(1);
+  });
+
+  it('refuses to move a sub-partner onto level 1 — they sit under a partner', async () => {
+    const { sub } = await mainAndSub('LVSUB');
+
+    await expect(service.changeLevel(sub, 1, UNRESTRICTED, REVIEWER)).rejects.toThrow(
+      /sits under another partner, so they are a sub-partner \(level 2\)/i,
+    );
+    expect((await store.findAccount(sub))?.level).toBe(2);
+  });
+
+  /*
+   * The level matching the position is still accepted — it is how a partner
+   * whose row predates 0197 and carries the wrong label is put right.
+   */
+  it('accepts the level that matches the position', async () => {
+    const { main, sub } = await mainAndSub('LVFIX');
+    // A legacy row: under a parent but labelled level 1.
+    await ctx.db.execute(sql`UPDATE ib_accounts SET level = 1 WHERE user_id = ${sub}`);
+
+    const fixed = await service.changeLevel(sub, 2, UNRESTRICTED, REVIEWER);
+    expect(fixed.level).toBe(2);
+    expect((await service.changeLevel(main, 1, UNRESTRICTED, REVIEWER)).level).toBe(1);
   });
 
   /*
    * A disabled level pays NOTHING, so moving somebody onto one stops their
-   * earnings silently instead of changing their terms visibly. It is also the
-   * other half of the disable guard: without this refusal an operator could
-   * route around "move them off first" by moving people ONTO a disabled rung.
+   * earnings silently instead of changing their terms visibly. The position
+   * rule comes first; the disabled refusal still guards the level it allows.
    */
   it('refuses to move a partner onto a disabled level', async () => {
-    const userId = await makeClient('level-disabled@test.local');
-    await store.createAccount({ userId, level: 1, referralCode: 'LVLDIS01' });
+    const { sub } = await mainAndSub('LVDIS');
 
     await ctx.db.execute(sql`UPDATE ib_levels SET enabled = false WHERE level = 2`);
     try {
-      await expect(service.changeLevel(userId, 2, UNRESTRICTED, REVIEWER)).rejects.toThrow(
+      await expect(service.changeLevel(sub, 2, UNRESTRICTED, REVIEWER)).rejects.toThrow(
         /disabled/i,
       );
     } finally {
@@ -438,17 +484,112 @@ describe('moving a partner onto different terms', () => {
   });
 
   /*
-   * An UNCONFIGURED rung is refused as firmly as a disabled one, and for the
-   * same reason: a partner standing on one earns nothing, and `calculate`
-   * reports it per trade rather than on the screen where somebody could act.
+   * A level past the tree is refused by the position rule, before the ladder
+   * is even consulted: there is no position a level 9 could match.
    */
-  it('refuses a level that is not configured', async () => {
-    const userId = await makeClient('level-ghost@test.local');
-    await store.createAccount({ userId, level: 1, referralCode: 'LVLGHST1' });
+  it('refuses a level that matches no position in a two-level tree', async () => {
+    const { main, sub } = await mainAndSub('LVGHST');
 
-    await expect(service.changeLevel(userId, 9, UNRESTRICTED, REVIEWER)).rejects.toThrow(
-      /not configured/i,
+    await expect(service.changeLevel(sub, 9, UNRESTRICTED, REVIEWER)).rejects.toThrow(
+      /sub-partner \(level 2\)/i,
     );
+    await expect(service.changeLevel(main, 3, UNRESTRICTED, REVIEWER)).rejects.toThrow(
+      /main partner \(level 1\)/i,
+    );
+  });
+});
+
+describe('a sub-partner’s own commission and rebate (0197)', () => {
+  /** A main partner and one sub-partner beneath them, on the default ladder. */
+  async function mainAndSub(): Promise<{ main: number; sub: number }> {
+    const main = await makeClient('terms-main@test.local');
+    const sub = await makeClient('terms-sub@test.local');
+    await store.createAccount({ userId: main, level: 1, referralCode: 'TERMSMAN' });
+    await store.createAccount({
+      userId: sub,
+      level: 2,
+      parentIbUserId: main,
+      referralCode: 'TERMSSUB',
+    });
+    return { main, sub };
+  }
+
+  beforeEach(() => {
+    audit.record.mockClear();
+  });
+
+  it('stores both shares on a sub-partner', async () => {
+    const { sub } = await mainAndSub();
+
+    const updated = await service.setTerms(
+      sub,
+      { commissionShare: '25', rebateShare: '7.5' },
+      UNRESTRICTED,
+      REVIEWER,
+    );
+
+    expect(Number(updated.commissionShareOverride)).toBe(25);
+    expect(Number(updated.rebateShareOverride)).toBe(7.5);
+    const stored = await store.findAccount(sub);
+    expect(Number(stored?.commissionShareOverride)).toBe(25);
+    expect(Number(stored?.rebateShareOverride)).toBe(7.5);
+  });
+
+  it('resets a share to the level’s with null, and leaves an absent one alone', async () => {
+    const { sub } = await mainAndSub();
+    await service.setTerms(
+      sub,
+      { commissionShare: '25', rebateShare: '7.5' },
+      UNRESTRICTED,
+      REVIEWER,
+    );
+
+    const reset = await service.setTerms(sub, { commissionShare: null }, UNRESTRICTED, REVIEWER);
+
+    expect(reset.commissionShareOverride).toBeNull();
+    // Absent key = unchanged, not cleared.
+    expect(Number(reset.rebateShareOverride)).toBe(7.5);
+
+    const both = await service.setTerms(sub, { rebateShare: null }, UNRESTRICTED, REVIEWER);
+    expect(both.commissionShareOverride).toBeNull();
+    expect(both.rebateShareOverride).toBeNull();
+  });
+
+  it('refuses a main partner — there is no share of theirs to set', async () => {
+    const { main } = await mainAndSub();
+
+    await expect(
+      service.setTerms(main, { commissionShare: '25' }, UNRESTRICTED, REVIEWER),
+    ).rejects.toThrow(/only a sub-partner has their own commission and rebate/i);
+    expect((await store.findAccount(main))?.commissionShareOverride).toBeNull();
+    expect(audit.record).not.toHaveBeenCalled();
+  });
+
+  it('writes an ib.terms_change audit row with the shares before and after', async () => {
+    const { sub } = await mainAndSub();
+
+    await service.setTerms(
+      sub,
+      { commissionShare: '25', rebateShare: '7.5' },
+      UNRESTRICTED,
+      REVIEWER,
+    );
+    await service.setTerms(sub, { commissionShare: '40' }, UNRESTRICTED, REVIEWER);
+
+    const rows = audit.record.mock.calls.filter((call) => call[1] === 'ib.terms_change');
+    expect(rows).toHaveLength(2);
+    const [actorId, , subjectType, subjectId, details] = rows[1];
+    expect(actorId).toBe(REVIEWER.id);
+    expect(subjectType).toBe('ib_account');
+    expect(subjectId).toBe(sub);
+    const { before, after } = details as {
+      before: { commissionShare: string | null; rebateShare: string | null };
+      after: { commissionShare: string | null; rebateShare: string | null };
+    };
+    expect(Number(before.commissionShare)).toBe(25);
+    expect(Number(before.rebateShare)).toBe(7.5);
+    expect(Number(after.commissionShare)).toBe(40);
+    expect(Number(after.rebateShare)).toBe(7.5);
   });
 });
 
@@ -619,17 +760,29 @@ describe('status', () => {
     expect(status.ineligibleReason).toMatch(/deepest level/i);
   });
 
-  it('opens the door the moment an operator enables a deeper level', async () => {
+  /*
+   * Since 0197 the door beneath a sub-partner stays shut for good: there is
+   * no level 3 an operator could enable to open it (the ladder refuses one),
+   * and even a level-3 row written behind the service's back changes nothing.
+   */
+  it('keeps the door shut beneath a sub-partner — no level 3 can open it', async () => {
     const { client } = await twoRungChain('reopened');
 
-    await new IbLevelsService(ctx.db, auditStubAs()).create(
-      { level: 3, name: 'Three Deep', commissionShare: '10' },
-      REVIEWER,
-    );
+    await expect(
+      new IbLevelsService(ctx.db, auditStubAs()).create(
+        { level: 3, name: 'Three Deep', commissionShare: '10' },
+        REVIEWER,
+      ),
+    ).rejects.toThrow(/partner tree has 2 levels/i);
+
+    await ctx.db.execute(sql`
+      INSERT INTO ib_levels (level, name, commission_share, rebate_share, enabled)
+      SELECT 3, 'Smuggled', commission_share, rebate_share, true FROM ib_levels WHERE level = 2
+    `);
     try {
       const status = await service.statusFor(client);
-      expect(status.eligible).toBe(true);
-      expect(status.ineligibleCode).toBeNull();
+      expect(status.eligible).toBe(false);
+      expect(status.ineligibleCode).toBe('chain_full');
     } finally {
       await ctx.db.execute(sql`DELETE FROM ib_levels WHERE level > 2`);
     }
@@ -688,25 +841,20 @@ describe('status', () => {
     await expect(service.apply(client, { agencyId: AGENCY.id })).rejects.toThrow(/deepest level/i);
   });
 
-  it('accepts an application three levels down once the ladder reaches that deep', async () => {
-    const { middle, client } = await twoRungChain('accepted');
+  /*
+   * Applying under a sub-partner is chain-full (0197): the case that used to
+   * prove a third level opened the door now proves nothing can, and that no
+   * application row is left behind by the refusal.
+   */
+  it('refuses an application under a sub-partner as chain-full, leaving no row', async () => {
+    const { client } = await twoRungChain('accepted');
 
-    await new IbLevelsService(ctx.db, auditStubAs()).create(
-      { level: 3, name: 'Three Deep', commissionShare: '10' },
-      REVIEWER,
+    await expect(service.apply(client, { agencyId: AGENCY.id })).rejects.toThrow(/deepest level/i);
+
+    const { rows } = await ctx.db.execute<{ n: number }>(
+      sql`SELECT count(*)::int n FROM ib_applications WHERE user_id = ${client}`,
     );
-    try {
-      const application = await service.apply(client, { agencyId: AGENCY.id });
-      expect(application.status).toBe('pending');
-
-      const account = await service.approve(application.id, REVIEWER, UNRESTRICTED, {
-        parentIbUserId: middle,
-      });
-      expect(account.parentIbUserId).toBe(middle);
-      expect(account.level).toBe(3);
-    } finally {
-      await ctx.db.execute(sql`DELETE FROM ib_levels WHERE level > 2`);
-    }
+    expect(rows[0].n).toBe(0);
   });
 
   /*
@@ -1092,7 +1240,36 @@ describe('approval', () => {
 
     await expect(
       service.approve(application.id, REVIEWER, UNRESTRICTED, { parentIbUserId: middle }),
-    ).rejects.toThrow(/no enabled level 3/i);
+    ).rejects.toThrow(/sub-partner cannot have partners beneath them/i);
+  });
+
+  /*
+   * 0197: approving under a sub-partner is refused even with a level-3 row in
+   * the table — the tree's two-level rule, not the ladder, is what decides it —
+   * and the refusal leaves the application pending and no account behind.
+   */
+  it('refuses to approve a partner under a sub-partner, whatever the ladder holds', async () => {
+    const { middle } = await twoRungChain('approve-under-sub');
+    const applicant = await makeClient('approve-under-sub-applicant@test.local');
+    const application = await service.apply(applicant, { agencyId: AGENCY.id });
+
+    await ctx.db.execute(sql`
+      INSERT INTO ib_levels (level, name, commission_share, rebate_share, enabled)
+      SELECT 3, 'Smuggled', commission_share, rebate_share, true FROM ib_levels WHERE level = 2
+    `);
+    try {
+      await expect(
+        service.approve(application.id, REVIEWER, UNRESTRICTED, { parentIbUserId: middle }),
+      ).rejects.toThrow(/sub-partner cannot have partners beneath them/i);
+    } finally {
+      await ctx.db.execute(sql`DELETE FROM ib_levels WHERE level > 2`);
+    }
+
+    expect(await store.findAccount(applicant)).toBeUndefined();
+    const { rows } = await ctx.db.execute<{ status: string }>(
+      sql`SELECT status FROM ib_applications WHERE id = ${application.id}`,
+    );
+    expect(rows[0].status).toBe('pending');
   });
 
   /*
@@ -1116,7 +1293,7 @@ describe('approval', () => {
     // the explicit null is the reviewer's decision, and it stands.
     await expect(
       service.approve(application.id, REVIEWER, UNRESTRICTED, { parentIbUserId: middle }),
-    ).rejects.toThrow(/no enabled level 3/i);
+    ).rejects.toThrow(/sub-partner cannot have partners beneath them/i);
 
     const account = await service.approve(application.id, REVIEWER, UNRESTRICTED, {
       parentIbUserId: null,
@@ -1360,12 +1537,101 @@ describe('managing a live partner', () => {
     });
     await store.createAccount({
       userId: child,
-      level: 1,
+      level: 2,
       parentIbUserId: parent,
       referralCode: 'MGMTCHLD',
     });
     return [parent, child];
   }
+
+  /** A root partner with no parent and nobody beneath them. */
+  async function makeRoot(email: string, referralCode: string): Promise<number> {
+    const userId = await makeClient(email);
+    await store.createAccount({ userId, level: 1, referralCode });
+    return userId;
+  }
+
+  /*
+   * ── TWO LEVELS AT MOST, ON REASSIGNMENT TOO (0197) ───────────────────────
+   *
+   * Reassigning is the other door into the tree, so it holds the same rule an
+   * approval does: the new parent must be a main partner, a partner with
+   * sub-partners of their own cannot become one, and the moved partner's level
+   * follows their new position.
+   */
+  it('refuses to reassign a partner under a sub-partner', async () => {
+    const [, child] = await makePair();
+    const mover = await makeRoot('mgmt-mover@test.local', 'MGMTMOVE');
+
+    await expect(service.reassignParent(mover, child, UNRESTRICTED, REVIEWER)).rejects.toThrow(
+      /sub-partner cannot have partners beneath them/i,
+    );
+    const unchanged = await store.findAccount(mover);
+    expect(unchanged?.parentIbUserId).toBeNull();
+    expect(unchanged?.level).toBe(1);
+  });
+
+  it('refuses to reassign a partner who has sub-partners of their own', async () => {
+    const [parent, child] = await makePair();
+    const newParent = await makeRoot('mgmt-newparent@test.local', 'MGMTNEWP');
+
+    await expect(service.reassignParent(parent, newParent, UNRESTRICTED, REVIEWER)).rejects.toThrow(
+      /has sub-partners of their own/i,
+    );
+    // Nobody moved: the parent is still a root on level 1, the child still theirs.
+    const stillRoot = await store.findAccount(parent);
+    expect(stillRoot?.parentIbUserId).toBeNull();
+    expect(stillRoot?.level).toBe(1);
+    expect((await store.findAccount(child))?.parentIbUserId).toBe(parent);
+  });
+
+  it('re-levels a partner moved under a main partner to level 2', async () => {
+    const mover = await makeRoot('mgmt-relevel-down@test.local', 'MGMTRLDN');
+    const newParent = await makeRoot('mgmt-relevel-parent@test.local', 'MGMTRLPR');
+
+    const moved = await service.reassignParent(mover, newParent, UNRESTRICTED, REVIEWER);
+
+    expect(moved.parentIbUserId).toBe(newParent);
+    expect(moved.level).toBe(2);
+    expect((await store.findAccount(mover))?.level).toBe(2);
+  });
+
+  it('re-levels a partner cut loose to level 1 and clears their own terms', async () => {
+    const [, child] = await makePair();
+    await service.setTerms(
+      child,
+      { commissionShare: '25', rebateShare: '7.5' },
+      UNRESTRICTED,
+      REVIEWER,
+    );
+
+    const freed = await service.reassignParent(child, null, UNRESTRICTED, REVIEWER);
+
+    expect(freed.parentIbUserId).toBeNull();
+    expect(freed.level).toBe(1);
+    // An override only means something on a sub-partner; a main partner has none.
+    expect(freed.commissionShareOverride).toBeNull();
+    expect(freed.rebateShareOverride).toBeNull();
+    const stored = await store.findAccount(child);
+    expect(stored?.commissionShareOverride).toBeNull();
+    expect(stored?.rebateShareOverride).toBeNull();
+  });
+
+  /*
+   * Moving a sub-partner sideways — from one main partner to another — keeps
+   * them a sub-partner, and keeps the terms set for them.
+   */
+  it('keeps a sub-partner’s level and terms when moved to another main partner', async () => {
+    const [, child] = await makePair();
+    await service.setTerms(child, { commissionShare: '25' }, UNRESTRICTED, REVIEWER);
+    const other = await makeRoot('mgmt-sideways@test.local', 'MGMTSIDE');
+
+    const moved = await service.reassignParent(child, other, UNRESTRICTED, REVIEWER);
+
+    expect(moved.parentIbUserId).toBe(other);
+    expect(moved.level).toBe(2);
+    expect(Number(moved.commissionShareOverride)).toBe(25);
+  });
 
   /*
    * `changeLevel` and its two tests went in 0102 with the rung they moved a
@@ -1440,7 +1706,7 @@ describe('managing a live partner', () => {
     await ctx.db.execute(sql`
       INSERT INTO client_tag_assignments (user_id, tag_id) VALUES (${child}, ${tagId})
     `);
-    const scope = scopeOf([tagId], false, false);
+    const scope = scopeOf([tagId], false);
 
     await expect(service.reassignParent(child, outsider, scope, REVIEWER)).rejects.toThrow(
       /not.*(found|exist)/i,
@@ -1479,7 +1745,7 @@ describe('managing a live partner', () => {
       INSERT INTO client_tags (slug, label) VALUES ('ib-inherit-mine', 'Mine') RETURNING id`);
     await ctx.db.execute(sql`
       INSERT INTO client_tag_assignments (user_id, tag_id) VALUES (${client}, ${tagRows[0].id})`);
-    const scope = scopeOf([tagRows[0].id], false, false);
+    const scope = scopeOf([tagRows[0].id], false);
 
     const application = await service.apply(client, {});
     const account = await service.approve(application.id, REVIEWER, scope);

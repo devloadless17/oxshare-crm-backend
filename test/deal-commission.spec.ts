@@ -55,11 +55,11 @@ const DEMO_LOGIN = '5000007';
 
 /**
  * The product every fixture account here is sold on: $10 a lot to the
- * partners, nothing back to the client (0140). With level 1 at 30% a one-lot
- * trade pays $3.00 on a $10.00 pool — the same two figures the suite asserted
- * when the base was "the 10.00 the broker kept", which is why most
- * expectations below did not have to move. What the broker earned on a trade
- * no longer enters the arithmetic at all.
+ * partners, nothing back to the client (0140). Every introducer in this suite
+ * is a level 1 partner with no sub-partner beneath them, so since 0197 they
+ * take the WHOLE pool on their own client: a one-lot trade pays $10.00 on a
+ * $10.00 pool. Level 1's own share on the ladder no longer decides anything,
+ * and what the broker earned on a trade does not enter the arithmetic at all.
  */
 let terms: CommissionTypeTerms;
 let productId: string;
@@ -92,13 +92,15 @@ async function ingest(deal: {
    * the millisecond two inserts happened to land on.
    */
   secondsAgo?: number;
+  /** The traded symbol (0198 exclusions); EURUSD when the case does not care. */
+  symbol?: string;
 }): Promise<string> {
   const { rows } = await ctx.db.execute<{ id: string }>(sql`
     INSERT INTO mt5_deals
       (mt5_deal_id, login, symbol, action, entry, volume, price, profit, commission, swap,
        mt5_position_id, dealt_at)
     VALUES
-      (${deal.ticket}, ${deal.login}, 'EURUSD', ${deal.action ?? 0}, ${deal.entry ?? 1},
+      (${deal.ticket}, ${deal.login}, ${deal.symbol ?? 'EURUSD'}, ${deal.action ?? 0}, ${deal.entry ?? 1},
        ${deal.volume ?? '1.00000000'}, '1.08542000', '0', ${deal.commission}, ${deal.swap},
        ${deal.positionId ?? null},
        now() - ((${deal.secondsAgo ?? 0})::text || ' seconds')::interval)
@@ -189,11 +191,11 @@ beforeAll(async () => {
   ctx = await startMoneyTestDb();
 
   /*
-   * A rate WELL UNDER the broker's revenue-share cap, which defaults to 50%.
-   *
-   * At 70% every figure below would come back scaled down to the ceiling, and
-   * the suite would be asserting the cap rather than the seam it is about. What
-   * the cap does is covered in `commission.spec.ts`.
+   * Level 1 must be ON the ladder and enabled for its partners to be paid, but
+   * since 0197 its commission share is IGNORED: a level 1 partner takes 100%
+   * less whatever sub-partners beneath them took. The 30 below is deliberately
+   * not 100, so every $10.00 asserted in this file proves the share was not
+   * read. What the payout ceiling does is covered in `commission.spec.ts`.
    *
    * ## The rate is a TIER now, and there is only one place to set it
    *
@@ -309,9 +311,16 @@ describe('an ingested deal pays the partner behind the client', () => {
 
     const [accrual] = await accrualsFor(id);
     expect(accrual.ib_user_id).toBe(partnerId);
-    // 30% of the 10.00 the broker kept. Not of the client's volume or profit.
-    expect(accrual.amount).toBe('3.00000000');
+    // The whole $10 pool one lot puts on the table: a level 1 partner's own
+    // client (0197). Not a share of the client's volume or profit.
+    expect(accrual.amount).toBe('10.00000000');
     expect(accrual.base_amount).toBe('10.00000000');
+
+    // The share actually applied is on the row: 100, not the ladder's 30.
+    const { rows } = await ctx.db.execute<{ rate_value: string }>(
+      sql`SELECT rate_value FROM ib_accruals WHERE source_type = 'deal' AND source_id = ${id}`,
+    );
+    expect(rows[0].rate_value).toBe('100.0000');
   });
 
   /*
@@ -439,7 +448,7 @@ describe('an ingested deal pays the partner behind the client', () => {
     const run = await deals.accruePending(2);
 
     expect(run.accrued).toBe(1);
-    expect((await accrualsFor(closing))[0].amount).toBe('3.00000000');
+    expect((await accrualsFor(closing))[0].amount).toBe('10.00000000');
   });
 
   it('pays the whole position when it closes, entry charge included', async () => {
@@ -463,10 +472,10 @@ describe('an ingested deal pays the partner behind the client', () => {
     await deals.accruePending();
 
     const [accrual] = await accrualsFor(closing);
-    // 30% of the $10 pool ONE closing lot puts on the table. The charges on
+    // All of the $10 pool ONE closing lot puts on the table. The charges on
     // either leg are not what pays (0140) — but both legs are consumed by the
     // close, so the opener never comes back as an unpaid deal.
-    expect(accrual.amount).toBe('3.00000000');
+    expect(accrual.amount).toBe('10.00000000');
     expect(accrual.base_amount).toBe('10.00000000');
     expect(await isProcessed(closing)).toBe(true);
   });
@@ -532,8 +541,8 @@ describe('an ingested deal pays the partner behind the client', () => {
 
     // The SAME on both. A partner is owed the product's per-lot terms on
     // volume (0140); what MT5 charged or credited does not move the number.
-    expect((await accrualsFor(charged))[0].amount).toBe('3.00000000');
-    expect((await accrualsFor(credited))[0].amount).toBe('3.00000000');
+    expect((await accrualsFor(charged))[0].amount).toBe('10.00000000');
+    expect((await accrualsFor(credited))[0].amount).toBe('10.00000000');
   });
 });
 
@@ -640,7 +649,7 @@ describe('what is finished, and what waits', () => {
     });
     const run = await deals.accruePending();
     expect(run.accrued).toBe(1);
-    expect((await accrualsFor(id))[0].amount).toBe('3.00000000');
+    expect((await accrualsFor(id))[0].amount).toBe('10.00000000');
     expect(await processedAt(id)).not.toBeNull();
   });
 
@@ -697,7 +706,7 @@ describe('what is finished, and what waits', () => {
     // makes the backoff a delay rather than a write-off.
     await makeDue(id);
     expect((await deals.accruePending()).accrued).toBe(1);
-    expect((await accrualsFor(id))[0].amount).toBe('3.00000000');
+    expect((await accrualsFor(id))[0].amount).toBe('10.00000000');
   });
 
   it('backs a repeatedly refused deal off further each time', async () => {
@@ -781,7 +790,7 @@ describe('a stuck deal does not block the ones behind it', () => {
     const run = await deals.accruePending(2);
 
     expect(run.accrued).toBe(1);
-    expect((await accrualsFor(payable))[0].amount).toBe('3.00000000');
+    expect((await accrualsFor(payable))[0].amount).toBe('10.00000000');
 
     // Held out of the batch, not lost: still queued, still counted, and still
     // the number that reaches an operator.
@@ -823,7 +832,7 @@ describe('a stuck deal does not block the ones behind it', () => {
     const run = await deals.accruePending(2);
 
     expect(run.accrued).toBe(1);
-    expect((await accrualsFor(payable))[0].amount).toBe('3.00000000');
+    expect((await accrualsFor(payable))[0].amount).toBe('10.00000000');
     expect(run.deferred).toBe(2);
   });
 
@@ -929,7 +938,7 @@ describe('only one feed pays for a trade', () => {
 
     const [accrual] = await accrualsFor(id);
     expect(accrual.ib_user_id).toBe(partnerId);
-    expect(accrual.amount).toBe('3.00000000');
+    expect(accrual.amount).toBe('10.00000000');
   });
 });
 
@@ -961,7 +970,7 @@ describe('a deposit cannot accrue a revenue share', () => {
 
   it('writes no accrual row for a referred client with a working ladder', async () => {
     /*
-     * The client below IS referred and the programme DOES pay 30% — the exact
+     * The client below IS referred and their partner DOES earn — the exact
      * fixture every other test in this file uses to prove commission lands. So
      * a zero here is the refusal and not an unreferred client or a dead rate.
      */
@@ -1045,7 +1054,7 @@ describe('what the engine is allowed to pay for', () => {
 
     expect(run.awaitingBacklogDecision).toBe(false);
     expect(run.accrued).toBe(1);
-    expect((await accrualsFor(fresh))[0].amount).toBe('3.00000000');
+    expect((await accrualsFor(fresh))[0].amount).toBe('10.00000000');
   });
 
   it('pays the whole backlog when somebody says so out loud', async () => {
@@ -1056,7 +1065,7 @@ describe('what the engine is allowed to pay for', () => {
 
     expect(run.awaitingBacklogDecision).toBe(false);
     expect(run.accrued).toBe(1);
-    expect((await accrualsFor(old))[0].amount).toBe('3.00000000');
+    expect((await accrualsFor(old))[0].amount).toBe('10.00000000');
   });
 
   it('pays from the chosen instant and FINISHES what predates it', async () => {
@@ -1067,7 +1076,7 @@ describe('what the engine is allowed to pay for', () => {
     const run = await deals.accruePending();
 
     expect(run.accrued).toBe(1);
-    expect((await accrualsFor(after))[0].amount).toBe('3.00000000');
+    expect((await accrualsFor(after))[0].amount).toBe('10.00000000');
 
     // Out of scope, and DONE — not left to be re-examined on every run forever
     // while inflating a backlog nobody intends to pay.
@@ -1167,9 +1176,9 @@ describe('what the accrual is a share of', () => {
     });
     await deals.accruePending();
 
-    /* 30% of a $50 pool: two lots at $25. The $10 of charges is not in it. */
+    /* All of a $50 pool: two lots at $25. The $10 of charges is not in it. */
     const [accrual] = await accrualsFor(closing);
-    expect(accrual.amount).toBe('15.00000000');
+    expect(accrual.amount).toBe('50.00000000');
     expect(accrual.base_amount).toBe('50.00000000');
     expect(await isProcessed(opening)).toBe(true);
 
@@ -1267,10 +1276,224 @@ describe('a trade the broker earned nothing on', () => {
     });
     await deals.accruePending();
 
-    /* 30% of a $20 pool: two lots at $10. */
+    /* All of a $20 pool: two lots at $10 — a level 1 partner's own client. */
     const [accrual] = await accrualsFor(closing);
-    expect(accrual?.amount).toBe('6.00000000');
+    expect(accrual?.amount).toBe('20.00000000');
     expect(accrual?.ib_user_id).toBe(zeroPartnerId);
     expect(await isProcessed(opening)).toBe(true);
+  });
+});
+
+/**
+ * ── EXCLUDED SYMBOLS PAY NOBODY (0198) ──────────────────────────────────────
+ *
+ * A commission type may exclude MT5 symbol FOLDERS (matched against the CRM's
+ * `mt5_symbols` mirror, at any depth) and single SYMBOLS (matched by name, no
+ * mirror needed). A closing deal on an excluded symbol is DONE having paid no
+ * commission and no rebate. A deal whose folder the mirror does not know yet,
+ * on a type that excludes folders, is REFUSED and retried — guessing either way
+ * is wrong money — and is priced once the mirror learns the symbol.
+ */
+describe('a commission type can exclude symbols and folders (0198)', () => {
+  /** On a type excluding the folders `Crypto` and `Forex`. */
+  const FOLDER_LOGIN = '5000010';
+  /** On a type excluding the single symbol `btcusd` — lower case on purpose. */
+  const SYMBOL_LOGIN = '5000011';
+  let folderClientId: number;
+
+  async function mirror(symbol: string, path: string): Promise<void> {
+    await ctx.db.execute(sql`INSERT INTO mt5_symbols (symbol, path) VALUES (${symbol}, ${path})`);
+  }
+
+  async function rowsFor(dealRowId: string) {
+    const { rows } = await ctx.db.execute<{
+      kind: string;
+      amount: string;
+      ib_user_id: number;
+      client_user_id: number | null;
+    }>(sql`
+      SELECT kind, amount, ib_user_id, client_user_id FROM ib_accruals
+       WHERE source_type = 'deal' AND source_id = ${dealRowId}
+       ORDER BY kind
+    `);
+    return rows;
+  }
+
+  /** A closing deal of one lot, as every case here wants. */
+  function closeOn(ticket: string, login: string, symbol: string): Promise<string> {
+    return ingest({
+      ticket,
+      login,
+      symbol,
+      commission: '-10.00000000',
+      swap: '0.00000000',
+    });
+  }
+
+  beforeAll(async () => {
+    folderClientId = await makeUser('deal-folder-excl-client@oxshare-e2e.test');
+    const symbolClientId = await makeUser('deal-symbol-excl-client@oxshare-e2e.test');
+    await ctx.db.execute(sql`
+      UPDATE users SET referred_by_ib_user_id = ${partnerId}
+      WHERE id IN (${folderClientId}, ${symbolClientId})
+    `);
+
+    /* $10 a lot to the partners and $4 a lot of rebate pool, so a paying
+       trade here produces BOTH kinds of row — and an excluded one, neither. */
+    const folders = await seedProductTerms(ctx.db, {
+      name: 'Folder-excluding terms',
+      commissionPerLot: '10',
+      rebatePerLot: '4',
+    });
+    await ctx.db.execute(sql`
+      UPDATE ib_commission_types SET excluded_paths = ${'{Crypto,Forex}'}::text[]
+       WHERE id = ${folders.typeId}
+    `);
+    const symbols = await seedProductTerms(ctx.db, {
+      name: 'Symbol-excluding terms',
+      commissionPerLot: '10',
+      rebatePerLot: '4',
+    });
+    await ctx.db.execute(sql`
+      UPDATE ib_commission_types SET excluded_symbols = ${'{btcusd}'}::text[]
+       WHERE id = ${symbols.typeId}
+    `);
+
+    await ctx.db.execute(sql`
+      INSERT INTO trading_accounts (user_id, login, currency, product_id)
+      VALUES (${folderClientId}, ${FOLDER_LOGIN}, 'USD', ${folders.productId}),
+             (${symbolClientId}, ${SYMBOL_LOGIN}, 'USD', ${symbols.productId})
+    `);
+
+    /* The introducer's rung returns half the rebate pool to the client. */
+    await setLadderShares(ctx.db, [{ commission: '30', rebate: '50' }]);
+  });
+
+  afterAll(async () => {
+    await setLadderShares(ctx.db, [{ commission: '30' }]);
+    await ctx.db.execute(sql`DELETE FROM mt5_symbols`);
+  });
+
+  beforeEach(async () => {
+    await ctx.db.execute(sql`DELETE FROM mt5_symbols`);
+  });
+
+  it('pays no commission and no rebate on a symbol in an excluded folder, and marks it done', async () => {
+    await mirror('BTCUSD', 'Crypto\\BTCUSD');
+    const id = await closeOn('90500', FOLDER_LOGIN, 'BTCUSD');
+
+    const run = await deals.accruePending();
+
+    expect(run.failed).toBe(0);
+    expect(run.accrued).toBe(0);
+    expect(run.nothingOwed).toBe(1);
+    expect(await rowsFor(id)).toEqual([]);
+    expect(await isProcessed(id)).toBe(true);
+    /* Done, not deferred: nothing waits to be retried. */
+    expect((await retryState(id)).commission_attempts).toBe(0);
+    expect((await deals.accruePending()).examined).toBe(0);
+  });
+
+  it('still pays commission AND rebate on a symbol outside the excluded folders', async () => {
+    await mirror('XAUUSD', 'Metals\\XAUUSD');
+    const id = await closeOn('90501', FOLDER_LOGIN, 'XAUUSD');
+
+    const run = await deals.accruePending();
+
+    expect(run.accrued).toBe(1);
+    const rows = await rowsFor(id);
+    expect(rows.map((r) => r.kind)).toEqual(['commission', 'rebate']);
+    const [commission, rebate] = rows;
+    expect(commission.ib_user_id).toBe(partnerId);
+    expect(commission.amount).not.toBe('0.00000000');
+    /* Half of a $4 pool, to the trading client. */
+    expect(rebate.amount).toBe('2.00000000');
+    expect(rebate.client_user_id).toBe(folderClientId);
+    expect(await isProcessed(id)).toBe(true);
+  });
+
+  it('a folder rule excludes symbols at any depth beneath it, and only beneath it', async () => {
+    await mirror('EURUSD', 'Forex\\Majors\\EURUSD');
+    /* Shares a PREFIX with `Forex`, but is not inside it. */
+    await mirror('FXPLUS', 'ForexPlus\\FXPLUS');
+    const nested = await closeOn('90502', FOLDER_LOGIN, 'EURUSD');
+    const sibling = await closeOn('90503', FOLDER_LOGIN, 'FXPLUS');
+
+    const run = await deals.accruePending();
+
+    expect(run.nothingOwed).toBe(1);
+    expect(run.accrued).toBe(1);
+    expect(await rowsFor(nested)).toEqual([]);
+    expect(await isProcessed(nested)).toBe(true);
+    expect((await rowsFor(sibling)).map((r) => r.kind)).toEqual(['commission', 'rebate']);
+  });
+
+  it('a single-symbol rule needs no mirror row, and leaves other symbols paying', async () => {
+    /* `mt5_symbols` is empty: the symbol-only type must not wait on it. */
+    const excluded = await closeOn('90504', SYMBOL_LOGIN, 'BTCUSD');
+    const paying = await closeOn('90505', SYMBOL_LOGIN, 'ETHUSD');
+
+    const run = await deals.accruePending();
+
+    expect(run.failed).toBe(0);
+    expect(run.nothingOwed).toBe(1);
+    expect(run.accrued).toBe(1);
+    /* The rule says `btcusd`, the deal `BTCUSD`: names match case-insensitively. */
+    expect(await rowsFor(excluded)).toEqual([]);
+    expect(await isProcessed(excluded)).toBe(true);
+    expect((await rowsFor(paying)).map((r) => r.kind)).toEqual(['commission', 'rebate']);
+    expect(await isProcessed(paying)).toBe(true);
+  });
+
+  it('defers a deal whose folder is not known yet, and prices it once the mirror knows', async () => {
+    const id = await closeOn('90506', FOLDER_LOGIN, 'SOLUSD');
+
+    const first = await deals.accruePending();
+
+    expect(first.failed).toBe(1);
+    expect(first.nothingOwed).toBe(0);
+    expect(await rowsFor(id)).toEqual([]);
+    expect(await isProcessed(id)).toBe(false);
+    const state = await retryState(id);
+    expect(state.commission_attempts).toBe(1);
+    expect(state.commission_last_error).toMatch(/not known yet/);
+
+    /* The next symbol sync records it — in an excluded folder. */
+    await mirror('SOLUSD', 'Crypto\\Alt\\SOLUSD');
+    await makeDue(id);
+
+    const second = await deals.accruePending();
+
+    expect(second.failed).toBe(0);
+    expect(second.nothingOwed).toBe(1);
+    expect(await rowsFor(id)).toEqual([]);
+    expect(await isProcessed(id)).toBe(true);
+  });
+
+  it('a deferred deal whose folder turns out NOT to be excluded is paid in full', async () => {
+    const id = await closeOn('90507', FOLDER_LOGIN, 'US500');
+    expect((await deals.accruePending()).failed).toBe(1);
+
+    await mirror('US500', 'Indices\\US500');
+    await makeDue(id);
+    const run = await deals.accruePending();
+
+    expect(run.accrued).toBe(1);
+    expect((await rowsFor(id)).map((r) => r.kind)).toEqual(['commission', 'rebate']);
+    expect(await isProcessed(id)).toBe(true);
+  });
+
+  it('looks the symbol up case-insensitively, and matches folders case-insensitively', async () => {
+    /* The mirror spells it `btcusd` under `CRYPTO`; the deal says `BTCUSD`. */
+    await mirror('btcusd', 'CRYPTO\\btcusd');
+    const id = await closeOn('90508', FOLDER_LOGIN, 'BTCUSD');
+
+    const run = await deals.accruePending();
+
+    /* Found (not deferred), and inside the `Crypto` rule. */
+    expect(run.failed).toBe(0);
+    expect(run.nothingOwed).toBe(1);
+    expect(await rowsFor(id)).toEqual([]);
+    expect(await isProcessed(id)).toBe(true);
   });
 });

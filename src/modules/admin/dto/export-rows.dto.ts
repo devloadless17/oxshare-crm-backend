@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { ProofDetailDto } from '../../payments/dto/deposit.dto';
+import { PayToDetailDto, ProofDetailDto } from '../../payments/dto/deposit.dto';
 import { ClientField, NotClientField } from '../../../common/security/client-field.decorator';
 
 /**
@@ -99,6 +99,12 @@ export class FinancialExportRowDto extends ExportedPerson {
   )
   @ApiProperty({ type: ProofDetailDto, isArray: true, required: false, nullable: true })
   proofDetails?: ProofDetailDto[] | null;
+
+  @NotClientField(
+    "the BROKER's own payment details as shown on the deposit screen, not anything about the client",
+  )
+  @ApiProperty({ type: PayToDetailDto, isArray: true, required: false, nullable: true })
+  payToDetails?: PayToDetailDto[] | null;
 }
 
 /**
@@ -164,4 +170,24 @@ export class IbApplicationExportRowDto {
 export class IbPartnerExportRowDto {
   @ApiProperty({ type: () => IbExportedPerson })
   user!: IbExportedPerson;
+}
+
+/** A ledger entry in `GET /admin/ledger/export` — the wallet's owner, flattened. */
+export class LedgerExportRowDto extends ExportedPerson {
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty()
+  id!: string;
+}
+
+/**
+ * A commission row in `GET /admin/ib/accruals/export` — TWO people, both
+ * walked. The store has already blanked whichever of them is outside the
+ * reader's territory; this is the field mask over the ones that remain.
+ */
+export class IbAccrualExportRowDto {
+  @ApiProperty({ type: () => IbExportedPerson })
+  partner!: IbExportedPerson;
+
+  @ApiProperty({ type: () => IbExportedPerson })
+  client!: IbExportedPerson;
 }

@@ -192,7 +192,6 @@ beforeAll(async () => {
         role: 'sub_admin' as const,
         roleId: settlerRole.id,
         permissions: [],
-        seesUntriaged: false,
       },
     ])
     .returning();

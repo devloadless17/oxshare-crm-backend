@@ -1,4 +1,5 @@
 import { type ProofDetail } from '../../../common/payments/proof-fields';
+import { type PayToDetail } from '../../../common/payments/pay-to-fields';
 import { and, asc, desc, eq, sql, type SQL, type SQLWrapper, lte } from 'drizzle-orm';
 import {
   paymentProviders,
@@ -13,6 +14,13 @@ import { clientIdentitySearch } from '../../../store/users.store';
 import type { TransactionView } from '../transaction-view';
 import { money } from '../../wallet/money';
 import { buildCursorPage, pageSize, type CursorPosition } from '../../../common/pagination';
+import {
+  type DateRange,
+  dateRangeQuery,
+  isUtcDayAligned,
+  utcDate,
+  withinRange,
+} from '../../../common/date-range';
 import type { SortOrder } from '../../../common/sorting';
 import { sortKey, sortOrder } from '../../../common/sorting';
 import type { Db } from '../../../database/db';
@@ -101,6 +109,8 @@ interface CombinedRow {
   proof_filename: string | null;
   /** The client's answers to an offline method's details (0163). */
   proof_details: ProofDetail[] | null;
+  /** What an offline method showed the client at filing (0199). */
+  pay_to_details: PayToDetail[] | null;
   rejection_reason: string | null;
   /** Its Arabic, written with it (0179). A transfer's `failure_reason_ar`. */
   rejection_reason_ar: string | null;
@@ -166,9 +176,9 @@ export interface AdminMovementsFilter {
   currency?: string;
   /** Free text over the client's email and name — see `listForAdmin.q`. */
   q?: string;
-  /** Inclusive date bounds, compared by DATE PART — see the union's filters. */
-  from?: string;
-  to?: string;
+  /** `[from, until)` instants — `common/date-range.ts`. */
+  from?: Date;
+  until?: Date;
   /**
    * Only payments a PERSON must reconcile (`needs_attention`, 0173) — where an
    * attention task's link lands, and the desk's "what is flagged" view. The
@@ -182,6 +192,12 @@ export interface AdminMovementsFilter {
    * the provider, and offering Approve on it only earned a refusal.
    */
   deskDecided?: boolean;
+  /**
+   * Only movements through these payment methods (their keys, deposit or
+   * withdrawal) — the buyer's "a payment method is the most important field".
+   * Only a payment has a method, so the transfer arms never match.
+   */
+  methods?: string[];
   /**
    * One movement by its row uuid — where a notification's link lands: a
    * payment's `transactions.id`, a transfer's `transfers.id`. Applied inside
@@ -209,6 +225,8 @@ interface MovementArm {
    * that carry no route.
    */
   route: SQL | null;
+  /** The payments arm's two method-key columns (deposit, withdrawal); absent elsewhere. */
+  methodKeys?: [SQL, SQL];
 }
 
 /**
@@ -226,9 +244,18 @@ interface MovementArm {
  */
 export function movementTotalsSource(filter: AdminMovementsFilter): 'daily' | 'client' | undefined {
   // One record (`id`) is a live read — no total is kept per row.
+  // No total is kept per method either.
   if (filter.q?.trim() || filter.attention || filter.deskDecided || filter.id) return undefined;
-  if (filter.scope.unrestricted && filter.userId === undefined) return 'daily';
-  if (!filter.from && !filter.to) return 'client';
+  if (filter.methods?.length) return undefined;
+  /*
+   * The daily totals are UTC days: they answer a period only when it starts and
+   * ends on UTC midnights. A viewer's own "today" in Beirut does not, so it reads
+   * the live rows — narrowed by the range to a few, through the created_at index.
+   */
+  if (filter.scope.unrestricted && filter.userId === undefined) {
+    return isUtcDayAligned(filter) ? 'daily' : undefined;
+  }
+  if (!filter.from && !filter.until) return 'client';
   return undefined;
 }
 
@@ -258,8 +285,8 @@ export function movementTotalsQuery(
   }
   if (shape !== 'state' && filter.state) conditions.push(sql`state = ${filter.state}`);
   if (totals === 'daily') {
-    if (filter.from) conditions.push(sql`day >= ${filter.from}::date`);
-    if (filter.to) conditions.push(sql`day <= ${filter.to}::date`);
+    if (filter.from) conditions.push(sql`day >= ${utcDate(filter.from)}::date`);
+    if (filter.until) conditions.push(sql`day < ${utcDate(filter.until)}::date`);
   } else {
     const scoped = clientScopePredicate(filter.scope, sql`m.user_id`);
     if (scoped) conditions.push(scoped);
@@ -305,6 +332,8 @@ export interface AdminTransactionExportRow {
   destination: string | null;
   /** What the client gave to identify an offline payment (0163). */
   proofDetails: ProofDetail[] | null;
+  /** Where the client was told to send an offline deposit, as shown at filing (0199). */
+  payToDetails: PayToDetail[] | null;
   rejectionReason: string | null;
   userId: number;
   userPortalId: number;
@@ -455,6 +484,7 @@ function toMovementRow(row: AdminCombinedRow) {
     // the row it is deciding on. Null on every other movement.
     proofFilename: row.proof_filename,
     proofDetails: row.proof_details,
+    payToDetails: row.pay_to_details,
     createdAt: instantOf(row.created_at),
     settledAt: instantOrNull(row.settled_at),
     reviewedAt: instantOrNull(row.reviewed_at),
@@ -680,6 +710,8 @@ export class TransactionQueries {
     /** R-2.5 server-side sort. Validated by `sortKey` before it gets here. */
     sort?: WithdrawalSortKey;
     order?: SortOrder;
+    /** When requested — `[from, until)`, `common/date-range.ts`. Narrows the tabs too. */
+    range?: DateRange;
   }) {
     const page = Math.max(1, filter.page ?? 1);
     const limit = pageSize(filter.limit);
@@ -699,6 +731,7 @@ export class TransactionQueries {
     if (filter.state) {
       conditions.push(eq(transactions.state, filter.state as 'pending'));
     }
+    conditions.push(...withinRange(transactions.createdAt, filter.range));
     /*
      * Keyset seek — R-2.4. This is the withdrawal QUEUE: an admin works down it
      * while clients keep submitting, which is precisely the concurrent-insert
@@ -874,16 +907,23 @@ export class TransactionQueries {
      */
     const scope = filter.scope ?? UNRESTRICTED;
     const countRowsOf = async (): Promise<{ state: string; value: number }[]> => {
-      if (!q) {
-        const totals = await db.execute(
-          movementTotalsQuery({ scope, kind: 'payment', direction: 'withdrawal' }, 'state'),
-        );
+      const totalsFilter: AdminMovementsFilter = {
+        scope,
+        kind: 'payment',
+        direction: 'withdrawal',
+        ...filter.range,
+      };
+      // The period narrows the tabs like the search does; the stored totals
+      // answer it only on UTC-day bounds (`movementTotalsSource`).
+      if (!q && movementTotalsSource(totalsFilter)) {
+        const totals = await db.execute(movementTotalsQuery(totalsFilter, 'state'));
         return totals.rows as unknown as { state: string; value: number }[];
       }
       const countConditions = [eq(transactions.direction, 'withdrawal')];
       if (scoped) countConditions.push(scoped);
+      countConditions.push(...withinRange(transactions.createdAt, filter.range));
       // The concatenated expression the trigram index is built on — see above.
-      countConditions.push(clientIdentitySearch(q));
+      if (q) countConditions.push(clientIdentitySearch(q));
       return db
         .select({ state: transactions.state, value: sql<number>`count(*)::int` })
         .from(transactions)
@@ -1026,8 +1066,11 @@ export class TransactionQueries {
     scope?: ClientScope;
     /** The export run's snapshot instant — the SAME value on every batch. */
     startedAt: Date;
+    /** The period the desk is looking at — the file lists what the screen lists. */
+    range?: DateRange;
   }) {
     const conditions = [
+      ...withinRange(transactions.createdAt, filter.range),
       eq(transactions.direction, 'withdrawal'),
       // The snapshot bound. Without it a concurrent insert shifts every offset.
       lte(transactions.createdAt, filter.startedAt),
@@ -1228,6 +1271,7 @@ export class TransactionQueries {
           NULL::uuid,                             -- destination_trading_account_id
           NULL::varchar,                          -- proof_filename
           NULL::jsonb,                            -- proof_details
+          NULL::jsonb,                            -- pay_to_details
           NULL::text,                             -- rejection_reason: it cannot fail
           NULL::text,                             -- rejection_reason_ar
           NULL::uuid,                             -- reviewed_by
@@ -1330,6 +1374,7 @@ export class TransactionQueries {
           t.destination_trading_account_id,
           t.proof_filename,
           t.proof_details,
+          t.pay_to_details,
           t.rejection_reason,
           t.rejection_reason_ar,
           t.reviewed_by,
@@ -1355,6 +1400,7 @@ export class TransactionQueries {
           id: sql`t.id`,
           payments: true,
           route: sql`(t.direction::text, t.provider_code, t.channel_code)`,
+          methodKeys: [sql`t.method_key`, sql`t.withdrawal_method_key`],
         })}
 
         UNION ALL
@@ -1390,6 +1436,7 @@ export class TransactionQueries {
           NULL::uuid,                             -- destination_trading_account_id
           NULL::varchar,                          -- proof_filename
           NULL::jsonb,                            -- proof_details
+          NULL::jsonb,                            -- pay_to_details
           /*
            * The transfer's failure reason lands in rejection_reason: both
            * answer "why did this not happen", and giving them one column means a
@@ -1465,6 +1512,7 @@ export class TransactionQueries {
           NULL::uuid,                             -- destination_trading_account_id
           NULL::varchar,                          -- proof_filename
           NULL::jsonb,                            -- proof_details
+          NULL::jsonb,                            -- pay_to_details
           NULL::text,                             -- rejection_reason: it cannot fail
           NULL::text,                             -- rejection_reason_ar
           NULL::uuid,                             -- reviewed_by
@@ -1673,16 +1721,8 @@ export class TransactionQueries {
             )})`,
           ]
         : []),
-      /*
-       * INCLUSIVE at both ends, compared by DATE PART.
-       *
-       * `created_at::date >= from` rather than `created_at >= from`. Comparing a
-       * timestamp against the end date parsed as midnight excludes almost the
-       * whole final day — the "my newest transaction vanished when I set an end
-       * date" bug the portal's date-range.ts exists to prevent.
-       */
-      ...(query.from ? [sql`created_at::date >= ${query.from}::date`] : []),
-      ...(query.to ? [sql`created_at::date <= ${query.to}::date`] : []),
+      // `[from, until)`, the column bare for its index — `common/date-range.ts`.
+      ...withinRange(sql`created_at`, dateRangeQuery(query.from, query.to)),
     ];
 
     return filters.length ? sql` WHERE ${sql.join(filters, sql` AND `)}` : sql``;
@@ -1772,11 +1812,25 @@ export class TransactionQueries {
           sql`, `,
         )
       : undefined;
+    const methodList = filter.methods?.length
+      ? sql.join(
+          filter.methods.map((key) => sql`${key}`),
+          sql`, `,
+        )
+      : undefined;
     const cte = this.movementsCte(
-      ({ owner, id, payments, route }) => {
+      ({ owner, id, payments, route, methodKeys }) => {
         const conditions: SQL[] = [];
         // A person decides it (0168) — only a payment can be one.
         if (deskRoutes) conditions.push(route ? sql`${route} IN (${deskRoutes})` : sql`FALSE`);
+        // Through one of these methods — only a payment has one.
+        if (methodList) {
+          conditions.push(
+            methodKeys
+              ? sql`(${methodKeys[0]} IN (${methodList}) OR ${methodKeys[1]} IN (${methodList}))`
+              : sql`FALSE`,
+          );
+        }
         /*
          * In the ARM's WHERE clause: an out-of-scope movement never enters the
          * union, so it also cannot appear in the counts, the summary or the
@@ -1879,25 +1933,12 @@ export class TransactionQueries {
       if (filter.currency) conditions.push(sql`combined.currency = ${filter.currency}`);
       if (filter.attention) conditions.push(sql`combined.needs_attention`);
       /*
-       * INCLUSIVE at both ends, and SARGABLE: the bounds are computed on the
-       * constants, never by casting the column. `created_at::date >= x` wraps
-       * every row's column in a cast no b-tree can serve, so the one filter
-       * that should shrink the scan most shrank it not at all; `created_at >=
-       * x::date` and `< to + 1 day` are the same inclusive-by-date-part
-       * semantics with the column left bare for the 0094 indexes to range-scan.
+       * `[from, until)` instants, SARGABLE: the column is left bare for the 0094
+       * indexes to range-scan (`created_at::date >= x` casts every row and no
+       * b-tree can serve it). A date-only bound is a UTC day (date-range.ts), the
+       * same day the daily totals (0165) count.
        */
-      // UTC days, stated rather than left to the session's time zone: the daily
-      // totals (0165) are UTC days, and both paths must mean the same day.
-      if (filter.from) {
-        conditions.push(
-          sql`combined.created_at >= (${filter.from}::date)::timestamp AT TIME ZONE 'UTC'`,
-        );
-      }
-      if (filter.to) {
-        conditions.push(
-          sql`combined.created_at < (${filter.to}::date + 1)::timestamp AT TIME ZONE 'UTC'`,
-        );
-      }
+      conditions.push(...withinRange(sql`combined.created_at`, filter));
       return conditions;
     };
 

@@ -26,6 +26,10 @@
       {
         "key": "clients.tag",
         "label": "Assign / Unassign Tags on a Client"
+      },
+      {
+        "key": "clients.bulk",
+        "label": "Change Many Clients at Once (bulk tagging)"
       }
     ]
   },

@@ -1,5 +1,6 @@
 import Decimal from 'decimal.js';
 import { money, toDecimal } from '../wallet/money';
+import { symbolExclusion } from '../../common/symbol-exclusion';
 
 /**
  * The commission engine's pure core — data in, data out.
@@ -10,10 +11,18 @@ import { money, toDecimal } from '../wallet/money';
  * able to test exhaustively without a container, and every boundary case in
  * them is arithmetic rather than I/O.
  *
- * ## What a trade pays, in one line (0140)
+ * ## What a trade pays (0140, re-split 0197)
  *
- *     partner at level N  earns  lots × type.commissionPerLot × level_N.commissionShare / 100
- *     the trading client  gets   lots × type.rebatePerLot     × introducer.rebateShare  / 100
+ *     sub-partner (level 2+)  earns  pool × (their override ?? their level's share) / 100
+ *     level 1 partner         earns  pool × (100 − the shares paid beneath them) / 100
+ *     the trading client      gets   lots × type.rebatePerLot
+ *                                      × (introducer's rebate override ?? their level's) / 100
+ *
+ * where pool = lots × type.commissionPerLot. So a level 1 partner takes the
+ * WHOLE commission on their own clients, and on a sub-partner's clients takes
+ * what the sub-partner does not: 70/30 by default, 50/50 for a sub-partner set
+ * to 50% (the owner, 6 Oct 2026). Level 1's own share on the ladder decides
+ * nothing any more.
  *
  * `type` is the COMMISSION TYPE the traded product is sold on — the product's
  * rate card, money per standard lot — and a level is a PERCENTAGE of it. The
@@ -21,13 +30,13 @@ import { money, toDecimal } from '../wallet/money';
  * ladder could describe only one product; they moved to the product so one
  * ladder prices the whole catalogue.
  *
- * ## The shares are independent, and that is 0114's rule kept
+ * ## Level 1 takes the rest (0197 — replaces 0114's independent shares)
  *
- * On a sub-partner's client's trade, level 2 takes its share of the type AND
- * level 1 takes its own share in full. Nothing is carved out of anybody: the
- * deeper the tree, the more one lot costs the broker, and the ceiling on that
- * is `ib_max_payout_per_lot` in `checkPlausible`. A ladder of 100% / 30% on a
- * $10 type is exactly the old "$10 to the main partner, $3 to the sub".
+ * Until 0197 each rung took its own share in full and nothing was carved out
+ * of anybody. Now the commission is ONE pool split down the chain: each
+ * sub-partner takes their share, and the level 1 partner at the top takes what
+ * is left of 100%. A suspended sub-partner breaks the chain (see
+ * `resolveChain`), so nothing reaches the level 1 partner through them.
  *
  * ## The chain walk is unchanged
  *
@@ -75,6 +84,10 @@ export interface ChainNode {
   level: number;
   /** HISTORICAL — the programme they used to be paid on. Decides nothing now. */
   programId?: string;
+  /** 0197 — this partner's own commission share, overriding their level's. */
+  commissionShareOverride?: string | null;
+  /** 0197 — what this partner's clients get back of the rebate, overriding their level's. */
+  rebateShareOverride?: string | null;
 }
 
 /** A resolved earner: who, and at what depth above the client. */
@@ -105,6 +118,9 @@ export interface ChainEntry {
    * sub-partner's alike, because their rung did not move.
    */
   level: number;
+  /** 0197 — see `ChainNode`. */
+  commissionShareOverride?: string | null;
+  rebateShareOverride?: string | null;
 }
 
 /**
@@ -148,6 +164,13 @@ export function resolveChain(
       depth,
       level: node.level,
       programId: node.programId,
+      // Only when set, so an entry for a partner on their level's terms is unchanged.
+      ...(node.commissionShareOverride !== undefined && node.commissionShareOverride !== null
+        ? { commissionShareOverride: node.commissionShareOverride }
+        : {}),
+      ...(node.rebateShareOverride !== undefined && node.rebateShareOverride !== null
+        ? { rebateShareOverride: node.rebateShareOverride }
+        : {}),
     });
     currentId = node.parentIbUserId;
   }
@@ -178,11 +201,19 @@ export interface CommissionTypeTerms {
   enabled: boolean;
   commissionPerLot: string;
   rebatePerLot: string;
+  /** 0198 — folders this type pays nothing on (MT5 paths, e.g. `Crypto`). */
+  excludedPaths?: readonly string[];
+  /** 0198 — single symbols this type pays nothing on. */
+  excludedSymbols?: readonly string[];
 }
 
 /** What generated the earning a commission is a share of. */
 export interface RevenueEvent {
   currency: string;
+  /** 0198 — the traded symbol, checked against the type's exclusions. */
+  symbol?: string | null;
+  /** 0198 — that symbol's MT5 folder path, from the mirror. Null = not known yet. */
+  symbolPath?: string | null;
   /**
    * Where the event came from.
    *
@@ -404,6 +435,25 @@ export function calculate(
   }
 
   /*
+   * ── EXCLUDED SYMBOLS PAY NOBODY (0198) ───────────────────────────────────
+   *
+   * Neither partner commission nor the client's rebate. An excluded symbol is
+   * a CONFIGURED zero, so the trade is done; a symbol whose folder the CRM
+   * does not know yet is refused and retried, because guessing either way is
+   * wrong money — see `symbolExclusion`.
+   */
+  const exclusion = symbolExclusion(terms, event.symbol, event.symbolPath);
+  if (exclusion.excluded === 'unknown') {
+    return { accruals: [], unpriceable: [exclusion.reason] };
+  }
+  if (exclusion.excluded) {
+    return {
+      accruals: [],
+      skippedReason: `${exclusion.reason} ('${terms.name}') — no commission or rebate is paid`,
+    };
+  }
+
+  /*
    * Zero when the caller did not supply it, which makes the trade report "no
    * volume" rather than accruing nothing without saying why. Every term is
    * priced per lot, so there is nothing else to price from.
@@ -427,6 +477,13 @@ export function calculate(
   const accruals: Accrual[] = [];
   const skipped: string[] = [];
 
+  /*
+   * Deepest first (0197): every sub-partner's share has to be known before the
+   * level 1 partner's remainder can be. The chain is introducer-first, so this
+   * is the chain's own order; the result is put back in that order below.
+   */
+  let paidBelow = toDecimal('0');
+
   for (const entry of chain) {
     const level = levels.get(entry.level);
 
@@ -440,16 +497,30 @@ export function calculate(
       skipped.push(`level ${level.level} is disabled`);
       continue;
     }
-
-    const share = toDecimal(level.commissionShare);
-    if (!share.greaterThan(0)) {
-      skipped.push(`level ${level.level} takes no share of the commission`);
-      continue;
-    }
     if (!commissionPool.greaterThan(0)) {
       skipped.push(`commission type '${terms.name}' pays no commission per lot`);
       continue;
     }
+
+    /*
+     * A sub-partner takes their own override, else their level's share. The
+     * level 1 partner takes whatever the sub-partners beneath them did not —
+     * 100% on their own clients. Never below zero: only a malformed tree
+     * deeper than two levels could pay out more than 100% beneath them.
+     */
+    const share =
+      entry.level <= 1
+        ? Decimal.max(toDecimal('100').minus(paidBelow), 0)
+        : toDecimal(entry.commissionShareOverride ?? level.commissionShare);
+    if (!share.greaterThan(0)) {
+      skipped.push(
+        entry.level <= 1
+          ? 'the sub-partners beneath this level 1 partner take the whole commission'
+          : `the partner at level ${level.level} takes no share of the commission`,
+      );
+      continue;
+    }
+    paidBelow = paidBelow.plus(share);
 
     /*
      * Rounded FIRST, then tested: a share that rounds to nothing at eight
@@ -465,7 +536,7 @@ export function calculate(
       levelId: level.id,
       programId: entry.programId,
       commissionTypeId: terms.id,
-      rateValue: level.commissionShare,
+      rateValue: share.toFixed(4),
       baseAmount: money(commissionPool),
       amount,
     });
@@ -487,7 +558,9 @@ export function calculate(
   const introducerLevel = introducer ? levels.get(introducer.level) : undefined;
 
   if (introducer && introducerLevel?.enabled) {
-    const share = toDecimal(introducerLevel.rebateShare);
+    // 0197 — a sub-partner may have their own rebate for their clients.
+    const rebateShare = introducer.rebateShareOverride ?? introducerLevel.rebateShare;
+    const share = toDecimal(rebateShare);
 
     if (share.greaterThan(0) && rebatePool.greaterThan(0)) {
       const amount = money(rebatePool.times(share).dividedBy(100));
@@ -497,7 +570,7 @@ export function calculate(
           levelId: introducerLevel.id,
           programId: introducer.programId,
           commissionTypeId: terms.id,
-          rateValue: introducerLevel.rebateShare,
+          rateValue: share.toFixed(4),
           baseAmount: money(rebatePool),
           amount,
         };

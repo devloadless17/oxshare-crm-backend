@@ -174,7 +174,7 @@ describe('the directory and the client list agree on who is a partner', () => {
     ['an unrestricted reader', UNRESTRICTED],
     ['a reader holding desk A only', 'deskA'],
   ] as const)('counts the same partners as the client list, for %s', async (_, which) => {
-    const scope = which === 'deskA' ? scopeOf([deskA], false, false) : which;
+    const scope = which === 'deskA' ? scopeOf([deskA], false) : which;
     const directory = await list({}, scope);
     const clients = await users.findPage({
       page: 1,
@@ -216,7 +216,7 @@ describe('searching the directory', () => {
      * operator is most often given, and precisely the thing a scoped desk could
      * guess: the search must narrow what they see, never widen it.
      */
-    const deskBScope = scopeOf([deskB], false, false);
+    const deskBScope = scopeOf([deskB], false);
     expect((await list({ q: 'DIRTOP01' }, deskBScope)).total).toBe(0);
     expect((await list({ q: String(top.portalId) }, deskBScope)).total).toBe(0);
     expect(portalIds(await list({ q: 'DIRCHLD2' }, deskBScope))).toEqual([child.portalId]);
@@ -253,7 +253,7 @@ describe('the parent is named, never identified', () => {
   });
 
   it('says a parent exists outside the territory, without saying who', async () => {
-    const [row] = (await list({ q: 'DIRCHLD2' }, scopeOf([deskB], false, false))).rows;
+    const [row] = (await list({ q: 'DIRCHLD2' }, scopeOf([deskB], false))).rows;
 
     expect(row.parentPortalId).toBeNull();
     expect(row.parentOutsideTerritory).toBe(true);

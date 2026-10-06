@@ -265,6 +265,24 @@
             }
           },
           {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Raised at or after: a date-time with offset, or YYYY-MM-DD (a UTC day).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "End: a date-time with offset (exclusive), or YYYY-MM-DD (that whole day).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "cursor",
             "required": false,
             "in": "query",
@@ -2462,6 +2480,24 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Earliest submitted time, inclusive: a date-time with offset (2026-10-06T00:00:00+03:00) or a date (YYYY-MM-DD, a UTC day).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -2506,6 +2542,24 @@
                 "approved",
                 "rejected"
               ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Earliest submitted time, inclusive: a date-time with offset (2026-10-06T00:00:00+03:00) or a date (YYYY-MM-DD, a UTC day).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
+            "schema": {
               "type": "string"
             }
           }
@@ -2628,11 +2682,139 @@
         ]
       }
     },
+    "/v1/admin/ib/accruals/export": {
+      "get": {
+        "description": "The same filters as GET /admin/ib/accruals, over every matching accrual.",
+        "operationId": "AdminIbController_exportAccruals",
+        "parameters": [
+          {
+            "name": "format",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "csv"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "ibUserId",
+            "required": false,
+            "in": "query",
+            "description": "Restrict to one partner.",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "clientUserId",
+            "required": false,
+            "in": "query",
+            "description": "Restrict to one client.",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "q",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "status",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "pending",
+                "confirmed",
+                "reversed"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "kind",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "commission",
+                "rebate"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Earliest accrued time, inclusive: a date-time with offset (2026-10-06T00:00:00+03:00) or a date (YYYY-MM-DD, a UTC day).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A CSV file. `Content-Disposition` names it `commissions-<YYYY-MM-DD>.csv`.",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Export the filtered commission ledger as CSV",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/ib/accruals": {
       "get": {
         "description": "Every accrual with the partner who earned it and the client whose deposit generated it. `totals` sums by status across the whole filtered set, as decimal strings (§6.1).",
         "operationId": "AdminIbController_listAccruals",
         "parameters": [
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Earliest accrued time, inclusive: a date-time with offset (2026-10-06T00:00:00+03:00) or a date (YYYY-MM-DD, a UTC day).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
+            "schema": {
+              "type": "string"
+            }
+          },
           {
             "name": "page",
             "required": false,
@@ -3074,6 +3256,53 @@
           }
         ],
         "summary": "Reassign a partner’s parent",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/ib/partners/{userId}/terms": {
+      "patch": {
+        "description": "Sub-partners only. `commissionShare` is their percentage of the product’s commission; the main partner above them takes the rest (100 − it). `rebateShare` is what their CLIENTS get back of the product’s rebate. Null = level 2’s share; an absent key is left unchanged. Applies from the next trade.",
+        "operationId": "AdminIbController_setTerms",
+        "parameters": [
+          {
+            "name": "userId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetIbTermsDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IbAccountDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Set a sub-partner’s own commission and rebate shares",
         "tags": [
           "admin"
         ]
@@ -3808,9 +4037,9 @@
             "name": "from",
             "required": false,
             "in": "query",
-            "description": "Inclusive, YYYY-MM-DD.",
+            "description": "Inclusive start: a date-time with offset, or YYYY-MM-DD.",
             "schema": {
-              "example": "2026-08-01",
+              "example": "2026-08-01T00:00:00+03:00",
               "type": "string"
             }
           },
@@ -3818,9 +4047,9 @@
             "name": "to",
             "required": false,
             "in": "query",
-            "description": "Inclusive, YYYY-MM-DD.",
+            "description": "End: a date-time with offset (exclusive), or YYYY-MM-DD (that whole day).",
             "schema": {
-              "example": "2026-08-31",
+              "example": "2026-09-01T00:00:00+03:00",
               "type": "string"
             }
           },
@@ -3953,9 +4182,9 @@
             "name": "from",
             "required": false,
             "in": "query",
-            "description": "Inclusive, YYYY-MM-DD.",
+            "description": "Inclusive start: a date-time with offset, or YYYY-MM-DD.",
             "schema": {
-              "example": "2026-08-01",
+              "example": "2026-08-01T00:00:00+03:00",
               "type": "string"
             }
           },
@@ -3963,9 +4192,9 @@
             "name": "to",
             "required": false,
             "in": "query",
-            "description": "Inclusive, YYYY-MM-DD.",
+            "description": "End: a date-time with offset (exclusive), or YYYY-MM-DD (that whole day).",
             "schema": {
-              "example": "2026-08-31",
+              "example": "2026-09-01T00:00:00+03:00",
               "type": "string"
             }
           },
@@ -5859,6 +6088,24 @@
             }
           },
           {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Earliest opened time, inclusive: a date-time with offset (2026-10-06T00:00:00+03:00) or a date (YYYY-MM-DD, a UTC day).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "page",
             "required": false,
             "in": "query",
@@ -6153,6 +6400,62 @@
           }
         ],
         "summary": "The MT5 groups the server currently reports, as the sync job mirrored them",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/mt5-symbols": {
+      "get": {
+        "description": "From the local mirror (`mt5_symbols`), so it renders when the server is unreachable. Symbols the server stopped reporting are left out.",
+        "operationId": "AdminMt5SymbolsController_list",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Mt5SymbolListDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "MT5 symbols with their folders, as last synced",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/mt5-symbols/sync": {
+      "post": {
+        "description": "The same sync the scheduled MT5 job runs. Answers the refreshed list. Slow on a large server: the bridge reads one symbol per round trip, then caches the list.",
+        "operationId": "AdminMt5SymbolsController_sync",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Mt5SymbolListDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Re-read the symbol list from MT5 now",
         "tags": [
           "admin"
         ]
@@ -7902,6 +8205,43 @@
         ]
       }
     },
+    "/v1/admin/clients/bulk/tags": {
+      "post": {
+        "operationId": "AdminClientsController_bulkTags",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BulkTagsDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BulkTagResultDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Add/remove tags on many clients (picked, or all matching a filter)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/clients": {
       "get": {
         "operationId": "AdminClientsController_listClients",
@@ -8031,7 +8371,7 @@
             "name": "tag",
             "required": false,
             "in": "query",
-            "description": "Tag SLUG, not id (ADM-14).",
+            "description": "Tag SLUG, not id (ADM-14). Several, comma-separated: clients carrying ANY of them.",
             "schema": {
               "type": "string"
             }
@@ -8083,6 +8423,24 @@
                 "asc",
                 "desc"
               ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Earliest registration time, inclusive: a date-time with offset (2026-10-06T00:00:00+03:00) or a date (YYYY-MM-DD, a UTC day).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
+            "schema": {
               "type": "string"
             }
           }
@@ -8216,7 +8574,7 @@
             "name": "tag",
             "required": false,
             "in": "query",
-            "description": "Tag SLUG, not id (ADM-14).",
+            "description": "Tag SLUG, not id (ADM-14). Several, comma-separated: clients carrying ANY of them.",
             "schema": {
               "type": "string"
             }
@@ -8268,6 +8626,33 @@
                 "asc",
                 "desc"
               ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Earliest registration time, inclusive: a date-time with offset (2026-10-06T00:00:00+03:00) or a date (YYYY-MM-DD, a UTC day).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "ids",
+            "required": false,
+            "in": "query",
+            "description": "Export selected: Portal IDs, comma-separated, at most 1000. Narrows the file; scope and masking still apply.",
+            "schema": {
               "type": "string"
             }
           }
@@ -8919,6 +9304,145 @@
         ]
       }
     },
+    "/v1/admin/signup-links/me": {
+      "get": {
+        "operationId": "SignupLinksController_mine",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MySignupLinkDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Your own sign-up link, the tags it gives, and what it has brought",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/signup-links": {
+      "get": {
+        "operationId": "SignupLinksController_list",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/SignupLinkRowDto"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Every administrator’s sign-up link, with what it has brought",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/signup-links/{adminId}": {
+      "patch": {
+        "operationId": "SignupLinksController_rename",
+        "parameters": [
+          {
+            "name": "adminId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenameSignupLinkDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignupLinkUrlDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Rename a sign-up link (your own, or anyone’s with admins.edit)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/signup-links/{adminId}/random": {
+      "post": {
+        "operationId": "SignupLinksController_randomize",
+        "parameters": [
+          {
+            "name": "adminId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignupLinkUrlDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Give a sign-up link a random word made by the server (the old word stops working)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/kyc": {
       "get": {
         "operationId": "AdminComplianceController_listKyc",
@@ -8990,6 +9514,24 @@
               ],
               "type": "string"
             }
+          },
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Earliest submitted time, inclusive: a date-time with offset (2026-10-06T00:00:00+03:00) or a date (YYYY-MM-DD, a UTC day).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -9052,6 +9594,24 @@
             "required": false,
             "in": "query",
             "description": "A Portal ID (digits, matched exactly) or free text over email and name.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Earliest submitted time, inclusive: a date-time with offset (2026-10-06T00:00:00+03:00) or a date (YYYY-MM-DD, a UTC day).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
             "schema": {
               "type": "string"
             }
@@ -10391,6 +10951,24 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Earliest created time, inclusive: a date-time with offset (2026-10-06T00:00:00+03:00) or a date (YYYY-MM-DD, a UTC day).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -10511,6 +11089,24 @@
                 "asc",
                 "desc"
               ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Earliest created time, inclusive: a date-time with offset (2026-10-06T00:00:00+03:00) or a date (YYYY-MM-DD, a UTC day).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
+            "schema": {
               "type": "string"
             }
           }
@@ -10842,6 +11438,24 @@
               ],
               "type": "string"
             }
+          },
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Earliest requested time, inclusive: a date-time with offset (2026-10-06T00:00:00+03:00) or a date (YYYY-MM-DD, a UTC day).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -10955,6 +11569,24 @@
             "required": false,
             "in": "query",
             "description": "One record by its uuid — where a notification deep link lands. AND-ed with every other filter and the reader's scope, so a record outside it answers an empty page, like any filtered-out row. No state is implied: a handled record is still returned.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Earliest requested time, inclusive: a date-time with offset (2026-10-06T00:00:00+03:00) or a date (YYYY-MM-DD, a UTC day).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
             "schema": {
               "type": "string"
             }
@@ -11654,6 +12286,106 @@
         ]
       }
     },
+    "/v1/admin/ledger/export": {
+      "get": {
+        "description": "The same filters as GET /admin/ledger, over every matching entry. Amounts and balances are the exact decimal strings the ledger holds — never rounded (§6.1).",
+        "operationId": "AdminMoneyController_exportLedger",
+        "parameters": [
+          {
+            "name": "format",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "csv"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "userId",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "q",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "walletId",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "entryType",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "deposit",
+                "withdrawal",
+                "commission",
+                "rebate",
+                "payout",
+                "adjustment",
+                "transfer"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Earliest posted time, inclusive: a date-time with offset (2026-10-06T00:00:00+03:00) or a date (YYYY-MM-DD, a UTC day).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A CSV file. `Content-Disposition` names it `ledger-<YYYY-MM-DD>.csv`.",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Export the filtered ledger as CSV",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/ledger": {
       "get": {
         "operationId": "AdminMoneyController_listLedger",
@@ -11711,6 +12443,24 @@
             "name": "cursor",
             "required": true,
             "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Earliest posted time, inclusive: a date-time with offset (2026-10-06T00:00:00+03:00) or a date (YYYY-MM-DD, a UTC day).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
             "schema": {
               "type": "string"
             }
@@ -12070,7 +12820,7 @@
             "name": "from",
             "required": false,
             "in": "query",
-            "description": "Inclusive, YYYY-MM-DD.",
+            "description": "Earliest created time, inclusive: a date-time with offset (2026-10-06T00:00:00+03:00) or a date (YYYY-MM-DD, a UTC day).",
             "schema": {
               "type": "string"
             }
@@ -12079,7 +12829,7 @@
             "name": "to",
             "required": false,
             "in": "query",
-            "description": "Inclusive, YYYY-MM-DD.",
+            "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
             "schema": {
               "type": "string"
             }
@@ -12105,6 +12855,15 @@
               "enum": [
                 "desk"
               ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "method",
+            "required": false,
+            "in": "query",
+            "description": "Payment method keys, comma-separated — deposit or withdrawal methods. Only payments have a method, so a transfer never matches. At most 50.",
+            "schema": {
               "type": "string"
             }
           },
@@ -12218,7 +12977,7 @@
             "name": "from",
             "required": false,
             "in": "query",
-            "description": "Inclusive, YYYY-MM-DD.",
+            "description": "Earliest created time, inclusive: a date-time with offset (2026-10-06T00:00:00+03:00) or a date (YYYY-MM-DD, a UTC day).",
             "schema": {
               "type": "string"
             }
@@ -12227,7 +12986,7 @@
             "name": "to",
             "required": false,
             "in": "query",
-            "description": "Inclusive, YYYY-MM-DD.",
+            "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
             "schema": {
               "type": "string"
             }
@@ -12253,6 +13012,15 @@
               "enum": [
                 "desk"
               ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "method",
+            "required": false,
+            "in": "query",
+            "description": "Payment method keys, comma-separated — deposit or withdrawal methods. Only payments have a method, so a transfer never matches. At most 50.",
+            "schema": {
               "type": "string"
             }
           },
@@ -12284,6 +13052,219 @@
           }
         ],
         "summary": "Totals over the filtered movement list, grouped per currency (amounts are strings)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/deposits/export": {
+      "get": {
+        "description": "The same filters as GET /admin/deposits, over every matching row. Amounts are the exact decimal strings the ledger holds (§6.1); the client's deposit details are a column.",
+        "operationId": "AdminFinancialController_exportDeskDeposits",
+        "parameters": [
+          {
+            "name": "format",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "csv"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "pending",
+                "approved",
+                "success",
+                "failure",
+                "rejected"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "required": false,
+            "in": "query",
+            "description": "A Portal ID, a phone, a name or an email — or a detail the client gave with the receipt.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Earliest created time, inclusive: a date-time with offset (2026-10-06T00:00:00+03:00) or a date (YYYY-MM-DD, a UTC day).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A CSV file. `Content-Disposition` names it `deposits-<YYYY-MM-DD>.csv`.",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Export the deposit desk as CSV",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/deposits": {
+      "get": {
+        "operationId": "AdminFinancialController_listDeskDeposits",
+        "parameters": [
+          {
+            "name": "state",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "pending",
+                "approved",
+                "success",
+                "failure",
+                "rejected"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "required": false,
+            "in": "query",
+            "description": "A Portal ID, a phone, a name or an email — or a detail the client gave with the receipt.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Earliest created time, inclusive: a date-time with offset (2026-10-06T00:00:00+03:00) or a date (YYYY-MM-DD, a UTC day).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "required": false,
+            "in": "query",
+            "description": "One deposit by its uuid — where a notification lands. No state is implied.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "description": "Legacy offset paging. Prefer cursor.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "required": false,
+            "in": "query",
+            "description": "Opaque keyset cursor (R-2.4).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sort",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "createdAt",
+                "amount",
+                "state"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "order",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminTransactionListResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "The deposit desk — deposits a person decides (amounts are strings)",
         "tags": [
           "admin"
         ]
@@ -12365,7 +13346,7 @@
             "name": "from",
             "required": false,
             "in": "query",
-            "description": "Inclusive, YYYY-MM-DD.",
+            "description": "Earliest created time, inclusive: a date-time with offset (2026-10-06T00:00:00+03:00) or a date (YYYY-MM-DD, a UTC day).",
             "schema": {
               "type": "string"
             }
@@ -12374,7 +13355,7 @@
             "name": "to",
             "required": false,
             "in": "query",
-            "description": "Inclusive, YYYY-MM-DD.",
+            "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
             "schema": {
               "type": "string"
             }
@@ -12400,6 +13381,15 @@
               "enum": [
                 "desk"
               ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "method",
+            "required": false,
+            "in": "query",
+            "description": "Payment method keys, comma-separated — deposit or withdrawal methods. Only payments have a method, so a transfer never matches. At most 50.",
+            "schema": {
               "type": "string"
             }
           },
@@ -12758,6 +13748,24 @@
                 "assigned",
                 "unassigned"
               ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Earliest opened time, inclusive: a date-time with offset (2026-10-06T00:00:00+03:00) or a date (YYYY-MM-DD, a UTC day).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
+            "schema": {
               "type": "string"
             }
           }
@@ -13948,6 +14956,11 @@
             "type": "string",
             "example": "K7M2PQR9",
             "maxLength": 50
+          },
+          "acquisitionCode": {
+            "type": "string",
+            "example": "K7M2Q9XA",
+            "maxLength": 32
           }
         },
         "required": [
@@ -15931,6 +16944,16 @@
             "nullable": true,
             "description": "What their clients get back, as a percentage of the product’s rebate per lot."
           },
+          "commissionShareOverride": {
+            "type": "string",
+            "nullable": true,
+            "description": "A sub-partner’s own commission share (0197), overriding the level’s. Null = the level’s."
+          },
+          "rebateShareOverride": {
+            "type": "string",
+            "nullable": true,
+            "description": "What a sub-partner’s clients get back of the rebate (0197), overriding the level’s. Null = the level’s."
+          },
           "referralCode": {
             "type": "string"
           },
@@ -16010,6 +17033,8 @@
           "levelEnabled",
           "levelCommissionShare",
           "levelRebateShare",
+          "commissionShareOverride",
+          "rebateShareOverride",
           "referralCode",
           "active",
           "approvedAt",
@@ -16032,8 +17057,8 @@
             "type": "number",
             "example": 2,
             "minimum": 1,
-            "maximum": 10,
-            "description": "Must be a CONFIGURED and ENABLED level. 1 is a partner dealing with the broker directly."
+            "maximum": 2,
+            "description": "Must match the partner’s position (0197): 1 with no parent, 2 under a main partner."
           }
         },
         "required": [
@@ -16052,6 +17077,23 @@
         "required": [
           "parentIbUserId"
         ]
+      },
+      "SetIbTermsDto": {
+        "type": "object",
+        "properties": {
+          "commissionShare": {
+            "type": "string",
+            "nullable": true,
+            "example": "50",
+            "description": "Their percentage of the product’s commission, 0–100. The main partner above them takes the rest. Null = level 2’s share."
+          },
+          "rebateShare": {
+            "type": "string",
+            "nullable": true,
+            "example": "30",
+            "description": "What their CLIENTS get back, as a percentage of the product’s rebate, 0–100. Null = level 2’s rebate share."
+          }
+        }
       },
       "SetIbActiveDto": {
         "type": "object",
@@ -16247,6 +17289,27 @@
             "example": "3.00000000",
             "description": "Money per standard lot returned to the trading CLIENT, before the introducer level’s share. A decimal string."
           },
+          "excludedPaths": {
+            "example": [
+              "Crypto",
+              "Forex\\Exotics"
+            ],
+            "description": "MT5 symbol FOLDERS this type pays nothing on — no commission, no rebate. A folder covers every symbol beneath it, including ones added later (0198).",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "excludedSymbols": {
+            "example": [
+              "BTCUSD"
+            ],
+            "description": "Single symbols this type pays nothing on — no commission, no rebate (0198).",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "sortOrder": {
             "type": "number",
             "example": 0
@@ -16274,6 +17337,8 @@
           "enabled",
           "commissionPerLot",
           "rebatePerLot",
+          "excludedPaths",
+          "excludedSymbols",
           "sortOrder",
           "productNames",
           "createdAt",
@@ -16301,6 +17366,20 @@
           "rebatePerLot": {
             "type": "string",
             "example": "3"
+          },
+          "excludedPaths": {
+            "description": "MT5 folder paths excluded from commission and rebate, e.g. \"Crypto\".",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "excludedSymbols": {
+            "description": "Symbols excluded from commission and rebate, e.g. \"BTCUSD\".",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           },
           "enabled": {
             "type": "boolean",
@@ -16337,6 +17416,20 @@
           },
           "rebatePerLot": {
             "type": "string"
+          },
+          "excludedPaths": {
+            "description": "MT5 folder paths excluded from commission and rebate, e.g. \"Crypto\".",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "excludedSymbols": {
+            "description": "Symbols excluded from commission and rebate, e.g. \"BTCUSD\".",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           },
           "enabled": {
             "type": "boolean"
@@ -16398,6 +17491,57 @@
           "hintAr"
         ]
       },
+      "ShownPayToFieldDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "example": "f_p7d2k9m4qa"
+          },
+          "label": {
+            "type": "string",
+            "example": "Send to"
+          },
+          "labelAr": {
+            "type": "string",
+            "nullable": true,
+            "example": "أرسل إلى",
+            "description": "The label in Arabic; null = not translated, show `label`."
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "text",
+              "phone"
+            ],
+            "example": "phone"
+          },
+          "value": {
+            "type": "string",
+            "example": "+96170123456",
+            "description": "The broker's value, shown read-only with a Copy button. A phone is E.164."
+          },
+          "hint": {
+            "type": "string",
+            "nullable": true,
+            "example": "Whish account in the name of OxShare."
+          },
+          "hintAr": {
+            "type": "string",
+            "nullable": true,
+            "description": "The hint in Arabic; null = not translated, show `hint`."
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "labelAr",
+          "type",
+          "value",
+          "hint",
+          "hintAr"
+        ]
+      },
       "PaymentMethodDto": {
         "type": "object",
         "properties": {
@@ -16450,6 +17594,13 @@
             "items": {
               "$ref": "#/components/schemas/AskedProofFieldDto"
             }
+          },
+          "payToFields": {
+            "description": "Where the client sends the money, in order — only the details shown to clients, and only for a method paid outside the platform. Read-only for the client.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ShownPayToFieldDto"
+            }
           }
         },
         "required": [
@@ -16463,7 +17614,8 @@
           "enabled",
           "sortOrder",
           "requiresProof",
-          "proofFields"
+          "proofFields",
+          "payToFields"
         ]
       },
       "DepositStateDto": {
@@ -17093,6 +18245,62 @@
           "enabled"
         ]
       },
+      "PayToFieldDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "example": "f_p7d2k9m4qa"
+          },
+          "label": {
+            "type": "string",
+            "example": "Send to"
+          },
+          "labelAr": {
+            "type": "string",
+            "nullable": true,
+            "example": "أرسل إلى",
+            "description": "The label in Arabic; null = not translated, show `label`."
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "text",
+              "phone"
+            ],
+            "example": "phone"
+          },
+          "value": {
+            "type": "string",
+            "example": "+96170123456",
+            "description": "The broker's value, shown read-only with a Copy button. A phone is E.164."
+          },
+          "hint": {
+            "type": "string",
+            "nullable": true,
+            "example": "Whish account in the name of OxShare."
+          },
+          "hintAr": {
+            "type": "string",
+            "nullable": true,
+            "description": "The hint in Arabic; null = not translated, show `hint`."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Shown to clients. A hidden detail is kept but never shown."
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "labelAr",
+          "type",
+          "value",
+          "hint",
+          "hintAr",
+          "enabled"
+        ]
+      },
       "AdminPaymentMethodDto": {
         "type": "object",
         "properties": {
@@ -17144,6 +18352,13 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/ProofFieldDto"
+            }
+          },
+          "payToFields": {
+            "description": "Every detail the method shows, hidden ones included. What an OFFLINE method SHOWS the client — where to send the money, e.g. the phone a transfer goes to or an account name. Ordered; the whole list is replaced on save. Shown only while the method is paid outside the platform. Each deposit records what it was shown.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PayToFieldDto"
             }
           },
           "ownMinAmount": {
@@ -17221,6 +18436,7 @@
           "sortOrder",
           "requiresProof",
           "proofFields",
+          "payToFields",
           "ownMinAmount",
           "countryRule",
           "countryCodes",
@@ -17284,6 +18500,62 @@
           "label",
           "type",
           "required",
+          "enabled"
+        ]
+      },
+      "PayToFieldInputDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "example": "f_p7d2k9m4qa",
+            "description": "Permanent; generated by the console."
+          },
+          "label": {
+            "type": "string",
+            "example": "Send to",
+            "maxLength": 60
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "text",
+              "phone"
+            ]
+          },
+          "value": {
+            "type": "string",
+            "example": "+96170123456",
+            "maxLength": 120
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Shown to clients."
+          },
+          "hint": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 160
+          },
+          "labelAr": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 60,
+            "example": "أرسل إلى",
+            "description": "Arabic for the portal’s Arabic readers. Optional; blank or null = not translated (the portal shows the English)."
+          },
+          "hintAr": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 160,
+            "description": "Arabic for the portal’s Arabic readers. Optional; blank or null = not translated (the portal shows the English)."
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "type",
+          "value",
           "enabled"
         ]
       },
@@ -17381,6 +18653,13 @@
             "items": {
               "$ref": "#/components/schemas/ProofFieldInputDto"
             }
+          },
+          "payToFields": {
+            "description": "What an OFFLINE method SHOWS the client — where to send the money, e.g. the phone a transfer goes to or an account name. Ordered; the whole list is replaced on save. Shown only while the method is paid outside the platform. Each deposit records what it was shown.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PayToFieldInputDto"
+            }
           }
         },
         "required": [
@@ -17461,6 +18740,13 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/ProofFieldInputDto"
+            }
+          },
+          "payToFields": {
+            "description": "What an OFFLINE method SHOWS the client — where to send the money, e.g. the phone a transfer goes to or an account name. Ordered; the whole list is replaced on save. Shown only while the method is paid outside the platform. Each deposit records what it was shown.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PayToFieldInputDto"
             }
           }
         }
@@ -20259,6 +21545,50 @@
           "accountsOutsideScope"
         ]
       },
+      "Mt5SymbolDto": {
+        "type": "object",
+        "properties": {
+          "symbol": {
+            "type": "string",
+            "example": "BTCUSD"
+          },
+          "path": {
+            "type": "string",
+            "example": "Crypto\\BTCUSD",
+            "description": "MT5’s own path, backslash-separated, ending in the symbol itself."
+          },
+          "description": {
+            "type": "string",
+            "example": "Bitcoin vs US Dollar"
+          }
+        },
+        "required": [
+          "symbol",
+          "path",
+          "description"
+        ]
+      },
+      "Mt5SymbolListDto": {
+        "type": "object",
+        "properties": {
+          "symbols": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Mt5SymbolDto"
+            }
+          },
+          "lastSyncedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "When the server last confirmed the list. Null = never synced."
+          }
+        },
+        "required": [
+          "symbols",
+          "lastSyncedAt"
+        ]
+      },
       "KycDocumentPartDto": {
         "type": "object",
         "properties": {
@@ -21587,9 +22917,6 @@
               "$ref": "#/components/schemas/AdminScopeTagDto"
             }
           },
-          "seesUntriaged": {
-            "type": "boolean"
-          },
           "seesAllClients": {
             "type": "boolean"
           },
@@ -21622,7 +22949,6 @@
           "status",
           "maskedFields",
           "scopedTags",
-          "seesUntriaged",
           "seesAllClients",
           "totpEnabledAt",
           "createdAt"
@@ -21671,15 +22997,11 @@
             }
           },
           "scopedTagIds": {
-            "description": "Client tags this admin is limited to. [] means no territory tags (new clients only, or none) — every client is only ever `seesAllClients` (0154).",
+            "description": "Client tags this admin is limited to. [] means no territory tags (no client) — every client is only ever `seesAllClients` (0154).",
             "type": "array",
             "items": {
               "type": "string"
             }
-          },
-          "seesUntriaged": {
-            "type": "boolean",
-            "description": "D-60 — sees the intake pool: clients with no tag assignments yet. Meaningful only for a scoped admin. DEFAULTS TO TRUE — restriction is the explicit act; an inviter who does not see the pool cannot grant it, and their default resolves to false."
           },
           "seesAllClients": {
             "type": "boolean",
@@ -21933,6 +23255,123 @@
           }
         }
       },
+      "BulkClientFilterDto": {
+        "type": "object",
+        "properties": {
+          "q": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "level": {
+            "type": "string"
+          },
+          "country": {
+            "type": "string"
+          },
+          "emailVerified": {
+            "type": "string"
+          },
+          "kycStatus": {
+            "type": "string"
+          },
+          "tag": {
+            "type": "string",
+            "description": "Tag slugs, comma-separated (ANY)."
+          },
+          "referredBy": {
+            "type": "number"
+          },
+          "referred": {
+            "type": "string"
+          },
+          "from": {
+            "type": "string",
+            "description": "Registered from (YYYY-MM-DD or ISO instant)."
+          },
+          "to": {
+            "type": "string",
+            "description": "Registered to."
+          }
+        }
+      },
+      "BulkTargetDto": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "description": "Picked Portal IDs, at most 1000.",
+            "type": "array",
+            "items": {
+              "type": "number"
+            }
+          },
+          "filter": {
+            "$ref": "#/components/schemas/BulkClientFilterDto"
+          },
+          "expectedCount": {
+            "type": "number",
+            "description": "The count the reader was shown for `filter`."
+          }
+        }
+      },
+      "BulkTagsDto": {
+        "type": "object",
+        "properties": {
+          "target": {
+            "$ref": "#/components/schemas/BulkTargetDto"
+          },
+          "add": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "remove": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "confirmLeavesScope": {
+            "type": "boolean",
+            "description": "Hand clients to another desk: confirms the 409 that asked."
+          }
+        },
+        "required": [
+          "target"
+        ]
+      },
+      "BulkTagResultDto": {
+        "type": "object",
+        "properties": {
+          "matched": {
+            "type": "number",
+            "description": "Clients the action was asked about and may see."
+          },
+          "changed": {
+            "type": "number",
+            "description": "Of which actually changed."
+          },
+          "unchanged": {
+            "type": "number",
+            "description": "Of which already carried the change."
+          },
+          "skippedOutOfScope": {
+            "type": "number",
+            "description": "Picked clients outside your territory — skipped, never touched."
+          }
+        },
+        "required": [
+          "matched",
+          "changed",
+          "unchanged",
+          "skippedOutOfScope"
+        ]
+      },
       "ClientTagDto": {
         "type": "object",
         "properties": {
@@ -21951,6 +23390,11 @@
           },
           "description": {
             "type": "string"
+          },
+          "countryCode": {
+            "type": "string",
+            "description": "Set on a COUNTRY tag (ISO code, 0193): carried by every client living there, derived from their country — never assigned, renamed or deleted; only its colour is editable.",
+            "example": "LB"
           },
           "createdAt": {
             "format": "date-time",
@@ -22999,6 +24443,11 @@
           "description": {
             "type": "string"
           },
+          "countryCode": {
+            "type": "string",
+            "description": "Set on a COUNTRY tag (ISO code, 0193): carried by every client living there, derived from their country — never assigned, renamed or deleted; only its colour is editable.",
+            "example": "LB"
+          },
           "createdAt": {
             "format": "date-time",
             "type": "string"
@@ -23078,6 +24527,11 @@
           "description": {
             "type": "string"
           },
+          "countryCode": {
+            "type": "string",
+            "description": "Set on a COUNTRY tag (ISO code, 0193): carried by every client living there, derived from their country — never assigned, renamed or deleted; only its colour is editable.",
+            "example": "LB"
+          },
           "createdAt": {
             "format": "date-time",
             "type": "string"
@@ -23121,6 +24575,138 @@
         "required": [
           "assignments",
           "stillVisible"
+        ]
+      },
+      "SignupLinkTagDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "color": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "slug",
+          "label"
+        ]
+      },
+      "MySignupLinkDto": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string",
+            "example": "omar-farah"
+          },
+          "url": {
+            "type": "string",
+            "description": "The link to hand out: <PORTAL_URL>/join/<slug>."
+          },
+          "tags": {
+            "description": "What a sign-up through it gets right now: your territory, minus countries.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SignupLinkTagDto"
+            }
+          },
+          "addsNoTag": {
+            "type": "boolean",
+            "description": "True when the link gives no tag: you see every client, or only countries. Clients you bring are recorded as yours, not put in a book."
+          },
+          "signups": {
+            "type": "number"
+          },
+          "verified": {
+            "type": "number"
+          },
+          "funded": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "slug",
+          "url",
+          "tags",
+          "addsNoTag",
+          "signups",
+          "verified",
+          "funded"
+        ]
+      },
+      "SignupLinkRowDto": {
+        "type": "object",
+        "properties": {
+          "adminId": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "active": {
+            "type": "boolean",
+            "description": "A suspended administrator's link tags nobody."
+          },
+          "signups": {
+            "type": "number"
+          },
+          "verified": {
+            "type": "number"
+          },
+          "funded": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "adminId",
+          "name",
+          "slug",
+          "url",
+          "active",
+          "signups",
+          "verified",
+          "funded"
+        ]
+      },
+      "RenameSignupLinkDto": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string",
+            "example": "omar-farah",
+            "description": "Lowercase letters, digits, - and _; 3–32 characters. The old link stops working."
+          }
+        },
+        "required": [
+          "slug"
+        ]
+      },
+      "SignupLinkUrlDto": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "slug",
+          "url"
         ]
       },
       "KycDocumentDto": {
@@ -24262,15 +25848,11 @@
             }
           },
           "scopedTagIds": {
-            "description": "Client tag ids. [] means no territory tags (new clients only, or none) — every client is only ever `seesAllClients` (0154).",
+            "description": "Client tag ids. [] means no territory tags (no client) — every client is only ever `seesAllClients` (0154).",
             "type": "array",
             "items": {
               "type": "string"
             }
-          },
-          "seesUntriaged": {
-            "type": "boolean",
-            "description": "D-60 — sees the intake pool: clients with no tag assignments yet. Meaningful only for a scoped admin. DEFAULTS TO TRUE — restriction is the explicit act; an inviter who does not see the pool cannot grant it, and their default resolves to false."
           },
           "seesAllClients": {
             "type": "boolean",
@@ -25665,6 +27247,45 @@
           "directions"
         ]
       },
+      "PayToDetailDto": {
+        "type": "object",
+        "properties": {
+          "fieldId": {
+            "type": "string",
+            "example": "f_p7d2k9m4qa"
+          },
+          "label": {
+            "type": "string",
+            "example": "Send to",
+            "description": "The label as shown."
+          },
+          "labelAr": {
+            "type": "string",
+            "nullable": true,
+            "example": "أرسل إلى",
+            "description": "The label in Arabic as shown, when the detail had one."
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "text",
+              "phone"
+            ],
+            "example": "phone"
+          },
+          "value": {
+            "type": "string",
+            "example": "+96170123456",
+            "description": "As shown. A phone is E.164."
+          }
+        },
+        "required": [
+          "fieldId",
+          "label",
+          "type",
+          "value"
+        ]
+      },
       "AdminTransactionRowDto": {
         "type": "object",
         "properties": {
@@ -25751,6 +27372,14 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/ProofDetailDto"
+            }
+          },
+          "payToDetails": {
+            "nullable": true,
+            "description": "Where an OFFLINE deposit's client was told to send the money — the details the method showed when it was filed, e.g. the phone a transfer goes to (0199). A copy: the method may have changed since. Null otherwise.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PayToDetailDto"
             }
           },
           "walletId": {

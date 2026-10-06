@@ -110,7 +110,6 @@ beforeAll(async () => {
       // The 0058 default is TRUE, and an untagged fixture client would then be
       // visible through the intake branch — which would hide the very boundary
       // this file exists to prove.
-      seesUntriaged: false,
       status: 'active',
     })
     .returning();

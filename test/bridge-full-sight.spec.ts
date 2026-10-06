@@ -41,7 +41,6 @@ beforeAll(async () => {
         roleId: role.id,
         permissions: [],
         seesAllClients: !scoped,
-        seesUntriaged: true,
         status: 'active',
       })
       .returning();

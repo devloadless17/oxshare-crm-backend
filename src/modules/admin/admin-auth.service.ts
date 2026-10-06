@@ -566,8 +566,6 @@ export class AdminAuthService {
      */
     maskedFields?: string[],
     scopedTagIds?: string[],
-    /** D-60 — the intake grant, chosen at invite time for the window reason above. */
-    seesUntriaged?: boolean,
     /** Sees every client — the explicit grant (0154). Only from an actor who does. */
     seesAllClients?: boolean,
   ) {
@@ -647,16 +645,13 @@ export class AdminAuthService {
     /*
      * Visibility at INVITE time runs the same three guards as `updateAdmin` —
      * the invite path used to check permissions only, so an `admins.create`
-     * holder could hand out a territory, a mask or the intake grant that the
-     * edit path would refuse them. One rulebook, both doors:
+     * holder could hand out a territory or a mask that the edit path
+     * would refuse them. One rulebook, both doors:
      * - setting any visibility field needs `admins.scope`;
      * - the mask obeys the superset rule (you cannot un-hide what is hidden
      *   from you);
-     * - the territory obeys the subset rule via `assertScopable`;
-     * - the intake grant cannot be handed out by a scoped actor who does not
-     *   hold it themselves.
-     * Since 0154 an EMPTY scope list means NO territory tags (new clients
-     * only, or none) — it only ever narrows, from any actor. Every client is the
+     * - the territory obeys the subset rule via `assertScopable`.
+     * Since 0154 an EMPTY scope list means NO territory tags (no client) — it only ever narrows, from any actor. Every client is the
      * explicit `seesAllClients` grant, given only by an actor who has it. The
      * old reading ("[] means unrestricted", normalised to absent for an
      * unrestricted actor and refused by name for a scoped one) is gone with it.
@@ -665,15 +660,10 @@ export class AdminAuthService {
      */
     /*
      * 0154: an EMPTY list is no longer "unrestricted" — it is "no territory
-     * tags" (new clients only, or none). Every client is only ever the explicit
+     * tags" (no client). Every client is only ever the explicit
      * `seesAllClients` grant, which only an actor who sees every client may give.
      */
-    if (
-      maskedFields !== undefined ||
-      scopedTagIds !== undefined ||
-      seesUntriaged !== undefined ||
-      seesAllClients !== undefined
-    ) {
+    if (maskedFields !== undefined || scopedTagIds !== undefined || seesAllClients !== undefined) {
       assertActorCan(actor, 'admins.scope', "choose an invitee's client visibility");
     }
     if (seesAllClients === true) {
@@ -705,10 +695,9 @@ export class AdminAuthService {
      * `...(scopedTagIds.length > 0 ? { scopedTagIds } : {})`, so an operator
      * who picks no tags omits the key rather than sending an empty array.
      *
-     * Refusing would be defensible; inheriting is chosen to match the intake
-     * grant immediately below, whose default bends to the subset rule in the
-     * same way rather than around it. Like that one it needs no `admins.scope`:
-     * it is the system declining to widen sight, not the actor choosing to.
+     * Refusing would be defensible; inheriting bends to the subset rule
+     * rather than around it, and needs no `admins.scope`: it is the system
+     * declining to widen sight, not the actor choosing to.
      * An UNRESTRICTED actor's silence still means unrestricted — capping them
      * would stop a master admin inviting another one.
      *
@@ -722,20 +711,6 @@ export class AdminAuthService {
     if (scopedTagIds === undefined && !actor.clientScope.unrestricted) {
       scopedTagIds = [...actor.clientScope.tagIds];
     }
-    /*
-     * The intake grant defaults to TRUE (0058) — restriction is the explicit
-     * act — EXCEPT when the inviter cannot grant it: a scoped actor without
-     * the grant themselves must not hand out sight of the pool implicitly
-     * through a default, and asking for it explicitly is refused. The default
-     * is the system's, not a choice, so it needs no `admins.scope`.
-     */
-    const actorCanGrantIntake = actor.clientScope.unrestricted || actor.seesUntriaged === true;
-    if (seesUntriaged && !actorCanGrantIntake) {
-      throw new AuthorizationError(
-        'You cannot grant sight of the intake pool: you do not see it yourself.',
-      );
-    }
-    const resolvedSeesUntriaged = seesUntriaged ?? actorCanGrantIntake;
     /*
      * Every client only by the explicit grant, or by an UNRESTRICTED inviter's
      * silence (today's behaviour for a silent invite). A scoped inviter's
@@ -756,7 +731,6 @@ export class AdminAuthService {
       permissions: grantedPermissions,
       maskedFields,
       scopedTagIds: resolvedSeesAllClients ? undefined : scopedTagIds,
-      seesUntriaged: resolvedSeesUntriaged,
       seesAllClients: resolvedSeesAllClients,
       invitedBy,
       expiresAt: new Date(Date.now() + 48 * 60 * 60 * 1000), // 48h
@@ -791,7 +765,6 @@ export class AdminAuthService {
       permissions: grantedPermissions,
       maskedFields: maskedFields ?? null,
       scopedTagIds: resolvedSeesAllClients ? null : (scopedTagIds ?? []),
-      seesUntriaged: resolvedSeesUntriaged,
       seesAllClients: resolvedSeesAllClients,
     });
 
@@ -885,7 +858,6 @@ export class AdminAuthService {
         permissions: admin.permissions,
         maskedFields: admin.maskedFields ?? null,
         scopedTagIds: invite.scopedTagIds ?? null,
-        seesUntriaged: admin.seesUntriaged,
         seesAllClients: admin.seesAllClients ?? false,
       },
     );
@@ -907,8 +879,8 @@ export class AdminAuthService {
    * The administrator an invite describes, created inside the caller's
    * transaction AFTER the caller has claimed the invite.
    *
-   * One piece of code decides the permissions, role, mask, intake and
-   * all-clients grants and territory an invitee arrives with.
+   * One piece of code decides the permissions, role, mask, all-clients
+   * grant and territory an invitee arrives with.
    */
   private async createAdminFromInvite(
     invite: AdminInvite,
@@ -926,9 +898,6 @@ export class AdminAuthService {
         // Carried from the invite. Without it the mask was always the role's
         // default and the inviter's choice was silently discarded.
         maskedFields: invite.maskedFields,
-        // D-60 — same carry, same reason: the intake grant is part of the
-        // visibility the inviter chose.
-        seesUntriaged: invite.seesUntriaged,
         // 0154 — the explicit all-clients grant, carried like the rest.
         seesAllClients: invite.seesAllClients ?? false,
         status: 'active',

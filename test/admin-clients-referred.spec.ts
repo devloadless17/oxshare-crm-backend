@@ -96,7 +96,6 @@ beforeAll(async () => {
         permissions: extra.scoped ? [] : ['*'],
         // An untagged fixture client would otherwise be visible through the
         // intake branch, hiding the boundary the scoped cases exist to prove.
-        seesUntriaged: !extra.scoped,
         status: 'active',
       })
       .returning();

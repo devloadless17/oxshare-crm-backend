@@ -41,24 +41,15 @@ export class AdminClientScopesStore {
 
   /**
    * The resolved scope of an administrator — `scopeOf` over their territory
-   * and the two grants on their row.
+   * and the all-clients grant on their row.
    *
-   * Takes the ROW, not an id and a flag. It used to take `(adminId,
-   * seesUntriaged)` with the grant defaulted, and two callers (the
-   * notification fan-out and KYC document delivery) took the default rather
-   * than reading the row they held, so an intake-granted admin lost sight of
-   * untagged clients in exactly those paths. With a second grant on the row
-   * (`seesAllClients`, 0154) a forgotten field could WIDEN sight instead, so the
-   * type now demands both.
+   * Takes the ROW, not an id and a flag: two callers once took a defaulted
+   * grant rather than reading the row they held, and lost sight in exactly
+   * those paths.
    */
-  async scopeFor(admin: {
-    id: string;
-    seesUntriaged?: boolean;
-    seesAllClients?: boolean;
-  }): Promise<ClientScope> {
+  async scopeFor(admin: { id: string; seesAllClients?: boolean }): Promise<ClientScope> {
     return scopeOf(
       await this.tagIdsFor(admin.id),
-      admin.seesUntriaged ?? false,
       // Absent reads as NOT granted: a row without the column is restricted.
       admin.seesAllClients ?? false,
     );
@@ -71,7 +62,7 @@ export class AdminClientScopesStore {
    * fail-loud stance: no try/catch, a database error propagates.
    */
   async scopesFor(
-    admins: readonly { id: string; seesUntriaged?: boolean; seesAllClients?: boolean }[],
+    admins: readonly { id: string; seesAllClients?: boolean }[],
   ): Promise<Map<string, ClientScope>> {
     const tagIdsByAdmin = new Map<string, string[]>();
     if (admins.length > 0) {
@@ -93,11 +84,7 @@ export class AdminClientScopesStore {
     return new Map(
       admins.map((admin) => [
         admin.id,
-        scopeOf(
-          tagIdsByAdmin.get(admin.id) ?? [],
-          admin.seesUntriaged ?? false,
-          admin.seesAllClients ?? false,
-        ),
+        scopeOf(tagIdsByAdmin.get(admin.id) ?? [], admin.seesAllClients ?? false),
       ]),
     );
   }

@@ -47,18 +47,19 @@ async function makeUser(email: string): Promise<number> {
 }
 
 /**
- * The product's rate card: $100 a lot to the partners AND $100 a lot back to
- * the client (0140). Every trade here is ONE LOT, so a rung's SHARE of either
- * figure is the same number of dollars — a 10% commission share pays $10, a
- * 5% rebate share returns $5 — and every assertion downstream reads as it did
- * when the rung was a percentage of $100 of revenue.
+ * The product's rate card: $10 a lot to the partners and $100 a lot back to
+ * the client (0140). Every trade here is ONE LOT. The partner is a level 1
+ * partner introducing their own client, so since 0197 they take the WHOLE
+ * commission pool — $10 — whatever level 1's share on the ladder says. The
+ * rebate is still a share of its own pool: a 5% rebate share returns $5.
  */
 let terms: CommissionTypeTerms;
 
 /**
  * Set the ladder: one commission share per rung, level 1 first, and the
  * rebate share on level 1 — the INTRODUCER's rung, the partner the client is
- * actually in a relationship with. Every rung is reset first.
+ * actually in a relationship with. Every rung is reset first. (Level 1's
+ * commission share is ignored by the engine since 0197.)
  */
 async function setTerms(ladder: { tiers?: string[]; rebateRate: string }): Promise<void> {
   const shares: RungShares[] = (ladder.tiers ?? []).map((commission) => ({ commission }));
@@ -114,16 +115,21 @@ beforeAll(async () => {
     sql`UPDATE users SET referred_by_ib_user_id = ${partnerId} WHERE id = ${clientId}`,
   );
 
+  /*
+   * $10 of commission, not $100: a level 1 partner now takes the whole pool on
+   * their own client, and $100 + the rebate would breach the shipped $50-a-lot
+   * ceiling and be refused.
+   */
   const seeded = await seedProductTerms(ctx.db, {
     name: 'Rebate terms',
-    commissionPerLot: '100',
+    commissionPerLot: '10',
     rebatePerLot: '100',
   });
   terms = {
     id: seeded.typeId,
     name: 'Rebate terms',
     enabled: true,
-    commissionPerLot: '100.00000000',
+    commissionPerLot: '10.00000000',
     rebatePerLot: '100.00000000',
   };
 
@@ -160,6 +166,12 @@ beforeEach(async () => {
    * confirming one fail in its setup rather than its assertion.
    */
   await ctx.db.execute(sql`DELETE FROM ib_accruals`);
+  /* The partner back on level 1 on the ladder's terms — one case moves them. */
+  await ctx.db.execute(sql`
+    UPDATE ib_accounts
+       SET level = 1, commission_share_override = NULL, rebate_share_override = NULL
+     WHERE user_id = ${partnerId}
+  `);
   /* Legacy `percent` rows — see the note in ib-end-to-end.spec.ts. The form
      cannot create these since 0117; the engine must still price them. */
   await ctx.db.execute(
@@ -198,11 +210,12 @@ beforeEach(async () => {
 
 describe('a hybrid programme produces two legs from one trade', () => {
   it('writes a commission row and a rebate row', async () => {
-    await setTerms({ tiers: ['10'], rebateRate: '5' });
+    await setTerms({ tiers: ['30'], rebateRate: '5' });
 
     const created = await accrue();
 
     expect(created).toBe(2);
+    /* The whole $10 pool to the level 1 partner — not level 1's 30% — and 5% of $100 back. */
     const rows = await accrualRows();
     expect(rows.map((r) => [r.kind, r.amount])).toEqual([
       ['commission', '10.00000000'],
@@ -217,7 +230,7 @@ describe('a hybrid programme produces two legs from one trade', () => {
    * rebate — which balances, and is wrong about whose money it is.
    */
   it('attributes the rebate to the partner and owes it to the client', async () => {
-    await setTerms({ tiers: ['10'], rebateRate: '5' });
+    await setTerms({ tiers: ['30'], rebateRate: '5' });
     await accrue();
 
     const rebate = (await accrualRows()).find((r) => r.kind === 'rebate');
@@ -232,7 +245,7 @@ describe('a hybrid programme produces two legs from one trade', () => {
    * configured rebate simply never pays.
    */
   it('does not let the two rows collide on re-delivery', async () => {
-    await setTerms({ tiers: ['10'], rebateRate: '5' });
+    await setTerms({ tiers: ['30'], rebateRate: '5' });
 
     await accrue();
     const second = await accrue();
@@ -244,7 +257,7 @@ describe('a hybrid programme produces two legs from one trade', () => {
 
 describe('confirmation pays each leg to the right person', () => {
   it('credits the partner’s commission wallet and the client’s main wallet', async () => {
-    await setTerms({ tiers: ['10'], rebateRate: '5' });
+    await setTerms({ tiers: ['30'], rebateRate: '5' });
     await accrue();
 
     /* Past the 60s window — see the note in the setup above. */
@@ -266,7 +279,7 @@ describe('confirmation pays each leg to the right person', () => {
   });
 
   it('records the client’s leg as a rebate in the ledger', async () => {
-    await setTerms({ tiers: ['10'], rebateRate: '5' });
+    await setTerms({ tiers: ['30'], rebateRate: '5' });
     await accrue();
     /* Past the 60s window — see the note in the setup above. */
     await ctx.db.execute(sql`UPDATE ib_accruals SET created_at = now() - interval '10 minutes'`);
@@ -283,7 +296,7 @@ describe('confirmation pays each leg to the right person', () => {
   });
 
   it('pays neither leg twice when the loop runs again', async () => {
-    await setTerms({ tiers: ['10'], rebateRate: '5' });
+    await setTerms({ tiers: ['30'], rebateRate: '5' });
     await accrue();
 
     /* Past the 60s window — see the note in the setup above. */
@@ -308,7 +321,7 @@ describe('the mode decides which legs exist at all', () => {
    * while carrying a rebate rate nobody could see on the screen.
    */
   it('pays only the partner when the rung returns nothing to the client', async () => {
-    await setTerms({ tiers: ['10'], rebateRate: '0' });
+    await setTerms({ tiers: ['30'], rebateRate: '0' });
 
     expect(await accrue()).toBe(1);
     expect((await accrualRows()).map((r) => r.kind)).toEqual(['commission']);
@@ -317,9 +330,21 @@ describe('the mode decides which legs exist at all', () => {
   /*
    * A real arrangement — the broker buys volume by handing the spread back —
    * and the partner earning nothing on it is the point, not a misconfiguration.
+   *
+   * Since 0197 a level 1 partner takes the whole commission on their own client
+   * whatever level 1's share says, so "commission at zero" is a SUB-PARTNER
+   * whose own share is set to 0 — here a lone one, with nobody above to take
+   * the rest. Both of their PER-PARTNER overrides are exercised: the level 2
+   * rung pays 30% commission and no rebate, and this partner is set to 0% and
+   * 5% instead.
    */
-  it('pays only the client when the rung rates commission at zero', async () => {
-    await setTerms({ tiers: [], rebateRate: '5' });
+  it('pays only the client when the sub-partner’s share is set to zero', async () => {
+    await setLadderShares(ctx.db, [{ commission: '0' }, { commission: '30', rebate: '0' }]);
+    await ctx.db.execute(sql`
+      UPDATE ib_accounts
+         SET level = 2, commission_share_override = '0', rebate_share_override = '5'
+       WHERE user_id = ${partnerId}
+    `);
 
     expect(await accrue()).toBe(1);
     expect((await accrualRows()).map((r) => r.kind)).toEqual(['rebate']);

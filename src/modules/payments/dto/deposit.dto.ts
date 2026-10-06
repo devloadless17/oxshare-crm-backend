@@ -124,6 +124,36 @@ export class ProofDetailDto {
 }
 
 /**
+ * One detail an offline method SHOWED the client when the deposit was filed —
+ * where they were told to send the money (0199), copied so a later change to the
+ * method never rewrites it.
+ */
+@NoClientFields(
+  "the broker's own payment details as the deposit screen showed them, which describe no client",
+)
+export class PayToDetailDto {
+  @ApiProperty({ example: 'f_p7d2k9m4qa' })
+  fieldId: string;
+
+  @ApiProperty({ example: 'Send to', description: 'The label as shown.' })
+  label: string;
+
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    example: 'أرسل إلى',
+    description: 'The label in Arabic as shown, when the detail had one.',
+  })
+  labelAr?: string | null;
+
+  @ApiProperty({ enum: PROOF_FIELD_TYPES, example: 'phone' })
+  type: ProofFieldType;
+
+  @ApiProperty({ example: '+96170123456', description: 'As shown. A phone is E.164.' })
+  value: string;
+}
+
+/**
  * The OFFLINE form: the same fields, plus the answers to the method's details.
  *
  * Sent as multipart `details[<fieldId>]` parts, which multer folds into one

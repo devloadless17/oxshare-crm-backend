@@ -114,7 +114,7 @@ beforeAll(async () => {
   await ctx.db.execute(sql`
     INSERT INTO client_tag_assignments (user_id, tag_id)
     VALUES (${inId}, ${tag['scope-in']}), (${outId}, ${tag['scope-out']})`);
-  reader = scopeOf([tag['scope-in']], false, false);
+  reader = scopeOf([tag['scope-in']], false);
 
   for (const type of CLIENT_SUBJECT_TYPES) await aboutB(type);
   // Refused requests: one naming B by Portal ID, one by uuid, one naming nobody.

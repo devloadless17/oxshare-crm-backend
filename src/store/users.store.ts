@@ -1,3 +1,4 @@
+import { type DateRange, withinRange } from '../common/date-range';
 import { ValidationError } from '../common/errors/domain-errors';
 import { currentFieldMask } from '../common/logging/request-context';
 import type { FieldMask } from '../common/security/field-mask';
@@ -15,6 +16,7 @@ import {
   isNotNull,
   isNull,
   lt,
+  ne,
   not,
   or,
   sql,
@@ -27,7 +29,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db, Executor } from '../database/db';
 import {
-  clientTagAssignments,
+  clientTagMemberships,
   clientTags,
   ibAccounts,
   kycSubmissions,
@@ -304,6 +306,35 @@ export function clientIdByPortalId(portalId: number): SQL<number> {
 }
 
 /**
+ * A search term that reads as a PHONE NUMBER, as the digits to look for — or
+ * undefined. Staff type numbers every way: "+961 70 123 456", "70-123456",
+ * "(03) 123 456", "00961 70…". Spaces, dashes, dots and brackets go; a leading
+ * `+`, `00` international prefix or trunk `0` goes, because the stored E.164
+ * (`+96170123456`) carries none of them and a local number is a SUFFIX of it.
+ * At least 6 digits remain, or it is too short to name a person (and "1000245"
+ * stays a Portal ID that ALSO tries the phone — see `clientIdentitySearch`).
+ */
+export function phoneSearchTerm(q: string): string | undefined {
+  const raw = q.trim();
+  if (!/^\+?[\d\s().-]+$/.test(raw)) return undefined;
+  const digits = raw.replace(/\D/g, '').replace(/^0+/, '');
+  return digits.length >= 6 && digits.length <= 15 ? digits : undefined;
+}
+
+/**
+ * The phone half of a client search. A fragment rides the trigram index on
+ * `phone::text` (0194) — the expression must stay exactly that. A HIDDEN phone
+ * (RBAC-03, D-82) is never matched by a fragment, which would read it out a
+ * digit at a time: only the COMPLETE number in international form finds it, the
+ * same rule as a hidden email.
+ */
+function phoneMatch(digits: string, person: typeof users, mask: FieldMask): SQL | undefined {
+  if (!mask.includes('client.phone')) return sql`${person.phone}::text LIKE ${`%${digits}%`}`;
+  const e164 = `+${digits}`;
+  return /^\+[1-9]\d{7,14}$/.test(e164) ? eq(person.phone, e164) : undefined;
+}
+
+/**
  * How EVERY client search in the system matches a client — one definition.
  *
  * The client list, the KYC queue, the withdrawal desk, the financial view, the
@@ -319,6 +350,13 @@ export function clientIdByPortalId(portalId: number): SQL<number> {
  * Digits alone are read as a Portal ID and matched EXACTLY — a point lookup on
  * the unique index, so "1000245" finds that client and not every email
  * containing those digits. Anything else is matched against email and name.
+ *
+ * ## A phone number is a phone number (0194, the buyer's demo, 6 Oct 2026)
+ *
+ * A term that reads as a phone (`phoneSearchTerm`) matches the client's phone,
+ * typed with or without its country code. Digits that are ALSO a valid Portal
+ * ID try both: `id = n OR phone LIKE`, which Postgres BitmapOrs over the primary
+ * key and the phone's trigram index.
  * The UUID is no longer searchable: it is shown nowhere, so nobody can have one
  * to paste.
  *
@@ -348,7 +386,12 @@ export function clientIdentitySearch(
   mask: FieldMask = currentFieldMask(),
 ): SQL {
   const portalId = parsePortalId(q);
-  if (portalId !== undefined) return eq(person.id, portalId);
+  const phone = phoneSearchTerm(q);
+  if (portalId !== undefined || phone !== undefined) {
+    const byPhone = phone === undefined ? undefined : phoneMatch(phone, person, mask);
+    if (portalId === undefined) return byPhone ?? sql`false`;
+    return byPhone ? sql`(${eq(person.id, portalId)} OR ${byPhone})` : eq(person.id, portalId);
+  }
   const fragment = `%${escapeLike(q.trim())}%`;
 
   const emailHidden = mask.includes('client.email');
@@ -415,8 +458,11 @@ export class UsersStore {
     return row?.id;
   }
 
-  async create(data: Omit<User, 'id' | 'createdAt' | 'portalId'>): Promise<User> {
-    const [row] = await this.db.insert(users).values(data).returning();
+  async create(
+    data: Omit<User, 'id' | 'createdAt' | 'portalId'> & { signedUpViaAdminId?: string },
+    executor?: Executor,
+  ): Promise<User> {
+    const [row] = await (executor ?? this.db).insert(users).values(data).returning();
     return toUser(row);
   }
 
@@ -630,6 +676,26 @@ export class UsersStore {
       .where(scoped ? and(eq(users.id, id), scoped) : eq(users.id, id))
       .limit(1);
     return row ? toUser(row) : undefined;
+  }
+
+  /**
+   * The client holding an E.164 phone number, other than `exceptId` — a point
+   * read on `users_phone_unique` (0194). Asked before a write so a taken number
+   * is refused on its field; the index still decides a race.
+   */
+  async findIdByPhone(
+    phone: string,
+    exceptId?: number,
+    tx: Executor = this.db,
+  ): Promise<number | undefined> {
+    const [row] = await tx
+      .select({ id: users.id })
+      .from(users)
+      .where(
+        and(eq(users.phone, phone), exceptId === undefined ? undefined : ne(users.id, exceptId)),
+      )
+      .limit(1);
+    return row?.id;
   }
 
   async findByEmail(email: string): Promise<User | undefined> {
@@ -1001,9 +1067,15 @@ export class UsersStore {
     cursor?: CursorPosition;
     /** Counting is opt-in: it is a full scan of the filtered set. */
     withTotal?: boolean;
+    /** When they REGISTERED — `[from, until)`, `common/date-range.ts`. */
+    registered?: DateRange;
+    /** Exactly these clients (picked rows, e.g. "export selected"). Scope still applies. */
+    ids?: readonly number[];
   }) {
     const db = this.db;
-    const conditions: SQL[] = [];
+    const conditions: SQL[] = [...withinRange(users.createdAt, filter.registered)];
+    if (filter.ids)
+      conditions.push(filter.ids.length > 0 ? inArray(users.id, [...filter.ids]) : sql`false`);
     const sortKey: ClientSortKey = filter.sort ?? DEFAULT_CLIENT_SORT;
     const direction = filter.order ?? 'desc';
     const sortColumn: SQLWrapper = CLIENT_SORT_COLUMNS[sortKey];
@@ -1056,12 +1128,22 @@ export class UsersStore {
      * and reads `client_tag_assignments_tag_idx` / the composite primary key
      * directly.
      */
-    if (filter.tagSlug) {
+    // One slug or several, comma-separated, ANY of them (validated by the
+    // service: each exists, at most 20). Memberships (0193): a country tag
+    // matches on the client's country.
+    const slugs = (filter.tagSlug ?? '')
+      .split(',')
+      .map((slug) => slug.trim())
+      .filter((slug) => slug !== '');
+    if (slugs.length > 0) {
       conditions.push(
         sql`EXISTS (
-          SELECT 1 FROM ${clientTagAssignments} ta
+          SELECT 1 FROM ${clientTagMemberships} ta
           JOIN ${clientTags} t ON t.id = ta.tag_id
-          WHERE ta.user_id = ${users.id} AND t.slug = ${filter.tagSlug}
+          WHERE ta.user_id = ${users.id} AND t.slug IN (${sql.join(
+            slugs.map((slug) => sql`${slug}`),
+            sql`, `,
+          )})
         )`,
       );
     }

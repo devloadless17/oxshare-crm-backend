@@ -96,6 +96,7 @@ interface Harness {
   service: AuthService;
   users: {
     findByEmail: ReturnType<typeof vi.fn>;
+    findIdByPhone: ReturnType<typeof vi.fn>;
     findById: ReturnType<typeof vi.fn>;
     findByVerificationTokenHash: ReturnType<typeof vi.fn>;
     consumeEmailVerification: ReturnType<typeof vi.fn>;
@@ -120,6 +121,7 @@ function build(overrides: { user?: User | undefined } = {}): Harness {
   const passwords = new PasswordService();
   const users = {
     findByEmail: vi.fn().mockResolvedValue(overrides.user),
+    findIdByPhone: vi.fn().mockResolvedValue(undefined),
     findById: vi.fn().mockResolvedValue(overrides.user),
     findByVerificationTokenHash: vi.fn().mockResolvedValue(undefined),
     consumeEmailVerification: vi.fn().mockResolvedValue(true),
@@ -211,7 +213,9 @@ describe('register', () => {
     // The unique index decides between them; Drizzle wraps the driver's error.
     const h = build();
     h.users.create.mockRejectedValueOnce(
-      Object.assign(new Error('duplicate key value'), { cause: { code: '23505' } }),
+      Object.assign(new Error('duplicate key value'), {
+        cause: { code: '23505', constraint: 'users_email_unique' },
+      }),
     );
     const refused = await h.service.register(dto).catch((error: unknown) => error);
     expect(refused).toBeInstanceOf(EmailAlreadyRegisteredError);

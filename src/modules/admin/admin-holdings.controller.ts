@@ -1,3 +1,4 @@
+import { ApiDateRangeQueries, dateRangeQuery } from '../../common/date-range';
 import { Throttle } from '@nestjs/throttler';
 // Part of the `admin` controller surface, split by concern — the same shape as
 // admin-clients.controller.ts and admin-money.controller.ts. Nest allows several
@@ -297,6 +298,7 @@ export class AdminHoldingsController {
       '`unassigned`: accounts the MT5 sync found that no client owns yet (shown only to a ' +
       'reader who sees every client); `assigned`: the rest.',
   })
+  @ApiDateRangeQueries('opened')
   @ScopedToClients(
     'AdminExportService.tradingAccountBatch → AdminHoldingsService.tradingAccountExportBatch, the same clientScopePredicate on trading_accounts.user_id the list applies.',
   )
@@ -309,6 +311,8 @@ export class AdminHoldingsController {
     @Query('environment') environment?: string,
     @Query('status') status?: string,
     @Query('client') client?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
   ) {
     const chosen = exportFormat(format);
     // Validated identically to the list route, so an unrecognised value is the
@@ -318,6 +322,7 @@ export class AdminHoldingsController {
       environment: enumQuery(environment, tradingEnvironmentEnum.enumValues, 'environment'),
       status: enumQuery(status, tradingAccountStatusEnum.enumValues, 'status'),
       client: enumQuery(client, TRADING_ACCOUNT_CLIENT_FILTERS, 'client'),
+      opened: dateRangeQuery(from, to),
     };
 
     this.audit.record(
@@ -390,6 +395,7 @@ export class AdminHoldingsController {
     description: 'login is nullable and pins NULLS LAST in both directions.',
   })
   @ApiQuery({ name: 'order', required: false, enum: ['asc', 'desc'] })
+  @ApiDateRangeQueries('opened')
   @ScopedToClients(
     'AdminHoldingsService.listTradingAccounts applies clientScopePredicate to trading_accounts.user_id, in the WHERE clause.',
   )
@@ -401,6 +407,8 @@ export class AdminHoldingsController {
     @Query('environment') environment?: string,
     @Query('status') status?: string,
     @Query('client') client?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('cursor') cursor?: string,
@@ -434,6 +442,7 @@ export class AdminHoldingsController {
         withTotal,
         sort,
         order,
+        opened: dateRangeQuery(from, to),
       },
       req.admin,
     );

@@ -93,12 +93,17 @@ async function makeUser(handle: string): Promise<number> {
  * live rows still use them.
  */
 /**
- * The product's rate card: $100 a lot to the partners and $100 a lot back to
- * the client (0140). Every trade here is ONE LOT, so a rung's SHARE of either
- * figure is the same number of dollars — "30%" pays $30 — and every `@n=amount`
- * asserted below reads as it did when a rung was a percentage of $100 of
- * revenue. The two-partner chain arithmetic is unchanged by the model: each
- * rung is still paid its own share, independently.
+ * The product's rate card: $40 a lot to the partners and $100 a lot back to
+ * the client (0140). Every trade here is ONE LOT, so each trade puts a $40
+ * commission POOL on the table and a $100 rebate pool.
+ *
+ * Since 0197 the commission pool is split down the chain rather than each rung
+ * taking its share independently: a sub-partner (level 2+) takes their share,
+ * and the level 1 partner takes 100% minus what was paid beneath them — the
+ * whole $40 on their own client, $28 (70%) beside a default 30% sub-partner.
+ * Level 1's own share on the ladder decides nothing. The pool is $40 rather
+ * than $100 because the whole of it is now paid on every trade, and it has to
+ * sit under the shipped $50-a-lot ceiling with the rebate on top.
  */
 let terms: CommissionTypeTerms;
 
@@ -197,14 +202,14 @@ beforeAll(async () => {
 
   const seeded = await seedProductTerms(ctx.db, {
     name: 'End-to-end terms',
-    commissionPerLot: '100',
+    commissionPerLot: '40',
     rebatePerLot: '100',
   });
   terms = {
     id: seeded.typeId,
     name: 'End-to-end terms',
     enabled: true,
-    commissionPerLot: '100.00000000',
+    commissionPerLot: '40.00000000',
     rebatePerLot: '100.00000000',
   };
 
@@ -281,10 +286,12 @@ beforeEach(async () => {
 
   /*
    * The two rungs the business asked for: a main partner and a partner under
-   * them. Rebate on rung 1, because that is the partner the client is in a
-   * relationship with.
+   * them, the sub-partner on the owner's default 30%. Level 1's 50% is ignored
+   * by the engine (0197) — it is set to a figure that would show up in an
+   * amount if it were not. Rebate on rung 1, because that is the partner the
+   * client is in a relationship with.
    */
-  await setLadder(['30', '8'], '3');
+  await setLadder(['50', '30'], '3');
 
   await makeAgency('E2E Gold Agency');
   await makeAgency('E2E Levant');
@@ -322,7 +329,7 @@ describe('who earns from whom, in a two-level tree', () => {
    * partner she recruited (rung 2). Each introduces a client of their own.
    */
   async function tree() {
-    await setLadder(['30', '8']);
+    await setLadder(['50', '30']);
     const hana = await makePartner('hana', 1, undefined, agency['E2E Gold Agency']);
     const omar = await makePartner('omar', 2, hana, agency['E2E Gold Agency']);
     return {
@@ -341,9 +348,10 @@ describe('who earns from whom, in a two-level tree', () => {
     /*
      * One row, and `omar` is not in it. Not "omar earns 0" — he is not an
      * earner on this trade at all, which is the difference between a rate set
-     * to zero and a relationship that does not exist.
+     * to zero and a relationship that does not exist. With nobody beneath her
+     * on this trade, hana takes the whole $40 pool.
      */
-    expect(await paidFor(uuid(20))).toEqual(['hana@1=30.00000000']);
+    expect(await paidFor(uuid(20))).toEqual(['hana@1=40.00000000']);
   });
 
   it('pays the main partner on a client the sub-partner introduced', async () => {
@@ -352,41 +360,48 @@ describe('who earns from whom, in a two-level tree', () => {
     await trade(omarClient, uuid(21));
 
     /*
-     * BOTH earn, and each at THEIR OWN RUNG — which is the whole of 0112.
+     * BOTH earn, out of ONE pool — which is the whole of 0197.
      *
-     * `omar` stands on rung 2 and takes rung 2's 8%, even though this is HIS
-     * OWN client. `hana` stands on rung 1 and takes rung 1's 30%, even though
-     * she introduced nobody here. The rate follows the PARTNER, not the trade.
+     * `omar` stands on rung 2 and takes rung 2's 30% of the $40 pool. `hana`
+     * stands on rung 1 and takes what omar did not: 70%. Level 1's own 50% on
+     * the ladder plays no part.
      *
      * ⚠️ Read the `@n` as DEPTH, not as a rung — it is `ib_accruals.depth`, how
-     * far below each earner the trade happened. So `omar@1=8` is "the
-     * introducer, paid his rung 2 rate" and `hana@2=30` is "one hop up, paid
-     * her rung 1 rate". The two numbers deliberately do not match, and reading
-     * the depth as the rung is exactly the confusion this comment exists to
-     * stop: an earlier version of this assertion did that and expected
-     * `omar@1=30`, which is the programme catalogue's depth-keyed behaviour
-     * that 0112 replaced.
-     *
-     * This is what "static per lot for the main partner, percent for the
-     * partner under him" describes: the main partner's terms are hers wherever
-     * the business comes from.
+     * far below each earner the trade happened. So `omar@1=12` is "the
+     * introducer, paid his rung 2 share" and `hana@2=28` is "one hop up, paid
+     * the rest".
      */
-    expect(await paidFor(uuid(21))).toEqual(['omar@1=8.00000000', 'hana@2=30.00000000']);
+    expect(await paidFor(uuid(21))).toEqual(['omar@1=12.00000000', 'hana@2=28.00000000']);
+  });
+
+  /*
+   * A sub-partner's OWN share (`commission_share_override`) beats their rung's,
+   * and the main partner's rest follows it: the owner's 50/50 example.
+   */
+  it('splits by the sub-partner’s own share when one is set', async () => {
+    const { omar, omarClient } = await tree();
+    await ctx.db.execute(
+      sql`UPDATE ib_accounts SET commission_share_override = '50' WHERE user_id = ${omar}`,
+    );
+
+    await trade(omarClient, uuid(22));
+
+    expect(await paidFor(uuid(22))).toEqual(['omar@1=20.00000000', 'hana@2=20.00000000']);
   });
 });
 
 /* ── One trade, one partner ───────────────────────────────────────────────── */
 
 describe('a partner earns on their own client', () => {
-  it('pays the introducer their own rung and nobody else', async () => {
+  it('pays a level 1 introducer the whole commission and nobody else', async () => {
     await setLadder(['25', '8']);
     const tariq = await makePartner('tariq', 1, undefined, agency['E2E Gulf']);
     const client = await makeClient('gulf-client', tariq);
 
     await trade(client, uuid(1));
 
-    /* 25% of 100 — rung 1, and no second row: nobody sits above him. */
-    expect(await paidFor(uuid(1))).toEqual(['tariq@1=25.00000000']);
+    /* The whole $40 — not level 1's 25% — and no second row: nobody sits above him. */
+    expect(await paidFor(uuid(1))).toEqual(['tariq@1=40.00000000']);
   });
 });
 
@@ -406,14 +421,14 @@ describe('a mixed chain pays each partner from their own terms', () => {
    *
    * `hana` deals with the broker and is rung 1; `omar` was recruited by her at
    * rung 2; `zaid` by him at rung 3. The client belongs to `zaid`, so the trade
-   * reaches him at DEPTH 1 — and he is paid the THIRD rate, because the rung
-   * follows the partner and the depth follows the trade.
+   * reaches him at DEPTH 1 — and he is paid the THIRD rung's share, because the
+   * rung follows the partner and the depth follows the trade.
    *
-   * The partner nearest the broker takes the most, however deep the trade was.
-   * That inversion is what levels changed, and it is what "static per lot for
-   * the main partner, a percentage for the partner under him" describes.
+   * New partners are capped at two levels, but a three-deep tree built directly
+   * in the data is still walked: every sub-partner (level 2+) takes their own
+   * rung's share, and the level 1 partner takes 100 − 8 − 5 = 87% of the pool.
    */
-  it('pays each earner by their own rung, deepest partner earning least', async () => {
+  it('pays each sub-partner by their rung and the level 1 partner the rest', async () => {
     await setLadder(['30', '8', '5']);
     const hana = await makePartner('hana', 1, undefined, agency['E2E Gold Agency']);
     const omar = await makePartner('omar', 2, hana, agency['E2E Gold Agency']);
@@ -423,18 +438,17 @@ describe('a mixed chain pays each partner from their own terms', () => {
     await trade(client, uuid(2));
 
     expect(await paidFor(uuid(2))).toEqual([
-      'zaid@1=5.00000000',
-      'omar@2=8.00000000',
-      'hana@3=30.00000000',
+      'zaid@1=2.00000000',
+      'omar@2=3.20000000',
+      'hana@3=34.80000000',
     ]);
   });
 
   /*
    * The same people, a different trade: hana's OWN client. She is depth 1 now
-   * and earns the full Gold rate — the ceiling never applied to her, it applied
-   * to that trade.
+   * with nobody beneath her on the trade, so she takes the whole pool.
    */
-  it('pays the same partner in full on a client they introduced themselves', async () => {
+  it('pays the same partner the whole pool on a client they introduced themselves', async () => {
     await setLadder(['30', '8']);
     const hana = await makePartner('hana', 1, undefined, agency['E2E Gold Agency']);
     const omar = await makePartner('omar', 2, hana, agency['E2E Gold Agency']);
@@ -443,7 +457,7 @@ describe('a mixed chain pays each partner from their own terms', () => {
 
     await trade(direct, uuid(3));
 
-    expect(await paidFor(uuid(3))).toEqual(['hana@1=30.00000000']);
+    expect(await paidFor(uuid(3))).toEqual(['hana@1=40.00000000']);
   });
 });
 
@@ -463,16 +477,24 @@ describe('a rung pays whichever of its two terms is set', () => {
 
     await trade(client, uuid(4));
 
-    /* 20% to the partner, 3% back to the client — both legs of `hybrid`. */
+    /* The whole $40 to the level 1 partner, 3% of $100 back to the client. */
     expect(await paidFor(uuid(4))).toEqual([
-      'rami@1=20.00000000',
+      'rami@1=40.00000000',
       'rebate→levant-client=3.00000000',
     ]);
   });
 
-  it('pays the client and nobody else when the rung rates commission at zero', async () => {
-    await setLadder([], '10');
-    const sami = await makePartner('sami', 1, undefined, agency['E2E Levant']);
+  /*
+   * Level 1's own share no longer decides anything (0197), so "commission at
+   * zero" is a SUB-PARTNER whose own share is 0 — a lone one, with no level 1
+   * partner above to take the rest. Their rung still sets the client's rebate.
+   */
+  it('pays the client and nobody else when the sub-partner takes no commission', async () => {
+    await setLadderShares(ctx.db, [{ commission: '50' }, { commission: '30', rebate: '10' }]);
+    const sami = await makePartner('sami', 2, undefined, agency['E2E Levant']);
+    await ctx.db.execute(
+      sql`UPDATE ib_accounts SET commission_share_override = '0' WHERE user_id = ${sami}`,
+    );
     const client = await makeClient('sami-client', sami);
 
     await trade(client, uuid(5));
@@ -487,7 +509,7 @@ describe('a rung pays whichever of its two terms is set', () => {
 
     await trade(client, uuid(6));
 
-    expect(await paidFor(uuid(6))).toEqual(['tariq@1=30.00000000']);
+    expect(await paidFor(uuid(6))).toEqual(['tariq@1=40.00000000']);
   });
 
   /*
@@ -506,8 +528,8 @@ describe('a rung pays whichever of its two terms is set', () => {
 
     await trade(client, uuid(7));
 
-    /* nadia earns rung 1; sami's rung 2 is unconfigured, so he earns nothing. */
-    expect(await paidFor(uuid(7))).toEqual(['nadia@1=30.00000000']);
+    /* nadia, on rung 1, takes the whole pool; sami's rung 2 pays nothing, so he earns nothing. */
+    expect(await paidFor(uuid(7))).toEqual(['nadia@1=40.00000000']);
   });
 });
 
@@ -517,8 +539,8 @@ describe('the per-lot payout ceiling', () => {
   /*
    * `ib_max_payout_per_lot` — the unit-error guard, and the only ceiling
    * since 0140 (the percentage-of-revenue one had nothing left to bound).
-   * On a $100-a-lot type and one-lot trades, a ceiling of N dollars a lot is
-   * exactly what "N% of the revenue" used to be here.
+   * On a $40-a-lot type and one-lot trades every chain pays the whole $40
+   * pool (0197), plus any rebate.
    */
   async function setCeiling(perLot: string) {
     await ctx.db.execute(sql`
@@ -528,15 +550,15 @@ describe('the per-lot payout ceiling', () => {
   }
 
   it('accrues a chain that fits under the ceiling', async () => {
-    await setCeiling('40');
+    await setCeiling('45');
     await setLadder(['30', '5']);
     const omar = await makePartner('omar', 1, undefined, agency['E2E Gulf']);
     const zaid = await makePartner('zaid', 2, omar, agency['E2E Gulf']);
     const client = await makeClient('under-client', zaid);
 
-    /* 5 at rung 2 plus 30 at rung 1 = 35, under 40. */
+    /* 5% at rung 2 ($2) plus the rest, 95%, at rung 1 ($38) = $40, under 45. */
     await trade(client, uuid(8));
-    expect(await paidFor(uuid(8))).toEqual(['zaid@1=5.00000000', 'omar@2=30.00000000']);
+    expect(await paidFor(uuid(8))).toEqual(['zaid@1=2.00000000', 'omar@2=38.00000000']);
   });
 
   /*
@@ -546,21 +568,23 @@ describe('the per-lot payout ceiling', () => {
    */
   it('refuses the whole chain rather than paying a reduced amount', async () => {
     await setCeiling('30');
+    await setLadder(['30', '5']);
     const omar = await makePartner('omar', 1, undefined, agency['E2E Gulf']);
-    const zaid = await makePartner('zaid', 1, omar, agency['E2E Gulf']);
+    const zaid = await makePartner('zaid', 2, omar, agency['E2E Gulf']);
     const client = await makeClient('over-client', zaid);
 
+    /* $40 across the chain, over 30. */
     await expect(trade(client, uuid(9))).rejects.toThrow(/ceiling/i);
     expect(await paidFor(uuid(9))).toEqual([]);
   });
 
   it('counts the client’s rebate against the ceiling too', async () => {
-    /* Rami's 30% alone fits under 31; with the 3% rebate the trade costs 33. */
-    await setCeiling('31');
+    /* Rami's $40 alone fits under 42; with the 3% rebate the trade costs 43. */
+    await setCeiling('42');
     const rami = await makePartner('rami', 1, undefined, agency['E2E Levant']);
     const client = await makeClient('rebate-ceiling-client', rami);
 
-    /* 20 commission + 3 rebate = 23, over 22. */
+    /* 40 commission + 3 rebate = 43, over 42. */
     await expect(trade(client, uuid(10))).rejects.toThrow(/ceiling/i);
     expect(await paidFor(uuid(10))).toEqual([]);
   });
@@ -571,7 +595,7 @@ describe('the per-lot payout ceiling', () => {
 describe('a suspended partner', () => {
   it('earns nothing and breaks the chain above them', async () => {
     const hana = await makePartner('hana', 1, undefined, agency['E2E Gold Agency']);
-    const omar = await makePartner('omar', 1, hana, agency['E2E Gold Agency']);
+    const omar = await makePartner('omar', 2, hana, agency['E2E Gold Agency']);
     const client = await makeClient('suspended-client', omar);
 
     await ctx.db.execute(sql`UPDATE ib_accounts SET active = false WHERE user_id = ${omar}`);
@@ -599,6 +623,6 @@ describe('replaying a trade', () => {
 
     // Two rows after three deliveries — `ib_accruals_source_earner_uq` absorbs
     // the replays rather than the code checking first and inserting after.
-    expect(await paidFor(uuid(12))).toEqual(['zaid@1=5.00000000', 'omar@2=30.00000000']);
+    expect(await paidFor(uuid(12))).toEqual(['zaid@1=2.00000000', 'omar@2=38.00000000']);
   });
 });

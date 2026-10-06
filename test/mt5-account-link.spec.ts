@@ -67,7 +67,7 @@ const ADMIN = {
 /** A desk that may see NO client — every territory check answers 404. */
 const NOBODYS_DESK = {
   ...ADMIN,
-  clientScope: { unrestricted: false, tagIds: [], includesUntriaged: false },
+  clientScope: { unrestricted: false, tagIds: [] },
 } as unknown as AuthenticatedAdmin;
 
 function onMt5(login: number, group: string, currency = 'USD', balance = '1250.00000000'): void {
@@ -334,7 +334,7 @@ describe('syncing MT5’s accounts into the CRM', () => {
   /** A desk admin who sees NEW clients — the predicate's intake branch, true for a NULL client. */
   const INTAKE_DESK = {
     ...VIEWER,
-    clientScope: { unrestricted: false, tagIds: [], includesUntriaged: true },
+    clientScope: { unrestricted: false, tagIds: [] },
   } as unknown as AuthenticatedAdmin;
 
   it('records every login the CRM lacks, with no client, MT5’s figures and holder', async () => {

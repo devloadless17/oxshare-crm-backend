@@ -363,6 +363,9 @@ export class CommissionService implements CommissionAccrualPort {
      * paid nothing.
      */
     terms: CommissionTypeTerms | null | undefined;
+    /** 0198 — the traded symbol and its MT5 folder path (null = not known yet). */
+    symbol?: string | null;
+    symbolPath?: string | null;
   }): Promise<number> {
     /*
      * The other half of the one-feed rule guarded in `accrueForClosedPosition`.
@@ -390,6 +393,8 @@ export class CommissionService implements CommissionAccrualPort {
       lots: deal.lots,
       terms: deal.terms,
       currency: deal.currency,
+      symbol: deal.symbol,
+      symbolPath: deal.symbolPath,
     });
   }
 
@@ -427,6 +432,9 @@ export class CommissionService implements CommissionAccrualPort {
     currency: string;
     /** The traded product's rate card — see `RevenueEvent.terms`. */
     terms: CommissionTypeTerms | null | undefined;
+    /** 0198 — see `RevenueEvent.symbol`. */
+    symbol?: string | null;
+    symbolPath?: string | null;
   }): Promise<number> {
     /*
      * Read from the CLIENT rather than taken as a parameter, for the reason the
@@ -459,6 +467,8 @@ export class CommissionService implements CommissionAccrualPort {
       source: 'deal',
       lots: event.lots,
       terms: event.terms,
+      symbol: event.symbol,
+      symbolPath: event.symbolPath,
     };
 
     const result = calculate(revenue, chain, levels);
