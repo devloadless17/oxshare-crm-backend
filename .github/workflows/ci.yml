@@ -75,13 +75,18 @@ concurrency:
 # `DEPLOY_DIR` is on the deploy job, beside the only step that uses it.
 
 jobs:
-  verify:
-    name: Type-check, lint and the §11 money tests
-    # On production, skipped when `plan` found this code already verified on main.
-    needs: plan
-    if: ${{ !cancelled() && needs.plan.outputs.verified != 'true' }}
+  # ── Verification, in PARALLEL (6 Oct 2026: the owner's "about 5 minutes") ──
+  #
+  # One job ran everything in sequence: 18 minutes, 15 of them the test suite.
+  # Now `checks` (audit, types, format, lint, build, contract) and twelve test
+  # SHARDS run side by side, and `verify` merges the shards' reports. The rules
+  # did not move: the coverage floors in vitest.config.mts and the
+  # every-file-ran check (assert-suite-complete) are judged on the MERGED run,
+  # i.e. the whole suite, exactly as before. Shards switch the floors off only
+  # because each holds a twelfth of the suite and would fail them alone.
+  checks:
+    name: Audit, types, lint, build and contract
     runs-on: ubuntu-latest
-
     # ── The two backing services the specs have always assumed ───────────────
     #
     # Testcontainers covers the money specs, which build and destroy their own
@@ -170,22 +175,13 @@ jobs:
       - name: Pin npm to the lockfile's generation
         run: npm install -g npm@11
 
-      # `npm ci` works again: the dead "jest" config block and its ts-jest
-      # dependency were removed (the repo runs Vitest) and the lockfile
-      # regenerated. Reproducible installs matter most on the money repo.
       - name: Install dependencies
         run: npm ci --no-audit --no-fund
 
       # PLATFORM-CONVENTIONS R-7.6. `--no-audit` above keeps the install quiet
-      # and fast; auditing is a separate, FAILING step rather than a line of
-      # install noise nobody reads. `high` and above only — a moderate advisory
-      # in a dev-only transitive dependency must not be able to block a fix to
-      # the money path.
-      #
-      # `--omit=dev` for the same reason, now that `deploy` needs this job: a HIGH
-      # advisory in vitest or drizzle-kit would otherwise block every hotfix to
-      # production, and neither is in the shipped image — the Dockerfile prunes
-      # them out. This audits what actually runs.
+      # and fast; auditing is a separate, FAILING step. `high` and above only,
+      # and `--omit=dev`: a HIGH advisory in vitest or drizzle-kit must not block
+      # a hotfix, and neither is in the shipped image.
       - name: Dependency audit
         run: npm audit --audit-level=high --omit=dev
 
@@ -207,8 +203,126 @@ jobs:
       # The AppModule specs need SCHEMA, not merely a reachable server:
       # `SelfServiceGroups.onModuleInit` selects from trading_products, so an
       # empty database fails `app.init()` the same way an absent one does. The
-      # same programmatic migrator the deploy uses, against the service above —
-      # one migrator for CI and production rather than two that can disagree.
+      # same programmatic migrator the deploy uses, against the service above.
+      # Testcontainers specs are untouched; they migrate their own database.
+      - name: Apply migrations to the CI database
+        run: node scripts/migrate.mjs
+        env:
+          DATABASE_URL: postgresql://oxshare:oxshare_dev@localhost:5432/oxshare
+
+      - name: Build
+        run: npm run build
+
+      # PLATFORM-CONVENTIONS R-1.3 — the API contract, checked rather than trusted.
+      # Both frontends generate their types from this document; a backend shape
+      # change with no regeneration would otherwise leave all three builds green
+      # while the running system was broken.
+      - name: API contract is up to date
+        run: node scripts/gen-openapi.mjs --check
+
+  tests:
+    name: Tests (shard ${{ matrix.shard }}/12)
+    runs-on: ubuntu-latest
+    strategy:
+      # One red shard stops the rest: a release waits for all twelve anyway.
+      fail-fast: true
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    # ── The two backing services the specs have always assumed ───────────────
+    #
+    # Testcontainers covers the money specs, which build and destroy their own
+    # Postgres. It does NOT cover the specs that stand up the whole AppModule —
+    # route-authorization, audit-coverage, client-scope-coverage, openapi-routes
+    # — because `SelfServiceGroups.onModuleInit` reads trading products at boot,
+    # so `app.init()` needs a real database on the default connection. On a dev
+    # machine `docker compose up -d` supplies exactly that and the specs pass; a
+    # runner had neither, so those four failed on every commit from 14 Aug.
+    #
+    # The credentials deliberately match the fallback in `src/database/db.ts`
+    # (`oxshare:oxshare_dev@localhost:5432/oxshare`), so no DATABASE_URL is set
+    # here and CI resolves the same connection a developer's machine does. That
+    # host is also why TLS stays off: db.ts treats localhost as local.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: oxshare
+          POSTGRES_PASSWORD: oxshare_dev
+          POSTGRES_DB: oxshare
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U oxshare -d oxshare"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+      # Single-use replay markers for signed webhooks. `ReplayNonceModule` turns
+      # a missing Redis into a REFUSAL rather than a bypass — fail-closed, and
+      # correct — so without this every signed Rival webhook spec got a 401 it
+      # was right to get and the suite was wrong to provoke.
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+
+    # ── Config the process REFUSES to boot without ───────────────────────────
+    #
+    # `env.validation.ts` rejects a missing or short JWT secret rather than
+    # starting with a weak one, which is correct and is why the HTTP specs stand
+    # up a real Nest app. It also means CI must supply them: locally they come
+    # from a gitignored `.env`, so the suite passed on every machine and failed
+    # here from the moment the fourth secret was added — for ten commits, with
+    # nobody looking, which is the failure mode a green-by-default pipeline has.
+    #
+    # These are NOT secrets. They are fixed throwaway strings long enough to
+    # satisfy the 32-character floor, used to sign tokens for a Postgres that
+    # Testcontainers creates and destroys inside the job. Putting real values in
+    # repository secrets would imply this build can reach something real; it
+    # cannot, and pretending otherwise is how a test key ends up in production.
+    env:
+      ADMIN_JWT_SECRET: ci-only-admin-access-secret-not-a-real-key
+      ADMIN_JWT_REFRESH_SECRET: ci-only-admin-refresh-secret-not-a-real-key
+      JWT_ACCESS_SECRET: ci-only-portal-access-secret-not-a-real-key
+      JWT_REFRESH_SECRET: ci-only-portal-refresh-secret-not-a-real-key
+      # The local-filesystem storage driver. `STORAGE_DRIVER` defaults to `r2`,
+      # and env.validation.ts then requires the R2 credential block, so a build
+      # without this would fail to boot AppModule. Stated rather than inferred for
+      # the reason that file gives: silently falling back to disk is how identity
+      # documents end up somewhere non-durable with nothing reporting it. CI must
+      # never hold real R2 credentials — same rule as the fake secrets above.
+      STORAGE_DRIVER: disk
+      # Points at the `redis` service above. Same reasoning as STORAGE_DRIVER:
+      # stated, so a signed-webhook spec exercises the real nonce store instead
+      # of the refusal path.
+      REDIS_URL: redis://localhost:6379
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      # The npm that interprets the lockfile is pinned, because Node 22 bundles
+      # npm 10.9 and the lockfile is maintained under npm 11. npm 10's ideal-tree
+      # builder mishandles a lockfile when package.json carries `overrides` —
+      # it re-resolves nested ranges against the registry's latest instead of
+      # honouring the locked version, so the day esbuild published 0.28.2 every
+      # `npm ci` began refusing the committed lockfile with "Missing:
+      # esbuild@0.28.2 from lock file", no commit involved. npm 11 honours the
+      # lock. The Dockerfile pins the same version for the same reason.
+      - name: Pin npm to the lockfile's generation
+        run: npm install -g npm@11
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      # The AppModule specs need SCHEMA, not merely a reachable server:
+      # `SelfServiceGroups.onModuleInit` selects from trading_products, so an
+      # empty database fails `app.init()` the same way an absent one does. The
+      # same programmatic migrator the deploy uses, against the service above.
       # Testcontainers specs are untouched; they migrate their own database.
       - name: Apply migrations to the CI database
         run: node scripts/migrate.mjs
@@ -217,25 +331,65 @@ jobs:
 
       # Testcontainers starts its own Postgres 16; the runner's Docker is all
       # it needs. Tests run against the real committed migrations, never a mock.
-      # --coverage so the thresholds in vitest.config.mts actually bind. They are
-      # floors pinned to measured numbers, not aspirations, and may only go up.
-      - name: Money-path tests (§11 reconciliation, idempotency, concurrency, two-level)
-        run: npm run test:coverage
+      # The blob report carries this shard's results AND coverage to `verify`.
+      - name: Tests, shard ${{ matrix.shard }} of 12
+        run: >-
+          npx vitest run --shard=${{ matrix.shard }}/12 --coverage
+          --coverage.thresholds.lines=0 --coverage.thresholds.functions=0
+          --coverage.thresholds.branches=0 --coverage.thresholds.statements=0
+          --reporter=default --reporter=blob
+          --outputFile.blob=.vitest-reports/blob-${{ matrix.shard }}.json
 
-      - name: Build
-        run: npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vitest-blob-${{ matrix.shard }}
+          path: .vitest-reports/
+          include-hidden-files: true
+          retention-days: 1
+          if-no-files-found: error
 
-      # PLATFORM-CONVENTIONS R-1.3 — the API contract, checked rather than trusted.
-      #
-      # Both frontends generate their types from this document. Until it was
-      # committed, nothing verified the generated types still matched: the
-      # frontend pipelines type-check against their OWN committed types.gen.ts,
-      # so a backend shape change with no regeneration left all three builds
-      # green while the running system was broken. The admin workflow even
-      # carried a comment claiming it caught that; it never runs the backend, so
-      # it could not.
-      - name: API contract is up to date
-        run: node scripts/gen-openapi.mjs --check
+  verify:
+    name: Type-check, lint and the §11 money tests
+    # The gate `deploy` waits for: everything above passed, and the WHOLE suite,
+    # merged, meets the coverage floors with every test file accounted for.
+    needs: [checks, tests]
+    if: ${{ !cancelled() && needs.checks.result == 'success' && needs.tests.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      # The npm that interprets the lockfile is pinned, because Node 22 bundles
+      # npm 10.9 and the lockfile is maintained under npm 11. npm 10's ideal-tree
+      # builder mishandles a lockfile when package.json carries `overrides` —
+      # it re-resolves nested ranges against the registry's latest instead of
+      # honouring the locked version, so the day esbuild published 0.28.2 every
+      # `npm ci` began refusing the committed lockfile with "Missing:
+      # esbuild@0.28.2 from lock file", no commit involved. npm 11 honours the
+      # lock. The Dockerfile pins the same version for the same reason.
+      - name: Pin npm to the lockfile's generation
+        run: npm install -g npm@11
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: vitest-blob-*
+          path: .vitest-reports
+          merge-multiple: true
+
+      # --coverage so the thresholds in vitest.config.mts actually bind, on the
+      # whole suite. They are floors pinned to measured numbers and may only go up.
+      - name: The whole suite, merged — coverage floors and every file accounted for
+        run: >-
+          npx vitest run --merge-reports --coverage
+          --reporter=default --reporter=json --outputFile.json=.vitest-result.json
+          && node scripts/assert-suite-complete.mjs
 
   # ───────────────────────────────────────────────────────────────────────────
   # Everything below runs ONLY for `production`. `main` and pull requests stop
@@ -244,96 +398,20 @@ jobs:
   # On a pull_request, github.ref is refs/pull/N/merge — so the branch check
   # alone would not be enough, which is why the event is checked too.
   # ───────────────────────────────────────────────────────────────────────────
-  # ── Build once, promote: why a production push takes about 2 minutes ──────
+  # ── CI on main, CI + CD on production (the owner's rule, 6 Oct 2026) ──────
   #
-  # Every push to main builds the image IN PARALLEL with `verify`, tagged
-  # `cand-<content key>`, and `promote` stamps it `tree-<content key>` only once
-  # verify has passed. A push to production then re-runs nothing: `plan` finds the
-  # verified image for exactly this code and `deploy` ships it. The content key
-  # (.github/content-key.sh) hashes the code, not the commit, so a "Release:" merge
-  # commit finds the image main built, and a docs-only change keeps the key.
-  #
-  # Code that never went through main (a direct hotfix on production) gets no such
-  # image, so `plan` says so and this run verifies and builds it before deploying.
-  # Either way, nothing ships that has not passed `verify`.
-  plan:
-    name: Find the verified image
+  # A push to main verifies and stops. A push to production verifies AND builds
+  # the image at the same time; `deploy` ships it only when both have passed, so
+  # nothing reaches the server that did not pass `verify`. The image is tagged
+  # with the commit, so a rollback names exactly what it returns to.
+  build:
+    name: Build image
     if: github.ref == 'refs/heads/production' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    # Reads main's CI run to wait for it (or stop when it failed). The workflow-wide
-    # `contents: read` alone refuses that read, so a release pushed before main had
-    # finished failed at once (6 Oct 2026); re-running after main finished worked.
-    permissions:
-      contents: read
-      actions: read
-    timeout-minutes: 50
-    outputs:
-      key: ${{ steps.find.outputs.key }}
-      verified: ${{ steps.find.outputs.verified }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_SECRET }}
-
-      - id: find
-        env:
-          IMAGE: ${{ secrets.DOCKER_USERNAME }}/oxshare-crm-backend
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          key=$(bash .github/content-key.sh HEAD)
-          echo "key=$key" >> "$GITHUB_OUTPUT"
-          has() { docker manifest inspect "$IMAGE:tree-$key" >/dev/null 2>&1; }
-          if has; then
-            echo "verified=true" >> "$GITHUB_OUTPUT"
-            echo "Verified image found: $IMAGE:tree-$key. Deploying it."
-            exit 0
-          fi
-          # Main's latest code IS this code: its pipeline is still verifying and
-          # building it, so wait for it rather than redo it here.
-          main_sha=$(git rev-parse origin/main)
-          if [ "$(bash .github/content-key.sh origin/main)" != "$key" ]; then
-            echo "verified=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::This code never passed through main: verifying and building it in this run."
-            exit 0
-          fi
-          echo "Waiting for main's pipeline (${main_sha:0:7}) to verify and build this code..."
-          for _ in $(seq 1 135); do
-            if has; then echo "verified=true" >> "$GITHUB_OUTPUT"; echo "Verified."; exit 0; fi
-            conclusion=$(gh api "repos/$REPO/actions/runs?branch=main&head_sha=$main_sha" \
-              --jq '[.workflow_runs[] | select(.name=="CI")][0].conclusion // ""')
-            case "$conclusion" in
-              failure | cancelled | timed_out)
-                echo "::error::main's pipeline for this code ended '$conclusion': nothing ships that has not passed it."
-                exit 1 ;;
-            esac
-            sleep 20
-          done
-          echo "::error::No verified image for this code after 45 minutes."
-          exit 1
-
-  build:
-    name: Build image (candidate)
-    needs: plan
-    if: >-
-      !cancelled() && github.event_name != 'pull_request' &&
-      ((github.event_name == 'push' && github.ref == 'refs/heads/main') ||
-       (github.ref == 'refs/heads/production' && needs.plan.outputs.verified == 'false'))
-    runs-on: ubuntu-latest
     timeout-minutes: 30
-    outputs:
-      key: ${{ steps.key.outputs.key }}
     steps:
       - uses: actions/checkout@v4
 
-      - id: key
-        run: echo "key=$(bash .github/content-key.sh HEAD)" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@v3
 
@@ -377,43 +455,22 @@ jobs:
               ;;
           esac
 
-      # A CANDIDATE: nothing deploys `cand-*`. `promote` stamps it once verify passes.
+      # Tagged with the commit: `deploy` ships it only once `verify` has passed.
       - uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile
           push: true
-          tags: ${{ secrets.DOCKER_USERNAME }}/oxshare-crm-backend:cand-${{ steps.key.outputs.key }}
+          tags: ${{ secrets.DOCKER_USERNAME }}/oxshare-crm-backend:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-  promote:
-    name: Promote the verified image
-    needs: [verify, build]
-    if: ${{ !cancelled() && needs.verify.result == 'success' && needs.build.result == 'success' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: docker/setup-buildx-action@v3
-
-      - uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_SECRET }}
-
-      # A registry-side copy of the manifest: seconds, nothing rebuilt or re-pulled.
-      - name: Stamp tree-<key> (and latest)
-        env:
-          IMAGE: ${{ secrets.DOCKER_USERNAME }}/oxshare-crm-backend
-          KEY: ${{ needs.build.outputs.key }}
-        run: docker buildx imagetools create -t "$IMAGE:tree-$KEY" -t "$IMAGE:latest" "$IMAGE:cand-$KEY"
 
   deploy:
     name: Ship and deploy
     if: >-
       !cancelled() && github.ref == 'refs/heads/production' && github.event_name != 'pull_request' &&
-      (needs.plan.outputs.verified == 'true' || needs.promote.result == 'success')
-    needs: [plan, promote]
+      needs.verify.result == 'success' && needs.build.result == 'success'
+    needs: [verify, build]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -660,7 +717,7 @@ jobs:
 
       - name: Ship and deploy
         env:
-          IMAGE_TAG: tree-${{ needs.plan.outputs.key }}
+          IMAGE_TAG: ${{ github.sha }}
           HOST: ${{ secrets.VPS_HOST }}
           SSH_USER: ${{ secrets.VPS_USER }}
           PORT: ${{ secrets.VPS_PORT || '22' }}
