@@ -7,7 +7,6 @@ import {
   clientTagAssignments,
   clientTags,
   ibAccounts,
-  kycConfigSteps,
   kycSubmissions,
   mt5Deals,
   transfers,
@@ -18,7 +17,7 @@ import {
   wallets,
 } from './schema';
 import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
-import { DEFAULT_KYC_STEPS } from '../store/kyc-config.store';
+import { DEFAULT_REJECTION_REASONS, ensurePlatformDefaults } from './platform-defaults';
 import permissionsCatalog from '../config/permissions.json';
 
 // Idempotent dev/bootstrap seeds — safe to run on every boot. Idempotency
@@ -62,42 +61,6 @@ function seedE2eFixtures(): boolean {
    */
   return process.env.SEED_E2E_FIXTURES !== 'false';
 }
-
-/**
- * The seeded reasons’ Arabic (0179) — the same wording migration 0179 gives a database
- * seeded before it, so a fresh one is not left untranslated. Keyed by the English label.
- */
-const SEEDED_REASON_AR: Readonly<Record<string, string>> = {
-  'Identity document is blurry or unreadable': 'وثيقة الهوية غير واضحة أو غير مقروءة',
-  'Identity document is expired': 'وثيقة الهوية منتهية الصلاحية',
-  'Selfie does not match the identity document': 'الصورة الشخصية لا تطابق وثيقة الهوية',
-  'Proof of address is older than 3 months': 'إثبات العنوان أقدم من 3 أشهر',
-  'Proof of address does not match the declared address':
-    'إثبات العنوان لا يطابق العنوان المُصرَّح به',
-  'Personal information does not match the documents': 'المعلومات الشخصية لا تطابق الوثائق',
-  'Document appears altered or tampered with': 'يبدو أن الوثيقة معدَّلة أو تم التلاعب بها',
-  'Beneficiary details do not match the account holder': 'بيانات المستفيد لا تطابق صاحب الحساب',
-  'Insufficient verified balance': 'الرصيد الموثَّق غير كافٍ',
-  'Account verification (KYC) incomplete': 'التحقق من هوية الحساب غير مكتمل',
-  'Suspicious activity — additional verification required': 'نشاط مشبوه — يلزم تحقق إضافي',
-  'Insufficient trading or introducing experience': 'خبرة غير كافية في التداول أو في إحالة العملاء',
-  'Introducing volume does not meet the programme minimum':
-    'حجم الإحالات لا يبلغ الحد الأدنى للبرنامج',
-  'Unable to verify the website or business details provided':
-    'تعذّر التحقق من الموقع الإلكتروني أو بيانات النشاط التجاري المقدَّمة',
-  'Application is incomplete or unclear': 'الطلب غير مكتمل أو غير واضح',
-  'Does not meet the eligibility criteria for this programme':
-    'لا يستوفي شروط الأهلية لهذا البرنامج',
-  'The receipt is unreadable — please send a clearer photo':
-    'الإيصال غير مقروء — يُرجى إرسال صورة أوضح',
-  'The amount on the receipt does not match the amount requested':
-    'المبلغ الوارد في الإيصال لا يطابق المبلغ المطلوب',
-  'No payment matching this receipt has reached our account':
-    'لم تصل إلى حسابنا أي دفعة مطابقة لهذا الإيصال',
-  'The receipt is for a different transfer we have already credited':
-    'الإيصال يخص تحويلاً آخر سبق أن أضفناه إلى رصيدك',
-  'The receipt does not show who sent the payment': 'الإيصال لا يُظهر اسم مُرسِل الدفعة',
-};
 
 export async function runSeeds(): Promise<void> {
   const db = getDb();
@@ -655,108 +618,13 @@ export async function runSeeds(): Promise<void> {
     }
   }
 
-  const kycReasons = [
-    'Identity document is blurry or unreadable',
-    'Identity document is expired',
-    'Selfie does not match the identity document',
-    'Proof of address is older than 3 months',
-    'Proof of address does not match the declared address',
-    'Personal information does not match the documents',
-    'Document appears altered or tampered with',
-  ].map((label) => ({ context: 'kyc' as const, label }));
-
-  const withdrawalReasons = [
-    'Beneficiary details do not match the account holder',
-    'Insufficient verified balance',
-    'Account verification (KYC) incomplete',
-    'Suspicious activity — additional verification required',
-  ].map((label) => ({ context: 'withdrawal' as const, label }));
-
   /*
-   * Seeded here rather than in a migration, and that placement is forced.
-   *
-   * `rejection_context` gained 'partner' in migration 0030, and Postgres will
-   * not let a new enum label be USED until the transaction that added it
-   * commits. Drizzle's migrator runs every pending migration inside ONE
-   * transaction, so an INSERT with context 'partner' fails even from a LATER
-   * migration file — splitting it out is not enough. Seeds run after migration
-   * has committed, which is the only place this insert is legal on a fresh
-   * database.
-   *
-   * `use-reject-options.ts` falls back to `[]` rather than blocking a decision,
-   * so an unseeded context does not break the review screen — it silently turns
-   * every refusal into free text and the reasons stop being comparable across
-   * reviewers. That is the failure this avoids, not a crash.
+   * The default rejection reasons and KYC form are PLATFORM defaults, written on every database's
+   * first boot by `PlatformDefaults` (platform-defaults.ts), production included. Here, as before,
+   * a development database also gets any default reason it lacks on every boot.
    */
-  const partnerReasons = [
-    'Insufficient trading or introducing experience',
-    /*
-     * Was 'Expected volume does not meet the programme minimum', which named a
-     * field that no longer exists — `expected_volume` went with migration 0063,
-     * so a reviewer choosing this reason could no longer point at the figure it
-     * refers to, and the applicant could not know what they had claimed.
-     *
-     * Seeds are ON CONFLICT DO NOTHING, so a database that already holds the
-     * old label keeps it. Editing it out of the catalogue is an operator's
-     * decision, not a migration's.
-     */
-    'Introducing volume does not meet the programme minimum',
-    'Unable to verify the website or business details provided',
-    'Application is incomplete or unclear',
-    'Does not meet the eligibility criteria for this programme',
-  ].map((label) => ({ context: 'partner' as const, label }));
-
-  /*
-   * OFFLINE DEPOSITS. Every one of these describes something the desk can see in
-   * the receipt or the bank statement, because that is all a deposit reviewer
-   * has — they are refusing a CLAIM about money, not a document's quality.
-   *
-   * None of them promises a refund, deliberately: nothing was debited, so there
-   * is nothing to give back. A client who really did send the money needs
-   * support, and the email says so.
-   *
-   * Seeded here rather than in migration 0127, which adds the enum value: a new
-   * enum value cannot be USED in the transaction that adds it, and the runner
-   * wraps each migration file in one. The seed runs afterwards on its own
-   * connection.
-   */
-  const depositReasons = [
-    'The receipt is unreadable — please send a clearer photo',
-    'The amount on the receipt does not match the amount requested',
-    'No payment matching this receipt has reached our account',
-    'The receipt is for a different transfer we have already credited',
-    'The receipt does not show who sent the payment',
-  ].map((label) => ({ context: 'deposit' as const, label }));
-
-  await db
-    .insert(rejectionReasons)
-    .values(
-      [...kycReasons, ...withdrawalReasons, ...partnerReasons, ...depositReasons].map((reason) => ({
-        ...reason,
-        labelAr: SEEDED_REASON_AR[reason.label] ?? null,
-      })),
-    )
-    .onConflictDoNothing();
-
-  // Default KYC onboarding steps — only when the config table is empty, so a
-  // builder-customized flow is never overwritten by a reboot.
-  const [existingStep] = await db.select().from(kycConfigSteps).limit(1);
-  if (!existingStep) {
-    await db.insert(kycConfigSteps).values(
-      DEFAULT_KYC_STEPS.map((s) => ({
-        id: s.id,
-        stepNumber: s.stepNumber,
-        slug: s.slug,
-        title: s.title,
-        description: s.description,
-        titleAr: s.titleAr ?? null,
-        descriptionAr: s.descriptionAr ?? null,
-        icon: s.icon,
-        enabled: s.enabled,
-        fields: s.fields as unknown as Record<string, unknown>[],
-      })),
-    );
-  }
+  await db.insert(rejectionReasons).values(DEFAULT_REJECTION_REASONS).onConflictDoNothing();
+  await ensurePlatformDefaults(db);
 
   // The `withdrawal_otp` security switch is no longer seeded: the OTP was
   // removed (D-67) and so was the screen that toggled it.
