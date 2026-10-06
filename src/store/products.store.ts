@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, asc, eq, inArray, isNotNull, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNotNull, sql, isNull } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db, Executor } from '../database/db';
 import { placeInOrder } from '../common/ordering';
@@ -497,22 +497,62 @@ export class ProductsStore {
   /* ── The resolution ───────────────────────────────────────────────────── */
 
   /**
-   * Which agency, if any, governs what this client may open.
+   * WHO is opening a live account, for the product offer (owner, 6 Oct 2026):
    *
-   * Null covers three different situations that all resolve the same way: the
-   * client came in directly, or their partner predates agencies, or their
-   * partner has none assigned. All three mean "no agency narrows this", and the
-   * caller offers the full catalogue.
+   *  - `direct`: an individual nobody introduced, or a MAIN partner (level 1,
+   *    no parent) opening their own account. Offered the live products with
+   *    NO commission type — nobody is paid on their trades.
+   *  - `referred`: anybody inside a partner's tree — a sub-partner opening
+   *    their own account, or a client under a main partner or a sub-partner.
+   *    Offered the products of the agency of the MAIN partner at the top of
+   *    that chain (`agencyId`; null when that partner has none), and only those
+   *    with a commission type, since their trades pay the chain.
+   *
+   * The top of the chain is found by walking `parent_ib_user_id` up from the
+   * introducer, so a client under a sub-partner gets the main partner's
+   * agency even if the sub-partner's own row says something else.
    */
-  async agencyForClient(userId: number): Promise<string | null> {
-    const [row] = await this.db
-      .select({ agencyId: ibAccounts.agencyId })
-      .from(users)
-      .innerJoin(ibAccounts, eq(ibAccounts.userId, users.referredByIbUserId))
-      .where(eq(users.id, userId))
-      .limit(1);
+  async liveAudienceFor(
+    userId: number,
+  ): Promise<{ kind: 'direct' } | { kind: 'referred'; agencyId: string | null }> {
+    const result = await this.db.execute(sql`
+      WITH RECURSIVE me AS (
+        SELECT u.referred_by_ib_user_id AS introducer,
+               own.user_id AS own_partner,
+               own.parent_ib_user_id AS own_parent
+          FROM ${users} u
+          LEFT JOIN ${ibAccounts} own ON own.user_id = u.id
+         WHERE u.id = ${userId}
+      ),
+      chain AS (
+        SELECT a.user_id, a.parent_ib_user_id, a.agency_id, 1 AS depth
+          FROM ${ibAccounts} a
+         WHERE a.user_id = (SELECT introducer FROM me)
+        UNION ALL
+        SELECT p.user_id, p.parent_ib_user_id, p.agency_id, c.depth + 1
+          FROM ${ibAccounts} p
+          JOIN chain c ON p.user_id = c.parent_ib_user_id
+         WHERE c.depth < 10
+      )
+      SELECT (SELECT introducer FROM me) AS introducer,
+             (SELECT own_partner FROM me) AS own_partner,
+             (SELECT own_parent FROM me) AS own_parent,
+             (SELECT agency_id::text FROM chain ORDER BY depth DESC LIMIT 1) AS root_agency
+    `);
+    const row = result.rows[0] as
+      | {
+          introducer: number | null;
+          own_partner: number | null;
+          own_parent: number | null;
+          root_agency: string | null;
+        }
+      | undefined;
 
-    return row?.agencyId ?? null;
+    // A main partner's own account, or nobody introduced them.
+    if (!row || (row.own_partner !== null && row.own_parent === null) || row.introducer === null) {
+      return { kind: 'direct' };
+    }
+    return { kind: 'referred', agencyId: row.root_agency };
   }
 
   /**
@@ -536,7 +576,8 @@ export class ProductsStore {
    * disabled currency and a disabled IB level follow.
    */
   async offeredTo(userId: number, environment: 'live' | 'demo'): Promise<OfferedGroup[]> {
-    const agencyId = environment === 'live' ? await this.agencyForClient(userId) : null;
+    const audience = environment === 'live' ? await this.liveAudienceFor(userId) : null;
+    const agencyId = audience?.kind === 'referred' ? audience.agencyId : null;
 
     const rows = await this.db
       .select({
@@ -557,13 +598,15 @@ export class ProductsStore {
           eq(tradingProducts.enabled, true),
           eq(tradingProducts.type, environment === 'demo' ? 'demo' : 'real'),
           /*
-           * A LIVE product with no commission type is not offered to clients
-           * (owner, 6 Oct 2026): it is not finished being set up, and a trade
-           * on it would accrue nothing. Admin screens still list and use it.
-           * Demo products never carry a type (refused at assignment), so the
-           * demo offer is untouched.
+           * LIVE products split on the commission type (owner, 6 Oct 2026):
+           * somebody inside a partner's tree is offered products that pay that
+           * tree (a type set); an individual or a main partner's own account is
+           * offered the products that pay nobody (no type). See
+           * `liveAudienceFor`. Demo products never carry a type, so the demo
+           * offer is untouched.
            */
-          ...(environment === 'live' ? [isNotNull(tradingProducts.commissionTypeId)] : []),
+          ...(audience?.kind === 'referred' ? [isNotNull(tradingProducts.commissionTypeId)] : []),
+          ...(audience?.kind === 'direct' ? [isNull(tradingProducts.commissionTypeId)] : []),
           ...(agencyId
             ? [
                 inArray(
