@@ -84,6 +84,17 @@ async function makeProduct(name: string, type: 'real' | 'demo' = 'real'): Promis
   return product.id;
 }
 
+/** A live product is offered only once it has a commission type (6 Oct 2026). */
+async function giveType(productId: string) {
+  const type = await new IbCommissionTypesService(ctx.db, auditStubAs()).create(
+    { name: `Terms ${productId}`, description: null, commissionPerLot: '10', rebatePerLot: '3' },
+    TEST_ACTOR,
+  );
+  await ctx.db.execute(
+    sql`UPDATE trading_products SET commission_type_id = ${type.id} WHERE id = ${productId}`,
+  );
+}
+
 async function makeAgency(name: string): Promise<string> {
   const agency = await service.createAgency(
     { name, description: null, enabled: true, sortOrder: 0 },
@@ -314,6 +325,8 @@ describe('offeredTo: demo is global, live is agency-scoped', () => {
     const carriedId = await makeProduct('Standard');
     const otherId = await makeProduct('ECN');
     const demoId = await makeProduct('Demo A', 'demo');
+    await giveType(carriedId);
+    await giveType(otherId);
 
     await service.attachGroup(
       carriedId,
@@ -336,8 +349,27 @@ describe('offeredTo: demo is global, live is agency-scoped', () => {
     const partnerId = await makePartner('partner@offered.local', agencyId);
     const referredId = await makeUser('referred@offered.local', partnerId);
     const directId = await makeUser('direct@offered.local');
-    return { referredId, directId, demoId };
+    return { referredId, directId, demoId, otherId };
   }
+
+  it('a LIVE product with no commission type is offered to nobody', async () => {
+    const { referredId, directId, otherId } = await fixture();
+    await ctx.db.execute(
+      sql`UPDATE trading_products SET commission_type_id = NULL WHERE id = ${otherId}`,
+    );
+
+    expect((await store.offeredTo(directId, 'live')).map((o) => o.mt5Group)).toEqual([
+      'real\\Standard-USD',
+    ]);
+    // Even inside an agency that carries it.
+    const [{ id: agencyId }] = await store.listAgencies();
+    await service.setAgencyProducts(agencyId, [otherId], TEST_ACTOR);
+    expect(await store.offeredTo(referredId, 'live')).toEqual([]);
+    // The demo offer never depended on a type.
+    expect((await store.offeredTo(directId, 'demo')).map((o) => o.mt5Group)).toEqual([
+      'demo\\Standard-USD',
+    ]);
+  });
 
   it('a referred client gets their agency for LIVE and the demo product for DEMO', async () => {
     const { referredId } = await fixture();
@@ -794,6 +826,7 @@ describe('Arabic names and descriptions (0179)', () => {
       { environment: 'live', mt5Group: 'real\\Standard-USD' },
       TEST_ACTOR,
     );
+    await giveType(id);
     const client = await makeUser('arabic@offered.local');
     const [offer] = await store.offeredTo(client, 'live');
     expect(offer).toMatchObject({ productName: 'Standard', productNameAr: 'قياسي' });

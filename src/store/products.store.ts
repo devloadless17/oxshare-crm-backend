@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, asc, eq, inArray, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNotNull, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db, Executor } from '../database/db';
 import { placeInOrder } from '../common/ordering';
@@ -500,6 +500,14 @@ export class ProductsStore {
           eq(tradingProductGroups.environment, environment),
           eq(tradingProducts.enabled, true),
           eq(tradingProducts.type, environment === 'demo' ? 'demo' : 'real'),
+          /*
+           * A LIVE product with no commission type is not offered to clients
+           * (owner, 6 Oct 2026): it is not finished being set up, and a trade
+           * on it would accrue nothing. Admin screens still list and use it.
+           * Demo products never carry a type (refused at assignment), so the
+           * demo offer is untouched.
+           */
+          ...(environment === 'live' ? [isNotNull(tradingProducts.commissionTypeId)] : []),
           ...(agencyId
             ? [
                 inArray(
