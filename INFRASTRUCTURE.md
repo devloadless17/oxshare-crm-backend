@@ -60,12 +60,36 @@ playbook's "never locked out" rule, with fail2ban guarding it). Keys: `~/.ssh/id
 | `admin-dashboard.oxshare.com` | A, TTL 300 | `31.97.52.63`  |
 | `portal.oxshare.com`          | A, TTL 300 | `31.97.52.63`  |
 
-- DNS is **Hostinger's** (`ns1/ns2.dns-parking.com`), in the buyer's Hostinger account. It is NOT
-  Cloudflare and nothing is proxied, which is what `TRUSTED_PROXY_HOPS=1` assumes.
+- The domain is **registered at GoDaddy** (renewal due 23 Jan 2031) and its **DNS is hosted at
+  Hostinger** (`ns1/ns2.dns-parking.com`), so records are edited in the buyer's Hostinger account.
+  It is NOT Cloudflare and nothing is proxied, which is what `TRUSTED_PROXY_HOPS=1` assumes.
 - **All three names must stay on ONE registrable domain** (`oxshare.com`): the sessions are
   `__Host-` cookies with `SameSite=Lax` (backend DEPLOYMENT.md, "Where the frontends must live").
-- No AAAA (IPv6) records, no CAA, no DNSSEC. Caddy obtains and renews the certificates itself
-  (Let's Encrypt, HTTP-01 on port 80).
+- No AAAA (IPv6) records, no CAA, no DNSSEC.
+
+### Certificates
+
+Caddy obtains and renews all three by itself (Let's Encrypt, 90-day certificates). Let's Encrypt
+tells it WHEN to renew (ARI): about 30 days before expiry, and earlier if Let's Encrypt ever
+revokes certificates. The first renewal is scheduled for 4–5 Dec 2026. A failed attempt is retried
+with backoff, and Caddy falls back to ZeroSSL if Let's Encrypt is down.
+
+Renewal stops only if one of these breaks, so never break them:
+
+| Needed for renewal                                    | Broken by                                    |
+| ----------------------------------------------------- | -------------------------------------------- |
+| The name still points at its server                   | a DNS edit at Hostinger                      |
+| Ports 80 and 443 open to the internet                 | a UFW/compose/Hostinger firewall change      |
+| The `caddy_data` volume (certificates + ACME account) | `docker compose down -v`, `docker volume rm` |
+| Caddy running                                         | (release.sh recreates it if it is not)       |
+
+**The alarm**: `.github/workflows/certificate-watch.yml` checks all three certificates and the
+API's health from outside every day at 06:17 UTC, and fails (GitHub emails the repository admins)
+when any certificate has under 21 days left — three weeks before a browser would refuse it.
+Let's Encrypt no longer sends expiry emails, so this is the only warning. To look by hand:
+`docker logs oxshare_caddy 2>&1 | grep -E "renewal info|certificate obtained"` (`oxshare_web_caddy`
+on the frontends server).
+
 - The old names (`oxshareapi/oxshareadmin/oxshareportal.loadless.site`) belong to the previous
   setup (Contabo backend, Vercel frontends).
 
@@ -168,7 +192,7 @@ the KYC form, countries, roles, the IP allowlist.
 | R2 or OpenAI keys        | provider dashboard → GitHub secret                                                                                   | redeploy the backend                                                                                             |
 | The bridge key or secret | GitHub secret AND the bridge's `appsettings.Production.json`, together                                               | redeploy the backend and restart the bridge                                                                      |
 | Docker Hub token         | Docker Hub → GitHub secret                                                                                           | next deploy uses it                                                                                              |
-| A domain                 | DNS + secrets (backend DEPLOYMENT.md, "When the buyer's domain arrives")                                             | redeploy the backend, then rebuild both frontends                                                                |
+| A domain                 | DNS + secrets (backend DEPLOYMENT.md, "When the buyer's domain arrives")                                             | redeploy the backend, then rebuild both frontends; update `HOSTS` in `certificate-watch.yml`                     |
 | Replace or add a server  | backend DEPLOYMENT.md, "Replacing a server"                                                                          | one script + secrets + DNS                                                                                       |
 | More capacity            | backend DEPLOYMENT.md, "How this scales"                                                                             | a bigger Hostinger plan first                                                                                    |
 | The broker upgrades MT5  | the bridge repo's `docs/DLL-UPGRADE.md`                                                                              | bridge only                                                                                                      |

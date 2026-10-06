@@ -1,0 +1,48 @@
+# A daily look at production from the OUTSIDE: every public certificate and the API's health.
+#
+# Caddy renews each certificate by itself about 30 days before it expires (Let's Encrypt tells
+# it when, through ARI). Let's Encrypt no longer emails anyone before a certificate expires, so
+# this is the alarm if renewal ever stops: a failed run emails the repository's admins, three
+# weeks before any browser would refuse the site. What stops renewal, and how to fix it, is in
+# INFRASTRUCTURE.md ("Certificates").
+#
+# Changing a domain? Update HOSTS below with it (INFRASTRUCTURE.md, "Changing things safely").
+name: Certificate watch
+
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      HOSTS: api-admin.oxshare.com admin-dashboard.oxshare.com portal.oxshare.com
+      HEALTH_URL: https://api-admin.oxshare.com/health
+      MIN_DAYS: '21'
+    steps:
+      - name: Every certificate has at least MIN_DAYS left, and the API answers
+        run: |
+          set -u
+          fail=0
+          for host in $HOSTS; do
+            end=$(echo | timeout 15 openssl s_client -connect "$host:443" -servername "$host" -verify_return_error 2>/dev/null \
+              | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2)
+            if [ -z "$end" ]; then
+              echo "::error::$host serves no valid certificate"; fail=1; continue
+            fi
+            days=$(( ( $(date -d "$end" +%s) - $(date +%s) ) / 86400 ))
+            if [ "$days" -lt "$MIN_DAYS" ]; then
+              echo "::error::$host: certificate expires in $days days ($end). Caddy renews ~30 days ahead, so renewal is failing: see INFRASTRUCTURE.md, Certificates."
+              fail=1
+            else
+              echo "$host: $days days left (until $end)"
+            fi
+          done
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$HEALTH_URL")
+          if [ "$code" = 200 ]; then echo "API health: 200"; else echo "::error::API health answered $code"; fail=1; fi
+          exit $fail
