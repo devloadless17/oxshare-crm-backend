@@ -82,6 +82,10 @@ describe('GET /trading/accounts/self-service is in the contract', () => {
       'product',
       'productAr',
       'productId',
+      // 0201: the client's cap on this product and the group's minimum deposit.
+      'maxAccounts',
+      'heldAccounts',
+      'minDeposit',
     ]);
   });
 });

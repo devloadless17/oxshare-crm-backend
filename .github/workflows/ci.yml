@@ -225,7 +225,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       # One red shard stops the rest: a release waits for all twelve anyway.
-      fail-fast: true
+      fail-fast: false
       matrix:
         shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     # ── The two backing services the specs have always assumed ───────────────
