@@ -634,6 +634,18 @@ export class Mt5AccountsService {
       .where(eq(tradingAccounts.login, normalised))
       .limit(1);
 
+    /*
+     * A login owned OUTSIDE the reader's territory answers before MT5 is asked.
+     * It cannot be linked (the CRM already owns it), and reading it would hand a
+     * scoped admin MT5's holder name, email and balance for a client they were
+     * specifically denied — any login number typed in would do (Oct 2026 audit).
+     */
+    if (owned && owned.userId !== null && !(await this.inTerritory(owned.userId, actor))) {
+      throw new ConflictError(
+        `Login ${normalised} already belongs to a client outside your territory.`,
+      );
+    }
+
     const snapshot = await this.bridge.getAccount(normalised);
     if (!snapshot) throw new NotFoundError(`MT5 has no account with login ${normalised}.`);
     const holder = await this.bridge.getAccountHolder(normalised).catch((error: unknown) => {
@@ -700,6 +712,15 @@ export class Mt5AccountsService {
       owner,
       waitingDeals: await this.waitingDeals(normalised),
     };
+  }
+
+  private async inTerritory(userId: number, actor: AuthenticatedAdmin): Promise<boolean> {
+    const [row] = await this.db
+      .select({ id: users.id })
+      .from(users)
+      .where(and(eq(users.id, userId), clientScopePredicate(actor.clientScope, users.id)))
+      .limit(1);
+    return Boolean(row);
   }
 
   /**

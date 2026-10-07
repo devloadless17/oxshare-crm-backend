@@ -218,9 +218,12 @@ describe('looking an MT5 login up', () => {
       name: 'Rana Existing',
       outsideTerritory: false,
     });
-    expect((await accounts.lookupMt5Account('7000002', NOBODYS_DESK)).owner).toEqual({
-      outsideTerritory: true,
-    });
+    // Outside the territory the lookup REFUSES before MT5 is asked (Oct 2026
+    // audit): it can never be linked, and answering handed a scoped admin MT5's
+    // holder name, email and balance for a client they were denied.
+    await expect(accounts.lookupMt5Account('7000002', NOBODYS_DESK)).rejects.toThrow(
+      /belongs to a client outside your territory/,
+    );
   });
 });
 

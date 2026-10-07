@@ -75,10 +75,11 @@ export class AdminRbacController {
   // ── RBAC: permission catalog, roles, admin directory (RBAC-02/07) ─────────
   @Get('permissions')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('roles.view', 'admins.view')
+  // `apikeys.create` too: issuing a key means choosing its permissions from this list.
+  @RequirePermissions('roles.view', 'admins.view', 'apikeys.create')
   @ApiCookieAuth()
   @ApiOperation({
-    summary: 'Permission catalog grouped by module (requires roles.view or admins.view)',
+    summary: 'Permission catalog grouped by module (roles.view, admins.view or apikeys.create)',
   })
   @ApiOkResponse({
     schema: {
@@ -90,7 +91,7 @@ export class AdminRbacController {
   })
   @NotClientScoped('The permission catalog — a static vocabulary, not client data.')
   getPermissions() {
-    return this.rbac.getPermissionsCatalog();
+    return this.rbac.servedCatalog();
   }
 
   /**
@@ -132,10 +133,14 @@ export class AdminRbacController {
   @ApiQuery({ name: 'sort', required: false, enum: Object.keys(ROLE_SORT_COLUMNS) })
   @ApiQuery({ name: 'order', required: false, enum: ['asc', 'desc'] })
   @NotClientScoped('RBAC configuration; roles are not clients.')
-  listRoles(@Query('sort') sort?: string, @Query('order') order?: string) {
+  listRoles(
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+    @Query('sort') sort?: string,
+    @Query('order') order?: string,
+  ) {
     // Validated in the service against ROLE_SORT_COLUMNS — the one place the
     // column mapping lives. Defaults to name ascending.
-    return this.rbac.listRoles({ sort, order });
+    return this.rbac.listRoles({ sort, order }, req.admin);
   }
 
   /**
@@ -232,7 +237,7 @@ export class AdminRbacController {
     @Param('id', UuidParam) id: string,
     @Req() req: Request & { admin: AuthenticatedAdmin },
   ) {
-    return this.rbac.deleteRole(id, req.admin.id);
+    return this.rbac.deleteRole(id, req.admin);
   }
 
   @Get('users')

@@ -461,7 +461,8 @@ export class AdminClientsService {
         paged.items,
         this.users,
         actor.clientScope,
-        actorHasPermission(actor, 'ib.view'),
+        actorHasPermission(actor, 'ib.partners.view') ||
+          actorHasPermission(actor, 'ib.referrals.view'),
       ),
     ]);
     const withTags = referred.map((row) => ({
@@ -532,7 +533,7 @@ export class AdminClientsService {
      * `users.referred_by_ib_user_id` — the attribution the old
      * `referral_attributions` table was replaced by in 0032.
      */
-    const canSeeNetwork = may('ib.view');
+    const canSeeNetwork = may('ib.partners.view') || may('ib.referrals.view');
     /*
      * The submission is read for the lock too, and for that reason alone when
      * the reader holds `clients.edit` without `kyc.view`: the edit dialog must

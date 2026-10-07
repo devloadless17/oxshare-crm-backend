@@ -200,24 +200,28 @@ describe('AdminRbacService anti-escalation', () => {
   });
 
   /*
-   * The counterpart, and the reason the rule is "not your own" rather than a
-   * flat subset: `roles.edit` has to be able to define a role, including with
-   * keys the definer does not personally hold. Otherwise the set of grantable
-   * permissions can only ever shrink, and a genuinely new key reaches nobody.
+   * GRANT ONLY WHAT YOU HOLD (Oct 2026 audit). The catalog-only rule this
+   * replaced let one person escalate alone: invite a second mailbox onto a
+   * role, then widen that role. The old objection — a new key reaches nobody —
+   * is answered by `Administrator`, which is topped up with every key at boot.
    */
-  it('a sub-admin MAY grant a permission they do not hold to a role they are not on', async () => {
-    const { service, rolesFake } = await buildRbacService();
+  it('refuses to grant a permission the editor does not hold', async () => {
+    const own: Role = { ...CUSTOM_ROLE, permissions: ['roles.view'] };
+    const { service, rolesFake } = await buildRbacService({
+      roles: { findById: vi.fn().mockResolvedValue(own) },
+    });
 
-    await service.updateRole('role-1', { permissions: ['ib.approve'] }, SUB_ADMIN);
-    expect(rolesFake.update).toHaveBeenCalledWith(
-      'role-1',
-      { permissions: ['ib.approve'] },
-      expect.anything(),
-    );
+    await expect(
+      service.updateRole('role-1', { permissions: ['ib.approve'] }, SUB_ADMIN),
+    ).rejects.toThrow(/cannot grant permissions you do not hold: ib.approve/);
+    expect(rolesFake.update).not.toHaveBeenCalled();
   });
 
   it('a sub-admin may grant a permission they do hold', async () => {
-    const { service, rolesFake } = await buildRbacService();
+    const own: Role = { ...CUSTOM_ROLE, permissions: [] };
+    const { service, rolesFake } = await buildRbacService({
+      roles: { findById: vi.fn().mockResolvedValue(own) },
+    });
 
     await service.updateRole('role-1', { permissions: ['roles.view'] }, SUB_ADMIN);
     expect(rolesFake.update).toHaveBeenCalledWith(
@@ -225,6 +229,40 @@ describe('AdminRbacService anti-escalation', () => {
       { permissions: ['roles.view'] },
       expect.anything(),
     );
+  });
+
+  it('refuses to edit or delete a role that carries keys the editor lacks', async () => {
+    // CUSTOM_ROLE carries kyc.review; SUB_ADMIN does not hold it.
+    const { service, rolesFake } = await buildRbacService({
+      admins: { findByRoleId: vi.fn().mockResolvedValue([]) },
+    });
+
+    await expect(service.updateRole('role-1', { permissions: [] }, SUB_ADMIN)).rejects.toThrow(
+      /permissions you do not hold/,
+    );
+    await expect(service.deleteRole('role-1', SUB_ADMIN)).rejects.toThrow(
+      /permissions you do not hold/,
+    );
+    expect(rolesFake.update).not.toHaveBeenCalled();
+    expect(rolesFake.delete).not.toHaveBeenCalled();
+  });
+
+  it("an API key cannot edit its creator's role", async () => {
+    const own: Role = { ...CUSTOM_ROLE, permissions: [] };
+    const key: Admin = {
+      ...SUB_ADMIN,
+      id: 'key-1',
+      actingForAdminId: SUB_ADMIN_ON_ROLE_1.id,
+    };
+    const { service, rolesFake } = await buildRbacService({
+      roles: { findById: vi.fn().mockResolvedValue(own) },
+      admins: { findById: vi.fn().mockResolvedValue(SUB_ADMIN_ON_ROLE_1) },
+    });
+
+    await expect(
+      service.updateRole('role-1', { permissions: ['roles.view'] }, key),
+    ).rejects.toThrow(/role you are assigned to/);
+    expect(rolesFake.update).not.toHaveBeenCalled();
   });
 
   it('refuses to untick the LAST roles.edit from the only role carrying it', async () => {
@@ -285,58 +323,20 @@ describe('AdminRbacService anti-escalation', () => {
     expect(rolesFake.update).not.toHaveBeenCalled();
   });
 
-  /*
-   * CREATE IS CATALOG-ONLY, AND THIS IS THE TEST THAT SAYS WHY THAT IS SAFE.
-   *
-   * A role being created has nobody on it, so writing `wallets.credit` into one
-   * grants that key to no one. The escalation is the SECOND step — assigning
-   * yourself to the role you just wrote — and `updateAdmin` is where it is
-   * caught, by checking the role's keys against the actor's own.
-   *
-   * Guarding `createRole` instead would block defining a role at all while
-   * leaving that second step to do the real work anyway.
-   */
-  it('lets a sub-admin CREATE a powerful role, but not put anybody on it', async () => {
-    const escalated: Role = { ...CUSTOM_ROLE, id: 'role-2', permissions: ALL_PERMISSIONS };
-    const colleague: Admin = { ...SUB_ADMIN, id: 'sub-9', permissions: ['clients.view'] };
-    const { service, rolesFake } = await buildRbacService({
-      roles: {
-        findById: vi.fn().mockResolvedValue(escalated),
-        /*
-         * The real fallback: a roleId REPLACES the admin's own snapshot. The
-         * colleague holds no role, so `assertActorOutranks` compares against
-         * their own column and the sub-admin outranks them — letting the test
-         * reach the grant check it is actually about.
-         */
-        resolvePermissions: vi.fn((roleId: string | undefined, own: string[]) =>
-          Promise.resolve(roleId ? escalated.permissions : own),
-        ),
-      },
-      admins: { findById: vi.fn().mockResolvedValue(colleague) },
-    });
+  it('refuses to CREATE a role carrying keys the creator does not hold', async () => {
+    const { service, rolesFake } = await buildRbacService();
 
-    await service.createRole('Escalated', undefined, ALL_PERMISSIONS, SUB_ADMIN);
-    expect(rolesFake.create).toHaveBeenCalled();
-
-    /*
-     * Assigning it to SOMEBODY ELSE, because assigning it to themselves never
-     * reaches this guard: `updateAdmin` refuses any self-edit that touches
-     * access outright, subset or not. Both doors are shut, by different checks.
-     */
     await expect(
-      service.updateAdmin(
-        colleague.id,
-        { roleId: 'role-2' },
-        { ...SUB_ADMIN, clientScope: UNRESTRICTED, fieldMask: [] },
-      ),
+      service.createRole('Escalated', undefined, ALL_PERMISSIONS, SUB_ADMIN),
     ).rejects.toThrow(AuthorizationError);
+    expect(rolesFake.create).not.toHaveBeenCalled();
   });
 
   it('still rejects unknown keys on create', async () => {
     const { service, rolesFake } = await buildRbacService();
 
     await expect(
-      service.createRole('Typo', undefined, ['definitely.not.real'], SUB_ADMIN),
+      service.createRole('Typo', undefined, ['definitely.not.real'], MASTER),
     ).rejects.toThrow(/Unknown permission key/);
     expect(rolesFake.create).not.toHaveBeenCalled();
   });

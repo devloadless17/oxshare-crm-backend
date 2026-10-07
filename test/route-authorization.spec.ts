@@ -827,20 +827,15 @@ describe('the permission CATALOGUE and the decorators agree, both directions', (
     'trading.deposit': 'admin-money.service.ts — the real gate on funding an account',
     'trading.withdraw': 'admin-money.service.ts — the real gate on withdrawing from one',
     /*
-     * ⚠️ NOT enforced anywhere, and kept deliberately rather than deleted.
+     * The Rejection reasons PAGE's key (one page, one key — Oct 2026 audit). The
+     * list behind it is readable by every admin on purpose: every reviewer's
+     * refusal dialog reads it. So the key decides only who sees the page in
+     * their menu; the writes are `rejection_reasons.create/edit/delete`.
      *
-     * There is no `GET /admin/deposits`: deposits surface through
-     * `GET /admin/transactions` under `transactions.view`. So this key grants
-     * nothing and shows in the picker as though it does.
-     *
-     * Deleting it is the right end state and is NOT a one-line change:
-     * `assertKnownKeys` rejects any permissions array containing an unknown key,
-     * so a role that already holds it would become uneditable the moment the key
-     * left the catalogue. That needs a migration stripping it from every role
-     * first. Recorded here so the next person meets the reason rather than the
-     * trap.
+     * (`deposits.view` used to sit here as a "dead key". It is not: the desk's
+     * own `GET /admin/deposits` enforces it.)
      */
-    'deposits.view': 'NOTHING — dead key; removing it needs a migration first, see the note',
+    'rejection_reasons.view': 'the console route /rejection-reasons; the list is any-admin',
   };
 
   it('every @RequirePermissions key exists in the catalogue', () => {

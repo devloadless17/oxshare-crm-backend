@@ -7635,7 +7635,7 @@
     },
     "/v1/admin/auth/totp/setup": {
       "post": {
-        "description": "Only while the account has no authenticator. Each call replaces the previous secret, so only the newest QR code can finish enrolment.",
+        "description": "Only while the account has no authenticator. Until a code confirms it, every call returns the SAME secret, so a scan is never wasted by a reload.",
         "operationId": "AdminAuthController_beginTotpSetup",
         "parameters": [],
         "requestBody": {
@@ -10413,7 +10413,7 @@
             "cookie": []
           }
         ],
-        "summary": "Permission catalog grouped by module (requires roles.view or admins.view)",
+        "summary": "Permission catalog grouped by module (roles.view, admins.view or apikeys.create)",
         "tags": [
           "admin"
         ]
@@ -25752,6 +25752,20 @@
           },
           "label": {
             "type": "string"
+          },
+          "requires": {
+            "description": "Keys this one cannot be used without. A role save adds them.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "opens": {
+            "description": "The console routes this VIEW key opens. Only view keys carry it.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         },
         "required": [
@@ -25762,6 +25776,18 @@
       "PermissionModuleDto": {
         "type": "object",
         "properties": {
+          "group": {
+            "type": "string",
+            "enum": [
+              "clients",
+              "introducing-brokers",
+              "finance",
+              "trading",
+              "system",
+              "security"
+            ],
+            "description": "The sidebar group this page sits in."
+          },
           "moduleName": {
             "type": "string"
           },
@@ -25776,6 +25802,7 @@
           }
         },
         "required": [
+          "group",
           "moduleName",
           "description",
           "permissions"
@@ -25858,6 +25885,17 @@
           "createdAt": {
             "format": "date-time",
             "type": "string"
+          },
+          "holderCount": {
+            "type": "number",
+            "description": "How many administrators hold this role (list only)."
+          },
+          "holderNames": {
+            "description": "Their names — only for a reader holding admins.view (list only).",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         },
         "required": [

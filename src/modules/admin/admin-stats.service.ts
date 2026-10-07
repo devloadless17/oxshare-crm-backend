@@ -52,7 +52,7 @@ export class AdminStatsService {
     clients: ['clients.view'],
     kyc: ['kyc.view', 'kyc.review'],
     withdrawals: ['withdrawals.view'],
-    ib: ['ib.view'],
+    ib: ['ib.partners.view'],
   } as const;
 
   constructor(private readonly stats: StatsStore) {}

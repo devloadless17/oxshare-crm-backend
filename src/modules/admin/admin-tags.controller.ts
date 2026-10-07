@@ -51,8 +51,9 @@ export class AdminTagsController {
   @UseGuards(PermissionsGuard)
   // OR semantics: anyone who can see the client list needs the vocabulary to
   // render its chips and its filter, so requiring `tags.view` alone would make
-  // the tag column render as blank for most administrators.
-  @RequirePermissions('tags.view', 'clients.view')
+  // the tag column render as blank for most administrators. `admins.scope` reads
+  // it to offer the tags an admin may be limited to.
+  @RequirePermissions('tags.view', 'clients.view', 'admins.scope')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Client tags, with how many clients carry each' })
   @ApiOkResponse({ type: [ClientTagWithCountDto] })

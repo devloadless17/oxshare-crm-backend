@@ -129,7 +129,15 @@ beforeAll(async () => {
     .insert(roles)
     .values({
       name: 'Export Scoped',
-      permissions: ['clients.view', 'kyc.review', 'withdrawals.view', 'ib.view'],
+      permissions: [
+        'clients.view',
+        'kyc.review',
+        'withdrawals.view',
+        'ib.partners.view',
+        'ib.applications.view',
+        'ib.commissions.view',
+        'ib.referrals.view',
+      ],
     })
     .returning();
   const [scopedAdmin] = await db
@@ -169,7 +177,15 @@ beforeAll(async () => {
       // read it. That is twice this one absent permission has hidden a live
       // leak; the lesson is that a mask fixture must hold EVERY read, not the
       // reads whose masking somebody already suspected.
-      permissions: ['clients.view', 'kyc.view', 'ib.view', 'audit.view'],
+      permissions: [
+        'clients.view',
+        'kyc.view',
+        'ib.partners.view',
+        'ib.applications.view',
+        'ib.commissions.view',
+        'ib.referrals.view',
+        'audit.view',
+      ],
       maskedFields: ['client.email'],
     })
     .returning();

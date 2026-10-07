@@ -74,7 +74,13 @@ export class AdminStatsController {
    * `AdminStatsService.SECTION_PERMISSIONS` answers "which numbers are yours",
    * per section, on the same permission keys.
    */
-  @RequirePermissions('clients.view', 'kyc.view', 'kyc.review', 'withdrawals.view', 'ib.view')
+  @RequirePermissions(
+    'clients.view',
+    'kyc.view',
+    'kyc.review',
+    'withdrawals.view',
+    'ib.partners.view',
+  )
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Dashboard headline counters (clients, KYC, withdrawals, IB)',

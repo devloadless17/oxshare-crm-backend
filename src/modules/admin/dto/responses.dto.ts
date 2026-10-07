@@ -1423,6 +1423,13 @@ export class RoleResponseDto {
   @ApiProperty({ type: [String] }) maskedFields: string[];
   @ApiProperty() isSystem: boolean;
   @ApiProperty() createdAt: Date;
+  @ApiPropertyOptional({ description: 'How many administrators hold this role (list only).' })
+  holderCount?: number;
+  @ApiPropertyOptional({
+    type: [String],
+    description: 'Their names — only for a reader holding admins.view (list only).',
+  })
+  holderNames?: string[];
 }
 
 @NoClientFields(
@@ -1459,12 +1466,27 @@ export class RejectionReasonResponseDto {
 export class PermissionItemDto {
   @ApiProperty() key: string;
   @ApiProperty() label: string;
+  @ApiPropertyOptional({
+    type: [String],
+    description: 'Keys this one cannot be used without. A role save adds them.',
+  })
+  requires?: string[];
+  @ApiPropertyOptional({
+    type: [String],
+    description: 'The console routes this VIEW key opens. Only view keys carry it.',
+  })
+  opens?: string[];
 }
 
 @NoClientFields(
   'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
 )
 export class PermissionModuleDto {
+  @ApiProperty({
+    enum: ['clients', 'introducing-brokers', 'finance', 'trading', 'system', 'security'],
+    description: 'The sidebar group this page sits in.',
+  })
+  group: string;
   @ApiProperty() moduleName: string;
   @ApiProperty() description: string;
   @ApiProperty({ type: [PermissionItemDto] }) permissions: PermissionItemDto[];

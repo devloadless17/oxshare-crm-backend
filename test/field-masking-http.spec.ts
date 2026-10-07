@@ -107,7 +107,7 @@ beforeAll(async () => {
       // covers changing an existing one. Same trap the comment above names:
       // with the wrong key the guard refuses first and the mask assertion
       // never runs.
-      // `ib.view` gates the profile's partner-network block. Without it that
+      // `ib.partners.view` gates the profile's partner-network block. Without it that
       // block is absent and the downline mask assertion below would pass
       // vacuously — the strongest way for this file to lie.
       permissions: [
@@ -116,7 +116,10 @@ beforeAll(async () => {
         'kyc.review',
         'roles.create',
         'roles.edit',
-        'ib.view',
+        'ib.partners.view',
+        // The two IB lists below are their own pages since 0203.
+        'ib.applications.view',
+        'ib.commissions.view',
         // Same trap the two comments above name: without this the desk answers
         // 403 and the assertion below would pass while proving nothing.
         'withdrawals.view',

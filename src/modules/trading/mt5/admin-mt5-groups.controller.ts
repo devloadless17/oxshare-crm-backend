@@ -33,7 +33,7 @@ export class AdminMt5GroupsController {
 
   @Get()
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('trading.view')
+  @RequirePermissions('mt5.groups.view', 'trading.create')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'The MT5 groups the server currently reports, as the sync job mirrored them',

@@ -18,7 +18,7 @@ export class AdminMt5SymbolsController {
 
   @Get()
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('ib.view')
+  @RequirePermissions('ib.commission_types.view')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'MT5 symbols with their folders, as last synced',

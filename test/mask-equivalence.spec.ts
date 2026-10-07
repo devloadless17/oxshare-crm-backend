@@ -14,7 +14,7 @@ import {
   WalletRowDto,
   WithdrawalRowDto,
 } from '../src/modules/admin/dto/responses.dto';
-import { IbApplicationDto, IbPartnerDetailDto } from '../src/modules/ib/dto/ib-application.dto';
+import { IbPartnerDetailDto } from '../src/modules/ib/dto/ib-application.dto';
 import { CreatedMt5AccountDto } from '../src/modules/trading/mt5/dto/mt5-account.dto';
 
 /**
@@ -82,8 +82,6 @@ const SHAPE_FOR: Record<string, unknown> = {
   wallet: WalletRowDto,
   tradingAccount: TradingAccountRowDto,
   ibPartner: IbPartnerDetailDto,
-  // The applicant's own words (D-82) — `client.partnerApplication`'s aliases.
-  ibApplication: IbApplicationDto,
   /*
    * The create-account response. It sat in `NO_DECLARED_SHAPE` as "a surface
    * that must KEEP its path-based call until the route gains a DTO" — and the
@@ -127,7 +125,6 @@ const NO_DECLARED_SHAPE = new Set<string>([]);
  */
 const NOT_A_PROFILE_PATH: Readonly<Record<string, string>> = {
   payoutDestination: "a withdrawal's destination — `withdrawal.`/`financial.destination`, below",
-  partnerApplication: "an IB application's free text — `ibApplication.*`, below",
   ipAddress: "a client actor's audit row, applied per row (field-mask-matrix pins it)",
 };
 

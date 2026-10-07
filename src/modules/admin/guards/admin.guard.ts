@@ -418,6 +418,7 @@ export class AdminAuthenticator {
       permissions,
       status: 'active',
       createdAt: row.createdAt,
+      ...(row.createdBy ? { actingForAdminId: row.createdBy } : {}),
     };
 
     /*

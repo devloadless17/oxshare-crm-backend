@@ -259,11 +259,11 @@ describe('updateAdmin — changing what an administrator may do', () => {
     // The exclusivity rule. Leaving roleId set would mean the next edit of that
     // role silently overwrites the direct grants an operator just chose.
     const { service, adminsFake } = await build();
-    await service.updateAdmin(TARGET.id, { permissions: ['ib.view'] }, MASTER);
+    await service.updateAdmin(TARGET.id, { permissions: ['ib.partners.view'] }, MASTER);
 
     expect(adminsFake.update).toHaveBeenCalledWith(
       TARGET.id,
-      expect.objectContaining({ roleId: undefined, permissions: ['ib.view'] }),
+      expect.objectContaining({ roleId: undefined, permissions: ['ib.partners.view'] }),
       expect.anything(),
     );
   });

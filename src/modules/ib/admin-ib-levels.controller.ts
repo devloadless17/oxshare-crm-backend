@@ -59,7 +59,7 @@ export class AdminIbLevelsController {
 
   @Get()
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('ib.view')
+  @RequirePermissions('ib.levels.view', 'ib.partners.edit')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'The commission ladder, shallowest level first',
@@ -85,7 +85,7 @@ export class AdminIbLevelsController {
    */
   @Get('limits')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('ib.view')
+  @RequirePermissions('ib.levels.view', 'ib.partners.edit')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'The bounds a level must fit inside',

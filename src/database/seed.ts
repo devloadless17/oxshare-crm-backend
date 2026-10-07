@@ -165,7 +165,7 @@ export async function runSeeds(): Promise<void> {
       {
         name: 'Senior Support',
         description: 'Escalation point. May edit client records and assign tags.',
-        permissions: ['clients.view', 'kyc.view', 'tags.view', 'clients.tag'],
+        permissions: ['clients.view', 'clients.edit', 'kyc.view', 'tags.view', 'clients.tag'],
         maskedFields: [],
       },
       {
@@ -177,22 +177,67 @@ export async function runSeeds(): Promise<void> {
       {
         name: 'KYC Administrator',
         description: 'Owns the KYC workflow itself — its steps, fields and requirements.',
-        permissions: ['kyc.view', 'kyc.review', 'kyc.edit', 'kyc.create', 'kyc.documents.view'],
+        permissions: [
+          'kyc.view',
+          'kyc.review',
+          'kyc.edit',
+          'kyc.create',
+          'kyc.documents.view',
+          'rejection_reasons.view',
+          'rejection_reasons.create',
+          'rejection_reasons.edit',
+        ],
         maskedFields: [],
       },
       {
         name: 'Finance Officer',
-        description: 'Settles approved withdrawals and reconciles them against the ledger.',
-        permissions: ['clients.view'],
+        description: 'Works the money desks: approves deposits, approves and pays withdrawals.',
+        /*
+         * There is one payout action now (`withdrawals.settle` approves AND pays —
+         * see admin-money.controller), so the old Approver/Officer split of one
+         * payout into two people no longer exists. This role held only
+         * `clients.view` while its description promised settlement.
+         */
+        permissions: [
+          'clients.view',
+          'transactions.view',
+          'deposits.view',
+          'deposits.proofs.view',
+          'deposits.approve',
+          'deposits.reject',
+          'withdrawals.view',
+          'withdrawals.settle',
+          'withdrawals.approve',
+          'wallets.view',
+          'ledger.view',
+        ],
         maskedFields: [],
       },
       {
-        name: 'Finance Approver',
-        description: 'Approves withdrawals. Separated from settlement on purpose.',
-        // Deliberately WITHOUT withdrawals.settle. Whoever approves a payment
-        // should not also mark it settled; that separation of duties is the
-        // only reason this and Finance Officer are two roles rather than one.
-        permissions: ['clients.view'],
+        name: 'Finance Auditor',
+        description:
+          'Reads the books: every transaction, the ledger and reconciliation. Changes nothing.',
+        permissions: [
+          'clients.view',
+          'transactions.view',
+          'wallets.view',
+          'ledger.view',
+          'reconciliation.view',
+        ],
+        maskedFields: [],
+      },
+      {
+        name: 'Sales',
+        description:
+          'Follows clients and partners. Sees trading accounts, partners and their payouts.',
+        permissions: [
+          'clients.view',
+          'trading.view',
+          'ib.partners.view',
+          'ib.applications.view',
+          'ib.referrals.view',
+          'ib.commissions.view',
+        ],
         maskedFields: [],
       },
       {
@@ -203,8 +248,10 @@ export async function runSeeds(): Promise<void> {
       },
       {
         name: 'Onboarding Agent',
-        description: 'Creates client records and starts their verification.',
-        permissions: ['clients.view', 'admins.create', 'kyc.view', 'kyc.create'],
+        description: 'Helps new clients through their details and verification.',
+        // Held `admins.create` (inviting ADMINISTRATORS) and `kyc.create` (the
+        // KYC form's steps) until Oct 2026 — neither is onboarding a client.
+        permissions: ['clients.view', 'clients.edit', 'kyc.view'],
         maskedFields: [],
       },
       {

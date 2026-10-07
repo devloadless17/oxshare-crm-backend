@@ -52,7 +52,7 @@ export class AdminIbCommissionTypesController {
 
   @Get()
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('ib.view')
+  @RequirePermissions('ib.commission_types.view', 'ib.levels.view', 'products.view')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Every commission type, disabled ones included',

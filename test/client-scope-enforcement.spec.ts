@@ -93,7 +93,10 @@ beforeAll(async () => {
         'kyc.view',
         'kyc.review',
         'kyc.review',
-        'ib.view',
+        'ib.partners.view',
+        'ib.applications.view',
+        'ib.commissions.view',
+        'ib.referrals.view',
         /*
          * The holdings keys. Without them `/admin/wallets` and
          * `/admin/trading-accounts` 403 and the assertions below would report

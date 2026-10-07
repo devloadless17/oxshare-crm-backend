@@ -105,7 +105,7 @@ beforeAll(async () => {
   await admin(MASTER, 'Referred Master', ALL_PERMISSIONS);
   const scopedId = await admin(SCOPED, 'Referred Scoped', ALL_PERMISSIONS, { scoped: true });
   await admin(NO_IB, 'Referred No IB', ['clients.view']);
-  await admin(MASKED, 'Referred Masked', ['clients.view', 'ib.view'], {
+  await admin(MASKED, 'Referred Masked', ['clients.view', 'ib.partners.view'], {
     maskedFields: ['client.firstName', 'client.lastName'],
   });
 
