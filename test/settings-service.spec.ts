@@ -109,21 +109,6 @@ beforeEach(() => {
   );
 });
 
-/** A complete, valid trading form — each test varies one field of it. */
-const baseTrading = {
-  maxDemoDeposit: '1000000',
-  /*
-   * The commission cadence (0113), which replaced `ibMaxLevels` on this form.
-   * 3600 is the shipped default — hourly, exactly what the 24h hold and the
-   * hourly job produced together before the two became one number.
-   *
-   * The two payout CEILINGS and the level ceiling are all absent, and that is
-   * the contract being exercised: this DTO is a full replace, so a field it no
-   * longer declares must leave its column alone rather than blanking it.
-   */
-  ibCommissionIntervalSeconds: 3600,
-};
-
 const baseSmtp = {
   host: 'smtp.saved.test',
   port: 587,
@@ -300,22 +285,6 @@ function detailsOfLastRecord(): Record<string, unknown> {
   return calls[calls.length - 1][4] as Record<string, unknown>;
 }
 
-describe('trading settings — the audit row', () => {
-  it('records the previous demo ceiling, not just the new one', async () => {
-    await service.setTrading({ ...baseTrading, maxDemoDeposit: '10000' }, ACTOR);
-    await service.setTrading({ ...baseTrading, maxDemoDeposit: '1000000' }, ACTOR);
-
-    const changed = detailsOfLastRecord()['changed'] as Record<
-      string,
-      { before: unknown; after: unknown }
-    >;
-    expect(changed['maxDemoDeposit']).toEqual({ before: '10000', after: '1000000' });
-    // The ladder did not move, so it is not in the diff — a reader should not
-    // have to compare identical pairs to find the one thing that changed.
-    expect(changed).not.toHaveProperty('leverages');
-  });
-});
-
 describe('SMTP settings — what the API reports', () => {
   it('never returns the password, only whether one is set', async () => {
     const result = await service.setSmtp({ ...baseSmtp, password: 'hunter2' }, ACTOR);
@@ -370,39 +339,6 @@ describe('SMTP settings — what the API reports', () => {
   it('treats a blank username as no credentials at all', async () => {
     await service.setSmtp({ ...baseSmtp, username: '   ' }, ACTOR);
     expect(store.lastSmtpWrite?.username).toBeNull();
-  });
-});
-
-describe('Trading settings', () => {
-  it('returns defaults before anything is saved', async () => {
-    const result = await service.getTrading();
-
-    expect(result.maxDemoDeposit).toBe('1000000');
-    expect(result.updatedAt).toBeNull();
-  });
-
-  /*
-   * The three leverage cases that were here — normalising a typed CSV,
-   * rejecting `1OO`, rejecting an empty ladder — moved to `leverages.spec.ts`
-   * with the data. There is no string to parse: each rung is a row, so
-   * "positive whole number" is the whole of the validation and the empty-ladder
-   * rule is a refusal to disable the last enabled one.
-   */
-
-  /*
-   * The account caps that were tested here are per PRODUCT now (0201) — see
-   * `account-open-product-choice.spec.ts`.
-   */
-
-  it('keeps the demo ceiling a string', async () => {
-    const result = await service.setTrading(
-      { ...baseTrading, maxDemoDeposit: '12345678901234567.89' },
-      ACTOR,
-    );
-
-    // §6: money never goes through a float. `Number()` on this loses the last
-    // two digits before anything is even displayed.
-    expect(result.maxDemoDeposit).toBe('12345678901234567.89');
   });
 });
 

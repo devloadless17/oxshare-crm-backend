@@ -17,8 +17,7 @@ export class FundDemoAccountDto {
   @ApiProperty({
     example: '10000.00',
     description:
-      'How much practice money to add. Positive decimal string, capped by the operator ' +
-      'ceiling reported as `maxDemoDeposit` on /trading/accounts/self-service.',
+      'How much practice money to add. Positive decimal string, up to two decimal places.',
   })
   @IsString()
   @Matches(/^\d+(\.\d{1,2})?$/, {

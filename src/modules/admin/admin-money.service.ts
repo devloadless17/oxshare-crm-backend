@@ -305,6 +305,65 @@ export class AdminMoneyService {
   }
 
   /**
+   * Take money OUT of a client's wallet by hand — the desk's withdrawal
+   * (owner, 7 Oct 2026), the mirror of `creditWallet`.
+   *
+   * The money LEAVES the platform: a completed `withdrawal` row on the Manual
+   * provider, posted against the wallet in one transaction with its audit row.
+   * Its own key, `wallets.debit`, as minting has `wallets.credit`. Refused past
+   * the wallet's available balance (`debitAdjustment`). Idempotent on the
+   * caller's key, through `UNIQUE(provider, provider_ref)`.
+   */
+  async debitWallet(
+    params: {
+      userId: number;
+      amount: string;
+      currency: string;
+      reason: string;
+      reasonAr?: string | null;
+    },
+    reference: string,
+    actor: AuthenticatedAdmin,
+  ) {
+    assertActorCan(actor, 'wallets.debit', 'withdraw from a client wallet');
+
+    const reasonText = params.reason.trim();
+    if (!reasonText) {
+      throw new ValidationError('A reason is required when withdrawing from a wallet by hand.');
+    }
+    const reasonAr = composeReasonArabic({ note: reasonText, noteAr: params.reasonAr });
+
+    await this.visibility.assertVisible(params.userId, actor.clientScope);
+    const user = await this.users.findById(params.userId);
+    if (!user) throw new NotFoundError('Client not found.');
+
+    const result = await this.transactions.debitAdjustment(
+      {
+        userId: params.userId,
+        amount: params.amount,
+        currency: params.currency,
+        provider: MANUAL_ADMIN_PROVIDER,
+        providerRef: reference,
+      },
+      (tx, row) =>
+        this.audit.recordWithin(tx, actor.id, 'wallet.debit', 'transaction', row.id, {
+          userId: params.userId,
+          amount: row.amount,
+          currency: row.currency,
+          reason: reasonText,
+          reasonAr,
+        }),
+    );
+    if (result.replayed) return { transaction: result.transaction, replayed: true as const };
+
+    this.logger.log(
+      `Admin ${actor.email} withdrew ${result.transaction.amount} ${result.transaction.currency} ` +
+        `from client ${params.userId}'s wallet: transaction ${result.transaction.id}`,
+    );
+    return { transaction: result.transaction, replayed: false as const };
+  }
+
+  /**
    * Put money onto a client's TRADING ACCOUNT by hand.
    *
    * ## Two movements, because two movements is what happens
@@ -370,11 +429,20 @@ export class AdminMoneyService {
       /** The reason in Arabic (0179) — it reaches the client's credit mail and bell. */
       reasonAr?: string | null;
       direction: 'deposit' | 'withdraw';
+      /**
+       * Where the money comes from or goes to (owner, 7 Oct 2026).
+       * Deposit: `system` (default) mints it — new money, credited to the
+       * wallet and moved on; `wallet` moves what the client already holds.
+       * Withdraw: `wallet` (default) lands it in the wallet; `system` then
+       * takes it off the platform as a manual withdrawal.
+       */
+      source?: 'system' | 'wallet';
     },
     reference: string,
     actor: AuthenticatedAdmin,
   ) {
     const isDeposit = params.direction === 'deposit';
+    const source = params.source ?? (isDeposit ? 'system' : 'wallet');
 
     /*
      * The permission follows the DIRECTION, and only a deposit needs
@@ -387,10 +455,14 @@ export class AdminMoneyService {
      * granting the power to create money in order to take some away.
      */
     if (isDeposit) {
-      assertActorCan(actor, 'wallets.credit', 'credit a client wallet');
+      // From the wallet mints nothing, so it needs no `wallets.credit`.
+      if (source === 'system') assertActorCan(actor, 'wallets.credit', 'credit a client wallet');
       assertActorCan(actor, 'trading.deposit', 'fund a client trading account');
     } else {
       assertActorCan(actor, 'trading.withdraw', 'debit a client trading account');
+      if (source === 'system') {
+        assertActorCan(actor, 'wallets.debit', 'withdraw from a client wallet');
+      }
     }
 
     const reasonText = params.reason.trim();
@@ -512,10 +584,16 @@ export class AdminMoneyService {
      * threading a direction through every leg of it.
      */
     if (!isDeposit) {
-      return await this.debitTradingAccount(
+      const debited = await this.debitTradingAccount(
         { account, amount: params.amount, reason: reasonText, reference },
         actor,
       );
+      if (source === 'wallet') return debited;
+      return this.payOutDebited(debited, account, params, reasonText, reference, actor);
+    }
+
+    if (source === 'wallet') {
+      return this.moveWalletToAccount(account, params.amount, reasonText, reference, actor);
     }
 
     /*
@@ -760,6 +838,97 @@ export class AdminMoneyService {
       /** Where the money went. The console says "wallet", not "paid out". */
       destination: 'wallet' as const,
     };
+  }
+
+  /**
+   * Deposit to a trading account FROM THE WALLET (owner, 7 Oct 2026): the
+   * client's own wallet money moved onto the account — nothing is minted, so
+   * this is the transfer alone, refused (before anything moves) when the
+   * wallet cannot cover it. Shaped like the deposit's return.
+   */
+  private async moveWalletToAccount(
+    account: { id: string; userId: number; currency: string; login: string | null },
+    amount: string,
+    reason: string,
+    reference: string,
+    actor: AuthenticatedAdmin,
+  ) {
+    const pending = await this.transfers.request({
+      userId: account.userId,
+      tradingAccountId: account.id,
+      direction: 'wallet_to_account',
+      amount,
+      currency: account.currency,
+      enforceProductMinimum: false,
+      requestRef: reference ? `admin-move:${reference}` : undefined,
+    });
+    const transfer = (await this.transferExecutor.execute(pending.id)) ?? null;
+
+    this.audit.record(actor.id, 'trading.deposit', 'trading_account', account.id, {
+      userId: account.userId,
+      login: account.login,
+      amount,
+      currency: account.currency,
+      source: 'wallet',
+      transferId: pending.id,
+      transferState: transfer?.state ?? null,
+      reason,
+    });
+    return {
+      transaction: null,
+      replayed: false as const,
+      transfer,
+      transferError: null,
+      source: 'wallet' as const,
+    };
+  }
+
+  /**
+   * Withdraw from a trading account OUT TO THE SYSTEM (owner, 7 Oct 2026):
+   * account → wallet, then a manual withdrawal of the same sum off the wallet.
+   *
+   * The wallet leg runs only once the transfer has SETTLED — before that the
+   * money is not in the wallet to take. A transfer still pending (bridge
+   * unreachable) or a refused wallet leg is reported as `transferError`, with
+   * the money sitting safely in the wallet for the desk to finish.
+   */
+  private async payOutDebited(
+    debited: Awaited<ReturnType<AdminMoneyService['debitTradingAccount']>>,
+    account: { id: string; userId: number; currency: string },
+    params: { amount: string; reasonAr?: string | null },
+    reason: string,
+    reference: string,
+    actor: AuthenticatedAdmin,
+  ) {
+    if (debited.transfer?.state !== 'settled') {
+      return {
+        ...debited,
+        transferError:
+          'The money has not reached the wallet yet, so it was not withdrawn from the platform. ' +
+          'Once the transfer settles, withdraw it from the wallet.',
+      };
+    }
+    try {
+      const out = await this.debitWallet(
+        {
+          userId: account.userId,
+          amount: params.amount,
+          currency: account.currency,
+          reason,
+          reasonAr: params.reasonAr,
+        },
+        `payout:${reference}`,
+        actor,
+      );
+      return { ...debited, transaction: out.transaction, destination: 'system' as const };
+    } catch (error) {
+      return {
+        ...debited,
+        transferError:
+          'The money was moved to the wallet, but withdrawing it from the wallet failed: ' +
+          (error instanceof Error ? error.message : String(error)),
+      };
+    }
   }
 
   /**

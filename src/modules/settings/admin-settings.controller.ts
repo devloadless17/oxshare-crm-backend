@@ -8,13 +8,7 @@ import { NotClientScoped } from '../admin/guards/client-scope.decorator';
 import { Audited, NotAudited } from '../admin/guards/audited.decorator';
 import { EmailService } from '../email/email.service';
 import { SettingsService } from './settings.service';
-import {
-  SmtpSettingsDto,
-  SmtpTestResultDto,
-  TradingSettingsDto,
-  UpdateSmtpSettingsDto,
-  UpdateTradingSettingsDto,
-} from './dto/settings.dto';
+import { SmtpSettingsDto, SmtpTestResultDto, UpdateSmtpSettingsDto } from './dto/settings.dto';
 import { ScheduledJobListDto, UpdateScheduledJobDto } from './dto/scheduled-jobs.dto';
 
 /**
@@ -58,54 +52,10 @@ export class AdminSettingsController {
   /* ── Trading ────────────────────────────────────────────────────────────── */
 
   /*
-   * `settings.view` / `settings.edit`, the same pair as General rather than the
-   * master-admin lock on SMTP.
-   *
-   * These are commercial dials — the leverage ladder, how many accounts a
-   * client may open, the demo ceiling — and the people who set them are the
-   * people who run the brokerage, not whoever holds the master credential.
-   * Requiring master here is how the master credential ends up shared, which is
-   * the argument `admin-platform-links.controller.ts` makes and this follows.
-   *
-   * They are not the same class as SMTP: nothing here is a path to an
-   * administrator account. The worst a bad value does is offer clients terms the
-   * broker did not intend, which the audit log attributes and an operator can
-   * reverse from the same screen.
+   * `GET` / `PUT trading` are GONE (owner, 7 Oct 2026): the Trading tab had
+   * nothing left to save — see `settings.dto.ts`. The commission cadence it
+   * carried is the Scheduled jobs row below.
    */
-  @Get('trading')
-  @UseGuards(PermissionsGuard)
-  @RequirePermissions('settings.view')
-  @ApiCookieAuth()
-  @ApiOperation({
-    summary: 'The terms clients may open trading accounts on',
-    description:
-      'The leverage ladder, the per-client account caps and the largest demo opening balance. ' +
-      'Until the first save these are the defaults, seeded from MT5_CLIENT_LEVERAGES when that ' +
-      'variable is set.',
-  })
-  @ApiOkResponse({ type: TradingSettingsDto })
-  @NotClientScoped('Broker-wide trading terms; contains no client data.')
-  getTrading() {
-    return this.settings.getTrading();
-  }
-
-  @Put('trading')
-  @UseGuards(PermissionsGuard)
-  @RequirePermissions('settings.edit')
-  @ApiCookieAuth()
-  @ApiOperation({
-    summary: 'Update the trading terms',
-    description:
-      'Leverages are a comma-separated list; a malformed entry is REFUSED rather than dropped, ' +
-      'so a typo cannot silently shorten the offer. An account cap of 0 stops new accounts of ' +
-      'that kind without touching the ones a client already holds.',
-  })
-  @ApiOkResponse({ type: TradingSettingsDto })
-  @NotClientScoped('Broker-wide trading terms; contains no client data.')
-  @Audited('settings.trading.update')
-  setTrading(@Body() dto: UpdateTradingSettingsDto, @Req() req: Request & { admin: Admin }) {
-    return this.settings.setTrading(dto, req.admin);
-  }
 
   /* ── Scheduled jobs (0167) ────────────────────────────────────────────────── */
 

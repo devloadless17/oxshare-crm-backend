@@ -1771,8 +1771,17 @@ export class TradingAccountFundResultDto {
   @ApiProperty() replayed: boolean;
   @ApiProperty({ type: TransferDto, nullable: true }) transfer: TransferDto | null;
   @ApiProperty({ type: String, nullable: true }) transferError: string | null;
-  @ApiPropertyOptional({ enum: ['wallet'], description: 'Where the money went, on a withdrawal.' })
-  destination?: 'wallet';
+  @ApiPropertyOptional({
+    enum: ['wallet', 'system'],
+    description:
+      'Where the money went, on a withdrawal: the client wallet, or off the platform (system).',
+  })
+  destination?: 'wallet' | 'system';
+  @ApiPropertyOptional({
+    enum: ['wallet'],
+    description: 'On a deposit: set when it was moved from the client wallet rather than minted.',
+  })
+  source?: 'wallet';
 }
 
 /**

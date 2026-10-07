@@ -43,8 +43,11 @@ export interface TradingTerms {
    * `maxLiveAccounts` / `maxDemoAccounts` were here. How many accounts a client
    * may hold is the PRODUCT's now (`max_accounts_per_client`, 0201).
    */
-  /** A decimal string, never a number — §6. */
-  maxDemoDeposit: string;
+  /*
+   * `maxDemoDeposit` was here — the ceiling on a demo account's practice
+   * balance. REMOVED on the owner's instruction (7 Oct 2026), with its column
+   * (0205) and the clamp that read it: demo money is the client's to choose.
+   */
   /*
    * ── NO IB TERMS HERE ANY MORE (0103, 0104) ──────────────────────────────
    *
@@ -124,7 +127,6 @@ export const DEFAULT_LEVERAGES = [50, 100, 200, 500];
 
 /** What the columns default to, for the case where there is no row at all. */
 export const DEFAULT_TRADING_TERMS: TradingTerms = {
-  maxDemoDeposit: '1000000',
   /* HISTORICAL since 0113 — nothing reads it. Kept so the shape of a stored
      row and the shape of the defaults stay the same object. */
   ibMaxLevels: DEFAULT_IB_MAX_LEVELS,
@@ -149,7 +151,6 @@ export function tradingTermsFrom(row: TradingSettingsRow | null): TradingTerms {
   if (!row) return DEFAULT_TRADING_TERMS;
 
   return {
-    maxDemoDeposit: row.maxDemoDeposit,
     /*
      * Narrowed on the way OUT of the database, not on the way in. The CHECK
      * stops a bad value being STORED; this stops one that predates the CHECK —

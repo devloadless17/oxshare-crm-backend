@@ -3165,6 +3165,51 @@
         "tags": [
           "admin"
         ]
+      },
+      "post": {
+        "description": "Appoints the client under an agency — a main partner, or a sub-partner under a main partner. It is an approval: a pending application the client sent is approved, otherwise one is opened on their behalf, and every approval rule applies. \"Introduced by\" follows the chosen position.",
+        "operationId": "AdminIbController_appointPartner",
+        "parameters": [
+          {
+            "name": "userId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppointIbPartnerDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IbAccountDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Make an individual client a partner",
+        "tags": [
+          "admin"
+        ]
       }
     },
     "/v1/admin/ib/partners/{userId}/level": {
@@ -5524,7 +5569,7 @@
     },
     "/v1/trading/accounts/{id}/fund": {
       "post": {
-        "description": "Demo accounts only — a live account is funded by transferring from a wallet, which posts both sides of the movement. The amount is capped at the operator ceiling reported as `maxDemoDeposit`; a larger request is clamped rather than refused, so a mistyped extra zero still leaves a working account.",
+        "description": "Demo accounts only — a live account is funded by transferring from a wallet, which posts both sides of the movement. Any positive amount with up to two decimal places.",
         "operationId": "TradingController_fundDemoAccount",
         "parameters": [
           {
@@ -6780,70 +6825,6 @@
         "summary": "Serve a KYC document to its owner or a kyc.review admin",
         "tags": [
           "compliance"
-        ]
-      }
-    },
-    "/v1/admin/settings/trading": {
-      "get": {
-        "description": "The leverage ladder, the per-client account caps and the largest demo opening balance. Until the first save these are the defaults, seeded from MT5_CLIENT_LEVERAGES when that variable is set.",
-        "operationId": "AdminSettingsController_getTrading",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/TradingSettingsDto"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "cookie": []
-          }
-        ],
-        "summary": "The terms clients may open trading accounts on",
-        "tags": [
-          "admin"
-        ]
-      },
-      "put": {
-        "description": "Leverages are a comma-separated list; a malformed entry is REFUSED rather than dropped, so a typo cannot silently shorten the offer. An account cap of 0 stops new accounts of that kind without touching the ones a client already holds.",
-        "operationId": "AdminSettingsController_setTrading",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/UpdateTradingSettingsDto"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/TradingSettingsDto"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "cookie": []
-          }
-        ],
-        "summary": "Update the trading terms",
-        "tags": [
-          "admin"
         ]
       }
     },
@@ -11711,6 +11692,54 @@
           }
         ],
         "summary": "Add funds to a client's wallet by hand",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/wallets/debit": {
+      "post": {
+        "description": "Writes a successful WITHDRAWAL transaction and a ledger debit — the money leaves the platform. Refused beyond the wallet’s available balance. Requires a reason.",
+        "operationId": "AdminMoneyController_debitWallet",
+        "parameters": [
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "description": "A unique value per intended withdrawal, reused only when retrying that same one. Stored as the transaction `provider_ref`, so a replay withdraws once.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DebitWalletDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WalletCreditResultDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Withdraw funds from a client's wallet by hand",
         "tags": [
           "admin"
         ]
@@ -17111,11 +17140,34 @@
             "example": 2,
             "minimum": 1,
             "maximum": 2,
-            "description": "Must match the partner’s position (0197): 1 with no parent, 2 under a main partner."
+            "description": "The level IS the position (0197): 1 with no parent, 2 under a main partner. Choosing the other level MOVES them — 1 detaches them from their parent, 2 places them under `parentIbUserId` — and \"introduced by\" follows the new position."
+          },
+          "parentIbUserId": {
+            "type": "integer",
+            "nullable": true,
+            "description": "The main partner to place them under. Required when moving a main partner to 2."
           }
         },
         "required": [
           "level"
+        ]
+      },
+      "AppointIbPartnerDto": {
+        "type": "object",
+        "properties": {
+          "agencyId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The agency to appoint them under."
+          },
+          "parentIbUserId": {
+            "type": "integer",
+            "nullable": true,
+            "description": "A main partner to place them under. Omitted or null: a main partner."
+          }
+        },
+        "required": [
+          "agencyId"
         ]
       },
       "ReassignIbParentDto": {
@@ -20181,7 +20233,7 @@
           "amount": {
             "type": "string",
             "example": "10000.00",
-            "description": "How much practice money to add. Positive decimal string, capped by the operator ceiling reported as `maxDemoDeposit` on /trading/accounts/self-service."
+            "description": "How much practice money to add. Positive decimal string, up to two decimal places."
           }
         },
         "required": [
@@ -20387,11 +20439,6 @@
             "items": {
               "type": "number"
             }
-          },
-          "maxDemoDeposit": {
-            "type": "string",
-            "example": "100000.00000000",
-            "description": "The most a demo account may be funded with, as a decimal string (§6.1)."
           }
         },
         "required": [
@@ -20399,8 +20446,7 @@
           "demo",
           "liveTypes",
           "demoTypes",
-          "leverages",
-          "maxDemoDeposit"
+          "leverages"
         ]
       },
       "TradingAccountDto": {
@@ -22132,55 +22178,6 @@
         "required": [
           "step",
           "data"
-        ]
-      },
-      "TradingSettingsDto": {
-        "type": "object",
-        "properties": {
-          "maxDemoDeposit": {
-            "type": "string",
-            "example": "1000000.00000000",
-            "description": "Largest opening balance a demo account may be given. A decimal string."
-          },
-          "ibCommissionIntervalSeconds": {
-            "type": "number",
-            "example": 3600,
-            "minimum": 60,
-            "description": "Seconds between commission payouts, and how long an accrual matures first. 60 credits a partner about a minute after the trade closes."
-          },
-          "updatedAt": {
-            "type": "string",
-            "nullable": true,
-            "format": "date-time"
-          },
-          "updatedByName": {
-            "type": "string",
-            "nullable": true
-          }
-        },
-        "required": [
-          "maxDemoDeposit",
-          "ibCommissionIntervalSeconds"
-        ]
-      },
-      "UpdateTradingSettingsDto": {
-        "type": "object",
-        "properties": {
-          "maxDemoDeposit": {
-            "type": "string",
-            "example": "1000000.00",
-            "description": "Positive decimal string."
-          },
-          "ibCommissionIntervalSeconds": {
-            "type": "number",
-            "example": 3600,
-            "minimum": 60,
-            "description": "Seconds between commission payouts, and how long an accrual matures before it is payable. One number for both: either alone leaves the other as the real delay. 60 = a partner is credited about a minute after the trade closes."
-          }
-        },
-        "required": [
-          "maxDemoDeposit",
-          "ibCommissionIntervalSeconds"
         ]
       },
       "ScheduledJobDto": {
@@ -26796,6 +26793,42 @@
           "replayed"
         ]
       },
+      "DebitWalletDto": {
+        "type": "object",
+        "properties": {
+          "userId": {
+            "type": "integer",
+            "description": "The client to credit."
+          },
+          "amount": {
+            "type": "string",
+            "example": "250.00000000"
+          },
+          "currency": {
+            "type": "string",
+            "example": "USD",
+            "description": "Must be a currency the platform holds."
+          },
+          "reason": {
+            "type": "string",
+            "example": "Goodwill adjustment for the failed 4 August transfer.",
+            "maxLength": 500
+          },
+          "reasonAr": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 500,
+            "example": "تسوية تعويضية عن تحويل 4 أغسطس الذي لم يكتمل.",
+            "description": "Arabic for the portal’s Arabic readers. Optional; blank or null = not translated (the portal shows the English)."
+          }
+        },
+        "required": [
+          "userId",
+          "amount",
+          "currency",
+          "reason"
+        ]
+      },
       "FundTradingAccountDto": {
         "type": "object",
         "properties": {
@@ -26822,6 +26855,14 @@
               "withdraw"
             ],
             "example": "deposit"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "system",
+              "wallet"
+            ],
+            "example": "system"
           }
         },
         "required": [
@@ -26861,9 +26902,17 @@
           "destination": {
             "type": "string",
             "enum": [
+              "wallet",
+              "system"
+            ],
+            "description": "Where the money went, on a withdrawal: the client wallet, or off the platform (system)."
+          },
+          "source": {
+            "type": "string",
+            "enum": [
               "wallet"
             ],
-            "description": "Where the money went, on a withdrawal."
+            "description": "On a deposit: set when it was moved from the client wallet rather than minted."
           }
         },
         "required": [

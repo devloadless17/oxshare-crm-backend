@@ -250,9 +250,7 @@ export class TradingController {
     summary: 'Top up a demo trading account with practice money',
     description:
       'Demo accounts only — a live account is funded by transferring from a wallet, which posts ' +
-      'both sides of the movement. The amount is capped at the operator ceiling reported as ' +
-      '`maxDemoDeposit`; a larger request is clamped rather than refused, so a mistyped extra ' +
-      'zero still leaves a working account.',
+      'both sides of the movement. Any positive amount with up to two decimal places.',
   })
   async fundDemoAccount(
     @Param('id', ParseUUIDPipe) id: string,
@@ -382,14 +380,6 @@ export class TradingController {
 
     const [liveTypes, demoTypes] = await Promise.all([describe('live'), describe('demo')]);
 
-    /*
-     * `maxDemoDeposit` is here for the funding box's own hint and its `max`
-     * attribute. It used to be a constant duplicated in the portal, which meant
-     * the number the client was told and the number enforced could differ by a
-     * deploy.
-     */
-    const terms = await this.selfServiceGroups.terms();
-
     return {
       // Derived from the offer rather than asked separately: "this client has
       // somewhere to open a live account" and "live account types exist for
@@ -400,7 +390,6 @@ export class TradingController {
       demoTypes,
       // From the ladder TABLE, not the settings row — see migration 0067.
       leverages: await this.selfServiceGroups.leverages(),
-      maxDemoDeposit: terms.maxDemoDeposit,
     };
   }
 

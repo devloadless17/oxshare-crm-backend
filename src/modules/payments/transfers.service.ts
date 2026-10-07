@@ -1,5 +1,6 @@
 import Decimal from 'decimal.js';
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
+import { Mt5BridgeClient } from '../trading/mt5/mt5-bridge.client';
 import { and, desc, eq, isNull, lt, or, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { getDb } from '../../database/db';
@@ -85,6 +86,11 @@ export class TransfersService {
     @Inject(DRIZZLE_DB) private readonly db: Db,
     @Inject(NOTIFICATION_DISPATCH)
     private readonly notifications: NotificationDispatchPort,
+    /*
+     * Optional: only the overdraw check's second opinion reads MT5 (7 Oct
+     * 2026), and a context without a bridge simply keeps the mirror's answer.
+     */
+    @Optional() private readonly bridge?: Mt5BridgeClient,
   ) {}
 
   /**
@@ -287,9 +293,38 @@ export class TransfersService {
           ),
         );
 
-      const mirrored = toDecimal(account.balance);
+      let mirrored = toDecimal(account.balance);
       const committed = toDecimal(inFlight?.total ?? '0');
-      const spendable = mirrored.minus(committed);
+      let spendable = mirrored.minus(committed);
+
+      /*
+       * ── NEVER REFUSE ON A STALE MIRROR (7 Oct 2026) ─────────────────────
+       *
+       * A client who has just closed a profitable trade asks to move the profit
+       * out — and the mirror, a few seconds behind MT5, does not hold it yet.
+       * Refusing them on our COPY when MT5 itself would allow it is the wrong
+       * answer to the one question they came with. So before a refusal, MT5 is
+       * asked once for this one account, and its figure decides. Only before a
+       * refusal: an allowed transfer is still checked by MT5 when it executes,
+       * so the read would add latency to every transfer for no new answer.
+       *
+       * A failed read keeps the mirror's answer — the refusal it would have
+       * given anyway — never a guess.
+       */
+      if (spendable.lessThan(amount) && account.login && this.bridge?.isConfigured) {
+        try {
+          const live = await this.bridge.getAccount(account.login);
+          if (live) {
+            mirrored = toDecimal(live.balance);
+            spendable = mirrored.minus(committed);
+          }
+        } catch (error) {
+          this.logger.debug(
+            `Live balance re-check for login ${account.login} failed; the mirror answers: ` +
+              `${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
 
       if (spendable.lessThan(amount)) {
         throw new ValidationError(

@@ -8,11 +8,12 @@ import { payToSnapshot } from '../../common/payments/pay-to-fields';
 import Decimal from 'decimal.js';
 import { randomBytes } from 'crypto';
 import { and, desc, eq } from 'drizzle-orm';
-import { tradingAccounts, transactions, users } from '../../database/schema';
+import { tradingAccounts, transactions, users, wallets } from '../../database/schema';
 import { TransfersService } from './transfers.service';
 import { TransferExecutor } from './transfer-executor.service';
 import { LEDGER_REFERENCE } from '../../database/ledger-reference';
-import { money, toDecimal } from '../wallet/money';
+import { available, money, toDecimal } from '../wallet/money';
+import { displayMoney } from '../../common/money-display';
 import { PaymentMethodsService } from './payment-methods.service';
 import { Currency, WalletService } from '../wallet/wallet.service';
 import { CurrenciesService } from '../currencies/currencies.service';
@@ -1062,6 +1063,106 @@ export class DepositCommands {
       );
       // No commission here: a deposit is client money, not revenue (see
       // `CommissionService.accrueForClosedPosition`).
+      await withinTx?.(dbTx, tx);
+      return { transaction: tx, replayed: false as const };
+    });
+  }
+
+  /**
+   * Withdrawal debit — the desk's hand withdrawal (owner, 7 Oct 2026), the
+   * mirror of `creditDeposit`: money LEAVES the platform from the wallet, as a
+   * completed `withdrawal` row. ONE transaction: the row, the ledger debit and
+   * (through `withinTx`) the audit row commit together. Idempotent on
+   * UNIQUE(provider, provider_ref).
+   *
+   * Refused beyond the AVAILABLE balance — balance less what in-flight
+   * transfers hold — checked under the wallet's row lock. `post` checks the
+   * balance alone, and a debit into held money would be refused by
+   * `wallets_hold_within_balance` as a 500 rather than a sentence.
+   */
+  async debitAdjustment(
+    params: {
+      userId: number;
+      amount: string;
+      currency: Currency;
+      provider: string;
+      providerRef: string;
+    },
+    withinTx?: WithinTransaction,
+  ) {
+    const wallet = await this.wallets.getOrCreateWallet(params.userId, params.currency);
+    return this.db.transaction(async (dbTx) => {
+      const [existing] = await dbTx
+        .select()
+        .from(transactions)
+        .where(
+          and(
+            eq(transactions.provider, params.provider),
+            eq(transactions.providerRef, params.providerRef),
+          ),
+        )
+        .limit(1);
+      if (existing) return { transaction: existing, replayed: true as const };
+
+      const [locked] = await dbTx
+        .select({ balance: wallets.balance, onHold: wallets.onHold })
+        .from(wallets)
+        .where(eq(wallets.id, wallet.id))
+        .for('update');
+      const free = toDecimal(available(locked.balance, locked.onHold));
+      if (free.lessThan(toDecimal(params.amount))) {
+        throw new MoneyRuleError(
+          `Insufficient available balance: the wallet has ` +
+            `${displayMoney(money(free), params.currency)} available, and this needs ` +
+            `${displayMoney(money(params.amount), params.currency)}.`,
+        );
+      }
+
+      const [tx] = await dbTx
+        .insert(transactions)
+        .values({
+          userId: params.userId,
+          walletId: wallet.id,
+          direction: 'withdrawal',
+          amount: money(params.amount),
+          currency: params.currency,
+          state: 'success',
+          provider: params.provider,
+          providerRef: params.providerRef,
+          // The desk's own debit: Manual's `adjustment`, never a client's method (0168).
+          providerCode: 'manual',
+          channelCode: 'adjustment',
+          providerEnvironment: 'live',
+          settledAt: new Date(),
+        })
+        .onConflictDoNothing({ target: [transactions.provider, transactions.providerRef] })
+        .returning();
+      if (!tx) {
+        // A racing replay committed first; the wallet lock serialised us behind it.
+        const [raced] = await dbTx
+          .select()
+          .from(transactions)
+          .where(
+            and(
+              eq(transactions.provider, params.provider),
+              eq(transactions.providerRef, params.providerRef),
+            ),
+          )
+          .limit(1);
+        return { transaction: raced, replayed: true as const };
+      }
+
+      await this.wallets.post(
+        {
+          userId: params.userId,
+          currency: params.currency,
+          amount: toDecimal(params.amount).negated(),
+          entryType: 'withdrawal',
+          referenceType: LEDGER_REFERENCE.transaction,
+          referenceId: tx.id,
+        },
+        dbTx,
+      );
       await withinTx?.(dbTx, tx);
       return { transaction: tx, replayed: false as const };
     });

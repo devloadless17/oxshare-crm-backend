@@ -159,36 +159,50 @@ describe('the runner', () => {
 });
 
 describe('Settings → Scheduled jobs', () => {
-  it('lists every job with its interval and bounds', async () => {
+  it('lists every job with its interval and bounds — and none of the MT5 safety nets', async () => {
     const { items } = await settings.listJobs();
-    expect(items.map((job) => job.key)).toContain('bridge.sweep');
-    expect(items.find((job) => job.key === 'mt5.syncAccounts')).toMatchObject({
+    const keys = items.map((job) => job.key);
+    /*
+     * The three MT5 jobs are not the admin's to see (owner, 7 Oct 2026): the
+     * bridge sweep is the bridge's own, and the two CRM ones are hidden safety
+     * nets behind instant, event-driven sync.
+     */
+    expect(keys).not.toContain('bridge.sweep');
+    expect(keys).not.toContain('mt5.syncAccounts');
+    expect(keys).not.toContain('mt5.syncGroups');
+    expect(items.find((job) => job.key === 'payments.reconcileProviders')).toMatchObject({
       runsOn: 'crm',
-      intervalSeconds: 600,
+      intervalSeconds: 300,
       minSeconds: 60,
     });
   });
 
   it('changes an interval within its bounds, audited — and refuses one outside them', async () => {
-    await settings.setJobInterval('mt5.syncAccounts', 900, ACTOR);
-    expect((await row('mt5.syncAccounts')).intervalSeconds).toBe(900);
+    await settings.setJobInterval('payments.reconcileProviders', 900, ACTOR);
+    expect((await row('payments.reconcileProviders')).intervalSeconds).toBe(900);
     expect(audit.record).toHaveBeenCalledWith(
       ACTOR.id,
       'settings.jobs.update',
       'app_settings',
-      'mt5.syncAccounts',
-      { intervalSeconds: { before: 600, after: 900 } },
+      'payments.reconcileProviders',
+      { intervalSeconds: { before: 300, after: 900 } },
     );
-    await expect(settings.setJobInterval('mt5.syncAccounts', 5, ACTOR)).rejects.toBeInstanceOf(
-      ValidationError,
-    );
+    await expect(
+      settings.setJobInterval('payments.reconcileProviders', 5, ACTOR),
+    ).rejects.toBeInstanceOf(ValidationError);
     await expect(settings.setJobInterval('nope', 60, ACTOR)).rejects.toBeInstanceOf(NotFoundError);
-    await settings.setJobInterval('mt5.syncAccounts', 600, ACTOR);
+    await settings.setJobInterval('payments.reconcileProviders', 300, ACTOR);
+  });
+
+  it('refuses to edit or start the hidden MT5 safety nets, as if they did not exist', async () => {
+    for (const key of ['mt5.syncAccounts', 'mt5.syncGroups', 'bridge.sweep']) {
+      await expect(settings.setJobInterval(key, 3600, ACTOR)).rejects.toBeInstanceOf(NotFoundError);
+      await expect(settings.runJobNow(key, ACTOR)).rejects.toBeInstanceOf(NotFoundError);
+    }
   });
 
   it('the commission pair’s interval IS the Trading setting', async () => {
     await settings.setJobInterval('ib.confirmAccruals', 120, ACTOR);
-    expect((await settings.getTrading()).ibCommissionIntervalSeconds).toBe(120);
     const { items } = await settings.listJobs();
     expect(items.find((job) => job.key === 'ib.accrueDeals')?.intervalSeconds).toBe(120);
     expect(audit.record).toHaveBeenCalledWith(
@@ -200,20 +214,12 @@ describe('Settings → Scheduled jobs', () => {
     );
   });
 
-  it('runs a CRM job now — but not the commission pair or a bridge job', async () => {
+  it('runs a CRM job now — but not the commission pair', async () => {
     await store.claimJob('payments.reconcileProviders');
     await settings.runJobNow('payments.reconcileProviders', ACTOR);
     expect((await row('payments.reconcileProviders')).lastStartedAt).toBeNull();
     await expect(settings.runJobNow('ib.accrueDeals', ACTOR)).rejects.toBeInstanceOf(
       ValidationError,
     );
-    await expect(settings.runJobNow('bridge.sweep', ACTOR)).rejects.toBeInstanceOf(ValidationError);
-  });
-
-  it('stamps the bridge reading its interval', async () => {
-    await settings.setJobInterval('bridge.sweep', 120, ACTOR);
-    expect(await store.readExternalJob('bridge.sweep', 300)).toBe(120);
-    expect((await row('bridge.sweep')).externalReadAt).not.toBeNull();
-    await settings.setJobInterval('bridge.sweep', 300, ACTOR);
   });
 });

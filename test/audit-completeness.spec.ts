@@ -362,55 +362,27 @@ describe('recorded: the feature modules', () => {
     await session.del('/v1/admin/ib-levels/3');
   });
 
-  it('settings.trading.update — the terms clients are offered are attributable', async () => {
+  it('settings.trading.update — when commission is paid is attributable', async () => {
     const session = await actingAs(ctx, 'admin', MASTER);
     const before = await countOf('settings.trading.update');
 
     /*
-     * Took over from `settings.general.update`, which was removed with the
-     * General tab and its table. The reason for pinning it is stronger here:
-     * the per-client account caps, the demo funding ceiling, the ladder ceiling
-     * and the total payout ceiling are all limits somebody can move, and the
-     * effect surfaces in the broker's own reporting weeks later.
-     *
-     * The leverage ladder USED to ride on this payload as a comma-separated
-     * string. Migration 0067 gave it its own table and its own `leverages.*`
-     * keys, so it is attributed through `leverage.create`/`.update`/`.delete`
-     * instead — one row per rung rather than one "trading settings changed".
-     * Sending it here now is a 400: the DTO whitelists its properties, so an
-     * unknown one is rejected rather than ignored.
-     *
-     * PUT, not PATCH — the route is `@Put('trading')`, and a PATCH matches no
-     * handler, which would make this pass on the status assertion rather than
-     * on the audit row it claims to be about.
+     * The Trading tab went on 7 Oct 2026 (owner): the demo ceiling was removed
+     * and the commission cadence is edited from Scheduled jobs. That cadence is
+     * still a trading setting and still audited under this action — shortening
+     * it removes the window in which a bad trade is caught before its
+     * commission becomes spendable, so "who changed it, and when" must answer.
      */
-    const res = await session.put('/v1/admin/settings/trading', {
-      maxDemoDeposit: '500000',
-      /*
-       * The ladder ceiling (0105) — required for the reason the note below
-       * gives: this is a PUT, so every field on the form travels together.
-       */
-      ibCommissionIntervalSeconds: 3600,
-      /*
-       * The two payout CEILINGS are not on this form any more (0112) — they
-       * are still stored and still enforced, but nothing here sets them, so
-       * sending either is the same kind of error the note below describes:
-       * the DTO does not declare it, the request is refused, and the audit row
-       * this test is about never gets written.
-       */
-      /*
-       * The four OTHER IB fields that used to be required here went in 0103/0104.
-       *
-       * They had to be sent because this is a PUT and every field on the form
-       * travels together — an omitted one was a malformed request rather than
-       * an unchanged setting. Sending them NOW is the same kind of error in the
-       * other direction: the DTO does not declare them, so the request is
-       * refused and the audit row this test is about never gets written.
-       */
+    const res = await session.put('/v1/admin/settings/scheduled-jobs/ib.accrueDeals', {
+      intervalSeconds: 7200,
     });
     expect([200, 201, 204]).toContain(res.status);
-
     expect(await waitForCount('settings.trading.update', before + 1)).toBe(before + 1);
+
+    // Put the hourly default back for any ordering-sensitive neighbour.
+    await session.put('/v1/admin/settings/scheduled-jobs/ib.accrueDeals', {
+      intervalSeconds: 3600,
+    });
   });
 });
 

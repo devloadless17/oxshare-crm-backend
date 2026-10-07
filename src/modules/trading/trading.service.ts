@@ -86,6 +86,15 @@ import {
 const BALANCE_REFRESH_AFTER_MS = 20_000;
 
 /**
+ * The same, on the screen where the client DECIDES how much to move — the
+ * transfer form (7 Oct 2026). A client who has just closed a trade goes there
+ * next, and the figure it offers is the one they act on, so it may be at most
+ * three seconds old. The bridge's change feed normally has the mirror fresher
+ * than that already, in which case this costs nothing.
+ */
+const TRANSFER_REFRESH_AFTER_MS = 3_000;
+
+/**
  * The most accounts one list request will read from MT5.
  *
  * The MT5 session is a single lock, so these reads are serial: this is how long
@@ -233,7 +242,10 @@ export class TradingService {
    * `demo`, and Postgres orders an enum by its declared order rather than
    * alphabetically — which is the opposite of what the letters would give.
    */
-  async listMine(userId: number): Promise<TradingAccountDto[]> {
+  async listMine(
+    userId: number,
+    options: { refreshAfterMs?: number } = {},
+  ): Promise<TradingAccountDto[]> {
     /*
      * ── ASK MT5 BEFORE ANSWERING, WHEN THE MIRROR IS OLD ──────────────────
      *
@@ -254,7 +266,7 @@ export class TradingService {
      * than a screen the client cannot open. The mirror is still the source of
      * the response below; this only gives it a chance to be current first.
      */
-    await this.refreshOwnBalances(userId);
+    await this.refreshOwnBalances(userId, options.refreshAfterMs);
 
     const rows = await this.db
       .select({
@@ -303,7 +315,7 @@ export class TradingService {
    * question is a second thing to drift.
    */
   async listTransferable(userId: number): Promise<TradingAccountDto[]> {
-    const rows = await this.listMine(userId);
+    const rows = await this.listMine(userId, { refreshAfterMs: TRANSFER_REFRESH_AFTER_MS });
     return rows.filter((row) => row.environment === 'live' && row.status === 'active');
   }
 
@@ -480,10 +492,13 @@ export class TradingService {
    * and an unreachable bridge must cost a stale balance rather than a screen
    * that will not open.
    */
-  private async refreshOwnBalances(userId: number): Promise<void> {
+  private async refreshOwnBalances(
+    userId: number,
+    refreshAfterMs = BALANCE_REFRESH_AFTER_MS,
+  ): Promise<void> {
     if (!this.bridge.isConfigured) return;
 
-    const cutoff = new Date(Date.now() - BALANCE_REFRESH_AFTER_MS);
+    const cutoff = new Date(Date.now() - refreshAfterMs);
 
     const stale = await this.db
       .select({ login: tradingAccounts.login })

@@ -9,9 +9,9 @@ import {
   UseGuards,
   UsePipes,
   ValidationPipe,
+  Optional,
 } from '@nestjs/common';
 import { AppSettingsStore } from '../../../store/app-settings.store';
-import { scheduledJob } from '../../../common/scheduling/scheduled-jobs.catalog';
 import { BridgeJobSettingsDto } from './dto/bridge-job-settings.dto';
 import {
   ApiExcludeController,
@@ -26,6 +26,12 @@ import { VALIDATION_PIPE_OPTIONS } from '../../../common/validation.config';
 import { BridgeSecretGuard } from './bridge-secret.guard';
 import { Mt5DealsService } from './mt5-deals.service';
 import { Mt5AccountSyncService } from './mt5-account-sync.service';
+import { Mt5AccountDirectoryService } from './mt5-account-directory.service';
+import { Mt5GroupSyncService } from './mt5-group-sync.service';
+import { Mt5GroupSyncScheduler } from './mt5-group-sync.scheduler';
+
+/** What an older bridge sweeps at — see `bridgeSettings`. */
+const BRIDGE_FALLBACK_SWEEP_SECONDS = 120;
 import { Mt5AccountSnapshotDto } from './dto/mt5-account-snapshot.dto';
 import { Mt5DealDto } from './dto/mt5-deal.dto';
 import { Mt5DealBatchDto } from './dto/mt5-deal-batch.dto';
@@ -154,8 +160,17 @@ export class Mt5WebhooksController {
     private readonly deals: Mt5DealsService,
     private readonly accounts: Mt5AccountSyncService,
     private readonly live: Mt5LiveService,
-    /** The job timings the bridge reads — Settings → Scheduled jobs (0167). Appended last. */
-    private readonly settings: AppSettingsStore,
+    /*
+     * Was the source of the bridge's sweep interval; that interval is fixed
+     * since 7 Oct 2026 (see `bridgeSettings`). Kept in place so the positional
+     * constructions in the specs keep lining up.
+     */
+    _settings: AppSettingsStore,
+    /** Accounts opened on MT5 directly, recorded when first seen (7 Oct 2026). */
+    @Optional() private readonly directory?: Mt5AccountDirectoryService,
+    /** A group first seen in a snapshot is synced at once (7 Oct 2026). Appended last. */
+    @Optional() private readonly groups?: Mt5GroupSyncService,
+    @Optional() private readonly groupSync?: Mt5GroupSyncScheduler,
   ) {}
 
   /**
@@ -168,14 +183,15 @@ export class Mt5WebhooksController {
   @Get('settings')
   @ApiOperation({ summary: 'The MT5 bridge job timings, as set in the CRM' })
   @ApiOkResponse({ type: BridgeJobSettingsDto })
-  async bridgeSettings(): Promise<BridgeJobSettingsDto> {
-    const job = scheduledJob('bridge.sweep');
-    return {
-      sweepIntervalSeconds: await this.settings.readExternalJob(
-        'bridge.sweep',
-        job?.defaultSeconds ?? 300,
-      ),
-    };
+  bridgeSettings(): BridgeJobSettingsDto {
+    /*
+     * FIXED since 7 Oct 2026: the sweep is no longer an admin setting. The
+     * bridge's change feed makes closed trades and balances instant, and the
+     * bridge picks its own safety interval — long while the feed works. This
+     * is the FALLBACK an older bridge (or one whose broker refuses the batch
+     * read) sweeps at: the interval it ran on before.
+     */
+    return { sweepIntervalSeconds: BRIDGE_FALLBACK_SWEEP_SECONDS };
   }
 
   @Post('deals')
@@ -314,7 +330,28 @@ export class Mt5WebhooksController {
       'names no account here; `"stale"` means a fresher read already landed. Both are normal.',
   })
   async ingestAccountBatch(@Body() batch: Mt5AccountBatchDto) {
-    return await this.accounts.ingestSnapshotBatch(batch.snapshots);
+    const result = await this.accounts.ingestSnapshotBatch(batch.snapshots);
+    /*
+     * A login with no row here is an account opened on MT5 directly, seen the
+     * moment its first deal reached the bridge's change feed (7 Oct 2026). It
+     * is recorded in the background — the bridge is answered now, and the
+     * directory's own run remains the backstop.
+     */
+    const discovered = result.results
+      .filter((r) => r.reason === 'unknown-login')
+      .map((r) => r.login);
+    if (discovered.length > 0) void this.directory?.recordDiscovered(discovered);
+    /*
+     * And a group this CRM has never synced — added on the broker's server
+     * since the last sync — is synced NOW rather than within the hour.
+     */
+    if (this.groupSync && this.groups) {
+      const named = batch.snapshots.map((s) => s.group ?? '').filter(Boolean);
+      if (named.length > 0 && (await this.groups.unknownGroups(named)).length > 0) {
+        this.groupSync.syncSoon();
+      }
+    }
+    return result;
   }
 
   /**

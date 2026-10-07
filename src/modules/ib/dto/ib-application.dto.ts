@@ -429,12 +429,45 @@ export class ChangeIbLevelDto {
     minimum: 1,
     maximum: 2,
     description:
-      'Must match the partner’s position (0197): 1 with no parent, 2 under a main partner.',
+      'The level IS the position (0197): 1 with no parent, 2 under a main partner. Choosing the ' +
+      'other level MOVES them — 1 detaches them from their parent, 2 places them under ' +
+      '`parentIbUserId` — and "introduced by" follows the new position.',
   })
   @IsInt()
   @Min(1)
   @Max(2)
   level: number;
+
+  @ApiPropertyOptional({
+    type: 'integer',
+    nullable: true,
+    description: 'The main partner to place them under. Required when moving a main partner to 2.',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  parentIbUserId?: number | null;
+}
+
+/**
+ * `POST /admin/ib/partners/{userId}` — make an individual client a partner
+ * under an agency (owner, 7 Oct 2026). With no parent they are a main partner;
+ * with one, a sub-partner beneath that main partner.
+ */
+export class AppointIbPartnerDto {
+  @ApiProperty({ format: 'uuid', description: 'The agency to appoint them under.' })
+  @IsUUID()
+  agencyId: string;
+
+  @ApiPropertyOptional({
+    type: 'integer',
+    nullable: true,
+    description: 'A main partner to place them under. Omitted or null: a main partner.',
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  parentIbUserId?: number | null;
 }
 
 /**

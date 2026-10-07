@@ -60,7 +60,10 @@ export class ScheduledJobsRunner implements OnApplicationBootstrap, OnModuleDest
     try {
       // A job added after 0167 gets its row, with its default, on first boot.
       for (const key of this.jobs.keys()) {
-        await this.settings.ensureJob(key, scheduledJob(key)?.defaultSeconds ?? 3600);
+        const job = scheduledJob(key);
+        await this.settings.ensureJob(key, job?.defaultSeconds ?? 3600);
+        // A hidden safety net runs at its default, whatever an older screen saved.
+        if (job?.hidden) await this.settings.pinJobInterval(key, job.defaultSeconds);
       }
     } catch (error) {
       this.logger.warn(

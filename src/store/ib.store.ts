@@ -164,6 +164,17 @@ export class IbStore {
     return row;
   }
 
+  /**
+   * Remove an application that is still pending — only the one the console
+   * opened for `appointPartner` when its approval was refused. A decided
+   * application is history and is never deleted.
+   */
+  async deletePendingApplication(id: string): Promise<void> {
+    await this.db
+      .delete(ibApplications)
+      .where(and(eq(ibApplications.id, id), eq(ibApplications.status, 'pending')));
+  }
+
   async findById(id: string): Promise<IbApplicationRow | undefined> {
     const [row] = await this.db
       .select()

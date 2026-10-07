@@ -37,6 +37,7 @@ import { AdminAuditService } from '../admin/admin-audit.service';
 import { exportFormat, streamCsv, EXPORT_RATE_LIMIT } from '../../common/export/export-response';
 import {
   ApproveIbApplicationDto,
+  AppointIbPartnerDto,
   ChangeIbLevelDto,
   ReverseAccrualDto,
   IbAccountDto,
@@ -745,7 +746,44 @@ export class AdminIbController {
     @Body() dto: ChangeIbLevelDto,
   ) {
     return this.applications.accountViewFor(
-      await this.applications.changeLevel(userId, dto.level, req.admin.clientScope, req.admin),
+      await this.applications.changeLevel(
+        userId,
+        dto.level,
+        req.admin.clientScope,
+        req.admin,
+        dto.parentIbUserId,
+      ),
+      req.admin.clientScope,
+    );
+  }
+
+  @Post('partners/:userId')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('ib.approve')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Make an individual client a partner',
+    description:
+      'Appoints the client under an agency — a main partner, or a sub-partner under a main ' +
+      'partner. It is an approval: a pending application the client sent is approved, otherwise ' +
+      'one is opened on their behalf, and every approval rule applies. "Introduced by" follows ' +
+      'the chosen position.',
+  })
+  @ApiOkResponse({ type: IbAccountDto })
+  @ScopedToClients('Acts on one client; out-of-scope 404s like a missing one.')
+  @Audited('ib.approve')
+  async appointPartner(
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+    @Param('userId', ClientRefPipe) userId: number,
+    @Body() dto: AppointIbPartnerDto,
+  ) {
+    return this.applications.accountViewFor(
+      await this.applications.appointPartner(
+        userId,
+        { agencyId: dto.agencyId, parentIbUserId: dto.parentIbUserId },
+        req.admin.clientScope,
+        req.admin,
+      ),
       req.admin.clientScope,
     );
   }

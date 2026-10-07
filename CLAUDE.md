@@ -338,6 +338,14 @@ It refuses a DISABLED or UNCONFIGURED rung, and the first is the other half of a
 guarantee: `IbLevelsService.update` refuses to disable a rung partners stand on, so without this
 refusal an operator could route around it by moving people ONTO a disabled row.
 
+**Since 7 Oct 2026 a change of level IS a move** (owner): the level is the position, so `2 → 1`
+detaches them (as `reassignParent(null)`) and `1 → 2` needs `parentIbUserId`, the main partner to
+sit under. **"Introduced by" follows the position**: `reassignParent` writes
+`users.referred_by_ib_user_id` = the new parent, or NULL for a main partner, in the same
+transaction. `POST /admin/ib/partners/:userId` (`ib.approve`, `appointPartner`) makes an individual
+a partner under an agency — it approves their pending application or opens one on their behalf, so
+every approval rule applies, and withdraws that application again if approval refuses.
+
 ⚠️ **It does NOT move anybody beneath them.** A level is one partner's position, and their
 sub-partners keep the rungs they were approved on — cascading would re-price an unbounded number of
 people from one operator's edit of somebody else's row. Moving a subtree is a series of decisions,
@@ -825,6 +833,31 @@ Four things that are easy to get wrong here:
 in one place — `BridgeOptions` says ~285ms idle, `mt5-bridge.client.ts` says ~2.5s through the CRM.
 `GET /admin/live` on the bridge now reports it continuously. Read that before tuning anything.
 
+### A closed trade reaches the client's screen in under a second (7 Oct 2026)
+
+A client closed a position, went to withdraw, and saw the old balance for up to two minutes. Three
+pieces now close that, and each is useless without the others:
+
+- **Bridge — the change feed.** Every ~3 s one `DEAL_GET_BATCH` for the whole server returns only
+  the deals since the last one seen; each new deal marks its login, and the balance sync reads just
+  those accounts in one `USER_ACCOUNT_GET_BATCH` and pushes them (`accounts/batch`). Cost follows
+  trading, not the size of the book. If the server refuses the batch commands the bridge falls back
+  to the old per-login sweep on its own — see the bridge README, "The change feed".
+- **CRM — the mirror announces itself (0204).** A trigger on `trading_accounts` `pg_notify`s
+  `account_balance` when an OWNED account's balance, credit or owner really changes (and on an
+  owned insert); the gateway emits `account.balance` `{accountId}` into `client:<userId>`. Every
+  writer is covered without knowing. The payload carries no money — the portal re-reads.
+- **Portal — refresh, never notify.** `account.balance` invalidates `tradingAccounts` and
+  `dashboard`. It is deliberately NOT a notification (owner: the client already knows they closed
+  the trade) — no bell row, no toast, no chime.
+
+Two decision-point guards sit behind it: `GET /trading/accounts/transferable` refreshes a mirror
+older than 3 s (not 20), and `TransfersService.request` asks MT5 once before REFUSING an
+account→wallet transfer, so a just-closed profit is never refused on a stale copy. An unknown login
+in a snapshot batch (an account opened on MT5 directly) is recorded at once via
+`Mt5AccountDirectoryService.recordDiscovered`. Measured on the simulator: close → socket event
+0.5 s. `test/account-balance-push.spec.ts` pins the CRM half.
+
 ### The sweep STREAMS its deals
 
 `StreamDealsAsync` hands the sweep one login at a time. The list form materialised a rolling 24-hour
@@ -843,7 +876,15 @@ changed interval applies within 15 s. It records each run (duration, error) for 
 
 - **The commission pair keeps its own loop**: its interval is `trading_settings.ib_commission_interval_seconds`,
   which is ALSO the hold window. The jobs screen edits that same value through `setTrading`.
-- **`bridge.sweep` runs on the bridge**, which reads `GET /webhooks/mt5/settings` once a minute
+- **The three MT5 jobs are NOT in Settings any more (owner, 7 Oct 2026; 0206).** Trades, balances,
+  new accounts and new groups are picked up instantly (the bridge change feed; `recordDiscovered`;
+  `Mt5GroupSyncScheduler.syncSoon` on an unknown group). `mt5.syncAccounts` / `mt5.syncGroups` are
+  `hidden: true` catalog entries — hourly background safety nets, pinned on boot, refused by the
+  edit and run-now routes. `bridge.sweep` left the catalog: the bridge picks its own interval
+  (`SafetySweepIntervalSeconds` while the feed works) and `/webhooks/mt5/settings` answers a fixed
+  fallback of 120 s for older bridges. The Trading tab went too (its demo ceiling was dropped in
+  0205; the commission cadence is the Scheduled jobs row, written via `setCommissionInterval`).
+- *(historical)* **`bridge.sweep` ran on the bridge**, which reads `GET /webhooks/mt5/settings` once a minute
   (`CrmSettingsPoller` → `SweepSchedule`, read by the deal sweep and the balance sync every round).
 - **A new job**: catalogue entry + `@ScheduledJob` + an admin label (`jobs.label.<key>`). Its row is
   created with the default on first boot.

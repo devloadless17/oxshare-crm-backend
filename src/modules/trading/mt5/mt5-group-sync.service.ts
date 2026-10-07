@@ -1,5 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { and, eq, isNotNull, isNull, notInArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, notInArray, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../../database/database.module';
 import type { Db } from '../../../database/db';
 import {
@@ -77,6 +77,21 @@ export interface GroupSyncRun {
 @Injectable()
 export class Mt5GroupSyncService {
   private readonly logger = new Logger(Mt5GroupSyncService.name);
+
+  /**
+   * Which of these group names the CRM has never synced — the trigger for an
+   * instant group sync (7 Oct 2026). One indexed read per snapshot batch.
+   */
+  async unknownGroups(names: string[]): Promise<string[]> {
+    const wanted = [...new Set(names.filter((name) => name.length > 0))];
+    if (wanted.length === 0) return [];
+    const known = await this.db
+      .select({ name: mt5Groups.name })
+      .from(mt5Groups)
+      .where(inArray(mt5Groups.name, wanted));
+    const have = new Set(known.map((row) => row.name));
+    return wanted.filter((name) => !have.has(name));
+  }
 
   constructor(
     @Inject(DRIZZLE_DB) private readonly db: Db,

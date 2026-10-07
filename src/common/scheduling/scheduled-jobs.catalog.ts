@@ -17,22 +17,34 @@
  */
 export const SCHEDULED_JOBS = [
   // ── MT5 ──────────────────────────────────────────────────────────────────
-  { key: 'bridge.sweep', group: 'mt5', runsOn: 'bridge', defaultSeconds: 300, min: 30, max: 3600 },
+  /*
+   * INSTANT, and not the admin's to see (owner, 7 Oct 2026). A closed trade, a
+   * new account and an unknown group are now picked up the moment they happen
+   * — the bridge's change feed and the webhooks behind it — so these two are
+   * only the background SAFETY NET for anything an event missed: hidden from
+   * Settings → Scheduled jobs, not editable, pinned to their default.
+   *
+   * `bridge.sweep` is GONE from this list: the bridge chooses its own safety
+   * interval (long while its change feed works, short only if the broker's
+   * server refuses the batch read). See `Mt5WebhooksController.bridgeSettings`.
+   */
   {
     key: 'mt5.syncAccounts',
     group: 'mt5',
     runsOn: 'crm',
-    defaultSeconds: 600,
-    min: 60,
-    max: 86_400,
+    defaultSeconds: 3600,
+    min: 3600,
+    max: 3600,
+    hidden: true,
   },
   {
     key: 'mt5.syncGroups',
     group: 'mt5',
     runsOn: 'crm',
     defaultSeconds: 3600,
-    min: 300,
-    max: 86_400,
+    min: 3600,
+    max: 3600,
+    hidden: true,
   },
   // ── Commission — ONE interval for both, kept in trading_settings (also the hold window) ──
   {
@@ -133,6 +145,12 @@ export interface ScheduledJobDefinition {
   max: number;
   /** Its interval is a setting shared with another (the commission pair). */
   sharedInterval?: 'commission';
+  /**
+   * A background safety net the admin never sees (7 Oct 2026): left out of
+   * Settings → Scheduled jobs, refused by its edit and run-now routes, and
+   * always run at `defaultSeconds` whatever an older row stored.
+   */
+  hidden?: true;
 }
 
 export type ScheduledJobKey = (typeof SCHEDULED_JOBS)[number]['key'];
