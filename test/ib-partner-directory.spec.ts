@@ -313,11 +313,48 @@ describe('the row is the declared shape, and only that', () => {
       [
         'account',
         'agencyName',
+        'clientCount',
         'earnings',
         'parentOutsideTerritory',
         'parentPortalId',
+        'subPartnerCount',
         'user',
       ].sort(),
     );
+  });
+});
+
+describe('the IB total — sub-partners plus clients (owner, 7 Oct 2026)', () => {
+  beforeAll(async () => {
+    // The sub-partner was referred by `top` too, as they normally are — they
+    // must count once, as a sub-partner, never again as a client.
+    await ctx.db.execute(
+      sql`UPDATE users SET referred_by_ib_user_id = ${top.id} WHERE id = ${child.id}`,
+    );
+    const a = await makeUser('ena.client@directory.test', 'Ena', 'Client', deskA);
+    const b = await makeUser('fadi.client@directory.test', 'Fadi', 'Client', deskB);
+    await ctx.db.execute(
+      sql`UPDATE users SET referred_by_ib_user_id = ${top.id} WHERE id IN (${a.id}, ${b.id})`,
+    );
+  });
+
+  it('counts each half once, on the list and on the detail alike', async () => {
+    const [row] = (await list({ q: 'DIRTOP01' }, UNRESTRICTED)).rows;
+    expect([row.subPartnerCount, row.clientCount]).toEqual([1, 2]);
+    const detail = await service.partnerDetailFor(top.id, UNRESTRICTED, []);
+    expect([detail?.subPartnerCount, detail?.clientCount]).toEqual([1, 2]);
+    // The network screen's number keeps its wider meaning.
+    expect(detail?.referredClientCount).toBe(3);
+  });
+
+  it('counts only what the reader’s territory holds', async () => {
+    const [row] = (await list({ q: 'DIRTOP01' }, scopeOf([deskA], false))).rows;
+    // The sub-partner and one client are on desk B.
+    expect([row.subPartnerCount, row.clientCount]).toEqual([0, 1]);
+  });
+
+  it('reports zero for a partner with nobody under them', async () => {
+    const [row] = (await list({ q: 'DIRSUSP3' }, UNRESTRICTED)).rows;
+    expect([row.subPartnerCount, row.clientCount]).toEqual([0, 0]);
   });
 });

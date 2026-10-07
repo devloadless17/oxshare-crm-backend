@@ -1166,7 +1166,12 @@ export class IbApplicationsService {
      * no commission reports `[]`: the honest reading of "nothing earned yet",
      * rather than a zero in a currency nobody chose.
      */
-    const earnings = await this.ib.earningsByPartner(result.rows.map((r) => r.account.userId));
+    const ids = result.rows.map((r) => r.account.userId);
+    const [earnings, ibTotals] = await Promise.all([
+      this.ib.earningsByPartner(ids),
+      // The IB total column — sub-partners and clients (owner, 7 Oct 2026).
+      this.ib.ibTotalsByPartner(ids, scope),
+    ]);
 
     /*
      * The AGENCY, beside the earnings, because the two answer the same
@@ -1214,6 +1219,8 @@ export class IbApplicationsService {
         parentOutsideTerritory: row.account.parentIbUserId !== null && row.parentPortalId === null,
         agencyName: row.agencyName,
         earnings: earnings.get(row.account.userId) ?? [],
+        subPartnerCount: ibTotals.get(row.account.userId)?.subPartnerCount ?? 0,
+        clientCount: ibTotals.get(row.account.userId)?.clientCount ?? 0,
       })),
     };
   }
@@ -1287,6 +1294,7 @@ export class IbApplicationsService {
       directPartners,
       directPartnersOutsideScope,
       earningsMap,
+      ibTotals,
       referredCount,
       referredOutsideScope,
       agencies,
@@ -1295,6 +1303,7 @@ export class IbApplicationsService {
       this.ib.findDirectPartners(userId, scope),
       this.ib.countDirectPartnersOutside(userId, scope),
       this.ib.earningsByPartner([userId]),
+      this.ib.ibTotalsByPartner([userId], scope),
       // Scoped, like every other client read on this route: `assertVisible`
       // above proves the PARTNER is visible and says nothing about their
       // clients. See UsersStore.countReferredBy.
@@ -1400,6 +1409,11 @@ export class IbApplicationsService {
          and the number the earnings are a consequence of. */
       referredClientCount: referredCount,
       referredClientsOutsideScope: referredOutsideScope,
+      /* The IB TOTAL's halves (owner, 7 Oct 2026): direct sub-partners, and
+         introduced clients who are not partners themselves — so the two add
+         up without counting a sub-partner twice. In-scope only. */
+      subPartnerCount: ibTotals.get(userId)?.subPartnerCount ?? 0,
+      clientCount: ibTotals.get(userId)?.clientCount ?? 0,
       // One entry per currency; `[]` is "nothing earned yet".
       earnings: earningsMap.get(userId) ?? [],
     };

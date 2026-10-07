@@ -16855,6 +16855,14 @@
             "items": {
               "$ref": "#/components/schemas/IbPartnerEarningsDto"
             }
+          },
+          "subPartnerCount": {
+            "type": "integer",
+            "description": "IB total, first half: sub-partners directly under this partner, in the reader’s territory."
+          },
+          "clientCount": {
+            "type": "integer",
+            "description": "IB total, second half: clients this partner introduced who are not partners themselves, in the reader’s territory — so it adds to `subPartnerCount` without double counting."
           }
         },
         "required": [
@@ -16863,7 +16871,9 @@
           "parentPortalId",
           "parentOutsideTerritory",
           "agencyName",
-          "earnings"
+          "earnings",
+          "subPartnerCount",
+          "clientCount"
         ]
       },
       "IbPartnerListResponseDto": {
@@ -17094,6 +17104,14 @@
             "type": "integer",
             "description": "How many clients this partner introduced sit OUTSIDE the reader’s territory, and so are absent from `referredClientCount`. Zero for an unrestricted reader. A count, no identity."
           },
+          "subPartnerCount": {
+            "type": "integer",
+            "description": "IB total, first half: sub-partners directly under this partner, in the reader’s territory."
+          },
+          "clientCount": {
+            "type": "integer",
+            "description": "IB total, second half: clients this partner introduced who are not partners themselves, in the reader’s territory — so it adds to `subPartnerCount` without double counting."
+          },
           "earnings": {
             "description": "One entry per currency they have earned in, sorted by currency. Empty when nothing has accrued yet — never a zero in a currency nobody chose.",
             "type": "array",
@@ -17129,6 +17147,8 @@
           "directPartnersOutsideScope",
           "referredClientCount",
           "referredClientsOutsideScope",
+          "subPartnerCount",
+          "clientCount",
           "earnings"
         ]
       },
