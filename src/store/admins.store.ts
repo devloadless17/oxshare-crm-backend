@@ -65,6 +65,14 @@ export interface Admin {
   permissions: string[];
   /** RBAC role the permissions were derived from, when assigned via a role. */
   roleId?: string;
+  /**
+   * Set only on an API-key identity: the administrator who minted the key.
+   *
+   * A key has no role and its own id, so without this the "nobody edits their
+   * own role / own account" rules could not see that a key editing its
+   * creator IS its creator editing themselves. Never set for a session.
+   */
+  actingForAdminId?: string;
   /** 'active' | 'suspended' — a suspended admin cannot sign in or use a session. */
   status: AdminStatus;
   /**
@@ -312,12 +320,27 @@ export class AdminsStore {
     return row;
   }
 
-  /** Enrolment: the secret just shown as a QR code. Replaces any earlier one. */
-  async setPendingTotp(id: string, sealedSecret: string): Promise<void> {
+  /**
+   * Enrolment: the secret shown as a QR code. COMPARE-AND-SET: writes only over `replacing` — the pending value the caller
+   * saw (null, or one it could not open). Two setup calls racing (a double
+   * render, a refresh, a double click) used to each write their own secret, so
+   * the QR code on screen could belong to the one the database no longer held,
+   * and every code typed was "not correct" (found by the e2e suite, Oct 2026).
+   * Now the loser writes nothing, and both re-read the one secret that won.
+   */
+  async setPendingTotp(id: string, sealedSecret: string, replacing: string | null): Promise<void> {
     await this.db
       .update(admins)
       .set({ totpPendingSecret: sealedSecret })
-      .where(and(eq(admins.id, id), sql`${admins.totpSecret} IS NULL`));
+      .where(
+        and(
+          eq(admins.id, id),
+          sql`${admins.totpSecret} IS NULL`,
+          replacing === null
+            ? sql`${admins.totpPendingSecret} IS NULL`
+            : eq(admins.totpPendingSecret, replacing),
+        ),
+      );
   }
 
   /**

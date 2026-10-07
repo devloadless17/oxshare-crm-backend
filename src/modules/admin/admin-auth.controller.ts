@@ -123,8 +123,8 @@ export class AdminAuthController {
   @ApiOperation({
     summary: 'Admin login, enrolment: a new authenticator secret as a QR code',
     description:
-      'Only while the account has no authenticator. Each call replaces the previous ' +
-      'secret, so only the newest QR code can finish enrolment.',
+      'Only while the account has no authenticator. Until a code confirms it, every ' +
+      'call returns the SAME secret, so a scan is never wasted by a reload.',
   })
   @ApiOkResponse({ type: AdminTotpSetupDto })
   @NotClientScoped(
