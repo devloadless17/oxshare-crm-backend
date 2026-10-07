@@ -84,16 +84,18 @@ async function accrue(
   status: 'confirmed' | 'pending' | 'reversed',
   kind: 'commission' | 'rebate' = 'commission',
   clientUserId = child.id,
+  /** 0209 — a LEGACY rebate paid to the client rather than the partner. */
+  paidToClient = false,
 ) {
   accrualSeq += 1;
   const sourceId = `00000000-0000-4000-8000-${String(accrualSeq).padStart(12, '0')}`;
   await ctx.db.execute(sql`
     INSERT INTO ib_accruals
       (ib_user_id, client_user_id, kind, source_type, source_id, depth, rate_value,
-       base_amount, amount, currency, status)
+       base_amount, amount, currency, status, paid_to_client)
     VALUES
       (${top.id}, ${clientUserId}, ${kind}, 'transaction', ${sourceId}, 1, '10.0000',
-       '1000.00000000', ${amount}, ${currency}, ${status})
+       '1000.00000000', ${amount}, ${currency}, ${status}, ${paidToClient})
   `);
 }
 
@@ -144,13 +146,15 @@ beforeAll(async () => {
 
   /*
    * `top` earns in TWO currencies, plus two rows that must never count:
-   * a rebate (the client's money — attribution, not entitlement) and a
-   * reversed accrual (clawed back).
+   * a LEGACY rebate paid to the client (the client's money, pre-0209) and a
+   * reversed accrual (clawed back). Since 0209 a rebate is partner money, so
+   * the partner's own 7 USD rebate DOES count, next to their commission.
    */
   await accrue('USD', '100.00000000', 'confirmed');
   await accrue('USD', '5.00000000', 'pending');
   await accrue('EUR', '90.00000000', 'confirmed');
-  await accrue('USD', '70.00000000', 'confirmed', 'rebate');
+  await accrue('USD', '70.00000000', 'confirmed', 'rebate', child.id, true);
+  await accrue('USD', '7.00000000', 'confirmed', 'rebate');
   await accrue('EUR', '30.00000000', 'reversed');
 }, 120_000);
 
@@ -273,14 +277,14 @@ describe('the parent is named, never identified', () => {
 describe('earnings, one line per currency', () => {
   const EXPECTED = [
     { currency: 'EUR', confirmed: '90.00000000', pending: '0' },
-    { currency: 'USD', confirmed: '100.00000000', pending: '5.00000000' },
+    { currency: 'USD', confirmed: '107.00000000', pending: '5.00000000' },
   ];
 
   it('keeps each currency on its own line, and never adds them together', async () => {
     /*
      * The defect: grouped by partner and status alone, this returned one
      * confirmed figure of 190 — USD and EUR added — which the profile then
-     * printed as the platform currency. The rebate (70 USD, the client's money)
+     * printed as the platform currency. The legacy client rebate (70 USD)
      * and the reversed accrual (30 EUR, clawed back) must not appear either.
      */
     const [row] = (await list({ q: 'DIRTOP01' }, UNRESTRICTED)).rows;

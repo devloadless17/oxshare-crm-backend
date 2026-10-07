@@ -5,31 +5,34 @@ import { scopeOf } from '../src/common/security/client-scope';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
 
 /**
- * AN ACCRUAL IS SCOPED ON WHOEVER IS PAID, AND THAT DEPENDS ON ITS KIND.
+ * AN ACCRUAL IS SCOPED ON WHOEVER WAS PAID.
  *
- * ⚠️ This closes a live inversion. `findAccrualsPage` scoped every row on
- * `ib_user_id`, which is correct for a commission and wrong for a REBATE:
- * `CommissionService.confirmPending` states the rule the query has to follow —
- * "`ibUserId` on a rebate row is the partner whose RUNG produced it —
- * attribution, not entitlement" — and pays `clientUserId`.
+ * Since 0209 (owner, 7 Oct 2026) that is the PARTNER on every new accrual —
+ * commission and rebate alike: the rebate is partner money, split down the
+ * chain and credited to the partner's commission wallet, and the client gets
+ * nothing. Only a LEGACY rebate, paid to the trading client before 0209 and
+ * marked `paid_to_client = true` by that migration, still has the CLIENT as its
+ * beneficiary. `accrualBeneficiarySql` is that rule in SQL, and
+ * `findAccrualsPage` scopes every row by it.
  *
- * Scoping the wrong column was wrong in BOTH directions at once, which is why
- * both are asserted here:
+ * ⚠️ This closed a live inversion, and the legacy rows still carry it. Scoping a
+ * client-paid rebate on `ib_user_id` was wrong in BOTH directions at once,
+ * which is why both are asserted here:
  *
  *   - A desk holding the PARTNER's tag saw rebates that are the client's own
  *     money, for a client they hold no territory over.
  *   - A desk holding the CLIENT's tag saw none of their own client's rebates,
  *     because the row was filed under a partner they cannot see.
  *
- * Neither was hypothetical: every rebate row in the development database had
- * `ib_user_id` different from `client_user_id`.
+ * And the new rule must not be read through the old one: a NEW rebate is the
+ * partner's, so the partner desk sees it and the client desk does not.
  *
  * ## The masking is the other half
  *
  * A visible row still names two people, and the one who is NOT the beneficiary
  * may be outside the reader's territory. Their identity is nulled and a flag
  * says so — the same control the 13 Aug scoped walk added for the client on a
- * commission, now applied to the partner on a rebate.
+ * commission, applied to the partner on a legacy rebate.
  */
 
 let ctx: MoneyTestContext;
@@ -59,22 +62,28 @@ async function makeTag(slug: string, label: string): Promise<string> {
 }
 
 /**
- * One accrual. `ibUserId` is the partner on BOTH kinds — that is the point: a
- * rebate records the partner whose rung priced it and pays the client.
+ * One accrual. `ibUserId` is the partner on every kind — that is the point:
+ * whether the row is the partner's or the client's is decided by
+ * `paid_to_client`, never by which id happens to be on it.
  */
-async function accrue(kind: 'commission' | 'rebate', sourceId: string) {
+async function accrue(
+  kind: 'commission' | 'rebate',
+  sourceId: string,
+  paidToClient = false,
+  amount = '70.00000000',
+) {
   await ctx.db.execute(sql`
     INSERT INTO ib_accruals
       (ib_user_id, client_user_id, kind, source_type, source_id, depth, rate_value,
-       base_amount, amount, currency, status)
+       base_amount, amount, currency, status, paid_to_client)
     VALUES
       (${partnerId}, ${clientId}, ${kind}, 'transaction', ${sourceId}, 1, '70.0000',
-       '100.00000000', '70.00000000', 'USD', 'confirmed')
+       '100.00000000', ${amount}, 'USD', 'confirmed', ${paidToClient})
   `);
 }
 
 interface Row {
-  accrual: { kind: string };
+  accrual: { kind: string; amount: string };
   partner: { id: string; email: string | null };
   client: { id: string; email: string | null };
   partnerMasked: boolean;
@@ -110,7 +119,8 @@ beforeAll(async () => {
   `);
 
   await accrue('commission', '11111111-1111-1111-1111-111111111111');
-  await accrue('rebate', '22222222-2222-2222-2222-222222222222');
+  // LEGACY: a rebate the old engine paid to the client, before 0209.
+  await accrue('rebate', '22222222-2222-2222-2222-222222222222', true);
 });
 
 afterAll(async () => {
@@ -118,13 +128,13 @@ afterAll(async () => {
 });
 
 describe('the partner desk', () => {
-  it('sees the commission it earned, and NOT the client rebate', async () => {
+  it('sees the commission it earned, and NOT the legacy client-paid rebate', async () => {
     const { rows } = await page([partnerTagId]);
 
     /*
-     * The rebate is the CLIENT's money on a client this desk holds no territory
-     * over. Under the old predicate both rows came back, because both carry
-     * this partner in `ib_user_id`.
+     * The legacy rebate is the CLIENT's money on a client this desk holds no
+     * territory over. Under the old predicate both rows came back, because
+     * both carry this partner in `ib_user_id`.
      */
     expect(rows.map((r) => r.accrual.kind)).toEqual(['commission']);
   });
@@ -145,7 +155,7 @@ describe('the partner desk', () => {
 });
 
 describe('the client desk', () => {
-  it('sees its own client REBATE, which was invisible to it before', async () => {
+  it('sees its own client’s LEGACY rebate, which was invisible to it before', async () => {
     const { rows } = await page([clientTagId]);
 
     /*
@@ -162,9 +172,9 @@ describe('the client desk', () => {
     const [rebate] = rows;
 
     /*
-     * The mirror of the 13 Aug finding. The rebate is visible because the
-     * BENEFICIARY is in territory; the partner named on it is attribution, and
-     * this desk holds no territory over them.
+     * The mirror of the 13 Aug finding. The legacy rebate is visible because
+     * the BENEFICIARY (the client it was paid to) is in territory; the partner
+     * named on it is attribution, and this desk holds no territory over them.
      */
     expect(rebate.partnerMasked).toBe(true);
     expect(rebate.partner.email).toBeNull();
@@ -175,23 +185,19 @@ describe('the client desk', () => {
 });
 
 describe("a partner's earnings total", () => {
-  it('counts their COMMISSION only, never their clients rebates', async () => {
+  it('counts their COMMISSION, never a rebate that was paid to their client', async () => {
     const earnings = await store.earningsByPartner([partnerId]);
     const mine = earnings.get(partnerId);
 
     /*
-     * ⚠️ This summed every accrual carrying the partner's id, and a rebate row
-     * carries it too — as attribution, not entitlement. So the figure included
-     * money paid to their CLIENT.
+     * ⚠️ This summed every accrual carrying the partner's id, and a legacy
+     * rebate row carries it too — as attribution, not entitlement. So the
+     * figure included money paid to their CLIENT.
      *
      * The fixture has one confirmed commission of 70.00 and one confirmed
-     * rebate of 70.00 against the same partner, so the old behaviour produced
-     * exactly double. That shape was real: on the development database one
-     * partner earned 20.79 and the screen read 41.58.
-     *
-     * The wallet was never wrong — only this display total — which is the
-     * worst way for it to be wrong: an operator reconciling the commission
-     * wallet against the screen finds a gap with no explanation.
+     * LEGACY rebate of 70.00 against the same partner, so the old behaviour
+     * produced exactly double. That shape was real: on the development
+     * database one partner earned 20.79 and the screen read 41.58.
      *
      * One entry per currency since the directory returned — the fixture
      * accrues in one, so there is exactly one line and it holds 70, not 140.
@@ -206,6 +212,56 @@ describe('an unrestricted reader', () => {
     const { rows } = await page([partnerTagId, clientTagId]);
 
     expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row.partnerMasked).toBe(false);
+      expect(row.clientMasked).toBe(false);
+    }
+  });
+});
+
+/*
+ * LAST, and with its own fixture: from here on a NEW (0209) rebate exists
+ * beside the two rows above, which the counts in the cases above do not expect.
+ */
+describe('a NEW rebate (0209) is the PARTNER’s, and is scoped on the partner', () => {
+  beforeAll(async () => {
+    // Partner money: `paid_to_client` false, as every rebate since 0209 is written.
+    // A different amount from the legacy row, so the two cannot be confused.
+    await accrue('rebate', '33333333-3333-3333-3333-333333333333', false, '30.00000000');
+  });
+
+  it('the partner desk sees it beside its commission', async () => {
+    const { rows } = await page([partnerTagId]);
+
+    expect(rows.map((r) => [r.accrual.kind, r.accrual.amount]).sort()).toEqual(
+      [
+        ['commission', '70.00000000'],
+        ['rebate', '30.00000000'],
+      ].sort(),
+    );
+
+    // The partner is the beneficiary and is never masked; the client — who was
+    // paid nothing and is outside this desk — is.
+    const rebate = rows.find((r) => r.accrual.kind === 'rebate')!;
+    expect(rebate.partnerMasked).toBe(false);
+    expect(rebate.partner.email).toBe('rebate-partner@oxshare-e2e.test');
+    expect(rebate.clientMasked).toBe(true);
+    expect(rebate.client.email).toBeNull();
+  });
+
+  it('the client desk does NOT see it — the client received none of it', async () => {
+    const { rows } = await page([clientTagId]);
+
+    // Only the legacy rebate, which really was the client's money.
+    expect(rows.map((r) => [r.accrual.kind, r.accrual.amount])).toEqual([
+      ['rebate', '70.00000000'],
+    ]);
+  });
+
+  it('an unrestricted reader sees all three, with nobody masked', async () => {
+    const { rows } = await page([partnerTagId, clientTagId]);
+
+    expect(rows).toHaveLength(3);
     for (const row of rows) {
       expect(row.partnerMasked).toBe(false);
       expect(row.clientMasked).toBe(false);

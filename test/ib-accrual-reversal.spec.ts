@@ -30,8 +30,11 @@ import { UsersStore } from '../src/store/users.store';
  * Three of these, and they are the reason the assertions are about WHO and
  * WHICH ROW rather than about totals:
  *
- *   - a rebate reversal that debits `ib_user_id` balances exactly, and takes
- *     the money from the introducer instead of the client who was paid;
+ *   - a rebate reversal that debits the wrong person balances exactly. Since
+ *     0209 (owner, 7 Oct 2026) a rebate is the PARTNER's money and is taken
+ *     back from their commission wallet; a LEGACY rebate (`paid_to_client`,
+ *     paid before 0209) went to the client and must come back from the
+ *     client's main wallet, never from the introducer who was never paid it;
  *   - a reversal reusing the credit's reference type is absorbed by
  *     `ledger_entries_wallet_reference_uq` as a replay — the desk sees success
  *     and the partner keeps the money;
@@ -61,22 +64,42 @@ async function makeUser(email: string): Promise<number> {
 }
 
 /**
- * The product's rate card: $10 a lot to the partners and $100 a lot back to
- * the client (0140). Every trade here is ONE LOT. Since 0197 the level 1
- * partner takes the whole $10 pool on their own client, whatever level 1's
- * share says, so the $10.00 commissions asserted below are that pool; the
- * rebate is still the rung's share of $100.
+ * The product's rate card: $10 a lot of commission, and a per-case rebate pool.
+ * Every trade here is ONE LOT. Since 0197 the level 1 partner takes the whole
+ * commission pool on their own client, whatever level 1's share says, so the
+ * $10.00 commissions asserted below are that pool.
+ *
+ * Since 0209 the same is true of the REBATE: it is partner money, split down
+ * the chain like commission, so a level 1 partner on their own client takes
+ * the whole rebate pool too. A level's rebate share therefore decides nothing
+ * here — only the type's `rebatePerLot` does, and a case that wants a trade
+ * with no rebate at all sets that pool to zero.
  */
 let terms: CommissionTypeTerms;
 
-/** The ladder: commission shares level 1 first, the rebate share on level 1. */
-async function setTerms(ladder: { tiers?: string[]; rebateRate: string }): Promise<void> {
+/** The ladder's commission shares (level 1 first) and the type's rebate pool per lot. */
+async function setTerms(ladder: { tiers?: string[]; rebatePerLot: string }): Promise<void> {
   const shares: RungShares[] = (ladder.tiers ?? [])
     .filter((rate) => Number.parseFloat(rate) > 0)
     .map((commission) => ({ commission }));
   if (shares.length === 0) shares.push({ commission: '0' });
-  shares[0] = { ...shares[0], rebate: ladder.rebateRate };
   await setLadderShares(ctx.db, shares);
+  await seedProductTerms(ctx.db, {
+    name: 'Reversal terms',
+    commissionPerLot: '10',
+    rebatePerLot: ladder.rebatePerLot,
+  });
+  terms = { ...terms, rebatePerLot: ladder.rebatePerLot };
+}
+
+/**
+ * Mark the rebate rows as LEGACY — written before 0209, when the rebate was the
+ * trading client's money. Migration 0209 set `paid_to_client = true` on exactly
+ * those, so the fixture states the row's history the way the column records it,
+ * and confirm/reverse must still route that money through the client's main wallet.
+ */
+async function markRebatesLegacy(): Promise<void> {
+  await ctx.db.execute(sql`UPDATE ib_accruals SET paid_to_client = true WHERE kind = 'rebate'`);
 }
 
 /** One closed trade on which the broker kept 100. */
@@ -141,15 +164,17 @@ beforeAll(async () => {
     name: 'Reversal terms',
     // $10, not $100: since 0197 a level 1 partner takes the WHOLE pool on their own
     // client, and $100 a lot would cross the $50-a-lot payout ceiling and be refused.
+    // Since 0209 the rebate pool is theirs too, so it is kept small for the same
+    // reason and set per case by `setTerms`.
     commissionPerLot: '10',
-    rebatePerLot: '100',
+    rebatePerLot: '0',
   });
   terms = {
     id: seeded.typeId,
     name: 'Reversal terms',
     enabled: true,
     commissionPerLot: '10.00000000',
-    rebatePerLot: '100.00000000',
+    rebatePerLot: '0',
   };
 
   commissions = new CommissionService(
@@ -211,7 +236,7 @@ beforeEach(async () => {
 
 describe('reversing a PENDING accrual costs nothing', () => {
   it('changes the status and moves no money', async () => {
-    await setTerms({ tiers: ['10'], rebateRate: '0' });
+    await setTerms({ tiers: ['10'], rebatePerLot: '0' });
     await accrue();
 
     const [accrual] = await accrualRows();
@@ -239,7 +264,7 @@ describe('reversing a PENDING accrual costs nothing', () => {
 
 describe('reversing a CONFIRMED accrual posts a compensating entry', () => {
   it('debits the wallet that was credited and never edits the credit', async () => {
-    await setTerms({ tiers: ['10'], rebateRate: '0' });
+    await setTerms({ tiers: ['10'], rebatePerLot: '0' });
     await accrue();
     /* Past the 60s window — see the note in the setup above. */
     await ctx.db.execute(sql`UPDATE ib_accruals SET created_at = now() - interval '10 minutes'`);
@@ -282,7 +307,7 @@ describe('reversing a CONFIRMED accrual posts a compensating entry', () => {
   });
 
   it('is idempotent: a second reversal does not debit twice', async () => {
-    await setTerms({ tiers: ['10'], rebateRate: '0' });
+    await setTerms({ tiers: ['10'], rebatePerLot: '0' });
     await accrue();
     /* Past the 60s window — see the note in the setup above. */
     await ctx.db.execute(sql`UPDATE ib_accruals SET created_at = now() - interval '10 minutes'`);
@@ -303,27 +328,74 @@ describe('reversing a CONFIRMED accrual posts a compensating entry', () => {
   });
 });
 
-describe('a REBATE is taken back from the client, not the partner', () => {
-  it('debits the client main wallet the rebate was paid into', async () => {
-    await setTerms({ tiers: [], rebateRate: '5' });
+describe('a REBATE is taken back from whoever it was paid to', () => {
+  it('a NEW rebate (0209) is partner money: debits the partner commission wallet, never the client', async () => {
+    await setTerms({ tiers: [], rebatePerLot: '5' });
     await accrue();
+
+    // Since 0197 the level 1 partner also takes the commission pool on this trade, so
+    // the rebate is picked by its kind rather than by position.
+    const { rows: written } = await ctx.db.execute<{
+      ib_user_id: number;
+      paid_to_client: boolean;
+    }>(sql`SELECT ib_user_id, paid_to_client FROM ib_accruals WHERE kind = 'rebate'`);
+    expect(written).toEqual([{ ib_user_id: partnerId, paid_to_client: false }]);
+
+    /* Past the 60s window — see the note in the setup above. */
+    await ctx.db.execute(sql`UPDATE ib_accruals SET created_at = now() - interval '10 minutes'`);
+    await commissions.confirmPending();
+
+    /*
+     * The owner's rule (7 Oct 2026): the client gets NOTHING. The partner's
+     * commission wallet holds both their $10 commission and the $5 rebate.
+     */
+    expect(await walletOf(partnerId, 'commission')).toBe('15.00000000');
+    expect(await walletOf(clientId, 'main')).toBeNull();
+
+    const rebate = (await accrualRows()).find((row) => row.kind === 'rebate');
+    if (!rebate) throw new Error('no rebate accrual was written');
+
+    const result = await commissions.reverseAccrual(rebate.id, 'trade cancelled', UNRESTRICTED);
+    expect(result.movedMoney).toBe(true);
+
+    // Exactly the rebate came back out of the partner's commission wallet; the
+    // commission beside it stands, and the client was never touched.
+    expect(await walletOf(partnerId, 'commission')).toBe('10.00000000');
+    expect(await walletOf(clientId, 'main')).toBeNull();
+    expect(await ledgerFor(clientId)).toHaveLength(0);
+
+    const ledger = await ledgerFor(partnerId);
+    expect(ledger.map((e) => [e.entry_type, e.amount]).sort()).toEqual(
+      [
+        ['adjustment', '-5.00000000'],
+        ['commission', '10.00000000'],
+        ['rebate', '5.00000000'],
+      ].sort(),
+    );
+  });
+
+  it('a LEGACY rebate (paid_to_client, pre-0209) debits the client main wallet it was paid into', async () => {
+    await setTerms({ tiers: [], rebatePerLot: '5' });
+    await accrue();
+    // Written the old way: the rebate was the trading client's money.
+    await markRebatesLegacy();
     /* Past the 60s window — see the note in the setup above. */
     await ctx.db.execute(sql`UPDATE ib_accruals SET created_at = now() - interval '10 minutes'`);
     await commissions.confirmPending();
 
     expect(await walletOf(clientId, 'main')).toBe('5.00000000');
+    expect(await walletOf(partnerId, 'commission')).toBe('10.00000000');
 
-    // Since 0197 the level 1 partner also takes the commission pool on this trade, so
-    // the rebate is picked by its kind rather than by position.
     const rebate = (await accrualRows()).find((row) => row.kind === 'rebate');
     if (!rebate) throw new Error('no rebate accrual was written');
 
     await commissions.reverseAccrual(rebate.id, 'trade cancelled', UNRESTRICTED);
 
     /*
-     * `ib_user_id` on a rebate row is the partner whose programme PRODUCED it —
-     * attribution, not entitlement. Reading it as the beneficiary balances
-     * perfectly and takes the money from the introducer, who was never paid it.
+     * `ib_user_id` on a legacy rebate row is the partner whose programme
+     * PRODUCED it — attribution, not entitlement. Reading it as the beneficiary
+     * balances perfectly and takes the money from the introducer, who was never
+     * paid it.
      */
     expect(await walletOf(clientId, 'main')).toBe('0.00000000');
     // The partner's own $10 pool (0197) is untouched: a wrong reversal would leave 5.00.
@@ -333,7 +405,7 @@ describe('a REBATE is taken back from the client, not the partner', () => {
 
 describe('a reversal REFUSES when the money is already gone', () => {
   it('leaves the accrual confirmed rather than telling a lie', async () => {
-    await setTerms({ tiers: ['10'], rebateRate: '0' });
+    await setTerms({ tiers: ['10'], rebatePerLot: '0' });
     await accrue();
     /* Past the 60s window — see the note in the setup above. */
     await ctx.db.execute(sql`UPDATE ib_accruals SET created_at = now() - interval '10 minutes'`);
@@ -381,14 +453,16 @@ describe('the reversal obeys the reader’s TERRITORY, on the column it actually
    * on the platform, in a system whose entire territory model exists to stop
    * exactly that.
    *
-   * The column the check needs is the one the DEBIT uses: the client on a
-   * rebate, the partner on a commission. These two cases are a matched pair
-   * that fail in opposite directions if that expression is ever inverted —
-   * which is the mistake worth guarding, because inverting it still balances
-   * perfectly and still refuses somebody, so it looks like it works.
+   * The column the check needs is the one the DEBIT uses: the partner on a
+   * commission and on a NEW rebate (0209, partner money), the client only on a
+   * LEGACY rebate (`paid_to_client`). These cases are matched pairs that fail
+   * in opposite directions if that expression is ever inverted — which is the
+   * mistake worth guarding, because inverting it still balances perfectly and
+   * still refuses somebody, so it looks like it works.
    */
   let scopedCommissions: CommissionService;
   let partnerOnlyTagId: string;
+  let clientOnlyTagId: string;
 
   beforeEach(async () => {
     const { rows } = await ctx.db.execute<{ id: string }>(sql`
@@ -400,6 +474,17 @@ describe('the reversal obeys the reader’s TERRITORY, on the column it actually
     // ONLY the partner is in this territory. The client is deliberately not.
     await ctx.db.execute(sql`
       INSERT INTO client_tag_assignments (user_id, tag_id) VALUES (${partnerId}, ${partnerOnlyTagId})
+    `);
+
+    const { rows: clientRows } = await ctx.db.execute<{ id: string }>(sql`
+      INSERT INTO client_tags (slug, label)
+      VALUES (${'reversal-client-territory-' + Date.now()}, 'Reversal Client Territory')
+      RETURNING id
+    `);
+    clientOnlyTagId = clientRows[0].id;
+    // And the mirror: ONLY the client is in this one.
+    await ctx.db.execute(sql`
+      INSERT INTO client_tag_assignments (user_id, tag_id) VALUES (${clientId}, ${clientOnlyTagId})
     `);
 
     scopedCommissions = new CommissionService(
@@ -419,7 +504,7 @@ describe('the reversal obeys the reader’s TERRITORY, on the column it actually
   });
 
   it('lets a reader reverse a COMMISSION when the PARTNER is in their territory', async () => {
-    await setTerms({ tiers: ['30.0000'], rebateRate: '5.0000' });
+    await setTerms({ tiers: ['30.0000'], rebatePerLot: '5' });
     await accrue();
     const commission = (await accrualRows()).find((r) => r.kind === 'commission')!;
 
@@ -432,16 +517,53 @@ describe('the reversal obeys the reader’s TERRITORY, on the column it actually
     expect(result.status).toBe('reversed');
   });
 
-  it('REFUSES a REBATE to that same reader — the beneficiary is the CLIENT, who is not', async () => {
+  it('lets that reader reverse a NEW rebate too — since 0209 its beneficiary is the PARTNER', async () => {
+    await setTerms({ tiers: ['30.0000'], rebatePerLot: '5' });
+    await accrue();
+    const rebate = (await accrualRows()).find((r) => r.kind === 'rebate')!;
+
+    const result = await scopedCommissions.reverseAccrual(
+      rebate.id,
+      'in territory',
+      scopeOf([partnerOnlyTagId], false),
+    );
+
+    expect(result.status).toBe('reversed');
+  });
+
+  it('REFUSES a NEW rebate to a reader who holds only the CLIENT — the client was paid nothing', async () => {
+    /*
+     * The inverse guard. Were the check still reading `client_user_id` on
+     * every rebate, this reader would be allowed to take partner money out of
+     * a partner's wallet they cannot see.
+     */
+    await setTerms({ tiers: ['30.0000'], rebatePerLot: '5' });
+    await accrue();
+    const rebate = (await accrualRows()).find((r) => r.kind === 'rebate')!;
+
+    await expect(
+      scopedCommissions.reverseAccrual(
+        rebate.id,
+        'out of territory',
+        scopeOf([clientOnlyTagId], false),
+      ),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND', message: 'Accrual not found.' });
+
+    const after = (await accrualRows()).find((r) => r.kind === 'rebate')!;
+    expect(after.status).not.toBe('reversed');
+  });
+
+  it('REFUSES a LEGACY rebate to the partner-only reader — its beneficiary is the CLIENT, who is not', async () => {
     /*
      * The case the old reasoning was built around, and the one that proves the
      * check reads the debited party rather than `ib_user_id`. The partner IS in
      * this reader's territory and the accrual row names them — so a check on
      * `ib_user_id` would ALLOW this, and take money from a client the reader
-     * cannot see.
+     * cannot see. A rebate paid before 0209 (`paid_to_client`) is the client's.
      */
-    await setTerms({ tiers: ['30.0000'], rebateRate: '5.0000' });
+    await setTerms({ tiers: ['30.0000'], rebatePerLot: '5' });
     await accrue();
+    await markRebatesLegacy();
     const rebate = (await accrualRows()).find((r) => r.kind === 'rebate')!;
 
     await expect(
@@ -456,6 +578,14 @@ describe('the reversal obeys the reader’s TERRITORY, on the column it actually
     // And nothing moved: the row is untouched, not half-reversed.
     const after = (await accrualRows()).find((r) => r.kind === 'rebate')!;
     expect(after.status).not.toBe('reversed');
+
+    // The reader who holds the CLIENT may.
+    const allowed = await scopedCommissions.reverseAccrual(
+      rebate.id,
+      'in territory',
+      scopeOf([clientOnlyTagId], false),
+    );
+    expect(allowed.status).toBe('reversed');
   });
 
   it('answers NOT FOUND rather than forbidden, so it is no enumeration oracle', async () => {
@@ -464,8 +594,9 @@ describe('the reversal obeys the reader’s TERRITORY, on the column it actually
      * would confirm the accrual is real, letting a scoped desk enumerate rows
      * belonging to territories they were specifically denied.
      */
-    await setTerms({ tiers: ['30.0000'], rebateRate: '5.0000' });
+    await setTerms({ tiers: ['30.0000'], rebatePerLot: '5' });
     await accrue();
+    await markRebatesLegacy();
     const rebate = (await accrualRows()).find((r) => r.kind === 'rebate')!;
 
     await expect(
@@ -480,8 +611,9 @@ describe('the reversal obeys the reader’s TERRITORY, on the column it actually
      * not see the beneficiary would confirm the row exists, reopening the oracle
      * the case above closes.
      */
-    await setTerms({ tiers: ['30.0000'], rebateRate: '5.0000' });
+    await setTerms({ tiers: ['30.0000'], rebatePerLot: '5' });
     await accrue();
+    await markRebatesLegacy();
     const rebate = (await accrualRows()).find((r) => r.kind === 'rebate')!;
 
     // Reversed by somebody who may.

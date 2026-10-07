@@ -11,15 +11,21 @@ import { symbolExclusion } from '../../common/symbol-exclusion';
  * able to test exhaustively without a container, and every boundary case in
  * them is arithmetic rather than I/O.
  *
- * ## What a trade pays (0140, re-split 0197)
+ * ## What a trade pays (0140, re-split 0197; rebate to PARTNERS since 0209)
  *
  *     sub-partner (level 2+)  earns  pool × (their override ?? their level's share) / 100
  *     level 1 partner         earns  pool × (100 − the shares paid beneath them) / 100
- *     the trading client      gets   lots × type.rebatePerLot
- *                                      × (introducer's rebate override ?? their level's) / 100
  *
- * where pool = lots × type.commissionPerLot. So a level 1 partner takes the
- * WHOLE commission on their own clients, and on a sub-partner's clients takes
+ * twice over: once with pool = lots × type.commissionPerLot and the COMMISSION
+ * shares, once with pool = lots × type.rebatePerLot and the REBATE shares.
+ *
+ * ⚠️ THE CLIENT GETS NO REBATE (owner, 7 Oct 2026). It used to be paid to the
+ * trading client from the introducer's rung; it is now partner money, split
+ * down the chain exactly as commission is, and credited to each partner's
+ * commission wallet. Rebates paid to clients before 0209 keep
+ * `paid_to_client = true`, so a reversal still takes them from where they went.
+ *
+ * So a level 1 partner takes the WHOLE commission (and rebate) on their own clients, and on a sub-partner's clients takes
  * what the sub-partner does not: 70/30 by default, 50/50 for a sub-partner set
  * to 50% (the owner, 6 Oct 2026). Level 1's own share on the ladder decides
  * nothing any more.
@@ -184,8 +190,8 @@ export function resolveChain(
  *
  * Both amounts are money per STANDARD LOT, as decimal strings (§6.1). They are
  * separate pools: the commission is what the partners' side of a trade is
- * worth, the rebate is what the trading client is promised, and neither is a
- * slice of the other.
+ * worth, the rebate is a second partner pool (0209 — no longer the client's),
+ * and neither is a slice of the other.
  */
 export interface CommissionTypeTerms {
   /** The `ib_commission_types` row id, recorded on every accrual it prices. */
@@ -280,7 +286,10 @@ export interface LevelTerms {
   enabled: boolean;
   /** The PARTNER's percentage of `commissionPerLot`. A decimal string. */
   commissionShare: string;
-  /** The CLIENT's percentage of `rebatePerLot`, read from the introducer's rung. */
+  /**
+   * The PARTNER's percentage of `rebatePerLot` (0209) — a sub-partner's share
+   * of the rebate pool; level 1 takes the rest, exactly as with commission.
+   */
   rebateShare: string;
 }
 
@@ -315,22 +324,18 @@ export interface Accrual {
 }
 
 /**
- * The client's leg — money returning to the person who traded.
- *
- * `ibUserId` is the partner whose RUNG produced it, not who receives it. The
- * beneficiary is the trading client, and there is only ever one of them per
- * event, which is why this is a single value rather than a list.
- *
- * It comes from the INTRODUCER's rung — the depth-1 partner — because that is
- * the relationship the client is actually in. A partner further up the chain
- * setting the rebate would be altering terms in a relationship they do not own.
+ * One partner's share of the REBATE pool (0209) — paid to that partner, never
+ * to the client. One leg per earner in the chain, split like commission: a
+ * sub-partner takes their rebate share, level 1 takes what is left of 100%.
  */
 export interface RebateLeg {
+  /** The partner who EARNS this leg and is paid it. */
   ibUserId: number;
+  depth: number;
   levelId?: string;
   programId?: string;
   commissionTypeId?: string;
-  /** The introducer's rebate share, as a percentage. */
+  /** This partner's share of the rebate pool, as a percentage. */
   rateValue: string;
   /** The pool: `lots × rebatePerLot`, as money. */
   baseAmount: string;
@@ -339,8 +344,8 @@ export interface RebateLeg {
 
 export interface CommissionResult {
   accruals: Accrual[];
-  /** Absent unless the introducer's rung pays a rebate and it rounds above zero. */
-  rebate?: RebateLeg;
+  /** Each partner's share of the rebate pool (0209); empty when the type pays no rebate. */
+  rebates: RebateLeg[];
   /**
    * Why nothing (or less than everything) was accrued, when the chain was
    * non-empty.
@@ -374,8 +379,8 @@ export interface CommissionResult {
 /**
  * Split an earning event across the resolved chain.
  *
- * Each earner is paid THEIR OWN rung's share of the product's commission type,
- * and the introducer's rung decides the client's rebate. Every step is
+ * Each earner is paid THEIR OWN rung's share of the product's commission type —
+ * of its commission and, separately, of its rebate (0209). Every step is
  * decimal.js. Nothing here touches a JS number — `Number()` and `parseFloat`
  * are lint errors in this module.
  */
@@ -389,7 +394,7 @@ export function calculate(
    */
   levels: Map<number, LevelTerms>,
 ): CommissionResult {
-  if (chain.length === 0) return { accruals: [] };
+  if (chain.length === 0) return { accruals: [], rebates: [] };
 
   /*
    * ── A SHARE OF A DEPOSIT IS NOT A COMMISSION ──────────────────────────
@@ -402,6 +407,7 @@ export function calculate(
   if (event.source === 'deposit') {
     return {
       accruals: [],
+      rebates: [],
       skippedReason:
         'commission cannot be taken of a deposit — the money is the client’s, not the ' +
         'broker’s revenue. Commission is earned on closed trades.',
@@ -416,6 +422,7 @@ export function calculate(
   if (event.terms === undefined) {
     return {
       accruals: [],
+      rebates: [],
       unpriceable: [
         'the trading account is linked to no product, so nothing says what this trade pays ' +
           'partners — link the account to a product that carries a commission type',
@@ -425,30 +432,36 @@ export function calculate(
   if (event.terms === null) {
     return {
       accruals: [],
+      rebates: [],
       skippedReason: 'the product carries no commission type, so it pays no partner commission',
     };
   }
 
   const terms = event.terms;
   if (!terms.enabled) {
-    return { accruals: [], skippedReason: `commission type '${terms.name}' is disabled` };
+    return {
+      accruals: [],
+      rebates: [],
+      skippedReason: `commission type '${terms.name}' is disabled`,
+    };
   }
 
   /*
    * ── EXCLUDED SYMBOLS PAY NOBODY (0198) ───────────────────────────────────
    *
-   * Neither partner commission nor the client's rebate. An excluded symbol is
+   * Neither partner commission nor rebate. An excluded symbol is
    * a CONFIGURED zero, so the trade is done; a symbol whose folder the CRM
    * does not know yet is refused and retried, because guessing either way is
    * wrong money — see `symbolExclusion`.
    */
   const exclusion = symbolExclusion(terms, event.symbol, event.symbolPath);
   if (exclusion.excluded === 'unknown') {
-    return { accruals: [], unpriceable: [exclusion.reason] };
+    return { accruals: [], rebates: [], unpriceable: [exclusion.reason] };
   }
   if (exclusion.excluded) {
     return {
       accruals: [],
+      rebates: [],
       skippedReason: `${exclusion.reason} ('${terms.name}') — no commission or rebate is paid`,
     };
   }
@@ -462,6 +475,7 @@ export function calculate(
   if (!lots.greaterThan(0)) {
     return {
       accruals: [],
+      rebates: [],
       skippedReason: 'this trade reports no volume, and every term is per lot',
     };
   }
@@ -543,38 +557,41 @@ export function calculate(
   }
 
   /*
-   * ── THE CLIENT'S LEG ─────────────────────────────────────────────────────
+   * ── THE REBATE, SPLIT DOWN THE CHAIN LIKE COMMISSION (0209) ──────────────
    *
-   * Read from the INTRODUCER's rung — see `RebateLeg` for why it is that
-   * partner's and not anyone else's in the chain.
-   *
-   * A suspended introducer breaks the chain before this runs, so a client whose
-   * partner has been switched off stops receiving a rebate too. That is the
-   * conservative reading and it is deliberate: the rebate is a term of the
-   * relationship the operator has just suspended.
+   * The owner's rule (7 Oct 2026): the rebate is the PARTNERS' money, not the
+   * client's. Same walk, same order, same rule as the commission above — a
+   * sub-partner takes their rebate share (override ?? level's), level 1 takes
+   * the rest of 100% — so a main partner on their own clients takes the whole
+   * rebate. A disabled or unconfigured rung was already reported above.
    */
-  let rebate: RebateLeg | undefined;
-  const introducer = chain.find((entry) => entry.depth === 1);
-  const introducerLevel = introducer ? levels.get(introducer.level) : undefined;
+  const rebates: RebateLeg[] = [];
+  let rebatePaidBelow = toDecimal('0');
+  if (rebatePool.greaterThan(0)) {
+    for (const entry of chain) {
+      const level = levels.get(entry.level);
+      if (!level || !level.enabled) continue;
 
-  if (introducer && introducerLevel?.enabled) {
-    // 0197 — a sub-partner may have their own rebate for their clients.
-    const rebateShare = introducer.rebateShareOverride ?? introducerLevel.rebateShare;
-    const share = toDecimal(rebateShare);
+      const share =
+        entry.level <= 1
+          ? Decimal.max(toDecimal('100').minus(rebatePaidBelow), 0)
+          : toDecimal(entry.rebateShareOverride ?? level.rebateShare);
+      if (!share.greaterThan(0)) continue;
+      rebatePaidBelow = rebatePaidBelow.plus(share);
 
-    if (share.greaterThan(0) && rebatePool.greaterThan(0)) {
       const amount = money(rebatePool.times(share).dividedBy(100));
-      if (!toDecimal(amount).isZero()) {
-        rebate = {
-          ibUserId: introducer.ibUserId,
-          levelId: introducerLevel.id,
-          programId: introducer.programId,
-          commissionTypeId: terms.id,
-          rateValue: share.toFixed(4),
-          baseAmount: money(rebatePool),
-          amount,
-        };
-      }
+      if (toDecimal(amount).isZero()) continue;
+
+      rebates.push({
+        ibUserId: entry.ibUserId,
+        depth: entry.depth,
+        levelId: level.id,
+        programId: entry.programId,
+        commissionTypeId: terms.id,
+        rateValue: share.toFixed(4),
+        baseAmount: money(rebatePool),
+        amount,
+      });
     }
   }
 
@@ -591,7 +608,7 @@ export function calculate(
 
   return {
     accruals,
-    rebate,
+    rebates,
     skippedReason: skipped.length > 0 ? skipped.join('; ') : undefined,
   };
 }
@@ -613,9 +630,9 @@ export function calculate(
  * FULL once the rates are corrected. Nothing is scaled, and nobody is quietly
  * short-changed.
  *
- * The client's rebate is counted with the rest: it leaves the broker by the
- * same door, and a unit error on `rebatePerLot` is exactly as expensive as one
- * on `commissionPerLot`.
+ * The rebate legs are counted with the rest: they leave the broker by the same
+ * door, and a unit error on `rebatePerLot` is exactly as expensive as one on
+ * `commissionPerLot`.
  *
  * Returns the reason rather than throwing, so the caller decides whether that
  * is a refusal or an alert.
@@ -623,7 +640,7 @@ export function calculate(
 export function checkPlausible(
   event: RevenueEvent,
   accruals: readonly Accrual[],
-  rebate?: RebateLeg,
+  rebates: readonly RebateLeg[] = [],
   /**
    * `trading_settings.ib_max_payout_per_lot` — the most ONE TRADE may pay out
    * per standard lot, across every leg. Defaults to 50, which is far above
@@ -631,7 +648,7 @@ export function checkPlausible(
    */
   maxPayoutPerLot: string = '50',
 ): { ok: true } | { ok: false; reason: string } {
-  const legs = [...accruals, ...(rebate ? [rebate] : [])];
+  const legs = [...accruals, ...rebates];
   if (legs.length === 0) return { ok: true };
 
   const lots = event.lots === undefined ? new Decimal(0) : toDecimal(event.lots);

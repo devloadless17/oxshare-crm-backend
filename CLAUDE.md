@@ -355,7 +355,19 @@ A change applies to the next trade only. Accruals record the rate AND the rung t
 (`ib_accruals.rate_value`, `ib_accruals.level_id`), so nothing already credited is restated — which
 is why this is an ordinary update rather than an operation that has to reason about history.
 
-### The client's rebate is an accrual row, not a direct credit
+### The rebate is PARTNER money since 0209 (owner, 7 Oct 2026)
+
+The client gets **no** rebate. A commission type's rebate pool (`lots × rebate_per_lot`) is split
+down the chain exactly like commission — a sub-partner takes `rebate_share_override ?? level 2's
+rebate_share`, level 1 the rest — one `kind = 'rebate'` row per earning partner, credited to the
+partner's **commission wallet** in its own batch (ledger `entry_type = 'rebate'`). Level 1's own
+`rebate_share` decides nothing, as with commission. `ib_accruals.paid_to_client` is `true` ONLY on
+legacy rebates already paid to a client before 0209 (confirmed/reversed); those keep confirming and
+reversing against the client's main wallet, and `accrualBeneficiary(Sql)` scopes them by the client.
+Partner earnings (`earningsByPartner`) count every row with `paid_to_client = false`. The section
+below is HISTORICAL.
+
+### (historical) The client's rebate is an accrual row, not a direct credit
 
 `ib_accruals.kind` is `commission` or `rebate`. A rebate row is produced by the same trade, matures
 through the same settlement window, and is made idempotent by the same key — which is why it is a

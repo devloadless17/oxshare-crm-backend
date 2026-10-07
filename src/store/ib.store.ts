@@ -1078,8 +1078,14 @@ export class IbStore {
            * which is the worst shape for it: an operator reconciling the
            * partner's commission wallet against the number on screen finds a
            * gap and no explanation for it.
+           *
+           * Since 0209 (7 Oct 2026) a rebate is PARTNER money, paid into that
+           * same commission wallet — so the rule is "what was paid to the
+           * partner": every row not paid to a client. That counts commission
+           * and new rebates, and still leaves out the legacy client rebates
+           * the paragraph above is about.
            */
-          eq(ibAccruals.kind, 'commission'),
+          eq(ibAccruals.paidToClient, false),
         ),
       )
       .groupBy(ibAccruals.ibUserId, ibAccruals.currency, ibAccruals.status)

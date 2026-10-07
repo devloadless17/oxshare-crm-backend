@@ -497,12 +497,12 @@ export class CommissionService implements CommissionAccrualPort {
       );
     }
 
-    if (result.accruals.length === 0 && !result.rebate) return 0;
+    if (result.accruals.length === 0 && result.rebates.length === 0) return 0;
 
     const plausible = checkPlausible(
       revenue,
       result.accruals,
-      result.rebate,
+      result.rebates,
       await this.maxPayoutPerLot(),
     );
     if (!plausible.ok) {
@@ -529,16 +529,10 @@ export class CommissionService implements CommissionAccrualPort {
     }
 
     /*
-     * The client's leg is a ROW like any other, and that is the whole reason it
-     * is one: it matures through the same settlement window, is confirmed by the
-     * same loop, and is made idempotent by the same unique key. A rebate paid
-     * straight to the wallet here would be the one payout on this system that
-     * skips the window a reversal needs.
-     *
-     * `depth: 1` always, because a rebate belongs to the DIRECT relationship —
-     * the client's own introducer — whatever the chain above it looks like.
+     * Each rebate leg is a ROW like any commission leg: it matures through the
+     * same settlement window, is confirmed by the same loop, and is made
+     * idempotent by the same unique key (source, earner, kind).
      */
-    const introducer = chain.find((entry) => entry.depth === 1);
     const rows = [
       ...result.accruals.map((accrual) => ({
         kind: 'commission' as const,
@@ -551,21 +545,22 @@ export class CommissionService implements CommissionAccrualPort {
         baseAmount: accrual.baseAmount,
         amount: accrual.amount,
       })),
-      ...(result.rebate && introducer
-        ? [
-            {
-              kind: 'rebate' as const,
-              ibUserId: result.rebate.ibUserId,
-              depth: 1,
-              programId: result.rebate.programId ?? null,
-              levelId: result.rebate.levelId ?? null,
-              commissionTypeId: result.rebate.commissionTypeId ?? null,
-              rateValue: result.rebate.rateValue,
-              baseAmount: result.rebate.baseAmount,
-              amount: result.rebate.amount,
-            },
-          ]
-        : []),
+      /*
+       * The rebate, one leg per PARTNER (0209): partner money, split down the
+       * chain like commission and paid to their commission wallet. The client
+       * receives none of it (owner, 7 Oct 2026).
+       */
+      ...result.rebates.map((rebate) => ({
+        kind: 'rebate' as const,
+        ibUserId: rebate.ibUserId,
+        depth: rebate.depth,
+        programId: rebate.programId ?? null,
+        levelId: rebate.levelId ?? null,
+        commissionTypeId: rebate.commissionTypeId ?? null,
+        rateValue: rebate.rateValue,
+        baseAmount: rebate.baseAmount,
+        amount: rebate.amount,
+      })),
     ];
 
     const inserted = await this.db
@@ -811,10 +806,11 @@ export class CommissionService implements CommissionAccrualPort {
      * testing, and a client's wallet history reduced to a column of two-dollar
      * credits. The money was right and the screen was useless.
      *
-     * The GROUPING KEY is the beneficiary plus the wallet kind plus the
-     * currency, and every part earns its place: a partner who is also somebody's
-     * client receives commission into their commission wallet and a rebate into
-     * their main one, and those must never merge into a single line.
+     * The GROUPING KEY is the beneficiary, the wallet kind, the accrual kind
+     * and the currency. Since 0209 a partner's commission AND rebate both go
+     * into their commission wallet, so the kind keeps them two lines (and two
+     * ledger entry types); a legacy client rebate (`paidToClient`) still goes
+     * to that client's main wallet.
      */
     const groups = new Map<
       string,
@@ -832,12 +828,13 @@ export class CommissionService implements CommissionAccrualPort {
       /* Decides the beneficiary, the wallet, the ledger type and who is told. */
       const rebate = accrual.kind === 'rebate';
       /*
-       * `ibUserId` on a rebate row is the partner whose RUNG produced it —
-       * attribution, not entitlement. Reading it as the beneficiary would pay
-       * the introducer their own client's rebate, and it would balance
-       * perfectly while doing it.
+       * WHO IS PAID (0209): since 7 Oct 2026 a rebate is the PARTNER's, like
+       * commission — `ibUserId` is the earner and both kinds go to their
+       * commission wallet. Only a rebate written before that (`paidToClient`)
+       * was the trading client's, and still goes to their main wallet.
        */
-      const userId = rebate ? accrual.clientUserId : accrual.ibUserId;
+      const toClient = accrual.paidToClient;
+      const userId = toClient ? accrual.clientUserId : accrual.ibUserId;
       if (!userId) {
         failed += 1;
         await this.markConfirmFailed([accrual.id]);
@@ -845,8 +842,10 @@ export class CommissionService implements CommissionAccrualPort {
         continue;
       }
 
-      const walletKind = rebate ? ('main' as const) : ('commission' as const);
-      const key = `${userId}:${walletKind}:${accrual.currency}`;
+      const walletKind = toClient ? ('main' as const) : ('commission' as const);
+      // The KIND is in the key: commission and rebate now share a wallet, and
+      // each batch (and its ledger entry type) must stay one kind.
+      const key = `${userId}:${walletKind}:${rebate ? 'rebate' : 'commission'}:${accrual.currency}`;
       const existing = groups.get(key);
       if (existing) {
         existing.total = existing.total.plus(accrual.amount);
@@ -934,11 +933,9 @@ export class CommissionService implements CommissionAccrualPort {
               userId: group.userId,
               currency: group.currency,
               /*
-               * The COMMISSION wallet for earnings, the MAIN wallet for a
-               * rebate. A rebate is the client's own money coming back rather
-               * than an earning, and putting it in a commission wallet would
-               * both mislabel it and strand it behind a transfer the client has
-               * no reason to make.
+               * The partner's COMMISSION wallet for commission and rebate alike
+               * (0209); the client's MAIN wallet only for a legacy rebate that
+               * was promised to them before 7 Oct 2026 (`paidToClient`).
                */
               kind: group.walletKind,
               amount: money(total),
@@ -1236,8 +1233,9 @@ export class CommissionService implements CommissionAccrualPort {
        * client's wallet on the platform.
        *
        * The right column is the one the debit itself uses, twenty lines down:
-       * the client on a rebate, the partner on a commission. Asked here, once,
-       * from the same expression — so the check cannot drift from the write.
+       * the partner, except on a legacy rebate paid to the client
+       * (`paidToClient`, 0209). Asked here, once, from the same expression —
+       * so the check cannot drift from the write.
        *
        * ⚠️ AFTER the row is read, which departs from `assertVisible`'s own "call
        * it FIRST" instruction, and has to: who is debited is a property of the
@@ -1251,7 +1249,7 @@ export class CommissionService implements CommissionAccrualPort {
        * exists to close.
        */
       await this.visibility.assertVisible(
-        accrual.kind === 'rebate' ? accrual.clientUserId : accrual.ibUserId,
+        accrual.paidToClient ? accrual.clientUserId : accrual.ibUserId,
         scope,
         () => new NotFoundError('Accrual not found.'),
       );
@@ -1272,18 +1270,18 @@ export class CommissionService implements CommissionAccrualPort {
       if (paid) {
         /*
          * The exact mirror of the confirm credit — same beneficiary, same
-         * wallet, same currency, negated. Read `confirmPending`'s note on why
-         * `ibUserId` is not the beneficiary of a rebate: getting that wrong
-         * here would debit the introducer for their client's rebate, which
-         * balances perfectly and takes money from the wrong person.
+         * wallet, same currency, negated: the partner's commission wallet, or
+         * the client's main wallet for a legacy rebate (`paidToClient`, 0209).
+         * Debiting anyone else would balance perfectly and take money from
+         * the wrong person.
          */
-        const rebate = accrual.kind === 'rebate';
+        const toClient = accrual.paidToClient;
 
         await this.wallets.post(
           {
-            userId: rebate ? accrual.clientUserId : accrual.ibUserId,
+            userId: toClient ? accrual.clientUserId : accrual.ibUserId,
             currency: accrual.currency,
-            kind: rebate ? 'main' : 'commission',
+            kind: toClient ? 'main' : 'commission',
             amount: money(toDecimal(accrual.amount).negated()),
             /*
              * `adjustment`, not `commission`. The entry types are what every
