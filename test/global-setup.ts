@@ -1,4 +1,7 @@
 import { PostgreSqlContainer, StartedPostgreSqlContainer } from '@testcontainers/postgresql';
+import { drizzle } from 'drizzle-orm/node-postgres';
+import { migrate } from 'drizzle-orm/node-postgres/migrator';
+import { Pool } from 'pg';
 
 /**
  * ONE Postgres container for the whole run.
@@ -55,13 +58,47 @@ export async function setup(): Promise<void> {
   const provided = process.env['TEST_PG_URI'];
   if (provided) {
     process.env['TEST_PG_URI'] = ipv4(provided);
-    return;
+  } else {
+    container = await new PostgreSqlContainer('postgres:16-alpine').start();
+    // Suites reach the container through this, rather than through an import —
+    // vitest runs globalSetup in a separate module graph from the test files.
+    process.env['TEST_PG_URI'] = ipv4(container.getConnectionUri());
   }
+  await buildTemplate(process.env['TEST_PG_URI']);
+}
 
-  container = await new PostgreSqlContainer('postgres:16-alpine').start();
-  // Suites reach the container through this, rather than through an import —
-  // vitest runs globalSetup in a separate module graph from the test files.
-  process.env['TEST_PG_URI'] = ipv4(container.getConnectionUri());
+/**
+ * The committed migrations, applied ONCE per run, to a template every suite copies.
+ *
+ * Each suite used to migrate its own empty database: 200+ migrations, about five
+ * seconds, ninety-odd times a run, which was a quarter of the whole suite's time.
+ * `CREATE DATABASE … TEMPLATE` copies the result in half a second, triggers,
+ * grants and sequences included. The migrations still run on a FRESH database
+ * every run (here), so "the committed DDL applies cleanly" is proved exactly as
+ * before; nothing per suite changes but the copy. A suite that migrates from its
+ * own folder (the migration specs) still migrates itself.
+ *
+ * Named per run, so two runs against one provided server cannot collide.
+ */
+const templateName = `money_template_${process.pid}_${Date.now()}`;
+
+async function buildTemplate(uri: string): Promise<void> {
+  const admin = new Pool({ connectionString: uri });
+  try {
+    await admin.query(`CREATE DATABASE ${templateName}`);
+  } finally {
+    await admin.end();
+  }
+  const url = new URL(uri);
+  url.pathname = `/${templateName}`;
+  const pool = new Pool({ connectionString: url.toString() });
+  try {
+    await migrate(drizzle(pool), { migrationsFolder: './src/database/migrations' });
+  } finally {
+    // A template with a connection open cannot be copied.
+    await pool.end();
+  }
+  process.env['TEST_PG_TEMPLATE'] = templateName;
 }
 
 /**
@@ -87,5 +124,19 @@ function ipv4(uri: string): string {
 }
 
 export async function teardown(): Promise<void> {
-  await container?.stop();
+  if (container) {
+    await container.stop();
+    return;
+  }
+  // A provided server outlives the run, so its template is dropped rather than left behind.
+  const uri = process.env['TEST_PG_URI'];
+  if (!uri) return;
+  const admin = new Pool({ connectionString: uri });
+  try {
+    await admin.query(`DROP DATABASE IF EXISTS ${templateName} WITH (FORCE)`);
+  } catch {
+    // Teardown must not fail a run that passed.
+  } finally {
+    await admin.end();
+  }
 }
