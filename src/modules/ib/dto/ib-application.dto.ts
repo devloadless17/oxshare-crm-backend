@@ -837,6 +837,21 @@ export class IbPartnerDetailDto {
       'absent from `referredClientCount`. Zero for an unrestricted reader. A count, no identity.',
   })
   referredClientsOutsideScope: number;
+  @NotClientField('a count on the RECORD, carrying no client attribute')
+  @ApiProperty({
+    type: 'integer',
+    description:
+      'IB total, first half: sub-partners directly under this partner, in the reader’s territory.',
+  })
+  subPartnerCount: number;
+  @NotClientField('a count on the RECORD, carrying no client attribute')
+  @ApiProperty({
+    type: 'integer',
+    description:
+      'IB total, second half: clients this partner introduced who are not partners themselves, ' +
+      'in the reader’s territory — so it adds to `subPartnerCount` without double counting.',
+  })
+  clientCount: number;
   @NotClientField(
     'not a client-owned attribute \u2014 earnings describes the record rather than the person',
   )
@@ -956,6 +971,21 @@ export class IbPartnerRowDto {
     description: 'Commission only (a rebate is the client’s money), one entry per currency.',
   })
   earnings: IbPartnerEarningsDto[];
+  @NotClientField('a count on the RECORD, carrying no client attribute')
+  @ApiProperty({
+    type: 'integer',
+    description:
+      'IB total, first half: sub-partners directly under this partner, in the reader’s territory.',
+  })
+  subPartnerCount: number;
+  @NotClientField('a count on the RECORD, carrying no client attribute')
+  @ApiProperty({
+    type: 'integer',
+    description:
+      'IB total, second half: clients this partner introduced who are not partners themselves, ' +
+      'in the reader’s territory — so it adds to `subPartnerCount` without double counting.',
+  })
+  clientCount: number;
 }
 
 /** `GET /admin/ib/partners` — the partner directory. */

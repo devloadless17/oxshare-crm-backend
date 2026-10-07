@@ -1013,6 +1013,57 @@ export class IbStore {
   }
 
   /**
+   * A partner's IB TOTAL, as its two halves (owner, 7 Oct 2026): how many
+   * SUB-PARTNERS stand directly under them and how many CLIENTS they
+   * introduced. One grouped query per half for the whole page.
+   *
+   * CLIENTS LEAVE OUT PARTNERS. A sub-partner is normally a user the parent
+   * referred too (`referred_by_ib_user_id`), so counting every referred user
+   * would count each sub-partner twice in the total. `referredClientCount` on
+   * the detail keeps its wider meaning — it is the network screen's number.
+   *
+   * SCOPED to the reader's territory on the counted person, like every other
+   * count on these routes; what sits outside is not added in.
+   */
+  async ibTotalsByPartner(ibUserIds: number[], scope: ClientScope) {
+    const totals = new Map<number, { subPartnerCount: number; clientCount: number }>();
+    for (const id of ibUserIds) totals.set(id, { subPartnerCount: 0, clientCount: 0 });
+    if (ibUserIds.length === 0) return totals;
+    const visible = clientScopePredicate(scope, users.id);
+
+    const [subs, clients] = await Promise.all([
+      this.db
+        .select({ parent: ibAccounts.parentIbUserId, value: count() })
+        .from(ibAccounts)
+        .innerJoin(users, eq(users.id, ibAccounts.userId))
+        .where(and(inArray(ibAccounts.parentIbUserId, ibUserIds), visible))
+        .groupBy(ibAccounts.parentIbUserId),
+      this.db
+        .select({ parent: users.referredByIbUserId, value: count() })
+        .from(users)
+        .where(
+          and(
+            inArray(users.referredByIbUserId, ibUserIds),
+            // Hand-qualified: a bare column inside the subquery would bind to
+            // the inner table.
+            sql`NOT EXISTS (SELECT 1 FROM ib_accounts AS p WHERE p.user_id = "users"."id")`,
+            visible,
+          ),
+        )
+        .groupBy(users.referredByIbUserId),
+    ]);
+    for (const row of subs) {
+      const entry = row.parent === null ? undefined : totals.get(row.parent);
+      if (entry) entry.subPartnerCount = row.value;
+    }
+    for (const row of clients) {
+      const entry = row.parent === null ? undefined : totals.get(row.parent);
+      if (entry) entry.clientCount = row.value;
+    }
+    return totals;
+  }
+
+  /**
    * Lifetime and pending earnings per partner, for the partner LIST.
    *
    * One grouped query for the whole page rather than one per row: a list of
