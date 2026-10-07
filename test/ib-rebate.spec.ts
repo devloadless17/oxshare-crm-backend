@@ -1,29 +1,38 @@
 import { IbStore } from '../src/store/ib.store';
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { emailStubAs } from './email-stub';
 import { sql } from 'drizzle-orm';
 import { CommissionService } from '../src/modules/ib/commission.service';
 import { WalletService } from '../src/modules/wallet/wallet.service';
 import { AppSettingsStore } from '../src/store/app-settings.store';
+import { UNRESTRICTED } from '../src/common/security/client-scope';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
-import { seedProductTerms, setLadderShares, type RungShares } from './support/commission-terms';
+import { seedProductTerms, setLadderShares } from './support/commission-terms';
 import type { CommissionTypeTerms } from '../src/modules/ib/commission';
 
 /**
- * The CLIENT's leg — FR-IB-05's rebate — against real Postgres.
+ * The REBATE leg against real Postgres — PARTNER money since 0209.
+ *
+ * ## The rule (owner, 7 Oct 2026)
+ *
+ * A commission type's `rebate_per_lot` × lots is a POOL, and it is split down
+ * the partner chain exactly like commission: a sub-partner (level 2) takes
+ * their own rebate share (override ?? their rung's), the level 1 partner takes
+ * the rest of 100%. Each earner gets one `rebate` row and is paid it into their
+ * COMMISSION wallet. The trading client gets nothing.
+ *
+ * Until 0209 the rebate went back to the trading client, into their MAIN
+ * wallet. Rebates already paid that way carry `paid_to_client = true` and are
+ * still reversed against the client — the last describe pins that.
  *
  * ## Why this suite exists
  *
- * `rebate` sat in `ledgerEntryTypeEnum` for months with nothing writing one.
- * Every layer was individually fine: the enum had the value, the wallet service
- * accepted it, and the commission engine paid partners correctly. What did not
- * exist was the leg itself, and no unit test on either half could have shown
- * that — which is exactly the shape of the deal-feed gap that preceded it.
- *
- * So the assertions here are about the JOIN: that a hybrid programme produces
- * two rows from one trade, that confirmation pays them to two DIFFERENT people,
- * that the client's money lands in their MAIN wallet rather than a commission
- * one, and that re-running pays neither of them twice.
+ * `rebate` sat in `ledgerEntryTypeEnum` for months with nothing writing one,
+ * and every layer was individually fine. So the assertions here are about the
+ * JOIN: that one trade produces a commission row AND a rebate row per earning
+ * partner, that confirmation pays both kinds to the PARTNER's commission wallet
+ * in separate batches, that the client's wallet receives nothing, and that
+ * re-running pays nobody twice.
  *
  * Every one of these has a wrong version that balances perfectly and pays the
  * wrong party.
@@ -31,9 +40,16 @@ import type { CommissionTypeTerms } from '../src/modules/ib/commission';
 
 let ctx: MoneyTestContext;
 let commissions: CommissionService;
+let notify: Mock<(input: unknown) => Promise<void>>;
 
-let partnerId: number;
+/** The level 1 partner, who deals with the broker directly. */
+let mainId: number;
+/** The level 2 partner `mainId` recruited. */
+let subId: number;
+/** A client the SUB-partner introduced — the trade reaches both partners. */
 let clientId: number;
+/** A client the MAIN partner introduced themselves. */
+let directClientId: number;
 
 const POSITION_ID = '11111111-1111-4111-8111-111111111111';
 
@@ -47,51 +63,50 @@ async function makeUser(email: string): Promise<number> {
 }
 
 /**
- * The product's rate card: $10 a lot to the partners and $100 a lot back to
- * the client (0140). Every trade here is ONE LOT. The partner is a level 1
- * partner introducing their own client, so since 0197 they take the WHOLE
- * commission pool — $10 — whatever level 1's share on the ladder says. The
- * rebate is still a share of its own pool: a 5% rebate share returns $5.
+ * The product's rate card: $10 a lot of commission and $10 a lot of rebate
+ * (0140). Every trade here is ONE LOT, so each puts a $10 commission pool and a
+ * $10 rebate pool on the table — $20 in all, under the shipped per-lot ceiling.
  */
 let terms: CommissionTypeTerms;
 
-/**
- * Set the ladder: one commission share per rung, level 1 first, and the
- * rebate share on level 1 — the INTRODUCER's rung, the partner the client is
- * actually in a relationship with. Every rung is reset first. (Level 1's
- * commission share is ignored by the engine since 0197.)
- */
-async function setTerms(ladder: { tiers?: string[]; rebateRate: string }): Promise<void> {
-  const shares: RungShares[] = (ladder.tiers ?? []).map((commission) => ({ commission }));
-  if (shares.length === 0) shares.push({ commission: '0' });
-  shares[0] = { ...shares[0], rebate: ladder.rebateRate };
-  await setLadderShares(ctx.db, shares);
-}
-
-/** One closed trade on which the broker kept 100. */
-async function accrue(sourceId = POSITION_ID): Promise<number> {
+/** One closed one-lot trade. */
+async function accrue(
+  client = clientId,
+  sourceId = POSITION_ID,
+  rateCard: CommissionTypeTerms = terms,
+): Promise<number> {
   return commissions.accrueForDeal({
     dealRowId: sourceId,
     ticket: '90210',
-    clientUserId: clientId,
+    clientUserId: client,
     lots: '1.00000000',
     currency: 'USD',
-    terms,
+    terms: rateCard,
   });
 }
 
 async function accrualRows() {
   const { rows } = await ctx.db.execute<{
+    id: string;
     kind: string;
     ib_user_id: number;
     client_user_id: number;
+    depth: number;
     amount: string;
     status: string;
+    paid_to_client: boolean;
   }>(sql`
-    SELECT kind, ib_user_id, client_user_id, amount, status
-      FROM ib_accruals ORDER BY kind
+    SELECT id, kind, ib_user_id, client_user_id, depth, amount, status, paid_to_client
+      FROM ib_accruals ORDER BY kind, depth
   `);
   return rows;
+}
+
+/** Rows as `kind:who@depth=amount` — readable in a failure message. */
+async function legs(): Promise<string[]> {
+  const name = (id: number) =>
+    id === mainId ? 'main' : id === subId ? 'sub' : id === clientId ? 'client' : String(id);
+  return (await accrualRows()).map((r) => `${r.kind}:${name(r.ib_user_id)}@${r.depth}=${r.amount}`);
 }
 
 async function walletsOf(userId: number) {
@@ -101,47 +116,58 @@ async function walletsOf(userId: number) {
   return rows;
 }
 
+/** Past the 60s maturation window — see the note in the setup below. */
+async function matureAndConfirm() {
+  await ctx.db.execute(sql`UPDATE ib_accruals SET created_at = now() - interval '10 minutes'`);
+  return commissions.confirmPending();
+}
+
 beforeAll(async () => {
   ctx = await startMoneyTestDb();
 
-  partnerId = await makeUser('rebate-partner@oxshare-e2e.test');
+  mainId = await makeUser('rebate-main@oxshare-e2e.test');
+  subId = await makeUser('rebate-sub@oxshare-e2e.test');
   clientId = await makeUser('rebate-client@oxshare-e2e.test');
+  directClientId = await makeUser('rebate-direct-client@oxshare-e2e.test');
 
   await ctx.db.execute(sql`
     INSERT INTO ib_accounts (user_id, referral_code, active, level)
-      VALUES (${partnerId}, 'REBATE01', true, 1)
+      VALUES (${mainId}, 'REBATE01', true, 1)
+  `);
+  await ctx.db.execute(sql`
+    INSERT INTO ib_accounts (user_id, parent_ib_user_id, referral_code, active, level)
+      VALUES (${subId}, ${mainId}, 'REBATE02', true, 2)
   `);
   await ctx.db.execute(
-    sql`UPDATE users SET referred_by_ib_user_id = ${partnerId} WHERE id = ${clientId}`,
+    sql`UPDATE users SET referred_by_ib_user_id = ${subId} WHERE id = ${clientId}`,
+  );
+  await ctx.db.execute(
+    sql`UPDATE users SET referred_by_ib_user_id = ${mainId} WHERE id = ${directClientId}`,
   );
 
-  /*
-   * $10 of commission, not $100: a level 1 partner now takes the whole pool on
-   * their own client, and $100 + the rebate would breach the shipped $50-a-lot
-   * ceiling and be refused.
-   */
   const seeded = await seedProductTerms(ctx.db, {
     name: 'Rebate terms',
     commissionPerLot: '10',
-    rebatePerLot: '100',
+    rebatePerLot: '10',
   });
   terms = {
     id: seeded.typeId,
     name: 'Rebate terms',
     enabled: true,
     commissionPerLot: '10.00000000',
-    rebatePerLot: '100.00000000',
+    rebatePerLot: '10.00000000',
   };
 
+  notify = vi.fn<(input: unknown) => Promise<void>>().mockResolvedValue(undefined);
   commissions = new CommissionService(
     ctx.db,
     new WalletService(ctx.db),
     {
-      notify: vi.fn().mockResolvedValue(undefined),
+      notify,
       notifyAdmins: vi.fn().mockResolvedValue(undefined),
     },
     // The payout ceiling (0106) — the real store against the real row, so
-    // this reads the shipped default of 100 rather than a stub's opinion.
+    // this reads the shipped default rather than a stub's opinion.
     new AppSettingsStore(ctx.db),
     /* The per-run payout summary email (0114). Stubbed: this suite is
        about the money, and the send is fire-and-forget by contract. */
@@ -159,6 +185,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  notify.mockClear();
   /*
    * ACCRUALS FIRST. `ib_accruals.ledger_entry_id` references the entry that
    * paid it, so clearing the ledger first violates that key the moment a
@@ -166,11 +193,18 @@ beforeEach(async () => {
    * confirming one fail in its setup rather than its assertion.
    */
   await ctx.db.execute(sql`DELETE FROM ib_accruals`);
-  /* The partner back on level 1 on the ladder's terms — one case moves them. */
+  /* The two partners back in their tree on the ladder's terms — cases move them. */
   await ctx.db.execute(sql`
     UPDATE ib_accounts
-       SET level = 1, commission_share_override = NULL, rebate_share_override = NULL
-     WHERE user_id = ${partnerId}
+       SET level = 1, parent_ib_user_id = NULL,
+           commission_share_override = NULL, rebate_share_override = NULL
+     WHERE user_id = ${mainId}
+  `);
+  await ctx.db.execute(sql`
+    UPDATE ib_accounts
+       SET level = 2, parent_ib_user_id = ${mainId},
+           commission_share_override = NULL, rebate_share_override = NULL
+     WHERE user_id = ${subId}
   `);
   /* Legacy `percent` rows — see the note in ib-end-to-end.spec.ts. The form
      cannot create these since 0117; the engine must still price them. */
@@ -178,6 +212,15 @@ beforeEach(async () => {
     sql`ALTER TABLE ib_levels DROP CONSTRAINT IF EXISTS ib_levels_commission_shape`,
   );
   await ctx.db.execute(sql`ALTER TABLE ib_levels DROP CONSTRAINT IF EXISTS ib_levels_rebate_shape`);
+  /*
+   * The ladder: rung 2 takes 30% of the commission and 40% of the rebate.
+   * Level 1's own shares (30% and 50%) are set to figures that would show in an
+   * amount if they decided anything — they do not: level 1 takes the rest.
+   */
+  await setLadderShares(ctx.db, [
+    { commission: '30', rebate: '50' },
+    { commission: '30', rebate: '40' },
+  ]);
   /*
    * BATCHES between the accruals and the wallets (0116). A batch is
    * referenced BY an accrual and references a wallet, so it sits exactly
@@ -189,9 +232,6 @@ beforeEach(async () => {
     sql`TRUNCATE ledger_entries, ib_accruals CASCADE` /* not DELETE: the ledger is append-only by trigger (§6.4). TRUNCATE resets a fixture table without firing row triggers, and no production path truncates. */,
   );
   await ctx.db.execute(sql`DELETE FROM wallets`);
-  /* The window is what stands between "earned" and "spendable"; these cases are
-     about WHO is paid, so it is set to zero and confirmation runs immediately.
-     The window itself is pinned in `ib-settlement.spec.ts`. */
   /*
    * The maturation window cannot be switched OFF any more (0113): it is a
    * setting with a 60-second floor, not `IB_COMMISSION_HOLD_HOURS=0`.
@@ -208,34 +248,60 @@ beforeEach(async () => {
     `);
 });
 
-describe('a hybrid programme produces two legs from one trade', () => {
-  it('writes a commission row and a rebate row', async () => {
-    await setTerms({ tiers: ['30'], rebateRate: '5' });
-
+describe('the rebate pool is split down the partner chain like commission', () => {
+  it('writes a commission row and a rebate row for each earning partner', async () => {
     const created = await accrue();
 
-    expect(created).toBe(2);
-    /* The whole $10 pool to the level 1 partner — not level 1's 30% — and 5% of $100 back. */
-    const rows = await accrualRows();
-    expect(rows.map((r) => [r.kind, r.amount])).toEqual([
-      ['commission', '10.00000000'],
-      ['rebate', '5.00000000'],
+    expect(created).toBe(4);
+    /*
+     * The sub-partner introduced the client (depth 1) and takes rung 2's 30% of
+     * the $10 commission and 40% of the $10 rebate; the main partner, one hop
+     * up, takes the rest of each.
+     */
+    expect(await legs()).toEqual([
+      'commission:sub@1=3.00000000',
+      'commission:main@2=7.00000000',
+      'rebate:sub@1=4.00000000',
+      'rebate:main@2=6.00000000',
+    ]);
+  });
+
+  /* Nobody beneath them on the trade, so the main partner takes BOTH whole pools. */
+  it('pays a main partner the whole rebate on their own client', async () => {
+    expect(await accrue(directClientId)).toBe(2);
+
+    expect(await legs()).toEqual(['commission:main@1=10.00000000', 'rebate:main@1=10.00000000']);
+  });
+
+  /* `rebate_share_override` beats the rung's share, and level 1's rest follows it. */
+  it('splits by the sub-partner’s own rebate share when one is set', async () => {
+    await ctx.db.execute(
+      sql`UPDATE ib_accounts SET rebate_share_override = '25' WHERE user_id = ${subId}`,
+    );
+
+    await accrue();
+
+    expect((await legs()).filter((leg) => leg.startsWith('rebate:'))).toEqual([
+      'rebate:sub@1=2.50000000',
+      'rebate:main@2=7.50000000',
     ]);
   });
 
   /*
-   * THE attribution rule, at the row level. `ib_user_id` on a rebate names the
-   * partner whose programme produced it; `client_user_id` names who is owed it.
-   * Reading the first as the beneficiary pays the introducer their own client's
-   * rebate — which balances, and is wrong about whose money it is.
+   * THE attribution rule, at the row level. On a rebate written since 0209
+   * `ib_user_id` is the partner who EARNS it and is paid it; `client_user_id`
+   * only names whose trade it was. `paid_to_client` is false on every new row —
+   * reading the client as the beneficiary is the pre-0209 rule.
    */
-  it('attributes the rebate to the partner and owes it to the client', async () => {
-    await setTerms({ tiers: ['30'], rebateRate: '5' });
+  it('names the partner as the earner and never marks a new rebate as the client’s', async () => {
     await accrue();
 
-    const rebate = (await accrualRows()).find((r) => r.kind === 'rebate');
-    expect(rebate?.ib_user_id).toBe(partnerId);
-    expect(rebate?.client_user_id).toBe(clientId);
+    const rebates = (await accrualRows()).filter((r) => r.kind === 'rebate');
+    expect(rebates.map((r) => [r.ib_user_id, r.depth, r.paid_to_client])).toEqual([
+      [subId, 1, false],
+      [mainId, 2, false],
+    ]);
+    expect(rebates.every((r) => r.client_user_id === clientId)).toBe(true);
   });
 
   /*
@@ -244,117 +310,182 @@ describe('a hybrid programme produces two legs from one trade', () => {
    * failure without it is silent: the ON CONFLICT drops the second row, and a
    * configured rebate simply never pays.
    */
-  it('does not let the two rows collide on re-delivery', async () => {
-    await setTerms({ tiers: ['30'], rebateRate: '5' });
-
+  it('does not let the rows collide, and writes none twice on re-delivery', async () => {
     await accrue();
     const second = await accrue();
 
     expect(second).toBe(0);
-    expect(await accrualRows()).toHaveLength(2);
+    expect(await accrualRows()).toHaveLength(4);
   });
 });
 
-describe('confirmation pays each leg to the right person', () => {
-  it('credits the partner’s commission wallet and the client’s main wallet', async () => {
-    await setTerms({ tiers: ['30'], rebateRate: '5' });
+describe('confirmation pays both kinds to the partners’ commission wallets', () => {
+  it('credits each partner’s commission wallet and nothing to the client', async () => {
     await accrue();
 
-    /* Past the 60s window — see the note in the setup above. */
-    await ctx.db.execute(sql`UPDATE ib_accruals SET created_at = now() - interval '10 minutes'`);
-    const result = await commissions.confirmPending();
-    expect(result.confirmed).toBe(2);
+    const result = await matureAndConfirm();
+    expect(result.confirmed).toBe(4);
 
-    expect(await walletsOf(partnerId)).toEqual([
-      { kind: 'commission', currency: 'USD', balance: '10.00000000' },
+    /* Commission + rebate: 7 + 6 for the main partner, 3 + 4 for the sub-partner. */
+    expect(await walletsOf(mainId)).toEqual([
+      { kind: 'commission', currency: 'USD', balance: '13.00000000' },
     ]);
-    /*
-     * MAIN, not commission. A rebate is the client's own money coming back, not
-     * an earning — putting it in a commission wallet would both mislabel it and
-     * strand it behind a transfer the client has no reason to make.
-     */
-    expect(await walletsOf(clientId)).toEqual([
-      { kind: 'main', currency: 'USD', balance: '5.00000000' },
+    expect(await walletsOf(subId)).toEqual([
+      { kind: 'commission', currency: 'USD', balance: '7.00000000' },
     ]);
+    /* No main wallet opened, no credit: the client gets no rebate since 0209. */
+    expect(await walletsOf(clientId)).toEqual([]);
   });
 
-  it('records the client’s leg as a rebate in the ledger', async () => {
-    await setTerms({ tiers: ['30'], rebateRate: '5' });
+  /*
+   * Commission and rebate now share a wallet, so the KIND has to stay in the
+   * batch key — one batch and one ledger entry per kind, the rebate posted as
+   * `rebate` so every report summing by entry type still tells them apart.
+   */
+  it('posts each kind as its own batch and ledger entry', async () => {
     await accrue();
-    /* Past the 60s window — see the note in the setup above. */
-    await ctx.db.execute(sql`UPDATE ib_accruals SET created_at = now() - interval '10 minutes'`);
-    await commissions.confirmPending();
+    await matureAndConfirm();
 
-    const { rows } = await ctx.db.execute<{ entry_type: string; amount: string }>(sql`
-      SELECT e.entry_type, e.amount
+    const { rows: entries } = await ctx.db.execute<{
+      wallet_kind: string;
+      entry_type: string;
+      amount: string;
+    }>(sql`
+      SELECT w.kind AS wallet_kind, e.entry_type, e.amount
         FROM ledger_entries e
         JOIN wallets w ON w.id = e.wallet_id
-       WHERE w.user_id = ${clientId}
+       WHERE w.user_id = ${mainId}
+       ORDER BY e.entry_type
     `);
+    expect(entries).toEqual([
+      { wallet_kind: 'commission', entry_type: 'commission', amount: '7.00000000' },
+      { wallet_kind: 'commission', entry_type: 'rebate', amount: '6.00000000' },
+    ]);
 
-    expect(rows).toEqual([{ entry_type: 'rebate', amount: '5.00000000' }]);
+    const { rows: batches } = await ctx.db.execute<{
+      kind: string;
+      amount: string;
+      accrual_count: number;
+    }>(sql`
+      SELECT b.kind, b.amount, b.accrual_count
+        FROM ib_accrual_batches b
+        JOIN wallets w ON w.id = b.wallet_id
+       WHERE w.user_id = ${mainId}
+       ORDER BY b.kind
+    `);
+    expect(batches).toEqual([
+      { kind: 'commission', amount: '7.00000000', accrual_count: 1 },
+      { kind: 'rebate', amount: '6.00000000', accrual_count: 1 },
+    ]);
   });
 
-  it('pays neither leg twice when the loop runs again', async () => {
-    await setTerms({ tiers: ['30'], rebateRate: '5' });
+  it('pays nobody twice when the loop runs again', async () => {
     await accrue();
 
-    /* Past the 60s window — see the note in the setup above. */
-    await ctx.db.execute(sql`UPDATE ib_accruals SET created_at = now() - interval '10 minutes'`);
-    await commissions.confirmPending();
-    /* Past the 60s window — see the note in the setup above. */
-    await ctx.db.execute(sql`UPDATE ib_accruals SET created_at = now() - interval '10 minutes'`);
-    const second = await commissions.confirmPending();
+    await matureAndConfirm();
+    const second = await matureAndConfirm();
 
     expect(second.confirmed).toBe(0);
-    expect(await walletsOf(clientId)).toEqual([
-      { kind: 'main', currency: 'USD', balance: '5.00000000' },
+    expect(await walletsOf(mainId)).toEqual([
+      { kind: 'commission', currency: 'USD', balance: '13.00000000' },
     ]);
+    expect(await walletsOf(subId)).toEqual([
+      { kind: 'commission', currency: 'USD', balance: '7.00000000' },
+    ]);
+    expect(await walletsOf(clientId)).toEqual([]);
+  });
+
+  /* The bell follows the money: whoever's wallet was paid is who is told. */
+  it('tells the partners, not the client, that a rebate was credited', async () => {
+    await accrue();
+    await matureAndConfirm();
+
+    const rebateRecipients = notify.mock.calls
+      .map(([event]) => event as { kind: string; recipient: { id: number } })
+      .filter((event) => event.kind === 'rebate.credited')
+      .map((event) => event.recipient.id)
+      .sort((a, b) => a - b);
+    expect(rebateRecipients).toEqual([mainId, subId].sort((a, b) => a - b));
   });
 });
 
-describe('the mode decides which legs exist at all', () => {
+describe('which legs exist at all', () => {
   /*
-   * "Commission only" is a SHAPE now, not a declared mode: a rung paying the
-   * partner and returning nothing to the client. `mode` went with the programme
-   * catalogue, and with it the way a programme could claim to be commission-only
-   * while carrying a rebate rate nobody could see on the screen.
+   * "Commission only" is a commission type with no rebate on it. A rung's
+   * rebate share cannot switch it off for a level 1 partner — they take the
+   * rest of the pool whatever their own share says — so the type is where it
+   * is decided.
    */
-  it('pays only the partner when the rung returns nothing to the client', async () => {
-    await setTerms({ tiers: ['30'], rebateRate: '0' });
-
-    expect(await accrue()).toBe(1);
-    expect((await accrualRows()).map((r) => r.kind)).toEqual(['commission']);
+  it('pays no rebate when the commission type carries none', async () => {
+    expect(await accrue(clientId, POSITION_ID, { ...terms, rebatePerLot: '0.00000000' })).toBe(2);
+    expect((await accrualRows()).map((r) => r.kind)).toEqual(['commission', 'commission']);
   });
 
   /*
-   * A real arrangement — the broker buys volume by handing the spread back —
-   * and the partner earning nothing on it is the point, not a misconfiguration.
-   *
-   * Since 0197 a level 1 partner takes the whole commission on their own client
-   * whatever level 1's share says, so "commission at zero" is a SUB-PARTNER
-   * whose own share is set to 0 — here a lone one, with nobody above to take
-   * the rest. Both of their PER-PARTNER overrides are exercised: the level 2
-   * rung pays 30% commission and no rebate, and this partner is set to 0% and
-   * 5% instead.
+   * Since 0197 a level 1 partner takes the whole commission whatever level 1's
+   * share says, so "commission at zero" is a SUB-PARTNER whose own share is 0
+   * — here a lone one, with nobody above to take the rest. Their own rebate
+   * share still pays THEM, into their commission wallet; the client still gets
+   * nothing.
    */
-  it('pays only the client when the sub-partner’s share is set to zero', async () => {
-    await setLadderShares(ctx.db, [{ commission: '0' }, { commission: '30', rebate: '0' }]);
+  it('pays a lone sub-partner only their rebate share when their commission share is zero', async () => {
     await ctx.db.execute(sql`
       UPDATE ib_accounts
-         SET level = 2, commission_share_override = '0', rebate_share_override = '5'
-       WHERE user_id = ${partnerId}
+         SET parent_ib_user_id = NULL, commission_share_override = '0', rebate_share_override = '5'
+       WHERE user_id = ${subId}
     `);
 
     expect(await accrue()).toBe(1);
-    expect((await accrualRows()).map((r) => r.kind)).toEqual(['rebate']);
+    expect(await legs()).toEqual(['rebate:sub@1=0.50000000']);
 
-    /* Past the 60s window — see the note in the setup above. */
-    await ctx.db.execute(sql`UPDATE ib_accruals SET created_at = now() - interval '10 minutes'`);
-    await commissions.confirmPending();
-    expect(await walletsOf(partnerId)).toEqual([]);
-    expect(await walletsOf(clientId)).toEqual([
-      { kind: 'main', currency: 'USD', balance: '5.00000000' },
+    await matureAndConfirm();
+    expect(await walletsOf(subId)).toEqual([
+      { kind: 'commission', currency: 'USD', balance: '0.50000000' },
+    ]);
+    expect(await walletsOf(clientId)).toEqual([]);
+  });
+});
+
+/*
+ * ── A REBATE PAID TO A CLIENT BEFORE 0209 ──────────────────────────────────
+ *
+ * 0209 stamped `paid_to_client = true` on every rebate whose money had already
+ * reached a client. Those are still the client's: a reversal must take the
+ * money back from the client's MAIN wallet it went to, not from the partner
+ * named in `ib_user_id`, who was never paid it.
+ *
+ * The fixture flags a pending row and confirms it, which is the shortest way to
+ * a client-paid rebate with a real ledger entry behind it — and pins that the
+ * confirm path still honours the flag too.
+ */
+describe('a legacy rebate paid to the client', () => {
+  it('is confirmed into and reversed out of the client’s main wallet', async () => {
+    await accrue(directClientId);
+    await ctx.db.execute(sql`UPDATE ib_accruals SET paid_to_client = true WHERE kind = 'rebate'`);
+
+    await matureAndConfirm();
+    expect(await walletsOf(directClientId)).toEqual([
+      { kind: 'main', currency: 'USD', balance: '10.00000000' },
+    ]);
+    /* Only the commission reached the partner. */
+    expect(await walletsOf(mainId)).toEqual([
+      { kind: 'commission', currency: 'USD', balance: '10.00000000' },
+    ]);
+    const told = notify.mock.calls
+      .map(([event]) => event as { kind: string; recipient: { id: number } })
+      .filter((event) => event.kind === 'rebate.credited')
+      .map((event) => event.recipient.id);
+    expect(told).toEqual([directClientId]);
+
+    const rebate = (await accrualRows()).find((r) => r.kind === 'rebate');
+    const reversed = await commissions.reverseAccrual(rebate!.id, 'legacy clawback', UNRESTRICTED);
+    expect(reversed.movedMoney).toBe(true);
+
+    expect(await walletsOf(directClientId)).toEqual([
+      { kind: 'main', currency: 'USD', balance: '0.00000000' },
+    ]);
+    expect(await walletsOf(mainId)).toEqual([
+      { kind: 'commission', currency: 'USD', balance: '10.00000000' },
     ]);
   });
 });

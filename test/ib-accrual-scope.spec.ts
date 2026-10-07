@@ -175,21 +175,32 @@ describe('commission accruals mask the out-of-scope client (#4)', () => {
   });
   it('the partner search matches only a partner the reader may see', async () => {
     const outsider = scopeOf([tagId], false);
-    // Runs LAST: it adds a rebate row the counts above do not expect.
+    // Runs LAST: it adds rebate rows the counts above do not expect.
     const { rows: tag } = await ctx.db.execute<{ id: string }>(sql`
       INSERT INTO client_tags (slug, label) VALUES ('accrual-other', 'Other') RETURNING id`);
     const hiddenPartner = await makeUser('accrual-hidden-partner@oxshare-e2e.test');
     await ctx.db.execute(sql`
       INSERT INTO client_tag_assignments (user_id, tag_id) VALUES (${hiddenPartner}, ${tag[0].id})`);
-    // A REBATE the hidden partner produced, paid to the in-scope client: the
-    // row is visible (the beneficiary is in territory), the partner masked.
+    // A LEGACY rebate (pre-0209, `paid_to_client`) the hidden partner produced,
+    // paid to the in-scope client: the row is visible (the beneficiary is in
+    // territory), the partner masked.
     await ctx.db.execute(sql`
       INSERT INTO ib_accruals
         (ib_user_id, client_user_id, source_type, source_id, depth, rate_value,
-         base_amount, amount, currency, status, kind)
+         base_amount, amount, currency, status, kind, paid_to_client)
       VALUES
         (${hiddenPartner}, ${inScopeClientId}, 'transaction', gen_random_uuid(), 1, '10.0000',
-         '100.00000000', '10.00000000', 'USD', 'confirmed', 'rebate')`);
+         '100.00000000', '10.00000000', 'USD', 'confirmed', 'rebate', true)`);
+    // And a NEW rebate (0209) on the same client's trade: partner money, so its
+    // beneficiary is the hidden partner and the row is NOT this reader's to see,
+    // although the client on it is in territory.
+    await ctx.db.execute(sql`
+      INSERT INTO ib_accruals
+        (ib_user_id, client_user_id, source_type, source_id, depth, rate_value,
+         base_amount, amount, currency, status, kind, paid_to_client)
+      VALUES
+        (${hiddenPartner}, ${inScopeClientId}, 'transaction', gen_random_uuid(), 1, '100.0000',
+         '20.00000000', '20.00000000', 'USD', 'confirmed', 'rebate', false)`);
 
     const visibleRebate = await store.findAccrualsPage({
       page: 1,
@@ -197,8 +208,19 @@ describe('commission accruals mask the out-of-scope client (#4)', () => {
       scope: outsider,
       kind: 'rebate',
     });
+    // Only the legacy one: the new rebate is the hidden partner's, whatever client it names.
     expect(visibleRebate.total).toBe(1);
+    expect(visibleRebate.rows[0].accrual.amount).toBe('10.00000000');
     expect(visibleRebate.rows[0].partnerMasked).toBe(true);
+
+    // Unrestricted, both rebates are there — the refusal is scope, not data.
+    const allRebates = await store.findAccrualsPage({
+      page: 1,
+      limit: 10,
+      scope: UNRESTRICTED,
+      kind: 'rebate',
+    });
+    expect(allRebates.total).toBe(2);
 
     for (const q of ['accrual-hidden-partner@oxshare-e2e.test', 'accrual-hidden']) {
       expect((await store.findAccrualsPage({ page: 1, limit: 10, scope: outsider, q })).total).toBe(

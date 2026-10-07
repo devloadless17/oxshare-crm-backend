@@ -29,6 +29,11 @@ import { SIGN_UP_DETAILS } from './support/registration';
  * >      that IB, depositing, trading, and generating spread-based commission
  * >      that distributes up the multi-level IB chain and (where the program
  * >      mode requires) a rebate that credits the client wallet."
+ *
+ * ⚠️ The last clause of J2 is SUPERSEDED (owner, 7 Oct 2026, migration 0209):
+ * the rebate is now PARTNER money, split down the chain like commission and
+ * credited to the partner's commission wallet. The trading client gets
+ * nothing. The journey is walked as the system now works.
  * > J3: "An IB being assigned to a named program, accruing commission across
  * >      closed deals, confirming after the settlement window, and requesting
  * >      and receiving a payout."
@@ -260,8 +265,8 @@ beforeAll(async () => {
 
   /*
    * THE NAMED PROGRAMME — J3's first clause. Rung 1 carries BOTH terms, so one
-   * closed round turn proves the two halves J2 asks for: commission up the
-   * chain, and a rebate crediting the CLIENT's wallet.
+   * closed round turn proves both halves: commission up the chain, and (since
+   * 0209) a rebate that is also the PARTNER's, never the client's.
    *
    * ⚠️ PRICED PER LOT, and the FSD's wording is out of date here rather than
    * this fixture. §14 says "spread-based commission", and rungs were a
@@ -281,7 +286,8 @@ beforeAll(async () => {
 
   /*
    * The PRODUCT the account below is opened on, sold on a COMMISSION TYPE of
-   * 1.50 a lot to the partner and 0.50 a lot back to the client (0140). The
+   * 1.50 a lot of commission and 0.50 a lot of rebate (0140), both paid to the
+   * partner since 0209. The
    * admin opens the account in `real\Standard`, and the group is what links the
    * account to the product — so the group has to be on the catalogue before
    * step 3, or the trade in step 4 belongs to no product and is refused.
@@ -522,8 +528,8 @@ describe('§14 J2 — step 3: the referred client deposits and trades', () => {
   });
 });
 
-describe('§14 J2 — step 4: the round turn pays the chain and rebates the client', () => {
-  it('accrues commission for the partner and a rebate for the client', async () => {
+describe('§14 J2 — step 4: the round turn pays the chain, rebate included', () => {
+  it('accrues commission AND the rebate for the partner, and nothing for the client', async () => {
     const deals = ctx.app.get(DealCommissionService);
     const run = await deals.accruePending();
     expect(run, 'the accrual pass returned nothing').toBeDefined();
@@ -534,8 +540,9 @@ describe('§14 J2 — step 4: the round turn pays the chain and rebates the clie
       kind: string;
       amount: string;
       status: string;
+      paid_to_client: boolean;
     }>(sql`
-      SELECT ib_user_id, client_user_id, kind, amount, status
+      SELECT ib_user_id, client_user_id, kind, amount, status, paid_to_client
       FROM ib_accruals ORDER BY kind
     `);
 
@@ -547,22 +554,26 @@ describe('§14 J2 — step 4: the round turn pays the chain and rebates the clie
     const rebate = rows.find((r) => r.kind === 'rebate');
 
     /*
-     * TWO LOTS on the round turn, at 1.50 per lot to the partner and 0.50 per
-     * lot back to the client:
-     *   partner 3.00, client 1.00 — to the cent, in decimal arithmetic.
+     * TWO LOTS on the round turn, at 1.50 per lot commission and 0.50 per lot
+     * rebate, both to the partner (0209):
+     *   commission 3.00, rebate 1.00 — to the cent, in decimal arithmetic.
      *
-     * The two figures are deliberately different, so a rebate credited to the
-     * partner or a commission credited to the client cannot pass by matching a
-     * total.
+     * The two figures are deliberately different, so the two legs cannot pass
+     * by matching each other's total.
      */
     expect(commission, 'the partner earned nothing on their client’s trade').toBeDefined();
     expect(commission?.ib_user_id).toBe(partnerId);
     expect(commission?.client_user_id).toBe(referredId);
     expect(commission?.amount).toBe('3.00000000');
 
-    expect(rebate, 'the programme rebates and the client received nothing').toBeDefined();
+    expect(rebate, 'the programme rebates and the partner received nothing').toBeDefined();
+    // The PARTNER earns it; the client is only the trade it came from.
+    expect(rebate?.ib_user_id).toBe(partnerId);
     expect(rebate?.client_user_id).toBe(referredId);
+    expect(rebate?.paid_to_client).toBe(false);
     expect(rebate?.amount).toBe('1.00000000');
+    // Nothing is ever written as the client's money any more.
+    expect(rows.every((r) => r.paid_to_client === false)).toBe(true);
 
     // Both start PENDING. Nothing is paid before the settlement window.
     expect(rows.every((r) => r.status === 'pending')).toBe(true);
@@ -627,18 +638,39 @@ describe('§14 J3 — step 5: confirming after the settlement window', () => {
       SELECT kind, balance FROM wallets WHERE user_id = ${partnerId} AND currency = 'USD'
     `);
     const total = rows.reduce((sum, r) => sum + Number(r.balance), 0);
-    expect(total, 'the confirmed commission never reached a wallet').toBeCloseTo(3, 8);
+    // 3.00 commission + 1.00 rebate, both the partner's since 0209.
+    expect(total, 'the confirmed commission and rebate never reached a wallet').toBeCloseTo(4, 8);
+
+    // Both in the COMMISSION wallet, as their own ledger lines.
+    const commissionWallet = rows.find((r) => r.kind === 'commission');
+    expect(Number(commissionWallet?.balance)).toBeCloseTo(4, 8);
+    const { rows: ledger } = await ctx.db.db.execute<{ entry_type: string; amount: string }>(sql`
+      SELECT e.entry_type, e.amount FROM ledger_entries e
+        JOIN wallets w ON w.id = e.wallet_id
+       WHERE w.user_id = ${partnerId} AND w.kind = 'commission'
+       ORDER BY e.entry_type
+    `);
+    expect(ledger.map((e) => [e.entry_type, Number(e.amount)])).toEqual([
+      ['commission', 3],
+      ['rebate', 1],
+    ]);
   });
 
-  it('the client’s REBATE reached the client’s own wallet', async () => {
-    // J2's last clause. A rebate credited to the partner would be the same
-    // number in the wrong account, and no total would notice.
+  it('the client received NO rebate — it is partner money since 0209', async () => {
+    // Superseded J2 clause. A rebate still credited to the client would be the
+    // same number in the wrong account, and the partner total alone would not notice.
     const { rows } = await ctx.db.db.execute<{ balance: string }>(sql`
       SELECT balance FROM wallets
       WHERE user_id = ${referredId} AND currency = 'USD' AND kind = 'main'
     `);
-    // 1000 credited − 500 to MT5 + 1.00 rebate.
-    expect(Number(rows[0].balance)).toBeCloseTo(501, 8);
+    // 1000 credited − 500 to MT5, and nothing back.
+    expect(Number(rows[0].balance)).toBeCloseTo(500, 8);
+    const { rows: rebates } = await ctx.db.db.execute<{ n: string }>(sql`
+      SELECT count(*)::text AS n FROM ledger_entries e
+        JOIN wallets w ON w.id = e.wallet_id
+       WHERE w.user_id = ${referredId} AND e.entry_type = 'rebate'
+    `);
+    expect(rebates[0].n).toBe('0');
   });
 });
 

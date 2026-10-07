@@ -1041,6 +1041,7 @@ export class DealCommissionService {
           kind: ibAccruals.kind,
           ibUserId: ibAccruals.ibUserId,
           clientUserId: ibAccruals.clientUserId,
+          paidToClient: ibAccruals.paidToClient,
         })
         .from(ibAccruals)
         .innerJoin(mt5Deals, eq(mt5Deals.id, ibAccruals.sourceId))
@@ -1081,7 +1082,8 @@ export class DealCommissionService {
        * is nobody. One per accrual because the reversal is per accrual, and so
        * is the decision: a desk may reverse the credited one and let a pending
        * one lapse. Each clears for every admin when THAT accrual is reversed
-       * (migration 0140's trigger). The client is the accrual's beneficiary —
+       * (migration 0140's trigger). The task names the accrual's BENEFICIARY
+       * (`accrualBeneficiary`: the partner, or the client on a legacy rebate) —
        * the same rule the commission screens scope by — so nobody is asked to
        * reverse an accrual they cannot open.
        */

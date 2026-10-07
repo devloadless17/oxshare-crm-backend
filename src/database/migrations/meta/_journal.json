@@ -1471,6 +1471,13 @@
       "when": 1789143710750,
       "tag": "0208_mask_personal_details_only",
       "breakpoints": true
+    },
+    {
+      "idx": 211,
+      "version": "7",
+      "when": 1789143810750,
+      "tag": "0209_rebate_to_partners",
+      "breakpoints": true
     }
   ]
 }

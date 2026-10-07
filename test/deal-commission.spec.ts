@@ -1311,8 +1311,9 @@ describe('a commission type can exclude symbols and folders (0198)', () => {
       amount: string;
       ib_user_id: number;
       client_user_id: number | null;
+      paid_to_client: boolean;
     }>(sql`
-      SELECT kind, amount, ib_user_id, client_user_id FROM ib_accruals
+      SELECT kind, amount, ib_user_id, client_user_id, paid_to_client FROM ib_accruals
        WHERE source_type = 'deal' AND source_id = ${dealRowId}
        ORDER BY kind
     `);
@@ -1365,7 +1366,11 @@ describe('a commission type can exclude symbols and folders (0198)', () => {
              (${symbolClientId}, ${SYMBOL_LOGIN}, 'USD', ${symbols.productId})
     `);
 
-    /* The introducer's rung returns half the rebate pool to the client. */
+    /*
+     * A rebate share on level 1 that would show in an amount if it decided
+     * anything: since 0209 the rebate is partner money, and a level 1 partner
+     * takes the REST of the pool — all of it, on their own client.
+     */
     await setLadderShares(ctx.db, [{ commission: '30', rebate: '50' }]);
   });
 
@@ -1406,9 +1411,15 @@ describe('a commission type can exclude symbols and folders (0198)', () => {
     const [commission, rebate] = rows;
     expect(commission.ib_user_id).toBe(partnerId);
     expect(commission.amount).not.toBe('0.00000000');
-    /* Half of a $4 pool, to the trading client. */
-    expect(rebate.amount).toBe('2.00000000');
+    /*
+     * The WHOLE $4 pool, to the level 1 partner (0209) — not level 1's 50%, and
+     * not to the trading client, who is named on the row only as whose trade
+     * it was.
+     */
+    expect(rebate.amount).toBe('4.00000000');
+    expect(rebate.ib_user_id).toBe(partnerId);
     expect(rebate.client_user_id).toBe(folderClientId);
+    expect(rebate.paid_to_client).toBe(false);
     expect(await isProcessed(id)).toBe(true);
   });
 

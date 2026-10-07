@@ -21,8 +21,9 @@ import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './mone
  *   - the level 1 partner takes the REST — 100% on their own clients, 70% on a
  *     default sub-partner's (100 − 30). Level 1's own commission share on the
  *     ladder decides nothing any more;
- *   - the client's rebate is still the introducer's rebate share (or their
- *     override) of the product's rebate.
+ *   - the REBATE is split the same way (0209, owner 7 Oct 2026): a sub-partner
+ *     takes their rebate share (or override), level 1 the rest. The client
+ *     gets NO rebate — it is partner money, paid to their commission wallets.
  *
  * The ladder is read from the MIGRATED database, so these prove the shares a
  * deployment actually gets, and then walk the owner's own example through the
@@ -87,7 +88,10 @@ function closeOneLot(
   const rates = Object.fromEntries(
     result.accruals.map((accrual) => [accrual.ibUserId, accrual.rateValue]),
   );
-  return { commissions, rates, rebate: result.rebate?.amount ?? null, result };
+  const rebates = Object.fromEntries(
+    result.rebates.map((rebate) => [rebate.ibUserId, rebate.amount]),
+  );
+  return { commissions, rates, rebates, result };
 }
 
 beforeAll(async () => {
@@ -135,40 +139,40 @@ describe('the migrated ladder', () => {
 });
 
 describe('one lot closed, on a $10 commission / $3 rebate product', () => {
-  it("a main partner's own client: the partner earns the whole $10.00, the client gets $2.10", () => {
-    const { commissions, rates, rebate } = closeOneLot(MAIN);
+  it("a main partner's own client: the partner earns the whole $10.00 and the whole $3.00 rebate", () => {
+    const { commissions, rates, rebates } = closeOneLot(MAIN);
 
     expect(commissions).toEqual({ [MAIN]: '10.00000000' });
     expect(rates).toEqual({ [MAIN]: '100.0000' });
-    expect(rebate).toBe('2.10000000');
+    expect(rebates).toEqual({ [MAIN]: '3.00000000' });
   });
 
   /* SUB trades like any client MAIN introduced. SUB earns nothing on SUB's own trade. */
-  it("the sub-partner's own trade: the main partner earns $10.00, the sub-partner gets $2.10", () => {
-    const { commissions, rebate } = closeOneLot(MAIN);
+  it("the sub-partner's own trade: the main partner earns $10.00 and the $3.00 rebate", () => {
+    const { commissions, rebates } = closeOneLot(MAIN);
 
     expect(commissions).not.toHaveProperty(String(SUB));
     expect(commissions).toEqual({ [MAIN]: '10.00000000' });
-    expect(rebate).toBe('2.10000000');
+    expect(rebates).toEqual({ [MAIN]: '3.00000000' });
   });
 
-  it("a sub-partner's client: the sub earns $3.00, the main partner the other $7.00, the client $0.90", () => {
-    const { commissions, rates, rebate } = closeOneLot(SUB);
+  it("a sub-partner's client: the sub earns $3.00 + $0.90 rebate, the main partner $7.00 + $2.10", () => {
+    const { commissions, rates, rebates } = closeOneLot(SUB);
 
     expect(commissions).toEqual({ [SUB]: '3.00000000', [MAIN]: '7.00000000' });
     // The main partner's 70 is what the sub-partner left of 100, not a share of its own.
     expect(rates).toEqual({ [SUB]: '30.0000', [MAIN]: '70.0000' });
-    // The rebate share is the INTRODUCER's — the sub-partner's 30%.
-    expect(rebate).toBe('0.90000000');
+    // The rebate is split like the commission: the sub-partner's 30%, the main partner the rest.
+    expect(rebates).toEqual({ [SUB]: '0.90000000', [MAIN]: '2.10000000' });
   });
 
   it('a sub-partner set to 50%: the sub earns $5.00 and the main partner the other $5.00', () => {
-    const { commissions, rates, rebate } = closeOneLot(SUB_50);
+    const { commissions, rates, rebates } = closeOneLot(SUB_50);
 
     expect(commissions).toEqual({ [SUB_50]: '5.00000000', [MAIN]: '5.00000000' });
     expect(rates).toEqual({ [SUB_50]: '50.0000', [MAIN]: '50.0000' });
-    // No rebate override, so the client still gets level 2's 30%.
-    expect(rebate).toBe('0.90000000');
+    // No rebate override, so the sub-partner takes level 2's 30% of the rebate.
+    expect(rebates).toEqual({ [SUB_50]: '0.90000000', [MAIN]: '2.10000000' });
   });
 
   it("ignores level 1's own commission share on the ladder", () => {
@@ -194,7 +198,7 @@ describe('one lot closed, on a $10 commission / $3 rebate product', () => {
   it('never pays more than the broker ceiling on any of them', () => {
     for (const introducer of [MAIN, SUB, SUB_50] as const) {
       const { result } = closeOneLot(introducer);
-      expect(checkPlausible(TRADE, result.accruals, result.rebate)).toEqual({ ok: true });
+      expect(checkPlausible(TRADE, result.accruals, result.rebates)).toEqual({ ok: true });
     }
   });
 });

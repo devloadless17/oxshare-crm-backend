@@ -5095,6 +5095,14 @@ export const ibAccruals = pgTable(
       .notNull()
       .references(() => currencies.code, { onDelete: 'restrict' }),
     kind: ibAccrualKindEnum('kind').notNull().default('commission'),
+    /**
+     * WHO is paid a rebate (0209). Rebates are partner money since 7 Oct 2026
+     * (owner): credited to `ib_user_id`'s commission wallet. Rebates written
+     * before were paid to the trading client's main wallet and keep `true`,
+     * so a reversal takes them back from where they actually went. Always
+     * false for commission.
+     */
+    paidToClient: boolean('paid_to_client').notNull().default(false),
     status: ibAccrualStatusEnum('status').notNull().default('pending'),
     /**
      * The ledger entry that paid it, once confirmed.
