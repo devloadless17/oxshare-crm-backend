@@ -20,22 +20,6 @@ import { violatesConstraint } from '../../../common/errors/pg-violation';
 import { ProductsStore } from '../../../store/products.store';
 
 /**
- * Clamp demo funding to the configured ceiling.
- *
- * Capped rather than refused, so a fat-fingered extra zero still produces a
- * working account. The ceiling itself is an operator setting — see
- * `trading_settings` — because "how much practice money is useful practice" is
- * a commercial judgement, and it lived here as a constant compiled into two
- * apps for far too long.
- */
-function capDemoFunding(amount: string, ceiling: string): string {
-  // Parsed ONLY to compare against the cap. The string is what is sent onward
-  // when it is within range, so nothing that reaches MT5 has been through a
-  // float unless it had to be.
-  return Number.parseFloat(amount) > Number.parseFloat(ceiling) ? ceiling : amount;
-}
-
-/**
  * A CLIENT's own MT5 accounts: open, rename, reset the password, top up a demo.
  *
  * Split out of `Mt5AccountsService` (1600 lines mixing back-office provisioning,
@@ -143,8 +127,6 @@ export class Mt5OwnAccountsService {
 
     if (!client) throw new NotFoundError('Client not found.');
 
-    const terms = await this.accounts.terms();
-
     /*
      * REFUSED rather than ignored on a live account.
      *
@@ -197,7 +179,8 @@ export class Mt5OwnAccountsService {
      */
     let funded = false;
     if (input.startingBalance && input.environment === 'demo') {
-      const capped = capDemoFunding(input.startingBalance, terms.maxDemoDeposit);
+      // No ceiling (owner, 7 Oct 2026): demo money is the client's to choose.
+      const capped = input.startingBalance;
       try {
         await this.bridge.balance({
           login: String(created.login),
@@ -652,8 +635,8 @@ export class Mt5OwnAccountsService {
       throw new ValidationError('Enter an amount greater than zero.');
     }
 
-    const terms = await this.accounts.terms();
-    const capped = capDemoFunding(requested.toString(), terms.maxDemoDeposit);
+    // No ceiling (owner, 7 Oct 2026): demo money is the client's to choose.
+    const capped = requested.toString();
 
     /*
      * NOT idempotent, and deliberately so.

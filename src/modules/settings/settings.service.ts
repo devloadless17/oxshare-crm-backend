@@ -6,12 +6,7 @@ import { AppSettingsStore } from '../../store/app-settings.store';
 import { AdminsStore } from '../../store/admins.store';
 import { AdminAuditService } from '../admin/admin-audit.service';
 import type { Actor } from '../../common/security/actor';
-import type {
-  SmtpSettingsDto,
-  TradingSettingsDto,
-  UpdateSmtpSettingsDto,
-  UpdateTradingSettingsDto,
-} from './dto/settings.dto';
+import type { SmtpSettingsDto, UpdateSmtpSettingsDto } from './dto/settings.dto';
 import { tradingTermsFrom } from '../../common/trading-terms';
 import {
   SCHEDULED_JOBS,
@@ -248,107 +243,27 @@ export class SettingsService {
     };
   }
 
-  /* ── Trading ──────────────────────────────────────────────────────────── */
+  /* ── The commission cadence (0113) ──────────────────────────────────────── */
 
-  async getTrading(): Promise<TradingSettingsDto> {
-    const row = await this.store.getTrading();
-    const terms = tradingTermsFrom(row);
-
-    return {
-      maxDemoDeposit: terms.maxDemoDeposit,
-      ibCommissionIntervalSeconds: terms.ibCommissionIntervalSeconds,
-      updatedAt: row?.updatedAt.toISOString() ?? null,
-      updatedByName: await this.savedBy(row?.updatedBy),
-    };
-  }
-
-  async setTrading(dto: UpdateTradingSettingsDto, actor: Actor): Promise<TradingSettingsDto> {
-    const previous = await this.getTrading();
-
-    /*
-     * The LEVERAGE LADDER is not here any more.
-     *
-     * It was a CSV on this row, parsed strictly and re-formatted on every save.
-     * It is the `leverages` table now (migration 0067), with its own screen and
-     * its own audit actions — a rung can be withdrawn without touching the
-     * accounts opened on it, which is what a delimited string could not say.
-     */
-
-    const row = await this.store.setTrading(
-      {
-        maxDemoDeposit: dto.maxDemoDeposit,
-        /*
-         * The commission CADENCE (0113), which replaced the ladder ceiling on
-         * this form. It passes the same test that ceiling did and the four
-         * fields 0103/0104 removed did not: it decides WHEN partners are paid,
-         * never HOW MUCH — the amounts belong to the IB Levels page alone.
-         */
-        ibCommissionIntervalSeconds: dto.ibCommissionIntervalSeconds,
-        /*
-         * ── THE TWO PAYOUT CEILINGS ARE NOT ON THIS FORM (0112) ────────────
-         *
-         * `ib_max_total_payout_pct` and `ib_max_payout_per_lot` are still
-         * enforced, still stored, and still bound every accrual — they are the
-         * unit-error backstop `checkPlausible` reads, and removing them would
-         * let a rate meaning 70x rather than 70% accrue seventy times the
-         * revenue.
-         *
-         * What went is the CONTROL. They were removed from the form on an
-         * explicit instruction, and the columns keep whatever they hold —
-         * defaulting to 100% and $50 a lot, both far above any real rate card.
-         * A PUT that no longer mentions them therefore leaves them alone
-         * rather than resetting them, which is why they are absent here rather
-         * than written from a constant.
-         */
-        /*
-         * No other IB fields here (0104). The settlement window, the accrual
-         * start, the revenue basis and the broker cap were all removed from this
-         * form: commission is configured on the Commission Programmes page, and
-         * a Trading-settings control that re-prices every partner is a second
-         * place to look when a payout surprises somebody.
-         *
-         * Which also removes the preserve-on-`undefined` dance those fields
-         * needed — a console that predates a field sends every OTHER value on a
-         * full-replace save, so a missing one used to risk re-pricing the whole
-         * book as a side effect of adjusting the demo account cap.
-         */
-      },
-      actor.id,
-    );
-
-    /*
-     * Every field here is a COMMERCIAL control, so every change is recorded
-     * with both sides. Raising the demo ceiling is the kind
-     * of change that gets noticed a month later in the broker's own reporting,
-     * and "who set this to a million and when" needs an answer.
-     */
-    const after: TradingSettingsDto = {
-      maxDemoDeposit: row.maxDemoDeposit,
-      ibCommissionIntervalSeconds: row.ibCommissionIntervalSeconds,
-      updatedAt: row.updatedAt.toISOString(),
-      updatedByName: await this.savedBy(row.updatedBy),
-    };
-
-    const changed: Record<string, { before: unknown; after: unknown }> = {};
-    for (const field of [
-      'maxDemoDeposit',
-      /*
-       * The cadence is audited for a sharper reason than the ceiling it
-       * replaced. Shortening it does not change what anybody is paid — it
-       * removes the window in which a bad trade can be caught BEFORE the
-       * commission on it becomes spendable. "Who set this to sixty seconds,
-       * and when" is the first question asked after a payout that should have
-       * been reviewed.
-       */
-      'ibCommissionIntervalSeconds',
-    ] as const) {
-      if (previous[field] !== after[field]) {
-        changed[field] = { before: previous[field], after: after[field] };
-      }
+  /**
+   * How often commission is paid — the one trading setting left, edited from
+   * Scheduled jobs (the Trading tab went on 7 Oct 2026, with nothing else to
+   * save). Audited with both sides under the same action as before:
+   * shortening it removes the window in which a bad trade can be caught BEFORE
+   * the commission on it becomes spendable, and "who set this to sixty seconds,
+   * and when" is the first question asked after a payout that should have been
+   * reviewed.
+   */
+  private async setCommissionInterval(seconds: number, actor: Actor): Promise<void> {
+    const before = tradingTermsFrom(await this.store.getTrading()).ibCommissionIntervalSeconds;
+    const row = await this.store.setTrading({ ibCommissionIntervalSeconds: seconds }, actor.id);
+    if (before !== row.ibCommissionIntervalSeconds) {
+      this.audit.record(actor.id, 'settings.trading.update', 'app_settings', 'trading', {
+        changed: {
+          ibCommissionIntervalSeconds: { before, after: row.ibCommissionIntervalSeconds },
+        },
+      });
     }
-    this.audit.record(actor.id, 'settings.trading.update', 'app_settings', 'trading', { changed });
-
-    return after;
   }
 
   // ── Scheduled jobs (0167) — Settings → Scheduled jobs ──────────────────────
@@ -363,8 +278,10 @@ export class SettingsService {
     const commission = tradingTermsFrom(trading).ibCommissionIntervalSeconds;
     const byKey = new Map(rows.map((row) => [row.key, row]));
     const iso = (at: Date | null | undefined) => (at ? at.toISOString() : null);
-    const items: ScheduledJobDto[] = (SCHEDULED_JOBS as readonly ScheduledJobDefinition[]).map(
-      (job) => {
+    const items: ScheduledJobDto[] = (SCHEDULED_JOBS as readonly ScheduledJobDefinition[])
+      // The MT5 safety nets run in the background; the admin sees nothing of them.
+      .filter((job) => !job.hidden)
+      .map((job) => {
         const row = byKey.get(job.key);
         return {
           key: job.key,
@@ -387,8 +304,7 @@ export class SettingsService {
             row?.lastStartedAt && (!row.lastFinishedAt || row.lastFinishedAt < row.lastStartedAt),
           ),
         };
-      },
-    );
+      });
     return { items };
   }
 
@@ -400,7 +316,7 @@ export class SettingsService {
    */
   async setJobInterval(key: string, seconds: number, actor: Actor): Promise<ScheduledJobListDto> {
     const job = scheduledJob(key);
-    if (!job) throw new NotFoundError(`There is no scheduled job "${key}".`);
+    if (!job || job.hidden) throw new NotFoundError(`There is no scheduled job "${key}".`);
     if (!Number.isInteger(seconds) || seconds < job.min || seconds > job.max) {
       throw new ValidationError(
         `This job can run every ${job.min} to ${job.max} seconds; ${seconds} is outside that.`,
@@ -408,14 +324,7 @@ export class SettingsService {
     }
 
     if (job.sharedInterval === 'commission') {
-      const current = await this.getTrading();
-      await this.setTrading(
-        {
-          maxDemoDeposit: current.maxDemoDeposit,
-          ibCommissionIntervalSeconds: seconds,
-        },
-        actor,
-      );
+      await this.setCommissionInterval(seconds, actor);
       return await this.listJobs();
     }
 
@@ -434,7 +343,7 @@ export class SettingsService {
    */
   async runJobNow(key: string, actor: Actor): Promise<ScheduledJobListDto> {
     const job = scheduledJob(key);
-    if (!job) throw new NotFoundError(`There is no scheduled job "${key}".`);
+    if (!job || job.hidden) throw new NotFoundError(`There is no scheduled job "${key}".`);
     if (job.runsOn !== 'crm' || job.sharedInterval) {
       throw new ValidationError(
         job.runsOn === 'bridge'

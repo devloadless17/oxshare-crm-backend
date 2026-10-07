@@ -90,10 +90,5 @@ export class SelfServiceOfferDto {
   })
   leverages: number[];
 
-  @ApiProperty({
-    type: 'string',
-    example: '100000.00000000',
-    description: 'The most a demo account may be funded with, as a decimal string (§6.1).',
-  })
-  maxDemoDeposit: string;
+  // `maxDemoDeposit` was here — the demo ceiling was removed (owner, 7 Oct 2026; 0205).
 }

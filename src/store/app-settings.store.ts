@@ -62,8 +62,7 @@ export interface SmtpSettingsWrite {
 export interface TradingSettingsRow {
   // `leverages` was here — the ladder is the `leverages` TABLE now (0067).
   // The account caps were here — they are per product now (0201).
-  /** A decimal string, never a number — see §6. */
-  maxDemoDeposit: string;
+  // `maxDemoDeposit` was here — dropped in 0205.
   /** How deep a programme's ladder may reach. Narrow with `normaliseIbMaxLevels`. */
   /** HISTORICAL since 0113 — nothing reads it. See the column in schema.ts. */
   ibMaxLevels: number;
@@ -99,7 +98,6 @@ export interface TradingSettingsRow {
 }
 
 export interface TradingSettingsWrite {
-  maxDemoDeposit: string;
   /**
    * ── NOT WRITTEN ANY MORE (0113) ─────────────────────────────────────────
    *
@@ -260,6 +258,11 @@ export class AppSettingsStore {
   }
 
   /** Create a job's row with its default if it has none (a job added after 0167). */
+  /** Force a job's interval — the hidden safety nets (7 Oct 2026). */
+  async pinJobInterval(key: string, intervalSeconds: number): Promise<void> {
+    await this.db.update(scheduledJobs).set({ intervalSeconds }).where(eq(scheduledJobs.key, key));
+  }
+
   async ensureJob(key: string, intervalSeconds: number): Promise<void> {
     await this.db.insert(scheduledJobs).values({ key, intervalSeconds }).onConflictDoNothing();
   }

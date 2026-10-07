@@ -158,6 +158,58 @@ export class Mt5AccountDirectoryService {
     return run;
   }
 
+  /**
+   * Logins the bridge just pushed a balance for that the CRM has no row for —
+   * an account opened on MT5 directly, seen the moment its first deal lands
+   * (7 Oct 2026). Recorded with no client at once, rather than on the next
+   * directory run up to ten minutes later.
+   *
+   * Fire-and-forget from the webhook, so it is bounded by itself: at most
+   * twenty per call, a login already being recorded is skipped, and one that
+   * could not be recorded (a currency this platform does not hold, an account
+   * gone again) is not retried for ten minutes — the directory run still
+   * owns the backlog.
+   */
+  async recordDiscovered(logins: string[]): Promise<number> {
+    if (!this.bridge.isConfigured) return 0;
+    const now = Date.now();
+    for (const [login, until] of this.discoveryBackoff) {
+      if (until <= now) this.discoveryBackoff.delete(login);
+    }
+    const todo = [...new Set(logins)]
+      .filter((login) => !this.discovering.has(login) && !this.discoveryBackoff.has(login))
+      .slice(0, 20);
+    if (todo.length === 0) return 0;
+
+    for (const login of todo) this.discovering.add(login);
+    try {
+      const held = new Set(
+        (await this.db.select({ code: currencies.code }).from(currencies)).map((row) => row.code),
+      );
+      const unknown = new Set<string>();
+      let added = 0;
+      for (const login of todo) {
+        try {
+          if (await this.record(login, held, unknown)) added += 1;
+          else this.discoveryBackoff.set(login, Date.now() + 10 * 60_000);
+        } catch (error) {
+          this.discoveryBackoff.set(login, Date.now() + 10 * 60_000);
+          this.logger.debug(
+            `Could not record newly seen MT5 login ${login}: ` +
+              `${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
+      if (added > 0) this.logger.log(`Recorded ${added} newly seen MT5 account(s) with no client`);
+      return added;
+    } finally {
+      for (const login of todo) this.discovering.delete(login);
+    }
+  }
+
+  private readonly discovering = new Set<string>();
+  private readonly discoveryBackoff = new Map<string, number>();
+
   /** Read one login from MT5 and record it with no client. False when it was not recorded. */
   private async record(login: string, held: Set<string>, unknown: Set<string>): Promise<boolean> {
     // Stamped BEFORE the read: the mirror's rule is the moment MT5 was asked.

@@ -585,9 +585,9 @@ describe('§14 J2 — step 4: the round turn pays the chain and rebates the clie
 describe('§14 J3 — step 5: confirming after the settlement window', () => {
   it('withholds everything while the window is still open', async () => {
     const admin = await actingAs(ctx, 'admin', MASTER);
-    const set = await admin.put('/v1/admin/settings/trading', {
-      maxDemoDeposit: '1000000.00',
-      ibCommissionIntervalSeconds: HOLD_SECONDS,
+    // The commission window lives in Settings → Scheduled jobs (the Trading tab went, 7 Oct 2026).
+    const set = await admin.put('/v1/admin/settings/scheduled-jobs/ib.accrueDeals', {
+      intervalSeconds: HOLD_SECONDS,
     });
     expect(set.status, JSON.stringify(set.body)).toBeLessThan(400);
 

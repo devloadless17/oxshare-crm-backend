@@ -1505,14 +1505,7 @@ export const tradingSettings = pgTable(
      * environment for every client. They are per PRODUCT now
      * (`trading_products.max_accounts_per_client`, 0201), which dropped them.
      */
-    /*
-     * The largest opening balance a demo account may be given, as a decimal
-     * string like every other money column here. Practice money, but it is
-     * credited on the broker's server and it shows up in their reporting.
-     */
-    maxDemoDeposit: numeric('max_demo_deposit', { precision: 28, scale: 8 })
-      .notNull()
-      .default('1000000'),
+    // `max_demo_deposit` was here — dropped in 0205 (owner, 7 Oct 2026).
     /**
      * ── HISTORICAL SINCE 0113. NOTHING READS THIS. ─────────────────────────
      *

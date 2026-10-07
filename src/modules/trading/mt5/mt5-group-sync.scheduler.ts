@@ -41,6 +41,33 @@ export class Mt5GroupSyncScheduler {
     private readonly symbols: Mt5SymbolSyncService,
   ) {}
 
+  /**
+   * Sync NOW, because something just showed a group this CRM does not have
+   * (7 Oct 2026) — an account the bridge pushed sits in a group added on the
+   * broker's server since the last sync. Single-flight and at most once a
+   * minute, so a burst of snapshots from one new group is one sync; the hourly
+   * run below stays as the hidden safety net for edits no account reveals.
+   */
+  syncSoon(): void {
+    const now = Date.now();
+    if (this.soon || now - this.lastSoonAt < 60_000) return;
+    this.lastSoonAt = now;
+    this.soon = this.sync()
+      .catch((error: unknown) => {
+        this.logger.warn(
+          `Instant MT5 group sync failed; the hourly run retries. ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      })
+      .finally(() => {
+        this.soon = null;
+      });
+  }
+
+  private soon: Promise<void> | null = null;
+  private lastSoonAt = 0;
+
   @ScheduledJob('mt5.syncGroups')
   async sync(): Promise<void> {
     /*

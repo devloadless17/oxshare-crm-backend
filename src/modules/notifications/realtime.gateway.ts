@@ -19,6 +19,11 @@ import {
   type Mt5LiveEvent,
 } from '../trading/mt5/live-snapshot';
 import { RealtimePrincipalResolver } from './realtime.principal';
+import {
+  ACCOUNT_BALANCE_CHANNEL,
+  ACCOUNT_BALANCE_EVENT,
+  type AccountBalanceEvent,
+} from '../trading/mt5/account-balance-event';
 import type { NotificationRecipient } from '../../store/notifications.store';
 
 /**
@@ -463,6 +468,19 @@ export class NotificationsRealtimeGateway
     this.server?.to(roomFor({ kind: 'client', id: userId })).emit(MT5_LIVE_EVENT, figures);
   }
 
+  /**
+   * A balance moved on one of this client's accounts (0204). Only the account
+   * id travels; the portal re-reads `GET /trading/accounts` — permission-checked,
+   * and by now already fresh, because the write that raised this IS the fresh
+   * figure.
+   */
+  publishAccountBalance(event: AccountBalanceEvent): void {
+    if (!Number.isInteger(event.userId)) return;
+    this.server
+      ?.to(roomFor({ kind: 'client', id: event.userId }))
+      .emit(ACCOUNT_BALANCE_EVENT, { accountId: event.accountId });
+  }
+
   publishResourceChange(event: ResourceChangedEvent): void {
     const audience = event.actorAdminId
       ? this.server
@@ -532,6 +550,10 @@ export class NotificationsRealtimeGateway
           this.publishNotificationChange(JSON.parse(message.payload) as NotificationChangedEvent);
           return;
         }
+        if (message.channel === ACCOUNT_BALANCE_CHANNEL) {
+          this.publishAccountBalance(JSON.parse(message.payload) as AccountBalanceEvent);
+          return;
+        }
         if (message.channel === MT5_LIVE_CHANNEL) {
           /*
            * `decodeLiveEvent`, not `JSON.parse`: a large reading arrives gzipped
@@ -577,8 +599,14 @@ export class NotificationsRealtimeGateway
        * the first — a room to address, never data to leak.
        */
       await client.query(`LISTEN ${NOTIFICATION_CHANGED_CHANNEL}`);
+      /*
+       * A FIFTH (0204): an owned account's balance moved. Same connection, same
+       * shape — a room and an id, and the client re-reads its own accounts.
+       */
+      await client.query(`LISTEN ${ACCOUNT_BALANCE_CHANNEL}`);
       this.logger.log(
-        'Listening for notification, notification-change, resource-change and live-account events.',
+        'Listening for notification, notification-change, resource-change, live-account and ' +
+          'account-balance events.',
       );
     } catch (error) {
       this.logger.error(

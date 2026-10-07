@@ -101,7 +101,6 @@
   "GET /v1/admin/settings/assistant",
   "GET /v1/admin/settings/scheduled-jobs",
   "GET /v1/admin/settings/smtp",
-  "GET /v1/admin/settings/trading",
   "GET /v1/admin/signup-links",
   "GET /v1/admin/signup-links/me",
   "GET /v1/admin/stats/kyc-trend",
@@ -320,7 +319,6 @@
   "PUT /v1/admin/settings/assistant",
   "PUT /v1/admin/settings/scheduled-jobs/{key}",
   "PUT /v1/admin/settings/smtp",
-  "PUT /v1/admin/settings/trading",
   "PUT /v1/assistant/messages/{id}/feedback",
   "PUT /v1/profile/locale"
 ]
