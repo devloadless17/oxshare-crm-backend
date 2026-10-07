@@ -128,31 +128,6 @@ export function accrualWindow(raw: string | null | undefined): AccrualWindow {
   return Number.isNaN(at.getTime()) ? { mode: 'unset' } : { mode: 'from', at };
 }
 
-/**
- * The platform's go-live: no trade dated before it earns commission, whatever
- * `IB_ACCRUAL_START` says (owner, 7 Oct 2026: "only the deals from yesterday
- * and so on" — midnight 6 Oct in Beirut, which is also the MT5 server's clock).
- */
-export const PLATFORM_GO_LIVE = new Date('2026-10-06T00:00:00+03:00');
-
-/**
- * The backlog decision, never earlier than go-live. PURE.
- *
- * In CODE rather than in the server's `.env`, because the `.env` is kept by
- * hand on the server and the copy this platform grew up with says `all` —
- * which pays on every deal ever ingested. An earlier instant is raised to the
- * floor, `all` becomes the floor, and so does unset: the owner has decided, so
- * there is no backlog left to hold for. A LATER instant is kept, so the
- * variable can still narrow the window; it can no longer widen it.
- */
-export function clampToGoLive(
-  window: AccrualWindow,
-  goLive: Date = PLATFORM_GO_LIVE,
-): AccrualWindow {
-  if (window.mode === 'from' && window.at >= goLive) return window;
-  return { mode: 'from', at: goLive };
-}
-
 /** What one drain of the queue did. Every deal lands in exactly one bucket. */
 export interface DealAccrualRun {
   /** Rows the query returned — the size of the batch, not of the backlog. */
@@ -284,13 +259,6 @@ export interface DealAccrualRun {
 export class DealCommissionService {
   private readonly logger = new Logger(DealCommissionService.name);
 
-  /**
-   * No trade before this earns commission (`clampToGoLive`). A field rather
-   * than a constant read inline so `ib-accrual-backlog.spec.ts` can lower it
-   * to the epoch and keep proving the backlog rules the floor sits on top of.
-   */
-  goLive: Date = PLATFORM_GO_LIVE;
-
   constructor(
     @Inject(DRIZZLE_DB) private readonly db: Db,
     /*
@@ -355,7 +323,7 @@ export class DealCommissionService {
      * discarded — rather than paying months of ingested history at once. See
      * `accrualWindow` and the holding branch below.
      */
-    const window = clampToGoLive(accrualWindow(process.env['IB_ACCRUAL_START']), this.goLive);
+    const window = accrualWindow(process.env['IB_ACCRUAL_START']);
 
     /*
      * ── WHAT A PARTNER IS PAID ON ──────────────────────────────────────────
