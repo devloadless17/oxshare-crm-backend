@@ -227,6 +227,9 @@ export interface Mt5Deal {
  * taken from the HTTP method rather than from a caller-supplied flag, and for
  * the client-facing screen that made it matter.
  */
+/** The pause before a read's one retry after the bridge answers 503. */
+const UNAVAILABLE_RETRY_MS = 1_500;
+
 @Injectable()
 export class Mt5BridgeClient {
   private readonly logger = new Logger(Mt5BridgeClient.name);
@@ -507,6 +510,8 @@ export class Mt5BridgeClient {
     path: string,
     body?: unknown,
     timeoutMs?: number,
+    /** 1 on the single retry a read gets after a 503 — see below. */
+    attempt = 0,
   ): Promise<T> {
     const baseUrl = this.config.get<string>('MT5_BRIDGE_URL');
     const apiKey = this.config.get<string>('MT5_BRIDGE_API_KEY');
@@ -591,6 +596,30 @@ export class Mt5BridgeClient {
       });
 
       const text = await response.text();
+
+      /*
+       * 503 = MT5 COULD NOT BE ASKED (bridge, 7 Oct 2026): reconnecting after a
+       * network drop, or the one MT5 session busy. The bridge sends nothing to
+       * MT5 before answering it, so for a READ one short pause and one retry
+       * usually turns a ten-second reconnect into an answer instead of an
+       * "unreachable" screen. Never for a write: a write's retry belongs to its
+       * caller, which owns the idempotency key.
+       */
+      if (response.status === 503 && safe && attempt === 0) {
+        clearTimeout(timer);
+        this.logger.warn(`MT5 bridge ${method} ${path} -> 503 (MT5 unavailable); retrying once`);
+        await new Promise((resolve) => setTimeout(resolve, UNAVAILABLE_RETRY_MS));
+        return await this.request<T>(method, path, body, timeoutMs, attempt + 1);
+      }
+
+      if (response.status === 503) {
+        this.logger.warn(`MT5 bridge ${method} ${path} -> 503: ${text.slice(0, 300)}`);
+        throw new ExternalServiceError(
+          `MT5 is temporarily unavailable (${method} ${path}). Nothing was changed; try again in a few seconds.`,
+          undefined,
+          response.status,
+        );
+      }
 
       if (!response.ok) {
         this.logger.error(

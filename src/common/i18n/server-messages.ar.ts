@@ -986,6 +986,8 @@ export const SERVER_MESSAGES_AR: Readonly<Record<string, string>> = {
   'MT5 bridge timed out after {1}ms on {2} {3}. If this was a balance operation its outcome is UNKNOWN — reconcile against the MT5 deal history before retrying, and reuse the SAME idempotency key when you do.':
     'انتهت مهلة جسر MT5 بعد {1}ms للطلب {2} {3}. إن كانت عملية رصيد فنتيجتها غير معروفة — طابقها مع سجل صفقات MT5 قبل إعادة المحاولة.',
   'MT5 bridge unreachable for {1} {2}: {3}': 'تعذّر الوصول إلى جسر MT5 للطلب {1} {2}: {3}',
+  'MT5 is temporarily unavailable ({1} {2}). Nothing was changed; try again in a few seconds.':
+    'خدمة MT5 غير متاحة مؤقتًا ({1} {2}). لم يتغير شيء؛ يُرجى المحاولة مرة أخرى بعد بضع ثوانٍ.',
   'Demo accounts are not available online yet. Please contact support.':
     'الحسابات التجريبية غير متاحة عبر الإنترنت بعد. يُرجى التواصل مع الدعم.',
   'Opening a live account online is not available yet. Please contact support.':
