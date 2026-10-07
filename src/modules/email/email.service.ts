@@ -90,6 +90,14 @@ export class EmailService {
       host: config.host,
       port: config.port,
       secure: config.secure,
+      /*
+       * On 587 (STARTTLS) REQUIRE the upgrade. Without this, nodemailer upgrades
+       * only if the server offers it — so anyone on the path who strips that offer
+       * gets the SMTP password and every reset and invite link in plain text.
+       * Brevo always offers it, so this costs nothing; a host on this machine
+       * (Mailpit in development) speaks plain SMTP and is exempt.
+       */
+      requireTLS: !config.secure && !isLoopback(config.host),
       auth: config.username ? { user: config.username, pass: config.password ?? '' } : undefined,
     });
 
@@ -647,4 +655,9 @@ export class EmailService {
     this.logger.log(`SMTP test email sent to ${to} via ${config.source} configuration`);
     return { source: config.source };
   }
+}
+
+/** A mail server on this machine (Mailpit in development) — the one plain-SMTP case. */
+function isLoopback(host: string): boolean {
+  return ['localhost', '127.0.0.1', '::1'].includes(host.trim().toLowerCase());
 }
