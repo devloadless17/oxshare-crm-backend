@@ -231,12 +231,16 @@
       {
         "key": "client.createdAt",
         "label": "Registered on",
-        "maskable": true
+        "maskable": false,
+        "reason": "The date the account was opened \u2014 a fact about the account, not a personal detail.",
+        "$locked": "Oct 2026 (owner): masking covers the client's personal details only \u2014 fewer special cases, fewer ways to break a screen."
       },
       {
         "key": "client.tags",
         "label": "Client tags",
-        "maskable": true,
+        "maskable": false,
+        "reason": "Tags decide which clients each administrator sees and drive the client list's filters, so every screen needs them. They are labels, not personal details.",
+        "$locked": "Oct 2026 (owner): masking covers the client's personal details only \u2014 fewer special cases, fewer ways to break a screen.",
         "$why": "Segmentation labels ('high risk', 'complaint pending') say more about how the business sees a client than most single fields do, and under tag scoping they also reveal which desks handle them."
       },
       {
@@ -255,7 +259,9 @@
       {
         "key": "kyc.stepData",
         "label": "Custom step answers",
-        "maskable": true,
+        "maskable": false,
+        "reason": "The broker's own extra verification questions. The client's personal details inside verification are hidden by their own fields (name, date of birth, address and so on).",
+        "$locked": "Oct 2026 (owner): masking covers the client's personal details only \u2014 fewer special cases, fewer ways to break a screen.",
         "$comment": "Answers to steps a broker configured beyond the four canonical ones, keyed by slug. ONE entry rather than one per field because the fields are invented after this file ships: a role that may not read them loses all of them, which is coarser than kyc.personalInfo and is the guarantee that can actually be kept."
       }
     ]
@@ -280,7 +286,9 @@
       {
         "key": "client.partnerApplication",
         "label": "Partner application answers",
-        "maskable": true,
+        "maskable": false,
+        "reason": "What a client wrote when applying to become a partner \u2014 reviewed on Partner applications, not a personal detail.",
+        "$locked": "Oct 2026 (owner): masking covers the client's personal details only \u2014 fewer special cases, fewer ways to break a screen.",
         "$comment": "The free text a client writes when applying to be an introducing broker: their motivation and website. Free text holds whatever the client chose to tell us (D-82).",
         "aliases": ["ibApplication.motivation", "ibApplication.website"]
       }

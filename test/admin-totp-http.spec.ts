@@ -199,6 +199,20 @@ describe('enrolment — scan the QR code, confirm one code', () => {
     expect(rows[0].totp_secret).toBeNull();
   });
 
+  it('two setup calls at once show the SAME secret — the one stored', async () => {
+    // A double render, a refresh or a double click races two setups. Each used to
+    // write its own secret, so the QR code on screen could be the one the database
+    // no longer held and every code was "not correct" (found by e2e, Oct 2026).
+    await forget(MASTER.email);
+    const challengeToken = tokenOf(await login(MASTER).expect(200));
+    const answers = await Promise.all([1, 2, 3, 4].map(() => setup(challengeToken).expect(200)));
+    const secrets = new Set(answers.map((a) => secretOf(a)));
+    expect(secrets.size).toBe(1);
+    await awayFromBoundary();
+    const [only] = [...secrets];
+    await verify(challengeToken, codeNow(only)).expect(200);
+  });
+
   it('refuses a code before any QR code was shown', async () => {
     await forget(MASTER.email);
     const challengeToken = tokenOf(await login(MASTER).expect(200));
@@ -217,14 +231,16 @@ describe('enrolment — scan the QR code, confirm one code', () => {
     expect(row.totpSecret).toBeNull();
   });
 
-  it('only the NEWEST QR code finishes enrolment', async () => {
+  it('shows the SAME QR code until it is confirmed — a reload or a new sign-in wastes no scan', async () => {
     await forget(MASTER.email);
-    const challengeToken = tokenOf(await login(MASTER).expect(200));
-    const old = secretOf(await setup(challengeToken).expect(200));
-    const fresh = secretOf(await setup(challengeToken).expect(200));
-    expect(fresh).not.toBe(old);
-    await verify(challengeToken, codeNow(old)).expect(401);
-    await verify(challengeToken, codeNow(fresh)).expect(200);
+    const first = tokenOf(await login(MASTER).expect(200));
+    const scanned = secretOf(await setup(first).expect(200));
+    // A reload of the setup screen…
+    expect(secretOf(await setup(first).expect(200))).toBe(scanned);
+    // …and "Back to sign in" then signing in again: still the QR already in the app.
+    const second = tokenOf(await login(MASTER).expect(200));
+    expect(secretOf(await setup(second).expect(200))).toBe(scanned);
+    await verify(second, codeNow(scanned)).expect(200);
   });
 
   it('a right code confirms the app, starts the session and is audited', async () => {
@@ -337,14 +353,21 @@ describe('every sign-in after enrolment — the code from the app', () => {
 describe("resetting another administrator's authenticator (lost phone)", () => {
   it('a peer master resets it; the next sign-in shows a new QR code; audited', async () => {
     await forget(PEER.email);
-    await enrol(PEER);
+    const peerSecretBeforeReset = await enrol(PEER);
     const master = await actingAs(ctx, 'admin', MASTER);
     const res = await master.post(`/v1/admin/users/${ids.peer}/totp/reset`).expect(200);
     expect(res.body.message).toMatch(/new one at their next sign-in/i);
 
+    const before = await ctx.db.pool.query('SELECT totp_secret FROM admins WHERE id = $1', [
+      ids.peer,
+    ]);
+    expect(before.rows[0].totp_secret).toBeNull();
+
     const next = await login(PEER).expect(200);
     expect(next.body.step).toBe('totp_setup');
     const qr = await setup(tokenOf(next)).expect(200);
+    // A reset is a NEW app entry, never the old secret coming back.
+    expect(secretOf(qr)).not.toBe(peerSecretBeforeReset);
     await verify(tokenOf(next), codeNow(secretOf(qr))).expect(200);
 
     const rows = await ctx.db.db

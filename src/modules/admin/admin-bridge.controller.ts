@@ -53,7 +53,7 @@ export class AdminBridgeController {
 
   @Get('outbox')
   @UseGuards(PermissionsGuard, FullSightGuard)
-  @RequirePermissions('trading.view')
+  @RequirePermissions('mt5.bridge.view')
   /*
    * Stated for all three routes here, and the reason is the same one: there is
    * no query to attach a predicate to. Every route in this controller is a
@@ -95,7 +95,7 @@ export class AdminBridgeController {
 
   @Get('operations')
   @UseGuards(PermissionsGuard, FullSightGuard)
-  @RequirePermissions('trading.view')
+  @RequirePermissions('mt5.bridge.view')
   @NotClientScoped(
     'Passthrough to the bridge HTTP API; reads no CRM rows, so there is no column to scope. ' +
       'The payload does name client logins — see the note on `outbox`.' +
@@ -123,7 +123,7 @@ export class AdminBridgeController {
 
   @Get('logs')
   @UseGuards(PermissionsGuard, FullSightGuard)
-  @RequirePermissions('trading.view')
+  @RequirePermissions('mt5.bridge.view')
   @NotClientScoped(
     'Passthrough to the bridge HTTP API; reads no CRM rows, so there is no column to scope. ' +
       'The log text can mention client logins — see the note on `outbox`.' +

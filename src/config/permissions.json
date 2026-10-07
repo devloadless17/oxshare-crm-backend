@@ -1,471 +1,779 @@
 {
   "clients": {
-    "moduleName": "Clients",
-    "description": "The client directory and one client's profile. Clients register themselves and are never deleted — every ledger row and audit entry has to keep resolving to a name — so this module has no create and no delete.\n\n`clients.edit` and `clients.email` are DELIBERATELY SEPARATE, and the split is a security boundary rather than tidiness. Correcting a misspelled surname is clerical work a support desk does daily. Changing the address an account signs in with is an account-takeover primitive: set it to your own, run a password reset, and the balance is yours. Granting the first must not silently grant the second, so the everyday role carries `clients.edit` alone and `clients.email` is handed to the few people who handle lockouts.",
+    "group": "clients",
+    "moduleName": "All clients",
+    "description": "The client list and each client's profile.",
     "permissions": [
       {
         "key": "clients.view",
-        "label": "View Clients"
+        "label": "See clients and their profiles",
+        "opens": ["/clients"]
       },
       {
         "key": "clients.edit",
-        "label": "Edit Client Profile"
+        "label": "Edit a client's details",
+        "requires": ["clients.view"]
       },
       {
         "key": "clients.email",
-        "label": "Change Client Sign-in Email"
+        "label": "Change a client's sign-in email",
+        "requires": ["clients.view"]
       },
       {
         "key": "clients.referrer.set",
-        "label": "Record a Missing Referring Partner"
+        "label": "Set a client's introducing partner",
+        "requires": ["clients.view"]
       },
       {
         "key": "clients.suspend",
-        "label": "Suspend / Restore Client Access"
+        "label": "Suspend or restore a client's access",
+        "requires": ["clients.view"]
       },
       {
         "key": "clients.tag",
-        "label": "Assign / Unassign Tags on a Client"
+        "label": "Add or remove a client's tags",
+        "requires": ["clients.view"]
       },
       {
         "key": "clients.bulk",
-        "label": "Change Many Clients at Once (bulk tagging)"
+        "label": "Tag many clients at once",
+        "requires": ["clients.tag"]
       }
-    ]
-  },
-  "admins": {
-    "moduleName": "Administrators",
-    "description": "The administrator directory, invitations and role assignment. Separate from clients on purpose: one key used to open both lists, so granting somebody the client list also handed them the admin directory.",
-    "permissions": [
-      {
-        "key": "admins.view",
-        "label": "View Administrators & Pending Invites"
-      },
-      {
-        "key": "admins.create",
-        "label": "Invite an Administrator & Revoke an Invite"
-      },
-      {
-        "key": "admins.edit",
-        "label": "Rename an Administrator & Assign Their Role"
-      },
-      {
-        "key": "admins.suspend",
-        "label": "Revoke / Restore Administrator Access"
-      },
-      {
-        "key": "admins.scope",
-        "label": "Set Which Client Tags an Administrator Is Limited To"
-      },
-      {
-        "key": "admins.reset",
-        "label": "Email an Administrator a Password Reset Link"
-      }
-    ]
-  },
-  "roles": {
-    "moduleName": "Roles & Permissions",
-    "description": "Roles are the only source of access in this system — there is no role above another and no wildcard. Editing a role takes effect on the next request from every administrator holding it.",
-    "permissions": [
-      {
-        "key": "roles.view",
-        "label": "View Roles & the Permission Matrix"
-      },
-      {
-        "key": "roles.create",
-        "label": "Create a Role"
-      },
-      {
-        "key": "roles.edit",
-        "label": "Edit a Role's Name & Permissions"
-      },
-      {
-        "key": "roles.delete",
-        "label": "Delete a Role"
-      }
-    ]
+    ],
+    "notes": "The client directory and one client's profile. Clients register themselves and are never deleted — every ledger row and audit entry has to keep resolving to a name — so this module has no create and no delete.\n\n`clients.edit` and `clients.email` are DELIBERATELY SEPARATE, and the split is a security boundary rather than tidiness. Correcting a misspelled surname is clerical work a support desk does daily. Changing the address an account signs in with is an account-takeover primitive: set it to your own, run a password reset, and the balance is yours. Granting the first must not silently grant the second, so the everyday role carries `clients.edit` alone and `clients.email` is handed to the few people who handle lockouts."
   },
   "kyc": {
-    "moduleName": "KYC & Verification",
-    "description": "The review queue, the documents clients upload, and the dynamic field builder behind them. Reviewing and configuring are separate: a reviewer decides on submissions, an administrator decides what is asked for.",
+    "group": "clients",
+    "moduleName": "KYC review",
+    "description": "Identity verifications waiting for a decision.",
     "permissions": [
       {
         "key": "kyc.view",
-        "label": "View Submissions & the Review Queue"
+        "label": "See the KYC review queue",
+        "opens": ["/kyc"]
       },
       {
         "key": "kyc.documents.view",
-        "label": "Open Submitted Documents"
+        "label": "Open clients' identity documents",
+        "requires": ["kyc.view"]
       },
       {
         "key": "kyc.review",
-        "label": "Claim, Approve & Reject Submissions"
+        "label": "Approve or reject verifications",
+        "requires": ["kyc.view"]
       },
       {
         "key": "kyc.claim.override",
-        "label": "Hand Back a Submission Another Reviewer Holds"
+        "label": "Take over a verification another reviewer holds",
+        "requires": ["kyc.review"]
       },
       {
         "key": "kyc.identity.correct",
-        "label": "Correct Identity Details on an Approved Submission"
+        "label": "Correct a verified client's details",
+        "requires": ["kyc.view"]
+      }
+    ],
+    "notes": "The review queue, the documents clients upload, and the dynamic field builder behind them. Reviewing and configuring are separate: a reviewer decides on submissions, an administrator decides what is asked for."
+  },
+  "trading": {
+    "group": "clients",
+    "moduleName": "Trading accounts",
+    "description": "Clients' MT5 trading accounts.",
+    "permissions": [
+      {
+        "key": "trading.view",
+        "label": "See trading accounts",
+        "opens": ["/trading-accounts"]
       },
       {
-        "key": "kyc.create",
-        "label": "Create Dynamic KYC Fields"
+        "key": "trading.create",
+        "label": "Open, link and assign MT5 accounts",
+        "requires": ["trading.view"]
       },
       {
-        "key": "kyc.edit",
-        "label": "Edit Dynamic KYC Fields"
+        "key": "trading.deposit",
+        "label": "Deposit to a trading account (also needs Add funds to a client's wallet)",
+        "requires": ["trading.view"]
       },
       {
-        "key": "kyc.delete",
-        "label": "Delete Dynamic KYC Fields"
+        "key": "trading.withdraw",
+        "label": "Withdraw from a trading account",
+        "requires": ["trading.view"]
+      }
+    ],
+    "notes": "No longer read-only: the MT5 bridge is live, so the console can open an account on the broker's server and move its balance. The three write keys are separate because they are three different powers — opening an account costs nothing, crediting one is giving away money, and debiting one is taking it. An operator who onboards clients needs the first and neither of the others."
+  },
+  "ib_partners": {
+    "group": "introducing-brokers",
+    "moduleName": "Partners",
+    "description": "The introducing brokers and their place in the partner tree.",
+    "permissions": [
+      {
+        "key": "ib.partners.view",
+        "label": "See partners",
+        "opens": ["/partners"]
+      },
+      {
+        "key": "ib.partners.edit",
+        "label": "Change a partner's level, parent or terms",
+        "requires": ["ib.partners.view"]
+      },
+      {
+        "key": "ib.partners.suspend",
+        "label": "Suspend or restore a partner",
+        "requires": ["ib.partners.view"]
+      }
+    ],
+    "notes": "Two objects share this module and the keys go one level deeper because of it: editing a LEVEL changes what every partner standing on it earns, while moving one partner between levels changes what one partner earns.\n\n`ib.programs.*` were removed in migration 0112 with the commission catalogue they governed, and `ib.levels.*` are back in their place — the ladder is the surface that replaced the catalogue, which is the swap 0104 made in the other direction. Whoever held the programme keys was granted the level equivalent, because silently narrowing somebody’s access during a refactor is a privilege change nobody asked for."
+  },
+  "ib_applications": {
+    "group": "introducing-brokers",
+    "moduleName": "Partner applications",
+    "description": "Clients asking to become partners.",
+    "permissions": [
+      {
+        "key": "ib.applications.view",
+        "label": "See partner applications",
+        "opens": ["/approvals/ib"]
+      },
+      {
+        "key": "ib.approve",
+        "label": "Approve partner applications",
+        "requires": ["ib.applications.view"]
+      },
+      {
+        "key": "ib.reject",
+        "label": "Reject partner applications",
+        "requires": ["ib.applications.view"]
       }
     ]
   },
-  "wallets": {
-    "moduleName": "Client Wallets",
-    "description": "Client holdings, opening a wallet, and manual credits. Crediting and closing are separate keys because adding money and removing an account are not one power — and a credit is a real ledger movement (§6), not an edit to a number.",
+  "ib_referrals": {
+    "group": "introducing-brokers",
+    "moduleName": "Referrals",
+    "description": "Every client a partner brought in, and who introduced them.",
     "permissions": [
       {
-        "key": "wallets.view",
-        "label": "View Client Wallets & Balances"
-      },
-      {
-        "key": "wallets.create",
-        "label": "Open a Wallet for a Client"
-      },
-      {
-        "key": "wallets.credit",
-        "label": "Add Funds to a Client Wallet"
-      },
-      {
-        "key": "wallets.debit",
-        "label": "Withdraw Funds from a Client Wallet"
-      },
-      {
-        "key": "wallets.delete",
-        "label": "Close an Empty Wallet"
+        "key": "ib.referrals.view",
+        "label": "See referrals",
+        "opens": ["/referrals"]
       }
     ]
   },
-  "withdrawals": {
-    "moduleName": "Withdrawals & Payouts",
-    "description": "Reviewing and paying out client withdrawal requests. Approve and settle are SEPARATE keys on purpose (R-5.4): approval says a payout may be released, settlement releases it. While both required the same permission, 'two people must be involved in a payout' was unexpressible — one admin could authorise their own instruction and pay it out in the same minute, with the audit log showing one name on both rows.",
+  "ib_commissions": {
+    "group": "introducing-brokers",
+    "moduleName": "Commission payouts",
+    "description": "What each partner earned, trade by trade.",
     "permissions": [
       {
-        "key": "withdrawals.view",
-        "label": "View Withdrawal Requests"
+        "key": "ib.commissions.view",
+        "label": "See commission payouts",
+        "opens": ["/commissions"]
       },
       {
-        "key": "withdrawals.approve",
-        "label": "Approve / Reject Withdrawals"
-      },
-      {
-        "key": "withdrawals.settle",
-        "label": "Mark Withdrawals Paid"
-      },
-      {
-        "key": "transfers.abandon",
-        "label": "Release a stuck transfer"
+        "key": "ib.commissions.reverse",
+        "label": "Reverse a commission payout",
+        "requires": ["ib.commissions.view"]
       }
     ]
   },
-  "deposits": {
-    "moduleName": "Offline Deposits",
-    "description": "Reviewing deposits a client paid OUTSIDE the platform — OMT, a bank transfer, cash — and credited on the strength of a receipt they uploaded. Separate from wallets.credit on purpose: approving here is BOUNDED (the amount is the client's own declaration against a reference that reconciles to a bank line), while wallets.credit types any amount into any wallet. A deposit clerk needs the first and must not be handed the second. Approve and reject are separate keys for the R-5.4 reason: refusing a declaration moves no money, crediting one does.",
+  "ib_commission_types": {
+    "group": "introducing-brokers",
+    "moduleName": "Commission types",
+    "description": "The rate cards partner levels take their share of.",
     "permissions": [
       {
-        "key": "deposits.view",
-        "label": "View Offline Deposit Requests"
+        "key": "ib.commission_types.view",
+        "label": "See commission types",
+        "opens": ["/commission-types"]
       },
       {
-        "key": "deposits.proofs.view",
-        "label": "Open a Deposit Payment Receipt"
+        "key": "ib.commission_types.create",
+        "label": "Add commission types",
+        "requires": ["ib.commission_types.view"]
       },
       {
-        "key": "deposits.approve",
-        "label": "Approve a Deposit & Credit the Wallet"
+        "key": "ib.commission_types.edit",
+        "label": "Edit commission types",
+        "requires": ["ib.commission_types.view"]
       },
       {
-        "key": "deposits.reject",
-        "label": "Reject a Deposit"
+        "key": "ib.commission_types.delete",
+        "label": "Delete commission types",
+        "requires": ["ib.commission_types.view"]
+      }
+    ]
+  },
+  "ib_levels": {
+    "group": "introducing-brokers",
+    "moduleName": "Partner levels",
+    "description": "The ladder that sets what partners on each level earn.",
+    "permissions": [
+      {
+        "key": "ib.levels.view",
+        "label": "See partner levels",
+        "opens": ["/ib-levels"]
+      },
+      {
+        "key": "ib.levels.create",
+        "label": "Add partner levels",
+        "requires": ["ib.levels.view"]
+      },
+      {
+        "key": "ib.levels.edit",
+        "label": "Edit partner levels",
+        "requires": ["ib.levels.view"]
+      },
+      {
+        "key": "ib.levels.delete",
+        "label": "Delete partner levels",
+        "requires": ["ib.levels.view"]
+      }
+    ]
+  },
+  "agencies": {
+    "group": "introducing-brokers",
+    "moduleName": "Agencies",
+    "description": "The agencies partners are appointed under, and the products each may sell.",
+    "permissions": [
+      {
+        "key": "agencies.view",
+        "label": "See agencies",
+        "opens": ["/agencies"]
+      },
+      {
+        "key": "agencies.create",
+        "label": "Add agencies",
+        "requires": ["agencies.view"]
+      },
+      {
+        "key": "agencies.edit",
+        "label": "Edit agencies",
+        "requires": ["agencies.view"]
+      },
+      {
+        "key": "agencies.delete",
+        "label": "Delete agencies",
+        "requires": ["agencies.view"]
       }
     ]
   },
   "transactions": {
-    "moduleName": "Financial Transactions",
-    "description": "The platform-wide money-movement list: every deposit, withdrawal and internal transfer, across every client, with the client named on each row. Its own key rather than `withdrawals.view` for the reason the ledger got `ledger.view`: granting payout review must not also hand over every client deposit and every partner transfer on the platform. Its own key rather than `ledger.view` because the two screens answer different questions — the ledger is the append-only accounting record under Audit & Reconciliation, while this list shows lifecycle states, client identity and payment rails, and coupling them would mean granting either screen always grants both.",
+    "group": "finance",
+    "moduleName": "All transactions",
+    "description": "Every money movement on the platform.",
     "permissions": [
       {
         "key": "transactions.view",
-        "label": "View All Money Movements"
+        "label": "See all transactions",
+        "opens": ["/financial"]
+      },
+      {
+        "key": "transfers.abandon",
+        "label": "Cancel a stuck transfer",
+        "requires": ["transactions.view"]
       }
-    ]
+    ],
+    "notes": "The platform-wide money-movement list: every deposit, withdrawal and internal transfer, across every client, with the client named on each row. Its own key rather than `withdrawals.view` for the reason the ledger got `ledger.view`: granting payout review must not also hand over every client deposit and every partner transfer on the platform. Its own key rather than `ledger.view` because the two screens answer different questions — the ledger is the append-only accounting record under Audit & Reconciliation, while this list shows lifecycle states, client identity and payment rails, and coupling them would mean granting either screen always grants both."
   },
-  "trading": {
-    "moduleName": "Trading Accounts",
-    "description": "No longer read-only: the MT5 bridge is live, so the console can open an account on the broker's server and move its balance. The three write keys are separate because they are three different powers — opening an account costs nothing, crediting one is giving away money, and debiting one is taking it. An operator who onboards clients needs the first and neither of the others.",
+  "deposits": {
+    "group": "finance",
+    "moduleName": "Deposits",
+    "description": "Deposits waiting for a person to approve them.",
     "permissions": [
       {
-        "key": "trading.view",
-        "label": "View Trading Accounts"
+        "key": "deposits.view",
+        "label": "See deposit requests",
+        "opens": ["/approvals/deposits"]
       },
       {
-        "key": "trading.create",
-        "label": "Open a Trading Account on MT5"
+        "key": "deposits.proofs.view",
+        "label": "Open deposit receipts",
+        "requires": ["deposits.view"]
       },
       {
-        "key": "trading.deposit",
-        "label": "Credit a Trading Account"
+        "key": "deposits.approve",
+        "label": "Approve deposits and credit the wallet",
+        "requires": ["deposits.view"]
       },
       {
-        "key": "trading.withdraw",
-        "label": "Debit a Trading Account"
+        "key": "deposits.reject",
+        "label": "Reject deposits",
+        "requires": ["deposits.view"]
       }
-    ]
+    ],
+    "notes": "Reviewing deposits a client paid OUTSIDE the platform — OMT, a bank transfer, cash — and credited on the strength of a receipt they uploaded. Separate from wallets.credit on purpose: approving here is BOUNDED (the amount is the client's own declaration against a reference that reconciles to a bank line), while wallets.credit types any amount into any wallet. A deposit clerk needs the first and must not be handed the second. Approve and reject are separate keys for the R-5.4 reason: refusing a declaration moves no money, crediting one does."
   },
-  "ib": {
-    "moduleName": "Partners & IB",
-    "description": "Two objects share this module and the keys go one level deeper because of it: editing a LEVEL changes what every partner standing on it earns, while moving one partner between levels changes what one partner earns.\n\n`ib.programs.*` were removed in migration 0112 with the commission catalogue they governed, and `ib.levels.*` are back in their place — the ladder is the surface that replaced the catalogue, which is the swap 0104 made in the other direction. Whoever held the programme keys was granted the level equivalent, because silently narrowing somebody’s access during a refactor is a privilege change nobody asked for.",
+  "withdrawals": {
+    "group": "finance",
+    "moduleName": "Withdrawals",
+    "description": "Withdrawal requests waiting to be paid.",
     "permissions": [
       {
-        "key": "ib.view",
-        "label": "View Partners, Applications & Commission Levels"
+        "key": "withdrawals.view",
+        "label": "See withdrawal requests",
+        "opens": ["/transactions"]
       },
       {
-        "key": "ib.approve",
-        "label": "Approve Partner Applications"
+        "key": "withdrawals.settle",
+        "label": "Approve and pay withdrawals",
+        "requires": ["withdrawals.view"]
       },
       {
-        "key": "ib.reject",
-        "label": "Reject Partner Applications"
-      },
-      {
-        "key": "ib.partners.edit",
-        "label": "Change a Partner's Level or Parent"
-      },
-      {
-        "key": "ib.partners.suspend",
-        "label": "Deactivate / Reactivate a Partner"
-      },
-      {
-        "key": "ib.commissions.view",
-        "label": "View Accrued Commission"
-      },
-      {
-        "key": "ib.commissions.reverse",
-        "label": "Reverse an accrual (claw back commission)"
-      },
-      {
-        "key": "ib.levels.create",
-        "label": "Create commission levels"
-      },
-      {
-        "key": "ib.levels.edit",
-        "label": "Edit commission levels"
-      },
-      {
-        "key": "ib.levels.delete",
-        "label": "Delete commission levels"
-      },
-      {
-        "key": "ib.commission_types.create",
-        "label": "Create commission types"
-      },
-      {
-        "key": "ib.commission_types.edit",
-        "label": "Edit commission types"
-      },
-      {
-        "key": "ib.commission_types.delete",
-        "label": "Delete commission types"
+        "key": "withdrawals.approve",
+        "label": "Reject or cancel withdrawals, and resend a payout",
+        "requires": ["withdrawals.view"]
       }
-    ]
+    ],
+    "notes": "Reviewing and paying out client withdrawal requests. Approve and settle are SEPARATE keys on purpose (R-5.4): approval says a payout may be released, settlement releases it. While both required the same permission, 'two people must be involved in a payout' was unexpressible — one admin could authorise their own instruction and pay it out in the same minute, with the audit log showing one name on both rows."
   },
-  "tags": {
-    "moduleName": "Client Tags",
-    "description": "The tag vocabulary itself. Deleting a tag is a privilege change rather than a label edit — an administrator restricted to it loses that restriction, and an empty scope means unrestricted — so delete is its own key. Applying a tag TO a client is clients.tag.",
+  "wallets": {
+    "group": "finance",
+    "moduleName": "Wallets",
+    "description": "Clients' wallets and balances.",
     "permissions": [
       {
-        "key": "tags.view",
-        "label": "View Tags"
+        "key": "wallets.view",
+        "label": "See wallets and balances",
+        "opens": ["/wallets"]
       },
       {
-        "key": "tags.create",
-        "label": "Create a Tag"
+        "key": "wallets.create",
+        "label": "Open a wallet for a client",
+        "requires": ["wallets.view"]
       },
       {
-        "key": "tags.edit",
-        "label": "Rename & Recolour a Tag"
+        "key": "wallets.credit",
+        "label": "Add funds to a client's wallet",
+        "requires": ["wallets.view"]
       },
       {
-        "key": "tags.delete",
-        "label": "Delete a Tag"
+        "key": "wallets.debit",
+        "label": "Withdraw funds from a client's wallet",
+        "requires": ["wallets.view"]
+      },
+      {
+        "key": "wallets.delete",
+        "label": "Close an empty wallet",
+        "requires": ["wallets.view"]
+      }
+    ],
+    "notes": "Client holdings, opening a wallet, and manual credits. Crediting and closing are separate keys because adding money and removing an account are not one power — and a credit is a real ledger movement (§6), not an edit to a number."
+  },
+  "ledger": {
+    "group": "finance",
+    "moduleName": "Ledger",
+    "description": "The accounting record of every balance change.",
+    "permissions": [
+      {
+        "key": "ledger.view",
+        "label": "See the ledger",
+        "opens": ["/ledger"]
+      }
+    ],
+    "notes": "The record of who did what, the append-only ledger, and the reconciliation report. Read-only throughout — none of these screens writes anything, so none has a write key.\n\n`ledger.view` is its OWN key rather than riding on `withdrawals.view`, which is what the endpoint used to require. The ledger holds six entry types — deposit, withdrawal, commission, rebate, payout and adjustment — and only one of them is a withdrawal, so gating it on the withdrawal queue handed anyone reviewing payouts every deposit and every partner commission on the platform. Reading every money movement is its own power, on the same reasoning that keeps `wallets.credit` apart from `wallets.delete`."
+  },
+  "reconciliation": {
+    "group": "finance",
+    "moduleName": "Reconciliation",
+    "description": "Whether the books balance. Shows every client.",
+    "permissions": [
+      {
+        "key": "reconciliation.view",
+        "label": "See the reconciliation report",
+        "opens": ["/reconciliation"]
       }
     ]
   },
   "currencies": {
+    "group": "finance",
     "moduleName": "Currencies",
-    "description": "Its own module rather than a corner of settings: a currency is a money object, and granting somebody the support email address should not also let them delete one.",
+    "description": "The currencies wallets can hold.",
     "permissions": [
       {
         "key": "currencies.view",
-        "label": "View Currencies"
+        "label": "See currencies",
+        "opens": ["/currencies"]
       },
       {
         "key": "currencies.create",
-        "label": "Add a Currency"
+        "label": "Add currencies",
+        "requires": ["currencies.view"]
       },
       {
         "key": "currencies.edit",
-        "label": "Edit a Currency"
+        "label": "Edit currencies",
+        "requires": ["currencies.view"]
       },
       {
         "key": "currencies.delete",
-        "label": "Delete a Currency"
+        "label": "Delete currencies",
+        "requires": ["currencies.view"]
+      }
+    ],
+    "notes": "Its own module rather than a corner of settings: a currency is a money object, and granting somebody the support email address should not also let them delete one."
+  },
+  "products": {
+    "group": "trading",
+    "moduleName": "Products",
+    "description": "The account types the broker sells and the MT5 groups behind them.",
+    "permissions": [
+      {
+        "key": "products.view",
+        "label": "See products",
+        "opens": ["/products"]
+      },
+      {
+        "key": "products.create",
+        "label": "Add products",
+        "requires": ["products.view"]
+      },
+      {
+        "key": "products.edit",
+        "label": "Edit products",
+        "requires": ["products.view"]
+      },
+      {
+        "key": "products.delete",
+        "label": "Delete products",
+        "requires": ["products.view"]
       }
     ]
   },
   "leverages": {
+    "group": "trading",
     "moduleName": "Leverages",
-    "description": "The leverage ladder a client may open a trading account on. Its own module rather than a corner of settings, for the reason currencies are: leverage is a RISK control and a regulatory answer, and granting somebody the support email address should not also let them withdraw 1:500. There is no separate 'withdraw' key — taking a rung off the menu is an edit (`enabled: false`), and it is the action an operator almost always wants, because deleting is refused while any account is trading at that ratio.",
+    "description": "The leverage options clients can choose.",
     "permissions": [
       {
         "key": "leverages.view",
-        "label": "View Leverages"
+        "label": "See leverages",
+        "opens": ["/leverages"]
       },
       {
         "key": "leverages.create",
-        "label": "Add a Leverage"
+        "label": "Add leverages",
+        "requires": ["leverages.view"]
       },
       {
         "key": "leverages.edit",
-        "label": "Edit / Withdraw a Leverage"
+        "label": "Edit or hide leverages",
+        "requires": ["leverages.view"]
       },
       {
         "key": "leverages.delete",
-        "label": "Delete a Leverage"
+        "label": "Delete leverages",
+        "requires": ["leverages.view"]
       }
-    ]
+    ],
+    "notes": "The leverage ladder a client may open a trading account on. Its own module rather than a corner of settings, for the reason currencies are: leverage is a RISK control and a regulatory answer, and granting somebody the support email address should not also let them withdraw 1:500. There is no separate 'withdraw' key — taking a rung off the menu is an edit (`enabled: false`), and it is the action an operator almost always wants, because deleting is refused while any account is trading at that ratio."
   },
-  "externallinks": {
-    "moduleName": "External Links",
-    "description": "The links the client portal shows in its sidebar — an economic calendar, a help centre, a Telegram channel. Its own module rather than a corner of settings, for the reason currencies and leverages are: whatever holds this key can put a destination of its choosing in front of every client on the platform, and that should not arrive attached to a grant somebody made about the support email address. No 'withdraw' key — taking a link off the client menu is an edit (`enabled: false`), which keeps its title, description and position for when it comes back; deleting is how a link goes away for good.",
+  "mt5": {
+    "group": "trading",
+    "moduleName": "MT5 groups",
+    "description": "The groups on the MT5 server, and the bridge that connects to it.",
     "permissions": [
       {
-        "key": "externallinks.view",
-        "label": "View External Links"
+        "key": "mt5.groups.view",
+        "label": "See MT5 groups",
+        "opens": ["/mt5-groups"]
       },
       {
-        "key": "externallinks.create",
-        "label": "Add an External Link"
-      },
-      {
-        "key": "externallinks.edit",
-        "label": "Edit / Hide an External Link"
-      },
-      {
-        "key": "externallinks.delete",
-        "label": "Delete an External Link"
-      }
-    ]
-  },
-  "payments": {
-    "moduleName": "Payment Methods",
-    "description": "How clients can put money in — the methods offered on the deposit screen, their instructions, and the account details money is sent to. No delete key: `payments.edit` deletes only a method NO transaction references (a typo, a test row); a used one is disabled rather than removed, because its deposits must keep naming it.",
-    "permissions": [
-      {
-        "key": "payments.view",
-        "label": "View Payment Methods"
-      },
-      {
-        "key": "payments.create",
-        "label": "Add a Payment Method"
-      },
-      {
-        "key": "payments.edit",
-        "label": "Edit a Payment Method"
-      }
-    ]
-  },
-  "paymentproviders": {
-    "moduleName": "Payment Providers",
-    "description": "The systems that move the money behind the methods: Rival, the desk itself, and each provider added after them. Their connection settings, secrets, environment (live or sandbox) and on/off switch, and what each last reported. Apart from `payments.*` on purpose: a provider's settings decide where every payment and payout instruction goes, and its secrets can move money, while a payment method only decides what clients are offered. `payments.providers.*` replaced the Rival tab's `settings.rival.*` (0168), and 0177 removed those keys.",
-    "permissions": [
-      {
-        "key": "payments.providers.view",
-        "label": "View Payment Providers"
-      },
-      {
-        "key": "payments.providers.edit",
-        "label": "Change Payment Provider Connections"
-      }
-    ]
-  },
-  "apikeys": {
-    "moduleName": "API Keys",
-    "description": "Machine credentials for the admin API. Grant create NARROWLY: a key is standing access with no login and no session lifetime, carrying whatever permissions its creator holds, so the power to issue one is close to the power to grant one.",
-    "permissions": [
-      {
-        "key": "apikeys.view",
-        "label": "View API Keys"
-      },
-      {
-        "key": "apikeys.create",
-        "label": "Issue an API Key"
-      },
-      {
-        "key": "apikeys.revoke",
-        "label": "Revoke an API Key"
+        "key": "mt5.bridge.view",
+        "label": "See the MT5 bridge diagnostics",
+        "opens": ["/bridge"]
       }
     ]
   },
   "settings": {
+    "group": "system",
     "moduleName": "Settings",
-    "description": "Operational settings: brand, support contacts, terminal download links, outbound mail and the security controls. A singleton, so there is no create and no delete. The SMTP keys gate the SCREEN — the system sends mail regardless of who holds them.",
+    "description": "Platform settings: platform links, email, scheduled jobs and the assistant.",
     "permissions": [
       {
         "key": "settings.view",
-        "label": "View Settings"
+        "label": "See settings",
+        "opens": ["/settings"]
       },
       {
         "key": "settings.edit",
-        "label": "Change Brand, Contacts & Platform Links"
+        "label": "Edit settings (platform links, scheduled jobs, assistant)",
+        "requires": ["settings.view"]
       },
       {
         "key": "settings.smtp.view",
-        "label": "View the Outbound Mail Tab"
+        "label": "See the email settings",
+        "requires": ["settings.view"]
       },
       {
         "key": "settings.smtp.edit",
-        "label": "Change Outbound Mail Credentials"
+        "label": "Change the email settings",
+        "requires": ["settings.smtp.view"]
+      }
+    ],
+    "notes": "Operational settings: brand, support contacts, terminal download links, outbound mail and the security controls. A singleton, so there is no create and no delete. The SMTP keys gate the SCREEN — the system sends mail regardless of who holds them."
+  },
+  "admins": {
+    "group": "system",
+    "moduleName": "Admin users",
+    "description": "The people who use this console.",
+    "permissions": [
+      {
+        "key": "admins.view",
+        "label": "See admin users and pending invites",
+        "opens": ["/admin-users"]
       },
       {
-        "key": "settings.security.view",
-        "label": "View the Security Tab"
+        "key": "admins.create",
+        "label": "Invite admin users",
+        "requires": ["admins.view"]
       },
       {
-        "key": "settings.security.edit",
-        "label": "Change the Security Controls"
+        "key": "admins.edit",
+        "label": "Edit admin users (name, role, sign-up link)",
+        "requires": ["admins.view"]
+      },
+      {
+        "key": "admins.suspend",
+        "label": "Suspend or restore admin users",
+        "requires": ["admins.view"]
+      },
+      {
+        "key": "admins.scope",
+        "label": "Choose which clients and client details an admin sees",
+        "requires": ["admins.view"]
+      },
+      {
+        "key": "admins.reset",
+        "label": "Reset an admin's password or authenticator",
+        "requires": ["admins.view"]
+      }
+    ],
+    "notes": "The administrator directory, invitations and role assignment. Separate from clients on purpose: one key used to open both lists, so granting somebody the client list also handed them the admin directory."
+  },
+  "roles": {
+    "group": "system",
+    "moduleName": "Roles & permissions",
+    "description": "What each role may see and do.",
+    "permissions": [
+      {
+        "key": "roles.view",
+        "label": "See roles",
+        "opens": ["/roles"]
+      },
+      {
+        "key": "roles.create",
+        "label": "Create roles",
+        "requires": ["roles.view"]
+      },
+      {
+        "key": "roles.edit",
+        "label": "Edit roles",
+        "requires": ["roles.view"]
+      },
+      {
+        "key": "roles.delete",
+        "label": "Delete roles",
+        "requires": ["roles.view"]
+      }
+    ],
+    "notes": "Roles are the only source of access in this system — there is no role above another and no wildcard. Editing a role takes effect on the next request from every administrator holding it."
+  },
+  "paymentproviders": {
+    "group": "system",
+    "moduleName": "Payment providers",
+    "description": "The systems that move money, and their connection details.",
+    "permissions": [
+      {
+        "key": "payments.providers.view",
+        "label": "See payment providers",
+        "opens": ["/payment-providers"]
+      },
+      {
+        "key": "payments.providers.edit",
+        "label": "Edit payment providers (connections and secrets)",
+        "requires": ["payments.providers.view"]
+      }
+    ],
+    "notes": "The systems that move the money behind the methods: Rival, the desk itself, and each provider added after them. Their connection settings, secrets, environment (live or sandbox) and on/off switch, and what each last reported. Apart from `payments.*` on purpose: a provider's settings decide where every payment and payout instruction goes, and its secrets can move money, while a payment method only decides what clients are offered. `payments.providers.*` replaced the Rival tab's `settings.rival.*` (0168), and 0177 removed those keys."
+  },
+  "payments": {
+    "group": "system",
+    "moduleName": "Deposit and withdrawal methods",
+    "description": "The ways clients can deposit and withdraw.",
+    "permissions": [
+      {
+        "key": "payments.view",
+        "label": "See deposit and withdrawal methods",
+        "opens": ["/payment-methods", "/withdrawal-methods"]
+      },
+      {
+        "key": "payments.create",
+        "label": "Add deposit and withdrawal methods",
+        "requires": ["payments.view"]
+      },
+      {
+        "key": "payments.edit",
+        "label": "Edit, hide or delete deposit and withdrawal methods",
+        "requires": ["payments.view"]
+      }
+    ],
+    "notes": "How clients can put money in — the methods offered on the deposit screen, their instructions, and the account details money is sent to. No delete key: `payments.edit` deletes only a method NO transaction references (a typo, a test row); a used one is disabled rather than removed, because its deposits must keep naming it."
+  },
+  "kyc_builder": {
+    "group": "system",
+    "moduleName": "KYC builder",
+    "description": "The verification form clients fill in, and the countries offered.",
+    "permissions": [
+      {
+        "key": "kyc.edit",
+        "label": "Edit the KYC form and offered countries",
+        "opens": ["/kyc/builder"]
+      },
+      {
+        "key": "kyc.create",
+        "label": "Add steps to the KYC form",
+        "requires": ["kyc.edit"]
+      },
+      {
+        "key": "kyc.delete",
+        "label": "Remove steps from the KYC form",
+        "requires": ["kyc.edit"]
       }
     ]
   },
+  "rejection_reasons": {
+    "group": "system",
+    "moduleName": "Rejection reasons",
+    "description": "The reasons reviewers choose from when they turn something down.",
+    "permissions": [
+      {
+        "key": "rejection_reasons.view",
+        "label": "See rejection reasons",
+        "opens": ["/rejection-reasons"]
+      },
+      {
+        "key": "rejection_reasons.create",
+        "label": "Add rejection reasons",
+        "requires": ["rejection_reasons.view"]
+      },
+      {
+        "key": "rejection_reasons.edit",
+        "label": "Edit rejection reasons",
+        "requires": ["rejection_reasons.view"]
+      },
+      {
+        "key": "rejection_reasons.delete",
+        "label": "Delete rejection reasons",
+        "requires": ["rejection_reasons.view"]
+      }
+    ]
+  },
+  "tags": {
+    "group": "system",
+    "moduleName": "Client tags",
+    "description": "The tags used to group clients and limit what admins see.",
+    "permissions": [
+      {
+        "key": "tags.view",
+        "label": "See client tags",
+        "opens": ["/tags"]
+      },
+      {
+        "key": "tags.create",
+        "label": "Add client tags",
+        "requires": ["tags.view"]
+      },
+      {
+        "key": "tags.edit",
+        "label": "Edit client tags",
+        "requires": ["tags.view"]
+      },
+      {
+        "key": "tags.delete",
+        "label": "Delete client tags",
+        "requires": ["tags.view"]
+      }
+    ],
+    "notes": "The tag vocabulary itself. Deleting a tag is a privilege change rather than a label edit — an administrator restricted to it loses that restriction, and an empty scope means unrestricted — so delete is its own key. Applying a tag TO a client is clients.tag."
+  },
+  "externallinks": {
+    "group": "system",
+    "moduleName": "External links",
+    "description": "Links shown in the client portal's sidebar.",
+    "permissions": [
+      {
+        "key": "externallinks.view",
+        "label": "See external links",
+        "opens": ["/external-links"]
+      },
+      {
+        "key": "externallinks.create",
+        "label": "Add external links",
+        "requires": ["externallinks.view"]
+      },
+      {
+        "key": "externallinks.edit",
+        "label": "Edit external links",
+        "requires": ["externallinks.view"]
+      },
+      {
+        "key": "externallinks.delete",
+        "label": "Delete external links",
+        "requires": ["externallinks.view"]
+      }
+    ],
+    "notes": "The links the client portal shows in its sidebar — an economic calendar, a help centre, a Telegram channel. Its own module rather than a corner of settings, for the reason currencies and leverages are: whatever holds this key can put a destination of its choosing in front of every client on the platform, and that should not arrive attached to a grant somebody made about the support email address. No 'withdraw' key — taking a link off the client menu is an edit (`enabled: false`), which keeps its title, description and position for when it comes back; deleting is how a link goes away for good."
+  },
   "audit": {
-    "moduleName": "Audit & Reconciliation",
-    "description": "The record of who did what, the append-only ledger, and the reconciliation report. Read-only throughout — none of these screens writes anything, so none has a write key.\n\n`ledger.view` is its OWN key rather than riding on `withdrawals.view`, which is what the endpoint used to require. The ledger holds six entry types — deposit, withdrawal, commission, rebate, payout and adjustment — and only one of them is a withdrawal, so gating it on the withdrawal queue handed anyone reviewing payouts every deposit and every partner commission on the platform. Reading every money movement is its own power, on the same reasoning that keeps `wallets.credit` apart from `wallets.delete`.",
+    "group": "security",
+    "moduleName": "Audit log",
+    "description": "Who did what, and when.",
     "permissions": [
       {
         "key": "audit.view",
-        "label": "View the Audit Log"
+        "label": "See the audit log",
+        "opens": ["/audit-log"]
+      }
+    ]
+  },
+  "apikeys": {
+    "group": "security",
+    "moduleName": "API keys",
+    "description": "Keys that let other systems use this console's API.",
+    "permissions": [
+      {
+        "key": "apikeys.view",
+        "label": "See API keys",
+        "opens": ["/api-keys"]
       },
       {
-        "key": "ledger.view",
-        "label": "View the Ledger"
+        "key": "apikeys.create",
+        "label": "Create API keys",
+        "requires": ["apikeys.view"]
       },
       {
-        "key": "reconciliation.view",
-        "label": "View the Reconciliation Report"
+        "key": "apikeys.revoke",
+        "label": "Revoke API keys",
+        "requires": ["apikeys.view"]
+      }
+    ],
+    "notes": "Machine credentials for the admin API. Grant create NARROWLY: a key is standing access with no login and no session lifetime, carrying whatever permissions its creator holds, so the power to issue one is close to the power to grant one."
+  },
+  "network": {
+    "group": "security",
+    "moduleName": "Network access",
+    "description": "Which networks may reach this console.",
+    "permissions": [
+      {
+        "key": "settings.security.view",
+        "label": "See network access",
+        "opens": ["/network-access"]
+      },
+      {
+        "key": "settings.security.edit",
+        "label": "Change allowed networks and exemptions",
+        "requires": ["settings.security.view"]
       }
     ]
   }

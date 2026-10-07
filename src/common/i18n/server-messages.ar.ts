@@ -1095,4 +1095,7 @@ export const SERVER_MESSAGES_AR: Readonly<Record<string, string>> = {
   'A method can show at most {1} details.': 'يمكن أن تعرض الطريقة {1} تفاصيل كحد أقصى.',
   'Enter what the client should see.': 'أدخل ما يجب أن يراه العميل.',
   'Keep the value to {1} characters, on one line.': 'اجعل القيمة في حدود {1} حرفًا وعلى سطر واحد.',
+  // The MT5 login lookup refuses a login owned outside the reader's territory (7 Oct 2026).
+  'Login {1} already belongs to a client outside your territory.':
+    'رقم الدخول {1} يخص عميلًا خارج نطاقك.',
 };

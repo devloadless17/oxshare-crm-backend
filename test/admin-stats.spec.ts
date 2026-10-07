@@ -75,7 +75,7 @@ const STATS_PERMISSIONS = [
   'kyc.view',
   'kyc.review',
   'withdrawals.view',
-  'ib.view',
+  'ib.partners.view',
 ] as const;
 
 /*

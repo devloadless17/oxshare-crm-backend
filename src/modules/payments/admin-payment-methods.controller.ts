@@ -242,7 +242,8 @@ export class AdminPaymentMethodsController {
    */
   @Post('logo')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('payments.edit')
+  // Creating a method uploads its logo before the method exists (Oct 2026 audit).
+  @RequirePermissions('payments.create', 'payments.edit')
   @UseInterceptors(
     FileInterceptor('file', {
       storage: memoryStorage(),

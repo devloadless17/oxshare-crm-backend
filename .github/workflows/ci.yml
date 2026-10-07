@@ -84,8 +84,53 @@ jobs:
   # every-file-ran check (assert-suite-complete) are judged on the MERGED run,
   # i.e. the whole suite, exactly as before. Shards switch the floors off only
   # because each holds a twelfth of the suite and would fail them alone.
+  # ── A release of code main has ALREADY tested deploys without testing it again ──
+  #
+  # The release commit carries main's tree byte for byte (`git commit-tree main^{tree}`),
+  # so a green CI run on main for that tree IS this commit's CI: the same code, the same
+  # tests, the same workflow file. Re-running it cost 3–8 minutes per deploy and proved
+  # nothing new. `plan` finds that run by tree; if main's run for the tree is still going
+  # it WAITS for it rather than starting a second one. No green run for the tree (a
+  # `[skip ci]` main commit, a commit made on production, a red or cancelled run, an API
+  # failure) → `tested` is false and this run tests everything itself, as before.
+  # The image is still built only here, on production, from this commit.
+  plan:
+    name: Already tested on main?
+    if: github.ref == 'refs/heads/production' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      tested: ${{ steps.find.outputs.tested }}
+    steps:
+      - id: find
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TREE: ${{ github.event.head_commit.tree_id }}
+        run: |
+          tested=false
+          deadline=$((SECONDS + 900))
+          while [ -n "$TREE" ]; do
+            runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?branch=main&event=push&per_page=50" \
+                     --jq "[.workflow_runs[] | select(.head_commit.tree_id == \"$TREE\")]" 2>/dev/null) || break
+            if [ "$(jq '[.[] | select(.conclusion == "success")] | length' <<<"$runs")" -gt 0 ]; then
+              tested=true; echo "main already passed CI on this exact tree."; break
+            fi
+            if [ "$(jq '[.[] | select(.status != "completed")] | length' <<<"$runs")" -eq 0 ]; then
+              echo "No green main run for this tree: testing here."; break
+            fi
+            [ "$SECONDS" -lt "$deadline" ] || { echo "Waited 15 minutes for main: testing here."; break; }
+            echo "main's run for this tree is still going; waiting for it."
+            sleep 15
+          done
+          echo "tested=$tested" >> "$GITHUB_OUTPUT"
+
   checks:
     name: Audit, types, lint, build and contract
+    needs: plan
+    if: ${{ !cancelled() && needs.plan.outputs.tested != 'true' }}
     runs-on: ubuntu-latest
     # ── The two backing services the specs have always assumed ───────────────
     #
@@ -222,6 +267,8 @@ jobs:
 
   tests:
     name: Tests (shard ${{ matrix.shard }}/12)
+    needs: plan
+    if: ${{ !cancelled() && needs.plan.outputs.tested != 'true' }}
     runs-on: ubuntu-latest
     strategy:
       # One red shard stops the rest: a release waits for all twelve anyway.
@@ -469,8 +516,9 @@ jobs:
     name: Ship and deploy
     if: >-
       !cancelled() && github.ref == 'refs/heads/production' && github.event_name != 'pull_request' &&
-      needs.verify.result == 'success' && needs.build.result == 'success'
-    needs: [verify, build]
+      needs.build.result == 'success' &&
+      (needs.verify.result == 'success' || needs.plan.outputs.tested == 'true')
+    needs: [plan, verify, build]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:

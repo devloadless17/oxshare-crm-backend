@@ -36,7 +36,7 @@ export class AdminPlatformLinksController {
   // admin could reach these routes — including the PUT, which sets the
   // executable download URL every client is handed.
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('settings.edit')
+  @RequirePermissions('settings.view')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Download links for every platform, configured or not' })
   @ApiOkResponse({ type: PlatformLinkDto, isArray: true })

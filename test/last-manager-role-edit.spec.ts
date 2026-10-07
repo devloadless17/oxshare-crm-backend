@@ -148,79 +148,45 @@ afterAll(async () => {
   await stopHttpTestApp(ctx);
 });
 
+/*
+ * Since the Oct 2026 audit a role editor may only touch a role WITHIN their own
+ * powers, so the first door here is that rule: an editor who lacks admins.edit
+ * cannot strip it from anybody's role. One who holds it stays a holder after the
+ * write (nobody edits their own role), so a signed-in editor can no longer reach
+ * the last-manager refusal through this route at all. It stays in the service as
+ * the second lock, and its counting is pinned in rbac.spec.ts.
+ */
 describe('unticking admins.edit on the last role that carries it', () => {
-  it('is REFUSED when that role is the only way anyone holds it', async () => {
+  it('is REFUSED to an editor who does not hold admins.edit themselves', async () => {
     await clearOtherManagers();
     const roleId = await manageableRole(SOLE_MANAGER, HOLDER.email);
-    const master = await actingAs(ctx, 'admin', ACTOR);
+    const editor = await actingAs(ctx, 'admin', ACTOR);
 
-    const refused = await master
+    const refused = await editor
       .put(`/v1/admin/roles/${roleId}`)
       .send({ permissions: ['admins.view'] });
 
-    expect(
-      refused.status,
-      `stripping admins.edit from the only role carrying it answered ${refused.status}. ` +
-        'The system would have been left with no administrator able to manage administrators.',
-    ).toBe(400);
-    expect(JSON.stringify(refused.body)).toMatch(/admins\.edit/);
-
-    // Non-vacuous: the role still carries the key, so the refusal REFUSED
-    // rather than merely reporting an error after writing.
-    expect(
-      await permissionsOf(master, roleId),
-      'the refusal did not refuse — the key is gone',
-    ).toContain('admins.edit');
+    expect(refused.status).toBe(403);
+    expect(JSON.stringify(refused.body)).toMatch(/permissions you do not hold/);
+    // Non-vacuous: the role still carries the key.
+    expect(await permissionsOf(editor, roleId)).toContain('admins.edit');
   });
 
-  it('is ALLOWED when a second role still carries it — the control', async () => {
-    /*
-     * Without this the refusal above could be a role editor that rejects every
-     * permission change, which would pass the assertion and break the screen.
-     */
+  it('is ALLOWED to an editor who holds admins.edit — the control', async () => {
     await clearOtherManagers();
+    const db = ctx.db.db;
+    await db
+      .update(admins)
+      .set({ permissions: [...ACTOR_PERMISSIONS, 'admins.edit'] })
+      .where(eq(admins.email, ACTOR.email));
     const first = await manageableRole('Manager A', 'last-manager-a@oxshare.com');
-    await manageableRole('Manager B', 'last-manager-b@oxshare.com');
-    const master = await actingAs(ctx, 'admin', ACTOR);
+    const editor = await actingAs(ctx, 'admin', ACTOR);
 
-    const allowed = await master
+    const allowed = await editor
       .put(`/v1/admin/roles/${first}`)
       .send({ permissions: ['admins.view'] });
 
-    expect(
-      allowed.status,
-      `stripping admins.edit answered ${allowed.status} while ANOTHER role still carries it — ` +
-        'the guard is refusing more than the invariant asks for.',
-    ).toBe(200);
-
-    expect(await permissionsOf(master, first)).not.toContain('admins.edit');
-  });
-
-  it('counts only ACTIVE holders, so a suspended one does not keep the system manageable', async () => {
-    /*
-     * The half a naive implementation gets wrong: "somebody is on a role that
-     * carries roles.edit" is not the same as "somebody can still use it". A
-     * suspended administrator cannot sign in, so a role whose only holder is
-     * suspended keeps nobody managing anything.
-     */
-    await clearOtherManagers();
-    const db = ctx.db.db;
-    const roleId = await manageableRole('Manager C', 'last-manager-c@oxshare.com');
-    const dormant = await manageableRole('Manager D', 'last-manager-d@oxshare.com');
-    await db
-      .update(admins)
-      .set({ status: 'suspended' })
-      .where(eq(admins.email, 'last-manager-d@oxshare.com'));
-
-    const master = await actingAs(ctx, 'admin', ACTOR);
-    const refused = await master
-      .put(`/v1/admin/roles/${roleId}`)
-      .send({ permissions: ['admins.view'] });
-
-    expect(
-      refused.status,
-      'the only OTHER holder is suspended, so this write leaves nobody managing administrators',
-    ).toBe(400);
-    void dormant;
+    expect(allowed.status).toBe(200);
+    expect(await permissionsOf(editor, first)).not.toContain('admins.edit');
   });
 });

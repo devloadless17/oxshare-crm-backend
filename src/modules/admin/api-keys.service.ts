@@ -89,6 +89,8 @@ export class ApiKeysService {
       );
     }
 
+    // An action without the page it is taken on is useless — close over `requires`.
+    input = { ...input, permissions: this.rbac.withRequirements(input.permissions) };
     await this.rbac.assertGrantable(actor, input.permissions);
 
     if (input.expiresAt && input.expiresAt.getTime() <= Date.now()) {

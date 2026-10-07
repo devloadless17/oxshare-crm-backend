@@ -56,7 +56,14 @@ export async function startMoneyTestDb(
   try {
     // No parameter binding in DDL, hence the interpolation — safe because the
     // name is generated here from a UUID, never from input.
-    await admin.query(`CREATE DATABASE ${databaseName}`);
+    // A copy of the run's migrated template (global-setup.ts), unless this suite
+    // migrates from its own folder and so needs an empty database.
+    const template = options.migrationsFolder ? undefined : process.env['TEST_PG_TEMPLATE'];
+    await admin.query(
+      template
+        ? `CREATE DATABASE ${databaseName} TEMPLATE ${template}`
+        : `CREATE DATABASE ${databaseName}`,
+    );
   } finally {
     await admin.end();
   }
@@ -80,6 +87,8 @@ export async function startMoneyTestDb(
    */
   pool.on('error', () => undefined);
   const db = drizzle(pool, { schema });
+  // On a template copy this applies nothing (every migration is recorded) — it
+  // stays so a database that is somehow behind the committed history is caught.
   await migrate(db, { migrationsFolder: options.migrationsFolder ?? './src/database/migrations' });
 
   // The stores and the money services resolve their connection from

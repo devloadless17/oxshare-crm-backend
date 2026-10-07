@@ -326,8 +326,8 @@ export class AdminAuthService {
    * phone is recovered by another administrator's reset (`resetTotpFor`), which
    * clears the secret and lands the person back here.
    *
-   * Each call replaces the pending secret, so reloading the page shows a new
-   * code and only the last one shown can complete enrolment.
+   * The SAME secret until enrolment is confirmed, so reloading the page or
+   * signing in again shows the QR already scanned (see the body).
    */
   async beginTotpSetup(challengeToken: string, callerIp?: string) {
     const admin = await this.adminForChallenge(challengeToken);
@@ -338,8 +338,36 @@ export class AdminAuthService {
         'An authenticator app is already set up for this account. Enter the code it shows.',
       );
     }
-    const secret = generateTotpSecret();
-    await this.admins.setPendingTotp(admin.id, sealSecret(secret, this.encryptionKey()));
+    /*
+     * ONE QR per enrolment, until it is confirmed. A new secret on every call
+     * meant a reload, "Back to sign in", or a code typed after it changed showed
+     * a DIFFERENT QR — and the first scan stayed in the phone as a dead entry
+     * (reported 7 Oct 2026: an invited admin "scanned twice"). So an unfinished
+     * setup is reused; a fresh one is made only when there is none, or the
+     * stored one cannot be opened (a rotated APP_ENCRYPTION_KEY). Read back after
+     * writing, so two tabs opening setup together show the one that was stored.
+     * Nothing is widened: the pending secret is still shown only to a holder of
+     * a password-proven challenge, exactly as a fresh one was.
+     */
+    const key = this.encryptionKey();
+    const open = (sealed: string | null | undefined): string | null => {
+      if (!sealed) return null;
+      try {
+        return openSecret(sealed, key);
+      } catch {
+        return null;
+      }
+    };
+    let secret = open(state?.pendingSecret);
+    if (!secret) {
+      await this.admins.setPendingTotp(
+        admin.id,
+        sealSecret(generateTotpSecret(), key),
+        state?.pendingSecret ?? null,
+      );
+      secret = open((await this.admins.totpState(admin.id))?.pendingSecret);
+      if (!secret) throw new ConflictError('Could not prepare the QR code. Please sign in again.');
+    }
     const otpauthUri = totpUri(TOTP_ISSUER, admin.email, secret);
     const qrSvg = await QRCode.toString(otpauthUri, { type: 'svg', margin: 1, width: 220 });
     return { secret, otpauthUri, qrSvg, account: admin.email, issuer: TOTP_ISSUER };

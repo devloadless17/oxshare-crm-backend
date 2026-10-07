@@ -59,7 +59,7 @@ export class AdminCatalogueController {
 
   @Get('products')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('settings.view')
+  @RequirePermissions('products.view', 'agencies.view')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Every product, with the MT5 groups behind it',
@@ -75,7 +75,7 @@ export class AdminCatalogueController {
 
   @Get('products/mt5-groups')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('settings.edit')
+  @RequirePermissions('products.create', 'products.edit')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'MT5 groups available to attach, read live where possible',
@@ -99,7 +99,7 @@ export class AdminCatalogueController {
 
   @Post('products')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('settings.edit')
+  @RequirePermissions('products.create')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Create a product' })
   @ApiOkResponse({ type: ProductDto })
@@ -111,7 +111,7 @@ export class AdminCatalogueController {
 
   @Put('products/:id')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('settings.edit')
+  @RequirePermissions('products.edit')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Update a product',
@@ -132,7 +132,7 @@ export class AdminCatalogueController {
 
   @Delete('products/:id')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('settings.edit')
+  @RequirePermissions('products.delete')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Delete a product',
@@ -148,7 +148,7 @@ export class AdminCatalogueController {
 
   @Post('products/:id/groups')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('settings.edit')
+  @RequirePermissions('products.edit')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Attach an MT5 group to a product',
@@ -170,7 +170,7 @@ export class AdminCatalogueController {
 
   @Patch('products/:id/groups/:groupId')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('settings.edit')
+  @RequirePermissions('products.edit')
   @ApiCookieAuth()
   @ApiOperation({
     summary: "Set an attached group's minimum deposit",
@@ -192,7 +192,7 @@ export class AdminCatalogueController {
 
   @Delete('products/:id/groups/:groupId')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('settings.edit')
+  @RequirePermissions('products.edit')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Detach an MT5 group from a product',
@@ -215,7 +215,7 @@ export class AdminCatalogueController {
 
   @Get('agencies')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('settings.view')
+  @RequirePermissions('agencies.view', 'ib.approve')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Every agency (وكالة), with the products it sells',
@@ -231,7 +231,7 @@ export class AdminCatalogueController {
 
   @Post('agencies')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('settings.edit')
+  @RequirePermissions('agencies.create')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Create an agency' })
   @ApiOkResponse({ type: AgencyDto })
@@ -243,7 +243,7 @@ export class AdminCatalogueController {
 
   @Put('agencies/:id')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('settings.edit')
+  @RequirePermissions('agencies.edit')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Update an agency',
@@ -262,7 +262,7 @@ export class AdminCatalogueController {
 
   @Delete('agencies/:id')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('settings.edit')
+  @RequirePermissions('agencies.delete')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Delete an agency',
@@ -276,7 +276,7 @@ export class AdminCatalogueController {
 
   @Put('agencies/:id/products')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('settings.edit')
+  @RequirePermissions('agencies.edit')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Set the products an agency sells',

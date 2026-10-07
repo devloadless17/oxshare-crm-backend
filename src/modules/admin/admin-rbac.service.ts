@@ -34,7 +34,11 @@ import {
 } from '../../common/errors/domain-errors';
 import { AdminAuditService } from './admin-audit.service';
 import { targetSupersedesActor } from './admin-reset';
-import { assertActorCan, normalizePermissionKey } from '../../common/security/actor';
+import {
+  actorHasPermission,
+  assertActorCan,
+  normalizePermissionKey,
+} from '../../common/security/actor';
 import { ClientFieldsService } from './client-fields.service';
 import { ClientTagsStore } from '../../store/client-tags.store';
 import { AdminClientScopesStore } from '../../store/admin-client-scopes.store';
@@ -57,11 +61,31 @@ export interface AdminDirectoryPage {
   limit: number;
 }
 
-/** `config/permissions.json`, keyed by module. The single grantable vocabulary. */
-type PermissionCatalog = Record<
-  string,
-  { moduleName: string; description: string; permissions: { key: string; label: string }[] }
->;
+/**
+ * `config/permissions.json`, keyed by module. The single grantable vocabulary.
+ *
+ * One module per console page, in sidebar order (Oct 2026 audit):
+ *   - `group` is the sidebar group the page sits in;
+ *   - a VIEW key lists the route(s) it `opens`, and is the only key that does;
+ *   - every other key `requires` the key(s) it cannot be used without, and a
+ *     save closes over them (`withRequirements`), so no role can hold "approve
+ *     deposits" without being able to open the deposits page;
+ *   - `notes` is the engineering record, stripped before the catalog is served.
+ */
+export interface CatalogPermission {
+  key: string;
+  label: string;
+  requires?: string[];
+  opens?: string[];
+}
+export interface CatalogModule {
+  group: string;
+  moduleName: string;
+  description: string;
+  notes?: string;
+  permissions: CatalogPermission[];
+}
+type PermissionCatalog = Record<string, CatalogModule>;
 
 /**
  * RBAC: the permission catalog, roles, admin users, and the anti-escalation
@@ -133,6 +157,39 @@ export class AdminRbacService {
     }
     return AdminRbacService.catalog;
   }
+
+  /** The catalog as the console reads it: the engineering notes left out. */
+  servedCatalog(): Record<string, Omit<CatalogModule, 'notes'>> {
+    return Object.fromEntries(
+      Object.entries(this.getPermissionsCatalog()).map(([id, { notes: _notes, ...module }]) => [
+        id,
+        module,
+      ]),
+    );
+  }
+
+  /**
+   * `keys` plus everything they require, transitively. Applied to every role
+   * save, so the stored set is always one the console can actually use: an
+   * action without the page it is taken on is a permission that does nothing.
+   * The result still goes through the subset rule — closing over requirements
+   * never grants what the actor lacks, because the actor's own set is closed.
+   */
+  withRequirements(keys: string[]): string[] {
+    const requires = new Map<string, string[]>();
+    for (const module of Object.values(this.getPermissionsCatalog())) {
+      for (const p of module.permissions) requires.set(p.key, p.requires ?? []);
+    }
+    const out = new Set<string>();
+    const visit = (key: string) => {
+      const k = AdminRbacService.normalizeKey(key);
+      if (out.has(k)) return;
+      out.add(k);
+      for (const r of requires.get(k) ?? []) visit(r);
+    };
+    keys.forEach(visit);
+    return [...out];
+  }
   /** Every grantable key, from the catalog — the single vocabulary for roles. */
   private catalogKeys(): Set<string> {
     const keys = new Set<string>();
@@ -200,50 +257,27 @@ export class AdminRbacService {
   }
 
   /**
-   * `roles.edit` MEANS `roles.edit` — on every role except the actor's own.
+   * WHAT A ROLE EDITOR MAY DO — three rules, the same ones every other grant
+   * path already follows (invites, API keys, assigning a role to an admin).
    *
-   * ## The rule
+   *   1. You grant only what you hold. A role you create or edit may carry a key
+   *      only if you carry it too (`assertGrantable`).
+   *   2. You touch only roles within your own powers. A role holding a key you
+   *      lack belongs to somebody above you; editing or deleting it is managing
+   *      upwards, which `updateAdmin` already refuses when done to a person.
+   *   3. Nobody edits the role they stand on (`assertRoleNotSelf`) — including
+   *      through an API key they minted.
    *
-   * An admin holding `roles.edit` may grant any key in the catalog to any role
-   * they are not themselves assigned to. Their OWN role is refused outright —
-   * see `assertRoleNotSelf`, which is applied to the whole update rather than
-   * to its permissions, because the mask and the name are the same act.
+   * ## Why rule 1 is back, and why its old objection no longer holds
    *
-   * ## Why not the plain subset rule everywhere
-   *
-   * It made the roles screen unusable, and not hypothetically. A hidden
-   * `Master Admin` role held `reconciliation.view` with zero admins assigned,
-   * so no logged-in operator held that key — and granting it required already
-   * holding it. The screen answered "You cannot grant permissions you do not
-   * hold" to the one person whose job is to decide that. Migration 0069 clears
-   * that particular row, but the shape recurs with every genuinely new key:
-   * defining what an operator may do is the job `roles.edit` names, and binding
-   * it to the editor's own set means the set can only ever shrink.
-   *
-   * ## Why not catalog-only everywhere
-   *
-   * Because then a sub-admin with `roles.edit` writes `wallets.credit` into
-   * their own role and reloads. That is a one-step path from "can manage
-   * access" to "can move money", taken by the person themselves, and it is what
-   * `REGRESSION C1` in `rbac.spec.ts` exists to stop.
-   *
-   * Excluding the actor's own role costs a role editor nothing they should be
-   * doing — you do not promote yourself, you ask somebody who can — and it
-   * removes the self-service escalation entirely.
-   *
-   * ## What it does NOT stop, stated plainly
-   *
-   * Two admins holding `roles.edit` can promote each other, and one holding it
-   * can promote a role they then ask to be moved onto. Both take a second
-   * person or a second step, and both land in the audit log with a name on
-   * them: `role.update` records the full before/after permission sets. That is
-   * the line this draws — escalation stops being something you can do alone and
-   * silently.
-   *
-   * API KEYS and INVITES keep the strict subset rule regardless, in
-   * `api-keys.service.ts` and `admin-auth.service.ts`. A key is a credential
-   * with no session and no browser that outlives the person who minted it, and
-   * an invite creates an account nobody has checked.
+   * Until Oct 2026 a role editor could write ANY catalog key into any role but
+   * their own. The subset rule had been tried and dropped because a brand-new
+   * key was held by nobody, so nobody could grant it. Two things changed:
+   * `Administrator` is a system role that `permission-drift.ts` tops up with
+   * every catalog key at boot, so a new key always has holders; and the
+   * catalog-only rule proved to be a lone escalation, not a two-person one —
+   * invite a second mailbox onto a role, then widen that role, and the same
+   * person holds every key with nobody else involved (the Oct 2026 audit).
    */
   /**
    * NOBODY EDITS THE ROLE THEY ARE STANDING ON.
@@ -253,52 +287,45 @@ export class AdminRbacService {
    * field on it counts: `permissions` grants, `maskedFields` decides which
    * client data they can read.
    *
-   * A subset rule was tried here first ("you may edit your own role, but only
-   * downward"). It closed the escalation and still read as a trap: the screen
-   * offered an Edit action that failed on save depending on which keys you
-   * ticked. A flat refusal is enforceable in one line, explainable in one
-   * sentence, and lets the roles screen hide the action outright rather than
-   * predicting which edits the API will take.
-   *
-   * The cost is that somebody else has to make the change. That is the point —
-   * it puts a second name on every permission change, which is what the audit
-   * log is for.
+   * An API key has no role of its own, so it is judged as the administrator
+   * who minted it: a key editing its creator's role is its creator editing
+   * themselves.
    */
-  private assertRoleNotSelf(actor: Admin, roleId: string): void {
-    if (actor.roleId !== undefined && actor.roleId === roleId) {
+  private async assertRoleNotSelf(actor: Admin, roleId: string): Promise<void> {
+    const ownRoleId = await this.standingRoleId(actor);
+    if (ownRoleId !== undefined && ownRoleId === roleId) {
       throw new AuthorizationError(
         'You cannot edit the role you are assigned to. Ask another administrator with role access to make this change.',
       );
     }
   }
 
-  // Async by contract, like `assertGrantable` above and for the same reason:
-  // every caller awaits it, and the day this needs a role lookup, making it
-  // async then would silently un-await the call sites. A missing `await` on
-  // exactly this kind of guard is what shipped a privilege escalation once.
-  // eslint-disable-next-line @typescript-eslint/require-await
-  private async assertRoleGrantable(
-    actor: Admin,
-    // `undefined` for "no role in question", matching `Admin.roleId` and
-    // `RolesStore.resolvePermissions` rather than introducing a second
-    // absent-value convention into the same comparison.
-    roleId: string | undefined,
-    permissions: string[],
-  ): Promise<void> {
-    /*
-     * `resolvePermissions` REPLACES an admin's own column with their role's
-     * when they have a roleId — so "my role" is the thing that actually decides
-     * what I can do, and editing it edits me. An admin with no roleId runs on
-     * their own snapshot, which no role edit can touch, so every role is fair
-     * game for them.
-     */
-    if (roleId !== undefined && actor.roleId === roleId) {
-      // Unreachable through `updateRole`, which refuses earlier — kept because
-      // this method is the one that states the invariant, and a future caller
-      // should not be able to reintroduce the hole by not knowing about it.
-      this.assertRoleNotSelf(actor, roleId);
+  /** The role the actor stands on — for an API key, its creator's. */
+  private async standingRoleId(actor: Admin): Promise<string | undefined> {
+    if (actor.roleId !== undefined) return actor.roleId;
+    if (!actor.actingForAdminId) return undefined;
+    return (await this.admins.findById(actor.actingForAdminId))?.roleId;
+  }
+
+  /** Is `adminId` the actor themselves — or, for a key, the key's creator? */
+  private static isSelf(actor: Admin, adminId: string): boolean {
+    return actor.id === adminId || actor.actingForAdminId === adminId;
+  }
+
+  /**
+   * Rule 2: a role holding a key the actor lacks is above them.
+   *
+   * Without it, `roles.edit` could strip a superior's role down to nothing —
+   * the demotion `assertActorOutranks` refuses when it is aimed at the person.
+   */
+  private assertRoleWithinActor(actor: Admin, role: { permissions: string[] }): void {
+    const held = new Set(actor.permissions.map((p) => AdminRbacService.normalizeKey(p)));
+    const beyond = role.permissions.filter((p) => !held.has(AdminRbacService.normalizeKey(p)));
+    if (beyond.length > 0) {
+      throw new AuthorizationError(
+        'This role carries permissions you do not hold, so it can only be changed by somebody who holds them.',
+      );
     }
-    this.assertKnownKeys(permissions);
   }
 
   /**
@@ -509,12 +536,28 @@ export class AdminRbacService {
     }
   }
   // ─── RBAC: roles ──────────────────────────────────────────────────────────
-  async listRoles(query: { sort?: string; order?: string } = {}) {
-    return await this.roles.findAll({
+  async listRoles(query: { sort?: string; order?: string } = {}, actor?: Admin) {
+    const list = await this.roles.findAll({
       // R-2.5. An unrecognised key is a 400 naming the allowed ones, never a
       // silent fallback to the default ordering.
       sort: sortKey(query.sort, ROLE_SORT_COLUMNS, DEFAULT_ROLE_SORT, 'roles'),
       order: sortOrder(query.order, DEFAULT_ROLE_ORDER),
+    });
+    /*
+     * WHO holds each role (Oct 2026 audit): "can I delete this?" and "who does
+     * this edit affect?" were unanswerable on the Roles screen. The count is
+     * for every reader; the NAMES are the admin directory's, so only a reader
+     * who may open it (`admins.view`) gets them.
+     */
+    const { rows } = await this.admins.findAll();
+    const namesVisible = actor ? actorHasPermission(actor, 'admins.view') : false;
+    return list.map((role) => {
+      const holders = rows.filter((a) => a.roleId === role.id);
+      return {
+        ...role,
+        holderCount: holders.length,
+        ...(namesVisible ? { holderNames: holders.map((a) => a.name) } : {}),
+      };
     });
   }
   async createRole(
@@ -527,13 +570,9 @@ export class AdminRbacService {
     if (await this.roles.findByName(name)) {
       throw new ConflictError('A role with this name already exists.');
     }
-    /*
-     * `undefined`, because a role being created is one NOBODY is assigned to —
-     * the actor included. Assigning themselves to it afterwards goes through
-     * `updateAdmin`, which runs `assertGrantable` against the role's keys and
-     * is where that escalation is actually caught.
-     */
-    await this.assertRoleGrantable(actor, undefined, permissions);
+    permissions = this.withRequirements(permissions);
+    // Rule 1: a new role carries only keys its creator holds.
+    await this.assertGrantable(actor, permissions);
     this.assertMaskAllowed(actor, maskedFields);
     const role = await this.roles.create({ name, description, permissions, maskedFields });
     this.audit.record(actor.id, 'role.create', 'role', role.id, {
@@ -567,12 +606,17 @@ export class AdminRbacService {
      * hide the action entirely: a rule with no exceptions is one a screen can
      * mirror without guessing.
      */
-    this.assertRoleNotSelf(actor, role.id);
+    await this.assertRoleNotSelf(actor, role.id);
+    this.assertRoleWithinActor(actor, role);
 
     if (patch.name && patch.name !== role.name && (await this.roles.findByName(patch.name))) {
       throw new ConflictError('A role with this name already exists.');
     }
-    if (patch.permissions) await this.assertRoleGrantable(actor, role.id, patch.permissions);
+    if (patch.permissions) {
+      const closed = this.withRequirements(patch.permissions);
+      patch = { ...patch, permissions: closed };
+      await this.assertGrantable(actor, closed);
+    }
     if (patch.maskedFields) this.assertMaskAllowed(actor, patch.maskedFields);
     /*
      * Editing a role edits everybody on it. If this takes `roles.edit` or
@@ -621,10 +665,11 @@ export class AdminRbacService {
     });
     return updated;
   }
-  async deleteRole(id: string, actorId?: string) {
+  async deleteRole(id: string, actor: Admin) {
     const role = await this.roles.findById(id);
     if (!role) throw new NotFoundError('Role not found.');
     if (role.isSystem) throw new ValidationError('System roles cannot be deleted.');
+    this.assertRoleWithinActor(actor, role);
     // A role in use cannot be deleted — silently orphaning its admins would
     // leave them running on the stale per-admin snapshot.
     const holders = await this.admins.findByRoleId(id);
@@ -640,7 +685,7 @@ export class AdminRbacService {
       );
     }
     await this.roles.delete(id);
-    if (actorId) this.audit.record(actorId, 'role.delete', 'role', id, { name: role.name });
+    this.audit.record(actor.id, 'role.delete', 'role', id, { name: role.name });
     return { message: 'Role deleted.' };
   }
   // ─── RBAC: admin directory ────────────────────────────────────────────────
@@ -754,7 +799,7 @@ export class AdminRbacService {
      */
     // Nobody rewrites their own access — not even a harmless-looking subset;
     // it keeps every permission change attributable to someone else's decision.
-    if (actor.id === id && touchesAccess) {
+    if (AdminRbacService.isSelf(actor, id) && touchesAccess) {
       throw new AuthorizationError('You cannot change your own role, permissions or visibility.');
     }
 
@@ -950,7 +995,7 @@ export class AdminRbacService {
     // rule, plus a blunter one: suspension bites on the NEXT request, so this
     // would be an administrator locking themselves out mid-session with no way
     // back in — the account that could reverse it is the one just disabled.
-    if (actor.id === id) {
+    if (AdminRbacService.isSelf(actor, id)) {
       throw new AuthorizationError('You cannot change your own account status.');
     }
     // Nobody suspends upwards either — D-59. Suspension of a superior is the

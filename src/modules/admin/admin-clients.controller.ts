@@ -28,6 +28,7 @@ import {
 import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { Request, Response } from 'express';
 import { AdminClientsService } from './admin-clients.service';
+import { actorHasPermission } from '../../common/security/actor';
 import { AdminClientsBulkService } from './admin-clients-bulk.service';
 import { Idempotent, IdempotencyInterceptor } from '../../common/security/idempotency.interceptor';
 import { AdminExportService, type ExportSeek } from './admin-export.service';
@@ -121,7 +122,7 @@ export class AdminClientsController {
   // ── Clients (ADM-01 / ADM-14) ─────────────────────────────────────────────
   @Get('clients')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('clients.view')
+  @RequirePermissions('clients.view', 'ib.referrals.view')
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Paginated, filterable, sortable client list' })
   @ApiOkResponse({ type: ClientListResponseDto })
@@ -240,7 +241,7 @@ export class AdminClientsController {
         // every row in the system.
         referredBy,
         // Validated in the service: `true`, `false` or absent, anything else a 400.
-        referred,
+        referred: referralsOnly(req.admin, referred),
         registered: dateRangeQuery(from, to),
         // `sort`/`order` are validated in the service against the SORTABLE_COLUMNS
         // allowlist, which is where the column mapping lives. Validating here too
@@ -288,7 +289,7 @@ export class AdminClientsController {
    */
   @Throttle({ default: { ttl: 60_000, limit: EXPORT_RATE_LIMIT } })
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('clients.view')
+  @RequirePermissions('clients.view', 'ib.referrals.view')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Export the filtered client list as CSV',
@@ -405,7 +406,7 @@ export class AdminClientsController {
       // `clientBatch` like the list validates it: malformed is a 400.
       referredBy,
       // The Referrals page's filter, parsed by the list's own function.
-      referred,
+      referred: referralsOnly(req.admin, referred),
       registered: dateRangeQuery(from, to),
       ids: exportIds(ids),
       sort,
@@ -570,4 +571,13 @@ function exportIds(raw: string | undefined): number[] | undefined {
     });
   }
   return [...new Set(parts.map((part) => Number(part)))];
+}
+
+/**
+ * The Referrals page reads the client list with `referred=true`. A reader who
+ * holds only "See referrals" (`ib.referrals.view`, not `clients.view`) is held
+ * to exactly that slice, whatever they ask for: one page, one key.
+ */
+function referralsOnly(actor: AuthenticatedAdmin, referred: string | undefined) {
+  return actorHasPermission(actor, 'clients.view') ? referred : 'true';
 }

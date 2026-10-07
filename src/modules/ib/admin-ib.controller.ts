@@ -95,7 +95,7 @@ export class AdminIbController {
 
   @Get('applications')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('ib.view')
+  @RequirePermissions('ib.applications.view')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'The partner application queue',
@@ -192,7 +192,7 @@ export class AdminIbController {
    */
   @Throttle({ default: { ttl: 60_000, limit: EXPORT_RATE_LIMIT } })
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('ib.view')
+  @RequirePermissions('ib.applications.view')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Export the partner application queue as CSV',
@@ -315,7 +315,7 @@ export class AdminIbController {
   @Get('accruals/export')
   @Throttle({ default: { ttl: 60_000, limit: EXPORT_RATE_LIMIT } })
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('ib.view', 'ib.commissions.view')
+  @RequirePermissions('ib.commissions.view')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Export the filtered commission ledger as CSV',
@@ -389,7 +389,7 @@ export class AdminIbController {
    */
   @Get('accruals')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('ib.view', 'ib.commissions.view')
+  @RequirePermissions('ib.commissions.view')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Partner commission accruals, filterable',
@@ -565,7 +565,13 @@ export class AdminIbController {
 
   @Get('partners')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('ib.view')
+  /*
+   * The pickers that choose a partner read this list too: appointing a partner
+   * under a main partner (`ib.approve`) and reassigning a parent
+   * (`ib.partners.edit`). One page one key keeps the PAGE on its view key; a
+   * dialog's picker is let in by the action it serves.
+   */
+  @RequirePermissions('ib.partners.view', 'ib.approve', 'ib.partners.edit')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'The partner directory',
@@ -640,7 +646,7 @@ export class AdminIbController {
    */
   @Throttle({ default: { ttl: 60_000, limit: EXPORT_RATE_LIMIT } })
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('ib.view')
+  @RequirePermissions('ib.partners.view')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Export the partner list as CSV',
@@ -692,7 +698,7 @@ export class AdminIbController {
    */
   @Get('partners/:userId')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('ib.view')
+  @RequirePermissions('ib.partners.view', 'ib.partners.edit')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'One partner’s standing, their line and their earnings',

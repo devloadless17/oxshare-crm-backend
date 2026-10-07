@@ -282,7 +282,13 @@ export class AdminExportService {
     const [tagsByClient, referred] = await Promise.all([
       this.tags.tagsForClients(page.map((r) => r.id)),
       // The same introducer lookup as the list — scoped, one query per batch.
-      withReferrers(page, this.users, actor.clientScope, actorHasPermission(actor, 'ib.view')),
+      withReferrers(
+        page,
+        this.users,
+        actor.clientScope,
+        actorHasPermission(actor, 'ib.partners.view') ||
+          actorHasPermission(actor, 'ib.referrals.view'),
+      ),
     ]);
     const withTags = referred.map((row) => ({ ...row, tags: tagsByClient.get(row.id) ?? [] }));
 
@@ -566,7 +572,7 @@ export class AdminExportService {
     /** The export run's snapshot instant — the SAME value on every batch. */
     startedAt: Date,
   ): Promise<IbAccrualExportRow[]> {
-    assertActorCanAny(actor, ['ib.view', 'ib.commissions.view'], 'export commissions');
+    assertActorCan(actor, 'ib.commissions.view', 'export commissions');
     const { rows } = await this.ib.findAccrualsPage({
       ...query,
       page: Math.floor(offset / limit) + 1,
@@ -955,7 +961,7 @@ export class AdminExportService {
     offset: number,
     limit: number,
   ): Promise<IbApplicationExportRow[]> {
-    assertActorCan(actor, 'ib.view', 'export partner applications');
+    assertActorCan(actor, 'ib.applications.view', 'export partner applications');
 
     const { rows } = await this.ib.findPageWithUsers({
       status: query.status as IbApplicationExportRow['application']['status'] | undefined,
@@ -1010,7 +1016,7 @@ export class AdminExportService {
     /** The directory's own search and state filter, so the file is the list. */
     filter: { q?: string; active?: boolean } = {},
   ): Promise<IbPartnerExportRow[]> {
-    assertActorCan(actor, 'ib.view', 'export partners');
+    assertActorCan(actor, 'ib.partners.view', 'export partners');
 
     const { rows } = await this.ib.findPartnersPage({
       page: Math.floor(offset / limit) + 1,

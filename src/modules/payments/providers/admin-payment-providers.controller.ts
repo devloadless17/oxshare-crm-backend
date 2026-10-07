@@ -21,6 +21,7 @@ import {
   RequirePermissions,
 } from '../../admin/guards/admin.guard';
 import { NotClientScoped } from '../../admin/guards/client-scope.decorator';
+import { FullSightGuard } from '../../admin/guards/full-sight.guard';
 import { Audited, NotAudited } from '../../admin/guards/audited.decorator';
 import { PaymentProvidersService } from './payment-providers.service';
 import {
@@ -76,7 +77,8 @@ export class AdminPaymentProvidersController {
   }
 
   @Get(':code/events')
-  @UseGuards(PermissionsGuard)
+  // Names payers and payout addresses across every territory (Oct 2026 audit).
+  @UseGuards(PermissionsGuard, FullSightGuard)
   @RequirePermissions('payments.providers.view')
   @ApiCookieAuth()
   @ApiOperation({
@@ -186,7 +188,8 @@ export class AdminPaymentProvidersController {
   }
 
   @Get(':code/unmatched-records')
-  @UseGuards(PermissionsGuard)
+  // Names payers and payout addresses across every territory (Oct 2026 audit).
+  @UseGuards(PermissionsGuard, FullSightGuard)
   @RequirePermissions('payments.providers.view')
   @ApiCookieAuth()
   @ApiOperation({
@@ -206,7 +209,8 @@ export class AdminPaymentProvidersController {
   }
 
   @Get(':code/exchanges')
-  @UseGuards(PermissionsGuard)
+  // Names payers and payout addresses across every territory (Oct 2026 audit).
+  @UseGuards(PermissionsGuard, FullSightGuard)
   @RequirePermissions('payments.providers.view')
   @ApiCookieAuth()
   @ApiOperation({

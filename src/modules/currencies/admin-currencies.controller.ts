@@ -24,6 +24,7 @@ import {
   AuthenticatedAdmin,
   PermissionsGuard,
   RequirePermissions,
+  AnyAdmin,
 } from '../admin/guards/admin.guard';
 import { NotClientScoped } from '../admin/guards/client-scope.decorator';
 import { Audited } from '../admin/guards/audited.decorator';
@@ -81,7 +82,13 @@ export class AdminCurrenciesController {
    */
   @Get()
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('currencies.view', 'payments.view')
+  /*
+   * Any admin (Oct 2026 audit): the currency filters on All transactions,
+   * Wallets and a client's Transactions tab, and the "Open wallet" picker, all
+   * read this list. Behind `currencies.view` they rendered silently empty for
+   * everyone the buyer had not also given the Currencies page.
+   */
+  @AnyAdmin('Currency codes — reference data every money screen filters by.')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Every currency, including disabled ones, in operator order',
