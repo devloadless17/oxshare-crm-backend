@@ -469,6 +469,14 @@ export const SERVER_MESSAGES_AR: Readonly<Record<string, string>> = {
   'Only a pending application can be rejected; this one is {1}.':
     'لا يمكن رفض إلا طلب قيد الانتظار؛ حالة هذا الطلب: {1}.',
   'That partner does not exist.': 'هذا الشريك غير موجود.',
+  // Partner structure from the console (7 Oct 2026).
+  'A partner is a main partner (level 1) or a sub-partner (level 2); there is no other level.':
+    'الشريك إما شريك رئيسي (المستوى 1) أو شريك فرعي (المستوى 2)؛ لا يوجد مستوى آخر.',
+  'A sub-partner (level 2) sits under a main partner. Choose the main partner to place them under.':
+    'الشريك الفرعي (المستوى 2) يكون تحت شريك رئيسي. اختر الشريك الرئيسي الذي سيُوضع تحته.',
+  'A partner cannot be placed under themselves.': 'لا يمكن وضع الشريك تحت نفسه.',
+  'This client is already a partner.': 'هذا العميل شريك بالفعل.',
+  'That client does not exist.': 'هذا العميل غير موجود.',
   'Level {1} is not configured, and a partner on an unconfigured level earns nothing. Add it on the Commission Levels page first.':
     'المستوى {1} غير مُعدّ، والشريك على مستوى غير مُعدّ لا يكسب شيئاً. أضفه من صفحة مستويات العمولة أولاً.',
   'Level {1} ("{2}") is disabled, and a disabled level pays nothing. Enable it first, or choose another.':
@@ -1010,6 +1018,9 @@ export const SERVER_MESSAGES_AR: Readonly<Record<string, string>> = {
   'Hold amount must be positive.': 'يجب أن يكون المبلغ المحجوز موجباً.',
   'Insufficient available balance: {1} {2} available, {3} requested.':
     'الرصيد المتاح غير كافٍ: المتاح {1} {2}، والمطلوب {3}.',
+  // The desk's hand withdrawal from a wallet (7 Oct 2026).
+  'Insufficient available balance: the wallet has {1} available, and this needs {2}.':
+    'الرصيد المتاح غير كافٍ: المتاح في المحفظة {1}، وتتطلب هذه العملية {2}.',
   'Release amount must be positive.': 'يجب أن يكون المبلغ المُفرج عنه موجباً.',
   '{1} is not a currency this platform offers.': '{1} ليست عملة تقدمها هذه المنصة.',
   'This wallet holds {1} {2}. Move the balance out before closing it.':
