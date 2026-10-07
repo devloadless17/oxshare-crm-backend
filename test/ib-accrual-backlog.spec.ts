@@ -1,6 +1,10 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { sql } from 'drizzle-orm';
-import { DealCommissionService } from '../src/modules/trading/mt5/deal-commission.service';
+import {
+  DealCommissionService,
+  PLATFORM_GO_LIVE,
+  clampToGoLive,
+} from '../src/modules/trading/mt5/deal-commission.service';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
 
 /**
@@ -52,6 +56,17 @@ const commissions = () =>
     accrueForDeal: vi.fn().mockResolvedValue(0),
     accrueForClosedPosition: vi.fn(),
   }) as never;
+
+/*
+ * The go-live floor lowered to the epoch: these cases prove the backlog rules
+ * underneath it, and a three-day-old trade would otherwise predate go-live in
+ * every case. The floor has its own block at the end.
+ */
+const engine = (goLive: Date = new Date(0)) => {
+  const service = new DealCommissionService(ctx.db, commissions());
+  service.goLive = goLive;
+  return service;
+};
 
 beforeAll(async () => {
   ctx = await startMoneyTestDb();
@@ -113,7 +128,7 @@ describe('the backlog decision', () => {
   it('HOLDS an aged backlog when nobody has decided', async () => {
     delete process.env['IB_ACCRUAL_START'];
 
-    const run = await new DealCommissionService(ctx.db, commissions()).accruePending();
+    const run = await engine().accruePending();
 
     expect(run.awaitingBacklogDecision).toBe(true);
     expect(run.accrued).toBe(0);
@@ -126,7 +141,7 @@ describe('the backlog decision', () => {
   it('releases the engine when the whole backlog is chosen deliberately', async () => {
     process.env['IB_ACCRUAL_START'] = 'all';
 
-    const run = await new DealCommissionService(ctx.db, commissions()).accruePending();
+    const run = await engine().accruePending();
 
     expect(run.awaitingBacklogDecision).toBe(false);
   });
@@ -138,7 +153,7 @@ describe('the backlog decision', () => {
   it('pays from an instant, and decides everything older without paying it', async () => {
     process.env['IB_ACCRUAL_START'] = new Date(Date.now() - 60_000).toISOString();
 
-    const run = await new DealCommissionService(ctx.db, commissions()).accruePending();
+    const run = await engine().accruePending();
 
     expect(run.awaitingBacklogDecision).toBe(false);
     expect(run.predating).toBe(1);
@@ -154,7 +169,7 @@ describe('the backlog decision', () => {
   it('holds rather than discarding when the value is malformed', async () => {
     process.env['IB_ACCRUAL_START'] = 'not-a-date';
 
-    const run = await new DealCommissionService(ctx.db, commissions()).accruePending();
+    const run = await engine().accruePending();
 
     expect(run.awaitingBacklogDecision).toBe(true);
     expect(run.predating).toBe(0);
@@ -167,12 +182,69 @@ describe('the backlog decision', () => {
    */
   it('reads the decision on every run, never caching it', async () => {
     delete process.env['IB_ACCRUAL_START'];
-    const service = new DealCommissionService(ctx.db, commissions());
+    const service = engine();
 
     expect((await service.accruePending()).awaitingBacklogDecision).toBe(true);
 
     process.env['IB_ACCRUAL_START'] = 'all';
 
     expect((await service.accruePending()).awaitingBacklogDecision).toBe(false);
+  });
+});
+
+/*
+ * THE GO-LIVE FLOOR (owner, 7 Oct 2026). Whatever the server's `.env` says —
+ * `all`, nothing, or an earlier instant — no trade before go-live is paid. The
+ * floor here is "yesterday" relative to the run, so the three-day-old trade
+ * predates it on any date the suite runs.
+ */
+describe('the go-live floor', () => {
+  const yesterday = () => new Date(Date.now() - 24 * 60 * 60 * 1000);
+
+  it('pays nothing before go-live even when the environment says all', async () => {
+    process.env['IB_ACCRUAL_START'] = 'all';
+
+    const run = await engine(yesterday()).accruePending();
+
+    expect(run.awaitingBacklogDecision).toBe(false);
+    expect(run.predating).toBe(1);
+    expect(run.accrued).toBe(0);
+  });
+
+  it('decides rather than holds when nothing is set: the floor is the decision', async () => {
+    delete process.env['IB_ACCRUAL_START'];
+
+    const run = await engine(yesterday()).accruePending();
+
+    expect(run.awaitingBacklogDecision).toBe(false);
+    expect(run.predating).toBe(1);
+  });
+
+  it('raises an earlier instant to go-live', async () => {
+    process.env['IB_ACCRUAL_START'] = new Date(
+      Date.now() - 30 * 24 * 60 * 60 * 1000,
+    ).toISOString();
+
+    const run = await engine(yesterday()).accruePending();
+
+    expect(run.predating).toBe(1);
+    expect(run.accrued).toBe(0);
+  });
+
+  it('keeps a later instant, which may only narrow the window', () => {
+    const goLive = new Date('2026-10-06T00:00:00+03:00');
+    const later = new Date('2026-10-08T00:00:00Z');
+
+    expect(clampToGoLive({ mode: 'from', at: later }, goLive)).toEqual({ mode: 'from', at: later });
+    expect(clampToGoLive({ mode: 'all' }, goLive)).toEqual({ mode: 'from', at: goLive });
+    expect(clampToGoLive({ mode: 'unset' }, goLive)).toEqual({ mode: 'from', at: goLive });
+    expect(clampToGoLive({ mode: 'from', at: new Date('2026-01-01Z') }, goLive)).toEqual({
+      mode: 'from',
+      at: goLive,
+    });
+  });
+
+  it('is midnight 6 Oct 2026 in Beirut, which is 21:00 UTC the day before', () => {
+    expect(PLATFORM_GO_LIVE.toISOString()).toBe('2026-10-05T21:00:00.000Z');
   });
 });
