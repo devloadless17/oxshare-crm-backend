@@ -51,6 +51,7 @@ import { AdminAuditService } from './admin-audit.service';
 import { exportFormat, streamCsv, EXPORT_RATE_LIMIT } from '../../common/export/export-response';
 import {
   CreditWalletDto,
+  DebitWalletDto,
   FundTradingAccountDto,
   OpenWalletDto,
   SettleWithdrawalDto,
@@ -353,6 +354,42 @@ export class AdminMoneyController {
   }
 
   /**
+   * The mirror of `wallets/credit` (7 Oct 2026): money LEAVES the platform
+   * from the client's wallet, as a completed manual withdrawal. Its own key,
+   * and the idempotency key is the `provider_ref`, exactly as for a credit.
+   */
+  @Post('wallets/debit')
+  @AnnouncesChange('wallets')
+  @Idempotent()
+  @ApiHeader({
+    name: IDEMPOTENCY_HEADER,
+    required: true,
+    description:
+      'A unique value per intended withdrawal, reused only when retrying that same one. Stored ' +
+      'as the transaction `provider_ref`, so a replay withdraws once.',
+  })
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('wallets.debit')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: "Withdraw funds from a client's wallet by hand",
+    description:
+      'Writes a successful WITHDRAWAL transaction and a ledger debit — the money leaves the ' +
+      'platform. Refused beyond the wallet’s available balance. Requires a reason.',
+  })
+  @ApiCreatedResponse({ type: WalletCreditResultDto })
+  @ScopedToClients('The client is resolved through ClientVisibilityService before any money moves.')
+  @Audited('wallet.debit')
+  async debitWallet(
+    @Body() dto: DebitWalletDto,
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+  ) {
+    const reference = req.header(IDEMPOTENCY_HEADER) ?? '';
+    const result = await this.money.debitWallet(dto, reference, req.admin);
+    return { ...result, transaction: transactionView(result.transaction) };
+  }
+
+  /**
    * Move money on a client's TRADING ACCOUNT by hand, either direction.
    *
    * ## Always recorded, which is the point of it
@@ -445,6 +482,7 @@ export class AdminMoneyController {
         reason: dto.reason,
         reasonAr: dto.reasonAr,
         direction: dto.direction,
+        source: dto.source,
       },
       reference,
       req.admin,

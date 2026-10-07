@@ -3165,6 +3165,51 @@
         "tags": [
           "admin"
         ]
+      },
+      "post": {
+        "description": "Appoints the client under an agency — a main partner, or a sub-partner under a main partner. It is an approval: a pending application the client sent is approved, otherwise one is opened on their behalf, and every approval rule applies. \"Introduced by\" follows the chosen position.",
+        "operationId": "AdminIbController_appointPartner",
+        "parameters": [
+          {
+            "name": "userId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppointIbPartnerDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IbAccountDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Make an individual client a partner",
+        "tags": [
+          "admin"
+        ]
       }
     },
     "/v1/admin/ib/partners/{userId}/level": {
@@ -11716,6 +11761,54 @@
         ]
       }
     },
+    "/v1/admin/wallets/debit": {
+      "post": {
+        "description": "Writes a successful WITHDRAWAL transaction and a ledger debit — the money leaves the platform. Refused beyond the wallet’s available balance. Requires a reason.",
+        "operationId": "AdminMoneyController_debitWallet",
+        "parameters": [
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "description": "A unique value per intended withdrawal, reused only when retrying that same one. Stored as the transaction `provider_ref`, so a replay withdraws once.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DebitWalletDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WalletCreditResultDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Withdraw funds from a client's wallet by hand",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/trading-accounts/{id}/fund": {
       "post": {
         "description": "ALWAYS RECORDED, in both directions. A deposit writes a successful DEPOSIT transaction crediting the wallet, then a TRANSFER of the same amount to the trading account. A withdrawal writes a TRANSFER off the account into the wallet — it is NOT a payout and no money leaves the platform. Both are visible in the client history, the ledger and the financial views. The currency is the account's and is not accepted from the caller. Enforces the same preconditions as a client transfer: KYC level 1, live and active account (DEMO accounts are refused both ways — practice money has no wallet). A deposit requires wallets.credit AND trading.deposit; a withdrawal requires trading.withdraw.",
@@ -17111,11 +17204,34 @@
             "example": 2,
             "minimum": 1,
             "maximum": 2,
-            "description": "Must match the partner’s position (0197): 1 with no parent, 2 under a main partner."
+            "description": "The level IS the position (0197): 1 with no parent, 2 under a main partner. Choosing the other level MOVES them — 1 detaches them from their parent, 2 places them under `parentIbUserId` — and \"introduced by\" follows the new position."
+          },
+          "parentIbUserId": {
+            "type": "integer",
+            "nullable": true,
+            "description": "The main partner to place them under. Required when moving a main partner to 2."
           }
         },
         "required": [
           "level"
+        ]
+      },
+      "AppointIbPartnerDto": {
+        "type": "object",
+        "properties": {
+          "agencyId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The agency to appoint them under."
+          },
+          "parentIbUserId": {
+            "type": "integer",
+            "nullable": true,
+            "description": "A main partner to place them under. Omitted or null: a main partner."
+          }
+        },
+        "required": [
+          "agencyId"
         ]
       },
       "ReassignIbParentDto": {
@@ -26796,6 +26912,42 @@
           "replayed"
         ]
       },
+      "DebitWalletDto": {
+        "type": "object",
+        "properties": {
+          "userId": {
+            "type": "integer",
+            "description": "The client to credit."
+          },
+          "amount": {
+            "type": "string",
+            "example": "250.00000000"
+          },
+          "currency": {
+            "type": "string",
+            "example": "USD",
+            "description": "Must be a currency the platform holds."
+          },
+          "reason": {
+            "type": "string",
+            "example": "Goodwill adjustment for the failed 4 August transfer.",
+            "maxLength": 500
+          },
+          "reasonAr": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 500,
+            "example": "تسوية تعويضية عن تحويل 4 أغسطس الذي لم يكتمل.",
+            "description": "Arabic for the portal’s Arabic readers. Optional; blank or null = not translated (the portal shows the English)."
+          }
+        },
+        "required": [
+          "userId",
+          "amount",
+          "currency",
+          "reason"
+        ]
+      },
       "FundTradingAccountDto": {
         "type": "object",
         "properties": {
@@ -26822,6 +26974,14 @@
               "withdraw"
             ],
             "example": "deposit"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "system",
+              "wallet"
+            ],
+            "example": "system"
           }
         },
         "required": [
@@ -26861,9 +27021,17 @@
           "destination": {
             "type": "string",
             "enum": [
+              "wallet",
+              "system"
+            ],
+            "description": "Where the money went, on a withdrawal: the client wallet, or off the platform (system)."
+          },
+          "source": {
+            "type": "string",
+            "enum": [
               "wallet"
             ],
-            "description": "Where the money went, on a withdrawal."
+            "description": "On a deposit: set when it was moved from the client wallet rather than minted."
           }
         },
         "required": [

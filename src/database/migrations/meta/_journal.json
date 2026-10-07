@@ -1429,6 +1429,13 @@
       "when": 1789143308750,
       "tag": "0202_withdrawal_method_pay_to",
       "breakpoints": true
+    },
+    {
+      "idx": 205,
+      "version": "7",
+      "when": 1789143408750,
+      "tag": "0203_grant_wallets_debit",
+      "breakpoints": true
     }
   ]
 }

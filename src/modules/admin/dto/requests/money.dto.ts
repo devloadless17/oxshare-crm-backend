@@ -209,6 +209,13 @@ export class CreditWalletDto {
 }
 
 /**
+ * Money an operator takes OUT of a client's wallet by hand (7 Oct 2026) — it
+ * leaves the platform as a completed manual withdrawal. The same fields as a
+ * credit, for the same reasons.
+ */
+export class DebitWalletDto extends CreditWalletDto {}
+
+/**
  * Money an operator puts onto a client's TRADING ACCOUNT by hand.
  *
  * ## No `currency`, unlike `CreditWalletDto` above
@@ -271,6 +278,18 @@ export class FundTradingAccountDto {
   @ApiProperty({ enum: ['deposit', 'withdraw'], example: 'deposit' })
   @IsIn(['deposit', 'withdraw'])
   direction: 'deposit' | 'withdraw';
+
+  /**
+   * Where the money comes from or goes to (owner, 7 Oct 2026). Deposit:
+   * `system` (default) is new money, credited to the wallet and moved on;
+   * `wallet` moves money the client already holds. Withdraw: `wallet`
+   * (default) lands it in the wallet; `system` then takes it off the platform
+   * as a completed manual withdrawal (`wallets.debit`).
+   */
+  @ApiPropertyOptional({ enum: ['system', 'wallet'], example: 'system' })
+  @IsOptional()
+  @IsIn(['system', 'wallet'])
+  source?: 'system' | 'wallet';
 }
 
 /**

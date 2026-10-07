@@ -122,6 +122,7 @@
     "transfers.abandon",
     "wallets.create",
     "wallets.credit",
+    "wallets.debit",
     "wallets.delete",
     "wallets.view",
     "withdrawals.approve",

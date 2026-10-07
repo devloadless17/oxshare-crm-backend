@@ -140,6 +140,10 @@
         "label": "Add Funds to a Client Wallet"
       },
       {
+        "key": "wallets.debit",
+        "label": "Withdraw Funds from a Client Wallet"
+      },
+      {
         "key": "wallets.delete",
         "label": "Close an Empty Wallet"
       }

@@ -207,6 +207,7 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
      payment provider, and so the entry an auditor looks for first. The payload
      carries the reason the operator was required to give. */
   { action: 'wallet.credit', label: 'Wallet credited by hand', group: 'Compliance' },
+  { action: 'wallet.debit', label: 'Wallet withdrawn from by hand', group: 'Compliance' },
   { action: 'wallet.create', label: 'Wallet opened', group: 'Compliance' },
   /* Only ever an EMPTY, unused wallet — the service refuses any other. Audited
      BEFORE the delete, so the currency and owner are still readable. */

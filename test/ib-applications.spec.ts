@@ -433,22 +433,57 @@ describe('moving a partner onto different terms', () => {
     return { main, sub };
   }
 
-  it('refuses to move a main partner onto level 2 — they have no parent', async () => {
+  /*
+   * ── A CHANGE OF LEVEL IS A MOVE (owner, 7 Oct 2026) ──────────────────────
+   *
+   * 2 → 1 detaches them and clears "introduced by" (a new main partner of the
+   * broker's); 1 → 2 needs the main partner to sit under, and "introduced by"
+   * follows to them.
+   */
+  it('refuses to move a main partner onto level 2 without naming a parent', async () => {
     const { main } = await mainAndSub('LVMAIN');
 
     await expect(service.changeLevel(main, 2, UNRESTRICTED, REVIEWER)).rejects.toThrow(
-      /no parent, so they are a main partner \(level 1\)/i,
+      /Choose the main partner to place them under/i,
     );
     expect((await store.findAccount(main))?.level).toBe(1);
   });
 
-  it('refuses to move a sub-partner onto level 1 — they sit under a partner', async () => {
-    const { sub } = await mainAndSub('LVSUB');
+  it('moves a main partner under the named main partner onto level 2', async () => {
+    const { main: target } = await mainAndSub('LVTGT');
+    const mover = await makeClient('lvmove-main@test.local');
+    await store.createAccount({ userId: mover, level: 1, referralCode: 'LVMOVER1' });
 
-    await expect(service.changeLevel(sub, 1, UNRESTRICTED, REVIEWER)).rejects.toThrow(
-      /sits under another partner, so they are a sub-partner \(level 2\)/i,
+    const moved = await service.changeLevel(mover, 2, UNRESTRICTED, REVIEWER, target);
+
+    expect(moved.level).toBe(2);
+    expect(moved.parentIbUserId).toBe(target);
+    expect((await users.findById(mover))?.referredByIbUserId).toBe(target);
+  });
+
+  it('moves a sub-partner to level 1: detached, and "introduced by" removed', async () => {
+    const { sub } = await mainAndSub('LVSUB');
+    await ctx.db.execute(sql`
+      UPDATE users SET referred_by_ib_user_id = (SELECT parent_ib_user_id FROM ib_accounts WHERE user_id = ${sub})
+       WHERE id = ${sub}
+    `);
+
+    const freed = await service.changeLevel(sub, 1, UNRESTRICTED, REVIEWER);
+
+    expect(freed.level).toBe(1);
+    expect(freed.parentIbUserId).toBeNull();
+    expect((await users.findById(sub))?.referredByIbUserId).toBeUndefined();
+  });
+
+  it('refuses level 2 under a sub-partner, and moves nobody', async () => {
+    const { sub } = await mainAndSub('LVBAD');
+    const mover = await makeClient('lvbad-mover@test.local');
+    await store.createAccount({ userId: mover, level: 1, referralCode: 'LVBADMV1' });
+
+    await expect(service.changeLevel(mover, 2, UNRESTRICTED, REVIEWER, sub)).rejects.toThrow(
+      /sub-partner cannot have partners beneath them/i,
     );
-    expect((await store.findAccount(sub))?.level).toBe(2);
+    expect((await store.findAccount(mover))?.parentIbUserId).toBeNull();
   });
 
   /*
@@ -491,11 +526,12 @@ describe('moving a partner onto different terms', () => {
     const { main, sub } = await mainAndSub('LVGHST');
 
     await expect(service.changeLevel(sub, 9, UNRESTRICTED, REVIEWER)).rejects.toThrow(
-      /sub-partner \(level 2\)/i,
+      /main partner \(level 1\) or a sub-partner \(level 2\)/i,
     );
     await expect(service.changeLevel(main, 3, UNRESTRICTED, REVIEWER)).rejects.toThrow(
-      /main partner \(level 1\)/i,
+      /main partner \(level 1\) or a sub-partner \(level 2\)/i,
     );
+    expect((await store.findAccount(sub))?.parentIbUserId).toBe(main);
   });
 });
 
@@ -1657,8 +1693,47 @@ describe('managing a live partner', () => {
   it('refuses a partner as their own parent', async () => {
     const [parent] = await makePair();
     await expect(service.reassignParent(parent, parent, UNRESTRICTED, REVIEWER)).rejects.toThrow(
-      /loop/i,
+      /under themselves/i,
     );
+  });
+
+  /*
+   * "Introduced by" follows the position (owner, 7 Oct 2026): it is the new
+   * parent after a move, and nobody once cut loose.
+   */
+  it('points "introduced by" at the new parent when moved sideways', async () => {
+    const [parent, child] = await makePair();
+    await ctx.db.execute(
+      sql`UPDATE users SET referred_by_ib_user_id = ${parent} WHERE id = ${child}`,
+    );
+    const other = await makeRoot('mgmt-ref-follow@test.local', 'MGMTREFF');
+
+    await service.reassignParent(child, other, UNRESTRICTED, REVIEWER);
+
+    expect((await users.findById(child))?.referredByIbUserId).toBe(other);
+  });
+
+  it('removes "introduced by" when a partner is cut loose', async () => {
+    const [parent, child] = await makePair();
+    await ctx.db.execute(
+      sql`UPDATE users SET referred_by_ib_user_id = ${parent} WHERE id = ${child}`,
+    );
+
+    await service.reassignParent(child, null, UNRESTRICTED, REVIEWER);
+
+    expect((await users.findById(child))?.referredByIbUserId).toBeUndefined();
+  });
+
+  it('leaves "introduced by" alone when the move is refused', async () => {
+    const [parent, child] = await makePair();
+    const mover = await makeRoot('mgmt-ref-keep@test.local', 'MGMTREFK');
+    await ctx.db.execute(
+      sql`UPDATE users SET referred_by_ib_user_id = ${parent} WHERE id = ${mover}`,
+    );
+
+    await expect(service.reassignParent(mover, child, UNRESTRICTED, REVIEWER)).rejects.toThrow();
+
+    expect((await users.findById(mover))?.referredByIbUserId).toBe(parent);
   });
 
   it('accepts an unrelated parent', async () => {
@@ -1967,5 +2042,118 @@ describe('who a new partner sits under', () => {
     );
 
     expect(refusedBy).toBe('users_referred_by_ib_accounts_user_id_fk');
+  });
+});
+
+describe('making an individual a partner from the console (7 Oct 2026)', () => {
+  async function makeMain(email: string, code: string): Promise<number> {
+    const userId = await makeClient(email);
+    await store.createAccount({ userId, level: 1, referralCode: code, agencyId: AGENCY.id });
+    return userId;
+  }
+
+  it('appoints a client as a main partner under the agency, with no introducer', async () => {
+    const introducer = await makeMain('appoint-intro@test.local', 'APPINTRO');
+    const client = await makeClient('appoint-top@test.local');
+    await ctx.db.execute(
+      sql`UPDATE users SET referred_by_ib_user_id = ${introducer} WHERE id = ${client}`,
+    );
+
+    const account = await service.appointPartner(
+      client,
+      { agencyId: AGENCY.id },
+      UNRESTRICTED,
+      REVIEWER,
+    );
+
+    expect(account.level).toBe(1);
+    expect(account.parentIbUserId).toBeNull();
+    expect(account.agencyId).toBe(AGENCY.id);
+    expect(account.referralCode).toMatch(/\S+/);
+    expect((await users.findById(client))?.referredByIbUserId).toBeUndefined();
+    // It is an approval: the application it went through is on record as approved.
+    expect((await store.findLatestByUser(client))?.status).toBe('approved');
+  });
+
+  it('appoints a client as a sub-partner under a main partner', async () => {
+    const main = await makeMain('appoint-main@test.local', 'APPMAIN1');
+    const client = await makeClient('appoint-sub@test.local');
+
+    const account = await service.appointPartner(
+      client,
+      { agencyId: AGENCY.id, parentIbUserId: main },
+      UNRESTRICTED,
+      REVIEWER,
+    );
+
+    expect(account.level).toBe(2);
+    expect(account.parentIbUserId).toBe(main);
+    expect((await users.findById(client))?.referredByIbUserId).toBe(main);
+  });
+
+  it('approves the application the client already sent rather than opening another', async () => {
+    const client = await makeClient('appoint-pending@test.local');
+    const pending = await store.createApplication({ userId: client, agencyId: AGENCY.id });
+
+    await service.appointPartner(client, { agencyId: AGENCY.id }, UNRESTRICTED, REVIEWER);
+
+    expect((await store.findById(pending.id))?.status).toBe('approved');
+    const { rows } = await ctx.db.execute<{ n: number }>(
+      sql`SELECT count(*)::int AS n FROM ib_applications WHERE user_id = ${client}`,
+    );
+    expect(rows[0].n).toBe(1);
+  });
+
+  it('refuses a client who is already a partner', async () => {
+    const main = await makeMain('appoint-twice@test.local', 'APPTWICE');
+    await expect(
+      service.appointPartner(main, { agencyId: AGENCY.id }, UNRESTRICTED, REVIEWER),
+    ).rejects.toThrow(/already a partner/i);
+  });
+
+  it('leaves no stray application in the queue when the approval is refused', async () => {
+    const main = await makeMain('appoint-chain-main@test.local', 'APPCHM01');
+    const sub = await makeClient('appoint-chain-sub@test.local');
+    await store.createAccount({
+      userId: sub,
+      level: 2,
+      parentIbUserId: main,
+      referralCode: 'APPCHS01',
+    });
+    const client = await makeClient('appoint-refused@test.local');
+
+    await expect(
+      service.appointPartner(
+        client,
+        { agencyId: AGENCY.id, parentIbUserId: sub },
+        UNRESTRICTED,
+        REVIEWER,
+      ),
+    ).rejects.toThrow(/sub-partner/i);
+
+    expect(await store.findAccount(client)).toBeUndefined();
+    expect(await store.findLatestByUser(client)).toBeUndefined();
+  });
+
+  it('refuses an agency that does not exist', async () => {
+    const client = await makeClient('appoint-noagency@test.local');
+    await expect(
+      service.appointPartner(
+        client,
+        { agencyId: '00000000-0000-4000-8000-0000000000aa' },
+        UNRESTRICTED,
+        REVIEWER,
+      ),
+    ).rejects.toThrow(/agency does not exist/i);
+    expect(await store.findLatestByUser(client)).toBeUndefined();
+  });
+
+  it('refuses a client outside the actor’s territory as not found', async () => {
+    const client = await makeClient('appoint-scope@test.local');
+    const scoped: Actor = { ...REVIEWER, clientScope: scopeOf([], false) } as Actor;
+    await expect(
+      service.appointPartner(client, { agencyId: AGENCY.id }, scopeOf([], false), scoped),
+    ).rejects.toThrow(/not found|does not exist/i);
+    expect(await store.findAccount(client)).toBeUndefined();
   });
 });

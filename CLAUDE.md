@@ -338,6 +338,14 @@ It refuses a DISABLED or UNCONFIGURED rung, and the first is the other half of a
 guarantee: `IbLevelsService.update` refuses to disable a rung partners stand on, so without this
 refusal an operator could route around it by moving people ONTO a disabled row.
 
+**Since 7 Oct 2026 a change of level IS a move** (owner): the level is the position, so `2 → 1`
+detaches them (as `reassignParent(null)`) and `1 → 2` needs `parentIbUserId`, the main partner to
+sit under. **"Introduced by" follows the position**: `reassignParent` writes
+`users.referred_by_ib_user_id` = the new parent, or NULL for a main partner, in the same
+transaction. `POST /admin/ib/partners/:userId` (`ib.approve`, `appointPartner`) makes an individual
+a partner under an agency — it approves their pending application or opens one on their behalf, so
+every approval rule applies, and withdraws that application again if approval refuses.
+
 ⚠️ **It does NOT move anybody beneath them.** A level is one partner's position, and their
 sub-partners keep the rungs they were approved on — cascading would re-price an unbounded number of
 people from one operator's edit of somebody else's row. Moving a subtree is a series of decisions,

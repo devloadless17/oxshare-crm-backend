@@ -167,6 +167,9 @@ export class TransactionsService implements TransactionLedgerPort {
   creditDeposit(...a: Parameters<DepositCommands['creditDeposit']>) {
     return this.deposits.creditDeposit(...a);
   }
+  debitAdjustment(...a: Parameters<DepositCommands['debitAdjustment']>) {
+    return this.deposits.debitAdjustment(...a);
+  }
   chainTransferToAccount(...a: Parameters<DepositCommands['chainTransferToAccount']>) {
     return this.deposits.chainTransferToAccount(...a);
   }

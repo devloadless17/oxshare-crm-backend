@@ -679,6 +679,12 @@ export class IbApplicationsService {
        */
       parentIbUserId?: number | null;
       agencyId?: string | null;
+      /**
+       * Point "introduced by" at the parent (or clear it at the top) — set by
+       * `appointPartner`, where the administrator chooses the position and the
+       * attribution follows it, as it does on every later move.
+       */
+      syncReferrer?: boolean;
     } = {},
   ): Promise<IbAccountRow> {
     const reviewerId = actor.id;
@@ -914,6 +920,13 @@ export class IbApplicationsService {
         },
         tx,
       );
+      if (options.syncReferrer) {
+        await this.users.update(
+          application.userId,
+          { referredByIbUserId: parentIbUserId ?? undefined },
+          tx,
+        );
+      }
 
       /*
        * Inside the transaction, and awaited. The subject is the CLIENT who
@@ -1488,6 +1501,8 @@ export class IbApplicationsService {
     level: number,
     scope: ClientScope,
     actor: Actor,
+    /** The main partner to sit under, when moving a main partner down to level 2. */
+    parentIbUserId?: number | null,
   ): Promise<IbAccountRow> {
     await this.visibility.assertVisible(userId, scope);
 
@@ -1499,19 +1514,54 @@ export class IbApplicationsService {
      * the rest of the commission and level 2 takes their own share, so a
      * partner labelled against their position would be paid the wrong side of
      * the split. A partner with no parent is level 1; one with a parent is 2.
-     * Moving them is "Reassign parent", which re-levels them.
+     *
+     * So a change of level is a MOVE (owner, 7 Oct 2026): 2 → 1 detaches them
+     * from their parent, and 1 → 2 places them under the main partner named
+     * here. Both go through `reassignParent`, which owns the tree rules and
+     * keeps "introduced by" in step with the new position.
      */
-    const positional = account.parentIbUserId ? 2 : 1;
-    if (level !== positional) {
+    if (level < 1 || level > IB_TREE_MAX_LEVELS) {
       throw new ValidationError(
-        positional === 1
-          ? 'This partner has no parent, so they are a main partner (level 1). To make them a ' +
-              'sub-partner, reassign them under a main partner.'
-          : 'This partner sits under another partner, so they are a sub-partner (level 2). To ' +
-              'make them a main partner, remove their parent.',
+        'A partner is a main partner (level 1) or a sub-partner (level 2); there is no other level.',
       );
     }
+    const positional = account.parentIbUserId ? 2 : 1;
+    if (level !== positional) {
+      await this.assertLevelUsable(level);
+      if (level === 2 && !parentIbUserId) {
+        throw new ValidationError(
+          'A sub-partner (level 2) sits under a main partner. Choose the main partner to place ' +
+            'them under.',
+        );
+      }
+      const moved = await this.reassignParent(
+        userId,
+        level === 1 ? null : (parentIbUserId ?? null),
+        scope,
+        actor,
+      );
+      this.audit.record(actor.id, 'ib.level_change', 'ib_account', userId, {
+        before: account.level,
+        after: moved.level,
+      });
+      return moved;
+    }
 
+    const target = await this.assertLevelUsable(level);
+
+    const updated = await this.ib.updateAccount(userId, { level });
+    if (!updated) throw new NotFoundError('That partner does not exist.');
+
+    this.audit.record(actor.id, 'ib.level_change', 'ib_account', userId, {
+      before: account.level,
+      after: updated.level,
+      levelName: target.name,
+    });
+    return updated;
+  }
+
+  /** The level must exist and be enabled — see `changeLevel`. */
+  private async assertLevelUsable(level: number) {
     const target = await this.levels.findTerms(level);
     if (!target) {
       throw new NotFoundError(
@@ -1525,16 +1575,7 @@ export class IbApplicationsService {
           'Enable it first, or choose another.',
       );
     }
-
-    const updated = await this.ib.updateAccount(userId, { level });
-    if (!updated) throw new NotFoundError('That partner does not exist.');
-
-    this.audit.record(actor.id, 'ib.level_change', 'ib_account', userId, {
-      before: account.level,
-      after: updated.level,
-      levelName: target.name,
-    });
-    return updated;
+    return target;
   }
 
   /**
@@ -1613,6 +1654,10 @@ export class IbApplicationsService {
 
     const account = await this.ib.findAccount(userId);
     if (!account) throw new NotFoundError('That partner does not exist.');
+    if (parentIbUserId === userId) {
+      throw new ValidationError('A partner cannot be placed under themselves.');
+    }
+    const referrerBefore = (await this.users.findById(userId))?.referredByIbUserId ?? null;
 
     if (parentIbUserId) {
       /*
@@ -1666,26 +1711,79 @@ export class IbApplicationsService {
        * own → 1. A per-partner override only means something on a
        * sub-partner, so becoming a main partner clears it.
        */
-      return this.ib.updateAccount(
+      const moved = await this.ib.updateAccount(
         userId,
         parentIbUserId
           ? { parentIbUserId, level: 2 }
           : { parentIbUserId, level: 1, commissionShareOverride: null, rebateShareOverride: null },
         tx,
       );
+      /*
+       * "Introduced by" FOLLOWS the position (owner, 7 Oct 2026): a main
+       * partner is a new partner of the broker's and has no introducer, and a
+       * sub-partner's introducer is the main partner they sit under. Written
+       * in the same transaction, so the tree and the attribution the
+       * commission walk starts from can never disagree.
+       */
+      await this.users.update(userId, { referredByIbUserId: parentIbUserId ?? undefined }, tx);
+      return moved;
     });
     if (!updated) throw new NotFoundError('That partner does not exist.');
 
     /*
      * A reassignment moves who is paid ABOVE this partner from that point on,
      * and the old parent is not recoverable from the row afterwards — this is
-     * the only place it survives.
+     * the only place it survives. The introducer it replaced is kept beside it.
      */
     this.audit.record(actor.id, 'ib.parent_change', 'ib_account', userId, {
       before: account.parentIbUserId,
       after: updated.parentIbUserId,
+      referrerBefore: referrerBefore,
+      referrerAfter: parentIbUserId ?? null,
     });
     return updated;
+  }
+
+  /**
+   * Make an individual client a partner, from the console (owner, 7 Oct 2026)
+   * — under an agency, at the top or under a main partner.
+   *
+   * It IS an approval: every rule `approve` enforces (agency required, tree of
+   * two levels, a rung beneath the parent, scope) and everything it starts
+   * (referral code, commission wallet, the client's email and bell) applies
+   * unchanged, so there is one way to become a partner. A pending application
+   * the client already sent is approved; otherwise one is opened on their
+   * behalf, and withdrawn again if approval refuses, so a refusal leaves no
+   * stray row in the review queue.
+   *
+   * "Introduced by" follows the chosen position, as on every later move.
+   */
+  async appointPartner(
+    userId: number,
+    options: { agencyId: string; parentIbUserId?: number | null },
+    scope: ClientScope,
+    actor: Actor,
+  ): Promise<IbAccountRow> {
+    await this.visibility.assertVisible(userId, scope);
+    if (await this.ib.findAccount(userId)) {
+      throw new ConflictError('This client is already a partner.');
+    }
+    if (!(await this.users.findById(userId))) {
+      throw new NotFoundError('That client does not exist.');
+    }
+
+    const pending = await this.ib.findPendingByUser(userId);
+    const application = pending ?? (await this.ib.createApplication({ userId }));
+    try {
+      return await this.approve(application.id, actor, scope, {
+        agencyId: options.agencyId,
+        parentIbUserId: options.parentIbUserId ?? null,
+        syncReferrer: true,
+      });
+    } catch (error) {
+      if (!pending) await this.ib.deletePendingApplication(application.id);
+      throw error;
+    }
   }
 
   /**

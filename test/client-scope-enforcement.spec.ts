@@ -115,6 +115,7 @@ beforeAll(async () => {
         'clients.referrer.set',
         'kyc.identity.correct',
         'ib.partners.edit',
+        'ib.approve',
         'ib.partners.suspend',
         'transactions.view',
         // Granted so the reconciliation case below proves the refusal is about
@@ -441,6 +442,13 @@ describe('by-id routes answer 404 for an out-of-scope client, never 403', () => 
       signature: 'PATCH /admin/ib/partners/:userId/parent',
       run: (s: Session, id: number) =>
         s.patch(`/v1/admin/ib/partners/${id}/parent`, { parentIbUserId: null }),
+    },
+    {
+      signature: 'POST /admin/ib/partners/:userId',
+      run: (s: Session, id: number) =>
+        s.post(`/v1/admin/ib/partners/${id}`, {
+          agencyId: '00000000-0000-4000-8000-000000000000',
+        }),
     },
     {
       signature: 'POST /admin/clients/:id/tags/:tagId',

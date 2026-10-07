@@ -320,10 +320,15 @@ export const users = pgTable(
      *
      * ## Permanent, and that is the point
      *
-     * Written once at registration and never rewritten. A partner is paid on
-     * the activity of the clients attributed to them, so a mutable column is a
-     * route for one partner's earnings to move to another; nothing in the
-     * partner-management surface offers to change it.
+     * Written once at registration and never rewritten for a CLIENT. A partner
+     * is paid on the activity of the clients attributed to them, so a mutable
+     * column is a route for one partner's earnings to move to another.
+     *
+     * ⚠️ The one exception is a PARTNER's own row (owner, 7 Oct 2026): it
+     * follows their position in the tree. Moving them under another main
+     * partner points it there, and making them a main partner (level 2 → 1,
+     * or appointing them at the top) clears it — `reassignParent` and
+     * `appointPartner`, in the same transaction as the tree edge.
      *
      * NULL means the client arrived directly. That is the common case and not a
      * gap: a mistyped or retired referral code must never cost a signup, so
