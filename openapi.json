@@ -8500,6 +8500,42 @@
         "tags": [
           "admin"
         ]
+      },
+      "post": {
+        "description": "The same checks as a sign-up: names, date of birth, nationality, phone and residence required, the offered countries, a free email and phone — each refusal under its field. The client gets the creator’s territory tags and a welcome email to choose their password; nobody else ever knows it. Refused (409) when the creator could not see the client afterwards, with nothing kept.",
+        "operationId": "AdminClientCreateController_create",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateClientDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientCreatedDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Create a client for somebody who cannot sign up themselves",
+        "tags": [
+          "admin"
+        ]
       }
     },
     "/v1/admin/clients/export": {
@@ -10384,6 +10420,286 @@
           }
         ],
         "summary": "Reset KYC steps to default",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/kyc/{userId}/assist": {
+      "get": {
+        "description": "The broker's form with every step's verdict (what is missing, what was returned) and the upload slots of each document page. Answers are in `personalInfo` / `stepData`, masked like the review page. Writes nothing: opening it for a client who never started does not create their KYC.",
+        "operationId": "AdminKycAssistController_getAssist",
+        "parameters": [
+          {
+            "name": "userId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KycAssistViewDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "A client's KYC laid out for staff to complete it for them",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/kyc/{userId}/assist/step": {
+      "post": {
+        "description": "The client's own `saveStep`: the same checks, refused while the KYC waits for review or is approved. A changed identity detail is written to the profile and audited under you.",
+        "operationId": "AdminKycAssistController_saveStep",
+        "parameters": [
+          {
+            "name": "userId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SaveKycStepDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KycAssistViewDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Save answers on a client's KYC step for them",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/kyc/{userId}/assist/upload": {
+      "post": {
+        "description": "Send `field` and `docType` exactly as the page layout gives them (`target`). The same checks as the client's own upload — type from the bytes, 10 MB, the client's allowance — and the registry records you as the uploader. Replacing a page keeps the old version in the client's history.",
+        "operationId": "AdminKycAssistController_upload",
+        "parameters": [
+          {
+            "name": "userId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "file",
+                  "field"
+                ],
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary"
+                  },
+                  "field": {
+                    "type": "string",
+                    "example": "doc_front"
+                  },
+                  "docType": {
+                    "type": "string",
+                    "example": "national_id"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KycAssistViewDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Upload a page or photo into a client's KYC for them",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/kyc/{userId}/assist/submit": {
+      "post": {
+        "description": "The client's own submit and its one judge; the submission records you. With `approve: true` (needs `kyc.review`) the review page's approve runs right after, with its own checks — refused before anything is submitted when you may not approve.",
+        "operationId": "AdminKycAssistController_submit",
+        "parameters": [
+          {
+            "name": "userId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssistSubmitDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KycAssistViewDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Submit a client's KYC for them (and approve it, with `approve`)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/kyc/{userId}/assist/return": {
+      "post": {
+        "description": "Recorded as a return (needs `kyc.review` too); the client is not emailed, because staff are handling it. Only from submitted or under review — an approved verification goes back through Request re-verification.",
+        "operationId": "AdminKycAssistController_returnToEdit",
+        "parameters": [
+          {
+            "name": "userId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssistReturnDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KycAssistViewDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Return a KYC waiting for review to open, to complete it for the client",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/clients/{id}/welcome": {
+      "post": {
+        "description": "Only while they have not chosen a password yet. A new link replaces the old one.",
+        "operationId": "AdminClientCreateController_resendWelcome",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Send a staff-created client their welcome email again",
         "tags": [
           "admin"
         ]
@@ -23866,6 +24182,13 @@
             "type": "number",
             "example": 1000001
           },
+          "createdByName": {
+            "type": "string",
+            "nullable": true
+          },
+          "awaitingWelcome": {
+            "type": "boolean"
+          },
           "email": {
             "type": "string"
           },
@@ -24308,6 +24631,12 @@
             "items": {
               "$ref": "#/components/schemas/ClientIdentityPageDto"
             }
+          },
+          "uploadedByStaff": {
+            "type": "string",
+            "nullable": true,
+            "example": "Omar Farah",
+            "description": "The administrator who uploaded it for the client (\"Complete KYC\"); null when the client uploaded it themselves."
           }
         },
         "required": [
@@ -24515,6 +24844,12 @@
             "format": "date-time",
             "type": "string",
             "description": "When it was uploaded (a KYC version) or filed (a deposit)."
+          },
+          "uploadedByStaff": {
+            "type": "string",
+            "nullable": true,
+            "example": "Omar Farah",
+            "description": "The administrator who uploaded a KYC version for the client (\"Complete KYC\"); null when the client uploaded it, and for a receipt."
           }
         },
         "required": [
@@ -25186,6 +25521,13 @@
             "type": "string",
             "nullable": true
           },
+          "submittedByName": {
+            "type": "string",
+            "nullable": true
+          },
+          "submittedByAdminId": {
+            "type": "string"
+          },
           "rejectionReason": {
             "type": "string"
           },
@@ -25327,6 +25669,13 @@
           "reviewedByName": {
             "type": "string",
             "nullable": true
+          },
+          "submittedByName": {
+            "type": "string",
+            "nullable": true
+          },
+          "submittedByAdminId": {
+            "type": "string"
           },
           "rejectionReason": {
             "type": "string"
@@ -25762,6 +26111,466 @@
         },
         "required": [
           "steps"
+        ]
+      },
+      "KycAssistTargetDto": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "type": "string",
+            "description": "Send back as `field` on the upload.",
+            "example": "doc_back"
+          },
+          "docType": {
+            "type": "string",
+            "description": "Send back as `docType` on the upload.",
+            "example": "passport"
+          }
+        },
+        "required": [
+          "field"
+        ]
+      },
+      "KycAssistUploadDto": {
+        "type": "object",
+        "properties": {
+          "target": {
+            "$ref": "#/components/schemas/KycAssistTargetDto"
+          },
+          "filePath": {
+            "type": "string",
+            "description": "The file on file — a stored-document reference, never its contents.",
+            "example": "uploads/kyc/1f0c….jpg"
+          },
+          "returned": {
+            "type": "boolean",
+            "description": "The reviewer returned it and it has not been replaced."
+          }
+        },
+        "required": [
+          "target",
+          "returned"
+        ]
+      },
+      "KycAssistFieldDto": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "example": "dateOfBirth"
+          },
+          "label": {
+            "type": "string",
+            "example": "Date of Birth"
+          },
+          "type": {
+            "type": "string",
+            "example": "date",
+            "description": "text, date, phone, select, checkbox, file, camera."
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "hint": {
+            "type": "string"
+          },
+          "system": {
+            "type": "boolean",
+            "description": "One of the client's identity details (their profile)."
+          },
+          "hidden": {
+            "type": "boolean",
+            "description": "Hidden from this reader's role: shown as hidden, never sent."
+          },
+          "upload": {
+            "description": "For an upload question.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/KycAssistUploadDto"
+              }
+            ]
+          }
+        },
+        "required": [
+          "name",
+          "label",
+          "type",
+          "required",
+          "hidden"
+        ]
+      },
+      "KycAssistPageDto": {
+        "type": "object",
+        "properties": {
+          "target": {
+            "$ref": "#/components/schemas/KycAssistTargetDto"
+          },
+          "filePath": {
+            "type": "string",
+            "description": "The file on file — a stored-document reference, never its contents.",
+            "example": "uploads/kyc/1f0c….jpg"
+          },
+          "returned": {
+            "type": "boolean",
+            "description": "The reviewer returned it and it has not been replaced."
+          },
+          "key": {
+            "type": "string",
+            "example": "back"
+          },
+          "label": {
+            "type": "string",
+            "example": "Back Side"
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "hint": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "target",
+          "returned",
+          "key",
+          "label",
+          "required"
+        ]
+      },
+      "KycAssistDocumentTypeDto": {
+        "type": "object",
+        "properties": {
+          "value": {
+            "type": "string",
+            "example": "national_id"
+          },
+          "label": {
+            "type": "string",
+            "example": "National ID"
+          },
+          "pages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KycAssistPageDto"
+            }
+          }
+        },
+        "required": [
+          "value",
+          "label",
+          "pages"
+        ]
+      },
+      "KycAssistDocumentDto": {
+        "type": "object",
+        "properties": {
+          "category": {
+            "type": "string",
+            "enum": [
+              "identity",
+              "address"
+            ]
+          },
+          "docType": {
+            "type": "string",
+            "description": "The document on file, or chosen with nothing uploaded."
+          },
+          "optional": {
+            "type": "boolean",
+            "description": "The broker made this evidence optional."
+          },
+          "types": {
+            "description": "The types the broker accepts.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KycAssistDocumentTypeDto"
+            }
+          }
+        },
+        "required": [
+          "category",
+          "optional",
+          "types"
+        ]
+      },
+      "KycAssistSelfieDto": {
+        "type": "object",
+        "properties": {
+          "target": {
+            "$ref": "#/components/schemas/KycAssistTargetDto"
+          },
+          "filePath": {
+            "type": "string",
+            "description": "The file on file — a stored-document reference, never its contents.",
+            "example": "uploads/kyc/1f0c….jpg"
+          },
+          "returned": {
+            "type": "boolean",
+            "description": "The reviewer returned it and it has not been replaced."
+          },
+          "optional": {
+            "type": "boolean",
+            "description": "The broker made the selfie optional."
+          }
+        },
+        "required": [
+          "target",
+          "returned",
+          "optional"
+        ]
+      },
+      "KycAssistStepDto": {
+        "type": "object",
+        "properties": {
+          "slug": {
+            "type": "string",
+            "example": "document"
+          },
+          "title": {
+            "type": "string",
+            "example": "Identity Document"
+          },
+          "description": {
+            "type": "string"
+          },
+          "complete": {
+            "type": "boolean",
+            "description": "Nothing owed and nothing returned that blocks."
+          },
+          "missing": {
+            "description": "What is still needed, in step order.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KycOwedDto"
+            }
+          },
+          "returned": {
+            "description": "What the reviewer returned, still unanswered.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KycOwedDto"
+            }
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KycAssistFieldDto"
+            }
+          },
+          "document": {
+            "$ref": "#/components/schemas/KycAssistDocumentDto"
+          },
+          "selfie": {
+            "$ref": "#/components/schemas/KycAssistSelfieDto"
+          }
+        },
+        "required": [
+          "slug",
+          "title",
+          "complete",
+          "missing",
+          "returned",
+          "fields"
+        ]
+      },
+      "KycAssistViewDto": {
+        "type": "object",
+        "properties": {
+          "userId": {
+            "type": "integer",
+            "description": "The Portal ID."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "not_started",
+              "in_progress",
+              "submitted",
+              "under_review",
+              "approved",
+              "rejected"
+            ]
+          },
+          "editable": {
+            "type": "boolean",
+            "description": "Open: not waiting for review and not approved."
+          },
+          "complete": {
+            "type": "boolean",
+            "description": "Every step has what it needs — Submit would be accepted."
+          },
+          "suspended": {
+            "type": "boolean",
+            "description": "The client's account is suspended: nothing here may change until it is reactivated."
+          },
+          "rejectionReason": {
+            "type": "string"
+          },
+          "reverificationRequestedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "submittedAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "submittedByName": {
+            "type": "string",
+            "nullable": true
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KycAssistStepDto"
+            }
+          },
+          "personalInfo": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "The personal step's answers — the client's identity details and its own questions."
+          },
+          "stepData": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "additionalProperties": true
+            },
+            "description": "Every other step's answers by slug, then field name: a string, or `{ filePath }` for an upload."
+          },
+          "maskedFields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "userId",
+          "status",
+          "editable",
+          "complete",
+          "suspended",
+          "steps"
+        ]
+      },
+      "AssistSubmitDto": {
+        "type": "object",
+        "properties": {
+          "approve": {
+            "type": "boolean",
+            "description": "Approve it immediately after submitting (needs `kyc.review`).",
+            "default": false
+          }
+        }
+      },
+      "AssistReturnDto": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string",
+            "example": "Staff are completing the documents with the client.",
+            "minLength": 1,
+            "maxLength": 500
+          }
+        },
+        "required": [
+          "reason"
+        ]
+      },
+      "CreateClientDto": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "example": "samir.khoury@example.com"
+          },
+          "firstName": {
+            "type": "string",
+            "example": "Samir"
+          },
+          "lastName": {
+            "type": "string",
+            "example": "Khoury"
+          },
+          "dateOfBirth": {
+            "type": "string",
+            "example": "1948-03-02",
+            "description": "YYYY-MM-DD, 18 or older."
+          },
+          "nationality": {
+            "type": "string",
+            "example": "Lebanese",
+            "description": "From the nationality list."
+          },
+          "phone": {
+            "type": "string",
+            "example": "+96170555123",
+            "description": "International format; stored as E.164."
+          },
+          "country": {
+            "type": "string",
+            "example": "Lebanon",
+            "description": "Country of residence, from the offered list."
+          },
+          "address": {
+            "type": "string",
+            "example": "Rue Gouraud 4",
+            "maxLength": 200
+          },
+          "city": {
+            "type": "string",
+            "example": "Beirut",
+            "maxLength": 100
+          },
+          "stateProvince": {
+            "type": "string",
+            "example": "Mount Lebanon",
+            "maxLength": 100
+          },
+          "postalCode": {
+            "type": "string",
+            "example": "1103 2080",
+            "maxLength": 12
+          },
+          "locale": {
+            "type": "string",
+            "enum": [
+              "en",
+              "ar"
+            ],
+            "default": "en",
+            "description": "The client's language: their welcome email, every later email and the portal."
+          }
+        },
+        "required": [
+          "email",
+          "firstName",
+          "lastName",
+          "dateOfBirth",
+          "nationality",
+          "phone",
+          "country"
+        ]
+      },
+      "ClientCreatedDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "example": 1000245,
+            "description": "The new client’s Portal ID."
+          }
+        },
+        "required": [
+          "id"
         ]
       },
       "PermissionItemDto": {
