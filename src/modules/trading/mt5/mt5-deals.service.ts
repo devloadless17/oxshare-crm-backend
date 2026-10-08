@@ -99,8 +99,10 @@ export class Mt5DealsService {
       .limit(1);
 
     if (!account) {
-      this.logger.warn(
-        `Ingested deal ${deal.dealId} for login ${deal.login}, which matches no trading account. ` +
+      // Debug for the reason given in `ingestBatch`: an account with no client
+      // is the ordinary state, not a fault.
+      this.logger.debug(
+        `Ingested deal ${deal.dealId} for login ${deal.login}, which has no client yet. ` +
           'Stored anyway — it will be picked up once the account is linked.',
       );
       return { ingested: true, orphaned: true };
@@ -231,9 +233,18 @@ export class Mt5DealsService {
         `${unique.size - newCount} already held.`,
     );
 
+    /*
+     * DEBUG, not a warning (8 Oct 2026). Since the directory records every MT5
+     * account (0166), most deals belong to an account that exists here with no
+     * CLIENT — the ordinary state of other desks' accounts — and this fired
+     * ~9,000 times a day, saying "match no trading account" about accounts that
+     * did. Nothing per batch needs a person: a brand-new login is recorded on
+     * arrival (the webhook offers it to the directory), and a backlog that does
+     * need one raises COMMISSION_QUEUE_STALLED hourly.
+     */
     if (orphanLogins.size > 0) {
-      this.logger.warn(
-        `${orphanLogins.size} MT5 login(s) in this batch match no trading account: ` +
+      this.logger.debug(
+        `${orphanLogins.size} MT5 login(s) in this batch have no client yet: ` +
           `${[...orphanLogins].join(', ')}. Their deals are stored and accrue once linked.`,
       );
     }

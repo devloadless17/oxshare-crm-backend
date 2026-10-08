@@ -1,5 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { and, eq, isNull, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../../database/database.module';
 import type { Db } from '../../../database/db';
 import { currencies, tradingAccounts } from '../../../database/schema';
@@ -93,12 +93,20 @@ export class Mt5AccountDirectoryService {
     }
     const listed = JSON.stringify(logins);
 
-    /* The logins the CRM has no row for — one statement, whatever the book size. */
+    /*
+     * The logins the CRM has no row for — one statement, whatever the book size.
+     *
+     * Logins that already have DEALS waiting come first (8 Oct 2026). The run
+     * takes 200 an hour from a backlog of 165,000 on this broker, in login
+     * order, so an account that had traded sat behind a month of dormant ones —
+     * its deals stored, unlinkable and paying no commission until it was reached.
+     */
     const fresh = await this.db.execute<{ login: string }>(sql`
       SELECT l.login
         FROM jsonb_array_elements_text(${listed}::jsonb) AS l(login)
        WHERE NOT EXISTS (SELECT 1 FROM trading_accounts t WHERE t.login = l.login)
-       ORDER BY length(l.login), l.login
+       ORDER BY EXISTS (SELECT 1 FROM mt5_deals d WHERE d.login = l.login) DESC,
+                length(l.login), l.login
     `);
     const newLogins = fresh.rows.map((row) => row.login);
 
@@ -176,9 +184,25 @@ export class Mt5AccountDirectoryService {
     for (const [login, until] of this.discoveryBackoff) {
       if (until <= now) this.discoveryBackoff.delete(login);
     }
-    const todo = [...new Set(logins)]
-      .filter((login) => !this.discovering.has(login) && !this.discoveryBackoff.has(login))
-      .slice(0, 20);
+    const candidates = [...new Set(logins)].filter(
+      (login) => !this.discovering.has(login) && !this.discoveryBackoff.has(login),
+    );
+    if (candidates.length === 0) return 0;
+    /*
+     * Only logins with NO row. A caller may offer logins the directory already
+     * recorded with no client — the deal path does, because to it "orphaned"
+     * means "no client owns it" — and each one reaching `record` would spend two
+     * MT5 reads on the single session to insert nothing.
+     */
+    const existing = new Set(
+      (
+        await this.db
+          .select({ login: tradingAccounts.login })
+          .from(tradingAccounts)
+          .where(inArray(tradingAccounts.login, candidates))
+      ).map((row) => row.login),
+    );
+    const todo = candidates.filter((login) => !existing.has(login)).slice(0, 20);
     if (todo.length === 0) return 0;
 
     for (const login of todo) this.discovering.add(login);

@@ -212,6 +212,7 @@ export class Mt5WebhooksController {
     @Query('source') source?: string,
   ) {
     const result = await this.deals.ingest(deal, source === 'sweep' ? 'sweep' : 'push');
+    if (result.orphaned) void this.directory?.recordDiscovered([deal.login]);
     return { dealId: deal.dealId, ...result };
   }
 
@@ -276,7 +277,26 @@ export class Mt5WebhooksController {
       'no trading account claims, which accrues once the account is linked.',
   })
   async ingestDealBatch(@Body() batch: Mt5DealBatchDto) {
-    return await this.deals.ingestBatch(batch.deals, 'sweep');
+    const result = await this.deals.ingestBatch(batch.deals, 'sweep');
+    /*
+     * A deal on a login with no row here is an account opened on MT5 directly,
+     * and its FIRST deal is when we learn of it (8 Oct 2026). Discovery hung off
+     * the balance push alone, so 30 accounts whose deals landed before that
+     * existed waited for the directory's hourly walk — a month down its queue,
+     * their trades unpaid until then. `orphaned` is only true on a deal stored
+     * for the first time, so a login is offered once per new deal, not per replay.
+     */
+    const loginOf = new Map(batch.deals.map((deal) => [deal.dealId, deal.login]));
+    const discovered = [
+      ...new Set(
+        result.results
+          .filter((r) => r.orphaned)
+          .map((r) => loginOf.get(r.dealId))
+          .filter((login): login is string => Boolean(login)),
+      ),
+    ];
+    if (discovered.length > 0) void this.directory?.recordDiscovered(discovered);
+    return result;
   }
 
   /**

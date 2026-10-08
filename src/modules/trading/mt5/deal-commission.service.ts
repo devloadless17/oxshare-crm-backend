@@ -168,6 +168,17 @@ export interface DealAccrualRun {
    */
   orphaned: number;
   /**
+   * Of those, deals on a login with NO `trading_accounts` row at all (8 Oct 2026).
+   *
+   * `orphaned` counts deals whose account has no CLIENT, and since the directory
+   * records every MT5 account (0166) that is mostly other desks' accounts: an
+   * ordinary state (119,000 and rising on this broker), not a fault. THIS is the
+   * fault the stall alarm was built for: a deal the CRM cannot place on any
+   * account. Alarming on `orphaned` fired every hour for ever, which is how an
+   * alarm gets muted, and the real case with it.
+   */
+  unrecorded: number;
+  /**
    * Deals held back by a retry delay right now — again the whole backlog.
    *
    * A processing backlog drains itself and a rising DEFERRED backlog does not:
@@ -361,7 +372,10 @@ export class DealCommissionService {
         nothingOwed: 0,
         demo: 0,
         legsConsumed: 0,
-        orphaned: await this.stuckCounts().then((c) => c.orphaned),
+        ...(await this.stuckCounts().then((c) => ({
+          orphaned: c.orphaned,
+          unrecorded: c.unrecorded,
+        }))),
         deferred: 0,
         failed: 0,
         predating: 0,
@@ -590,6 +604,7 @@ export class DealCommissionService {
       demo: 0,
       legsConsumed: 0,
       orphaned: 0,
+      unrecorded: 0,
       deferred: 0,
       failed: 0,
       predating: 0,
@@ -860,6 +875,7 @@ export class DealCommissionService {
      */
     const stuck = await this.stuckCounts();
     run.orphaned = stuck.orphaned;
+    run.unrecorded = stuck.unrecorded;
     run.deferred = stuck.deferred;
 
     return run;
@@ -925,17 +941,22 @@ export class DealCommissionService {
    * previously attempted is counted honestly in each, rather than assigned to
    * whichever query ran first.
    */
-  private async stuckCounts(): Promise<{ orphaned: number; deferred: number }> {
+  private async stuckCounts(): Promise<{ orphaned: number; unrecorded: number; deferred: number }> {
     const [row] = await this.db
       .select({
         orphaned: sql<number>`count(*) FILTER (WHERE ${tradingAccounts.userId} IS NULL)::int`,
+        unrecorded: sql<number>`count(*) FILTER (WHERE ${tradingAccounts.id} IS NULL)::int`,
         deferred: sql<number>`count(*) FILTER (WHERE ${mt5Deals.commissionAttempts} > 0)::int`,
       })
       .from(mt5Deals)
       .leftJoin(tradingAccounts, eq(tradingAccounts.login, mt5Deals.login))
       .where(isNull(mt5Deals.commissionProcessedAt));
 
-    return { orphaned: row?.orphaned ?? 0, deferred: row?.deferred ?? 0 };
+    return {
+      orphaned: row?.orphaned ?? 0,
+      unrecorded: row?.unrecorded ?? 0,
+      deferred: row?.deferred ?? 0,
+    };
   }
 
   /**
