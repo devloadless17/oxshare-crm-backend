@@ -375,21 +375,32 @@ export class DealCommissionScheduler implements OnApplicationBootstrap, OnModule
         const waiting = run.orphaned;
 
         /*
-         * Said when the NUMBER changes, and otherwise at most hourly.
+         * TWO different facts since the directory records every MT5 account
+         * (8 Oct 2026), and only one of them is a warning.
          *
-         * A change is news — a new orphan arrived, or somebody linked an account
-         * and cleared some. An unchanged count is the same fact as a minute ago,
-         * and repeating it buries the run that actually differs.
+         * A deal on a login with NO account row is one the CRM cannot place —
+         * the directory missed it — and a change in that number is news.
+         *
+         * A deal on a recorded account with no CLIENT is the ordinary state of
+         * other desks' accounts: 119,000 and rising here. Warning whenever THAT
+         * number changed meant a warning every minute, since a new deal changes
+         * it. It is reported hourly, as information.
          */
-        const changed = this.lastOrphanWarn?.count !== waiting;
+        const changed = this.lastOrphanWarn?.count !== run.unrecorded;
         const stale = Date.now() - (this.lastOrphanWarn?.at ?? 0) >= 3_600_000;
 
-        if (changed || stale) {
-          this.lastOrphanWarn = { count: waiting, at: Date.now() };
+        if (run.unrecorded > 0 && (changed || stale)) {
+          this.lastOrphanWarn = { count: run.unrecorded, at: Date.now() };
           this.logger.warn(
-            `${waiting} ingested deal(s) belong to MT5 logins no trading account claims, so ` +
-              'nobody can be paid for them yet. They accrue automatically once the account is ' +
-              'linked — no backfill needed. Repeated hourly while the number holds steady.',
+            `${run.unrecorded} ingested deal(s) belong to MT5 logins the CRM has no account for, ` +
+              'so nobody can be paid for them yet. The account directory records a login when ' +
+              'it trades; they accrue automatically once it does. Repeated hourly while held.',
+          );
+        } else if (stale) {
+          this.lastOrphanWarn = { count: run.unrecorded, at: Date.now() };
+          this.logger.log(
+            `${waiting} ingested deal(s) are on MT5 accounts with no client yet. They accrue ` +
+              'automatically once an account is assigned to a client.',
           );
         }
       } else if (this.lastOrphanWarn) {
@@ -451,9 +462,11 @@ export class DealCommissionScheduler implements OnApplicationBootstrap, OnModule
    * The context says which, so a drain can route on it without the taxonomy
    * growing a kind per cause.
    */
-  private alertOnStall(run: { orphaned: number; deferred: number }): void {
+  private alertOnStall(run: { unrecorded: number; deferred: number }): void {
     const refused = run.deferred >= REFUSED_DEAL_ALERT;
-    const unlinked = run.orphaned >= ORPHAN_DEAL_ALERT;
+    // Deals on logins with NO account row, not deals awaiting a client — see
+    // `DealAccrualRun.unrecorded` for why the second can never clear.
+    const unlinked = run.unrecorded >= ORPHAN_DEAL_ALERT;
 
     if (!refused && !unlinked) {
       /*
@@ -477,10 +490,10 @@ export class DealCommissionScheduler implements OnApplicationBootstrap, OnModule
         ? `${run.deferred} ingested deal(s) were REFUSED by the commission engine and are ` +
             'retrying on a backoff. Every future run fails the same way until the commission ' +
             'configuration is corrected; the deals stay queued and pay in full once it is.'
-        : `${run.orphaned} ingested deal(s) belong to MT5 logins no trading account claims, so ` +
-            'the commission on them cannot be attributed to anybody. They accrue automatically ' +
-            'once the accounts are linked — no backfill needed.',
-      { refused: run.deferred, unlinked: run.orphaned },
+        : `${run.unrecorded} ingested deal(s) belong to MT5 logins the CRM has no account for, ` +
+            'so the commission on them cannot be attributed to anybody. The account directory ' +
+            'records a login when it trades; if this persists, that recording is failing.',
+      { refused: run.deferred, unlinked: run.unrecorded },
     );
   }
 
@@ -528,6 +541,7 @@ export class DealCommissionScheduler implements OnApplicationBootstrap, OnModule
       demo: 0,
       legsConsumed: 0,
       orphaned: 0,
+      unrecorded: 0,
       deferred: 0,
       failed: 0,
       predating: 0,
@@ -548,6 +562,7 @@ export class DealCommissionScheduler implements OnApplicationBootstrap, OnModule
 
       // Live readings, not tallies — see the note above.
       total.orphaned = run.orphaned;
+      total.unrecorded = run.unrecorded;
       total.deferred = run.deferred;
 
       /*

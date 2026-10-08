@@ -42,6 +42,7 @@ function accrualRun(overrides: Partial<DealAccrualRun> = {}): DealAccrualRun {
     demo: 0,
     legsConsumed: 0,
     orphaned: 0,
+    unrecorded: 0,
     deferred: 0,
     failed: 0,
     predating: 0,
@@ -239,8 +240,10 @@ describe('the accrual job drains the deal queue', () => {
      */
     const accruePending = vi
       .fn()
-      .mockResolvedValueOnce(accrualRun({ examined: 200, accrued: 200, orphaned: 250 }))
-      .mockResolvedValue(accrualRun({ examined: 3, accrued: 3, orphaned: 250 }));
+      .mockResolvedValueOnce(
+        accrualRun({ examined: 200, accrued: 200, orphaned: 250, unrecorded: 250 }),
+      )
+      .mockResolvedValue(accrualRun({ examined: 3, accrued: 3, orphaned: 250, unrecorded: 250 }));
 
     const scheduler = new DealCommissionScheduler(
       {

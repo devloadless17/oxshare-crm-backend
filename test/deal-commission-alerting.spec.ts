@@ -35,6 +35,7 @@ function run(overrides: Partial<DealAccrualRun> = {}): DealAccrualRun {
     demo: 0,
     legsConsumed: 0,
     orphaned: 0,
+    unrecorded: 0,
     deferred: 0,
     failed: 0,
     predating: 0,
@@ -111,7 +112,21 @@ describe('the queue says when nothing is going to pay it', () => {
      * muted alert on the commission queue is worse than none — it reads as
      * coverage.
      */
-    const scheduler = schedulerReturning(run({ orphaned: 12 }));
+    const scheduler = schedulerReturning(run({ orphaned: 12, unrecorded: 12 }));
+
+    await scheduler.accrue();
+
+    expect(alertsRaised(errors)).toHaveLength(0);
+  });
+
+  it('stays silent on deals whose account is recorded but has no client yet', async () => {
+    /*
+     * Production, 8 Oct 2026: the directory records every MT5 account (0166),
+     * so other desks' accounts sit here with no client and their deals wait —
+     * 119,000 and rising, with nothing wrong. Alarming on that fired every hour
+     * for ever. Only a deal on a login with NO account row is a stall.
+     */
+    const scheduler = schedulerReturning(run({ orphaned: 119_000, unrecorded: 0 }));
 
     await scheduler.accrue();
 
@@ -119,7 +134,7 @@ describe('the queue says when nothing is going to pay it', () => {
   });
 
   it('alerts once a batch of trades cannot be attributed to anybody', async () => {
-    const scheduler = schedulerReturning(run({ orphaned: 200 }));
+    const scheduler = schedulerReturning(run({ orphaned: 200, unrecorded: 200 }));
 
     await scheduler.accrue();
 
