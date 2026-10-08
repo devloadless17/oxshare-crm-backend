@@ -95,6 +95,16 @@ export class ClientDocumentDto {
 
   @ApiProperty({ description: 'When it was uploaded (a KYC version) or filed (a deposit).' })
   uploadedAt: Date;
+
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    example: 'Omar Farah',
+    description:
+      'The administrator who uploaded a KYC version for the client ("Complete KYC"); null when ' +
+      'the client uploaded it, and for a receipt.',
+  })
+  uploadedByStaff: string | null;
 }
 
 @NoClientFields('a list envelope around already scoped document records')

@@ -341,6 +341,17 @@ export const SERVER_MESSAGES_AR: Readonly<Record<string, string>> = {
     'ينطبق هذا التصحيح على طلب مقبول فقط؛ حالة هذا الطلب: {1}. في أي حالة أخرى يمكن للعميل تعديل بياناته بنفسه.',
   'KYC is under review. You cannot edit it now.':
     'طلب التحقق من الهوية قيد المراجعة. لا يمكنك تعديله الآن.',
+  // Staff completing a client's KYC for them ("Complete KYC", 0210).
+  'This client is already verified. Request re-verification to change their KYC.':
+    'هذا العميل موثَّق مسبقاً. اطلب إعادة التحقق لتغيير بيانات التحقق الخاصة به.',
+  'This KYC is waiting for review. Return it to edit it.':
+    'طلب التحقق هذا بانتظار المراجعة. أعِده للتعديل أولاً.',
+  'This client is already verified. Request re-verification to change their documents.':
+    'هذا العميل موثَّق مسبقاً. اطلب إعادة التحقق لتغيير مستنداته.',
+  'This KYC is waiting for review. Return it to change its documents.':
+    'طلب التحقق هذا بانتظار المراجعة. أعِده لتغيير مستنداته.',
+  'This file is not a JPG, PNG or WebP image or a PDF. Save a photo in HEIC format (the iPhone default) as JPG first.':
+    'هذا الملف ليس صورة JPG أو PNG أو WebP ولا ملف PDF. احفظ الصورة بصيغة HEIC (الصيغة الافتراضية في iPhone) بصيغة JPG أولاً.',
   'A correction does not change the phone number — edit it on the client’s profile.':
     'لا يغيّر التصحيح رقم الهاتف — عدّله من الملف الشخصي للعميل.',
   'Only an approved verification can be returned for re-verification. A submission still under review is returned with a rejection.':

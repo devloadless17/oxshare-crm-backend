@@ -433,6 +433,19 @@ export class KycSubmissionDto {
   @NotClientField('an ADMINISTRATOR attribute \u2014 this describes the operator, never a client')
   @ApiPropertyOptional({ type: String, nullable: true })
   reviewedByName?: string | null;
+  /**
+   * Who SUBMITTED it for the client ("Complete KYC", 0210) — an administrator's
+   * name; null when the client submitted it themselves.
+   */
+  @NotClientField(
+    'an ADMINISTRATOR attribute \u2014 who submitted it for the client, never a client',
+  )
+  @ApiPropertyOptional({ type: String, nullable: true })
+  submittedByName?: string | null;
+  /** The administrator's id behind `submittedByName` (0210); absent = the client submitted it. */
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiPropertyOptional()
+  submittedByAdminId?: string;
   @NotClientField(
     'not a client-owned attribute \u2014 rejectionReason describes the record rather than the person',
   )
@@ -581,6 +594,19 @@ export class KycAttemptDto {
   @NotClientField('an ADMINISTRATOR attribute \u2014 this describes the operator, never a client')
   @ApiPropertyOptional({ type: String, nullable: true })
   reviewedByName?: string | null;
+  /**
+   * Who SUBMITTED it for the client ("Complete KYC", 0210) — an administrator's
+   * name; null when the client submitted it themselves.
+   */
+  @NotClientField(
+    'an ADMINISTRATOR attribute \u2014 who submitted it for the client, never a client',
+  )
+  @ApiPropertyOptional({ type: String, nullable: true })
+  submittedByName?: string | null;
+  /** The administrator's id behind `submittedByName` (0210); absent = the client submitted it. */
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiPropertyOptional()
+  submittedByAdminId?: string;
   @NotClientField(
     'not a client-owned attribute \u2014 rejectionReason describes the record rather than the person',
   )
@@ -1183,6 +1209,14 @@ export class ClientProfileDto {
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
   @ApiProperty({ type: Number, example: 1000001 })
   portalId: number;
+  /** The administrator who CREATED this client ("New client", 0211); null when they signed up. */
+  @NotClientField('an ADMINISTRATOR attribute - who created the client, never the client')
+  @ApiPropertyOptional({ type: String, nullable: true })
+  createdByName?: string | null;
+  /** Staff created them and they have not chosen a password yet: a welcome email can be resent. */
+  @NotClientField('a property of the account, not of the person - whether a welcome is still owed')
+  @ApiPropertyOptional()
+  awaitingWelcome?: boolean;
   @ClientField('client.email')
   @ApiPropertyOptional()
   email?: string;

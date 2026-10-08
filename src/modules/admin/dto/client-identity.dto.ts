@@ -77,6 +77,17 @@ export class ClientIdentityVersionDto {
   @ApiProperty({ type: [ClientIdentityPageDto] })
   @NotClientField(RECORD)
   pages: ClientIdentityPageDto[];
+
+  @ApiPropertyOptional({
+    nullable: true,
+    type: String,
+    example: 'Omar Farah',
+    description:
+      'The administrator who uploaded it for the client ("Complete KYC"); null when the client ' +
+      'uploaded it themselves.',
+  })
+  @NotClientField('an ADMINISTRATOR attribute - who uploaded it for the client, never a client')
+  uploadedByStaff: string | null;
 }
 
 export class ClientIdentityDocumentDto {

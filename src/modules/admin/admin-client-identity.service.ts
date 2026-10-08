@@ -166,6 +166,7 @@ export class AdminClientIdentityService {
             transactionId: null,
             // The record's store may hand back a timestamp STRING; a Date either way.
             uploadedAt: new Date(version.presentedAt ?? version.createdAt),
+            uploadedByStaff: version.uploadedByStaff ?? null,
           });
         });
       }
@@ -204,6 +205,7 @@ export class AdminClientIdentityService {
           reason: receipt.rejectionReason,
           transactionId: receipt.id,
           uploadedAt: new Date(receipt.createdAt),
+          uploadedByStaff: null,
         });
       }
     } else {

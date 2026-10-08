@@ -220,6 +220,13 @@ export interface User {
    * INSERT that omits it (the column defaults to 'en') still type-check.
    */
   locale?: Locale;
+  /** The administrator who created this client ("New client", 0211); absent = they signed up. */
+  createdByAdminId?: string;
+  /**
+   * When the client last chose their password (0211). Absent only for a
+   * staff-created client who has not used their welcome link yet.
+   */
+  passwordSetAt?: Date;
   createdAt: Date;
 }
 
@@ -265,6 +272,8 @@ const toUser = ({
   postalCode: r.postalCode ?? undefined,
   referredByIbUserId: r.referredByIbUserId ?? undefined,
   locale: parseLocale(r.locale),
+  createdByAdminId: r.createdByAdminId ?? undefined,
+  passwordSetAt: r.passwordSetAt ?? undefined,
 });
 
 /**
@@ -666,9 +675,14 @@ export class UsersStore {
    * distinguish "no such client" from "not yours", and that difference is an
    * oracle for enumerating the client base an admin was specifically denied.
    */
-  async findForAdmin(id: number, scope: ClientScope): Promise<User | undefined> {
+  async findForAdmin(
+    id: number,
+    scope: ClientScope,
+    /** A caller's transaction — "New client" asks before its insert commits (0211). */
+    executor?: Executor,
+  ): Promise<User | undefined> {
     const scoped = clientScopePredicate(scope, users.id);
-    const [row] = await this.db
+    const [row] = await (executor ?? this.db)
       .select(USER_COLUMNS)
       .from(users)
       // In the WHERE clause, never a post-fetch comparison — the rule this

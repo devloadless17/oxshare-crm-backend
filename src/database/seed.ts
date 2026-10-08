@@ -987,7 +987,9 @@ export async function runSeeds(): Promise<void> {
       .values({
         name: 'E2E Restricted',
         description: 'Fixture for the admin end-to-end suite. Not for human use.',
-        permissions: ['clients.view', 'kyc.review', 'tags.view'],
+        // Closed over the catalog's `requires` (0204), as any role saved through the
+        // API is: `kyc.review` needs the page it happens on, `kyc.view`.
+        permissions: ['clients.view', 'kyc.review', 'kyc.view', 'tags.view'],
         // Hidden from this identity, so a masking spec has something to assert
         // is absent from the response BODY, not merely from the screen.
         maskedFields: ['client.email'],

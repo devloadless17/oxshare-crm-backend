@@ -3,13 +3,7 @@ import { SignupLinksStore } from '../../store/signup-links.store';
 import { normaliseSignupSlug } from '../../common/signup-slug';
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { lockoutMessage } from '../../common/security/lockout-message';
-import { REGISTRATION_REQUIRED } from '../../common/kyc/identity-core';
-import {
-  checkProfile,
-  offeredProblems,
-  firstProfileError,
-  type ProfileKey,
-} from '../../common/profile/client-profile';
+import { ClientCreation } from './client-creation';
 import { ALERT_KINDS, raiseAlert } from '../../common/logging/alerts';
 import { normaliseReferralCode } from '../../common/referral-code';
 import { requestLocale } from '../../common/i18n/locale';
@@ -30,10 +24,7 @@ import { Request, Response } from 'express';
 import {
   AuthenticationError,
   AuthorizationError,
-  EmailAlreadyRegisteredError,
-  PhoneAlreadyRegisteredError,
   EmailCodeInvalidError,
-  FieldValidationError,
   EmailNotVerifiedError,
   NotFoundError,
   SessionReplayedError,
@@ -61,7 +52,6 @@ import { PasswordService } from '../../common/security/password.service';
 import { AVATAR_BUCKET, StoredFilesService } from '../../common/uploads/stored-files.service';
 import { LoginAttemptsService } from '../../common/security/login-attempts.service';
 import { localizeMessage } from '../../common/i18n/localize-message';
-import { violatesConstraint } from '../../common/errors/pg-violation';
 import {
   isTokenKind,
   TOKEN_ALGORITHM,
@@ -111,18 +101,6 @@ const EMAIL_VERIFICATION_TTL_MS = 24 * 60 * 60 * 1000;
 export interface VerifyEmailResult {
   status: 'verified' | 'already_verified';
   message: string;
-}
-
-/** What the sign-up form shows under the email field for a taken address. */
-const EMAIL_TAKEN =
-  'This email already has an OxShare account. Reset your password or sign in instead.';
-
-function emailAlreadyRegistered(): EmailAlreadyRegisteredError {
-  return new EmailAlreadyRegisteredError(EMAIL_TAKEN, { email: EMAIL_TAKEN });
-}
-
-function phoneAlreadyRegistered(): PhoneAlreadyRegisteredError {
-  return new PhoneAlreadyRegisteredError();
 }
 
 @Injectable()
@@ -178,7 +156,7 @@ export class AuthService {
      */
     @Optional()
     @Inject(WALLET_PROVISIONING)
-    private readonly walletProvisioning?: WalletProvisioningPort,
+    walletProvisioning?: WalletProvisioningPort,
     /*
      * Tells every admin screen that the client list moved when somebody
      * registers — data only, no bell. A registration is not a task (the admin
@@ -190,13 +168,13 @@ export class AuthService {
      * record. Absent, the list refreshes on its own next fetch.
      */
     @Optional()
-    private readonly resourceChanged?: ResourceChangedPublisher,
+    resourceChanged?: ResourceChangedPublisher,
     /*
      * The countries the broker offers (0178): sign-up accepts only those, the
      * same list KYC and the desk use. Optional for the positional reason above.
      */
     @Optional()
-    private readonly offered?: OfferedCountriesStore,
+    offered?: OfferedCountriesStore,
     /*
      * Sign-up links and partner tags (0198): the tags a new client ARRIVES
      * with, written in the registration's own transaction. Optional for the
@@ -205,7 +183,17 @@ export class AuthService {
      */
     @Optional()
     private readonly signupLinks?: SignupLinksStore,
-  ) {}
+  ) {
+    /*
+     * The ONE way a client comes to exist (0211) — the same checks and the same
+     * wallets as a client staff create — built from what this service already
+     * holds, so every positional `new AuthService(...)` keeps working.
+     */
+    this.creation = new ClientCreation(users, offered, walletProvisioning, resourceChanged);
+  }
+
+  /** See the constructor. */
+  private readonly creation: ClientCreation;
 
   // ─── Register ────────────────────────────────────────────────────────────────
   /**
@@ -227,55 +215,37 @@ export class AuthService {
    */
   async register(dto: RegisterDto) {
     /*
+     * ── THE CHECKS EVERY NEW CLIENT PASSES (`ClientCreation`, 0211) ─────────
+     *
      * The ADDRESS first: when it is taken that is the whole answer — its holder
-     * signs in or resets their password, and the details below are not theirs
-     * to type again.
-     */
-    await this.assertEmailAvailable(dto.email);
-
-    /*
-     * ── THE PROFILE, BY THE RULES EVERY LATER WRITER OBEYS ──────────────────
+     * signs in or resets their password, and the details are not theirs to type
+     * again.
      *
      * Registration seeds the whole client profile (25 Sep 2026) — name, date of
      * birth, nationality, phone, residence — by the same rules every later
-     * writer obeys (`common/profile/client-profile.ts`).
+     * writer obeys (`common/profile/client-profile.ts`), with the sign-up tier
+     * REQUIRED since 26 Sep 2026 (the owner's ruling): who the person is and
+     * how to reach them. Enforced per field and in the profile's own words,
+     * rather than trusted to a form; the countries the broker offers; one
+     * client per phone (0194). The address, city and postal code stay
+     * optional: they are completed in the verification, pre-filled from
+     * whatever was given here.
      *
-     * REQUIRED since 26 Sep 2026, the owner's ruling: who the person is and how
-     * to reach them — names, date of birth, nationality, phone, residence
-     * (`REGISTRATION_REQUIRED`). Enforced here, per field and in the profile's
-     * own words, rather than trusted to a form. The address, city and postal
-     * code stay optional: they are completed in the verification, pre-filled
-     * from whatever was given here. Every portal build since 25 Sep sends all
-     * six, so enforcing them breaks no live screen.
+     * The SAME checks a client staff create passes ("New client"), so the two
+     * ways in can never accept different people.
      */
-    const profile = checkProfile(
-      {
-        firstName: dto.firstName,
-        lastName: dto.lastName,
-        ...(dto.dateOfBirth !== undefined ? { dateOfBirth: dto.dateOfBirth } : {}),
-        ...(dto.nationality !== undefined ? { nationality: dto.nationality } : {}),
-        ...(dto.phone !== undefined ? { phone: dto.phone } : {}),
-        ...(dto.country !== undefined ? { country: dto.country } : {}),
-        ...(dto.address !== undefined ? { address: dto.address } : {}),
-        ...(dto.city !== undefined ? { city: dto.city } : {}),
-        ...(dto.postalCode !== undefined ? { postalCode: dto.postalCode } : {}),
-      },
-      { required: REGISTRATION_REQUIRED },
-    );
-    const offeredErrors = this.offered
-      ? offeredProblems(profile.values, await this.offered.get())
-      : {};
-    const errors = { ...offeredErrors, ...profile.errors };
-    const profileError = firstProfileError(errors);
-    if (profileError) {
-      throw new FieldValidationError(profileError, errors);
-    }
-    // One client per phone number (0194) — told on the field, like a taken address.
-    if (profile.values.phone) await this.assertPhoneAvailable(profile.values.phone);
-    // A blank optional field is simply not stored — there is nothing to clear yet.
-    const seeded = Object.fromEntries(
-      Object.entries(profile.values).filter(([, value]) => value !== null),
-    ) as Partial<Record<ProfileKey, string>>;
+    const seeded = await this.creation.check({
+      email: dto.email,
+      ...(dto.firstName !== undefined ? { firstName: dto.firstName } : {}),
+      ...(dto.lastName !== undefined ? { lastName: dto.lastName } : {}),
+      ...(dto.dateOfBirth !== undefined ? { dateOfBirth: dto.dateOfBirth } : {}),
+      ...(dto.nationality !== undefined ? { nationality: dto.nationality } : {}),
+      ...(dto.phone !== undefined ? { phone: dto.phone } : {}),
+      ...(dto.country !== undefined ? { country: dto.country } : {}),
+      ...(dto.address !== undefined ? { address: dto.address } : {}),
+      ...(dto.city !== undefined ? { city: dto.city } : {}),
+      ...(dto.postalCode !== undefined ? { postalCode: dto.postalCode } : {}),
+    });
 
     const passwordHash = await this.passwords.hash(dto.password);
     const verificationToken = uuidv4();
@@ -285,38 +255,32 @@ export class AuthService {
     const arrival = await this.resolveArrival(dto.acquisitionCode, referredByIbUserId);
 
     const createUser = (tx?: Executor) =>
-      this.users
-        .create(
-          {
-            email: dto.email.toLowerCase(),
-            passwordHash,
-            ...seeded,
-            firstName: seeded.firstName!,
-            lastName: seeded.lastName!,
-            type: 'individual',
-            status: 'active',
-            verificationLevel: 0,
-            emailVerified: false,
-            // Hashed, never the token — schema.ts. `emailVerificationConsumedAt` is
-            // absent rather than explicit: an INSERT gets NULL for free, which is
-            // exactly "outstanding".
-            emailVerificationTokenHash: hashEmailedToken(verificationToken),
-            emailVerificationExpiry: verificationExpiry,
-            referredByIbUserId,
-            // The language the portal was in when they signed up (X-OxShare-Locale):
-            // what every mail sent outside their own requests will be written in.
-            locale: requestLocale(),
-            signedUpViaAdminId: arrival.adminId,
-          },
-          tx,
-        )
-        .catch((error: unknown) => {
-          // Two sign-ups for one NEW address at the same moment: the unique index
-          // decides, and the loser gets the same plain answer as any taken address.
-          if (violatesConstraint(error, 'users_email_unique')) throw emailAlreadyRegistered();
-          if (violatesConstraint(error, 'users_phone_unique')) throw phoneAlreadyRegistered();
-          throw error;
-        });
+      this.creation.insert(
+        {
+          email: dto.email.toLowerCase(),
+          passwordHash,
+          // They chose it just now (0211): never a client waiting for a welcome link.
+          passwordSetAt: new Date(),
+          ...seeded,
+          firstName: seeded.firstName!,
+          lastName: seeded.lastName!,
+          type: 'individual',
+          status: 'active',
+          verificationLevel: 0,
+          emailVerified: false,
+          // Hashed, never the token — schema.ts. `emailVerificationConsumedAt` is
+          // absent rather than explicit: an INSERT gets NULL for free, which is
+          // exactly "outstanding".
+          emailVerificationTokenHash: hashEmailedToken(verificationToken),
+          emailVerificationExpiry: verificationExpiry,
+          referredByIbUserId,
+          // The language the portal was in when they signed up (X-OxShare-Locale):
+          // what every mail sent outside their own requests will be written in.
+          locale: requestLocale(),
+          signedUpViaAdminId: arrival.adminId,
+        },
+        tx,
+      );
 
     /*
      * The tags a client ARRIVES with (0198), in the account's own transaction:
@@ -333,27 +297,12 @@ export class AuthService {
         : await createUser();
 
     /*
-     * A wallet in every enabled currency, before the email goes out.
-     *
-     * Awaited rather than fire-and-forget so the client's first sign-in finds
-     * their balances already there — but it cannot fail the registration, and
-     * the service swallows its own errors for that reason. `?.` because the
-     * parameter is optional; see the constructor.
+     * Wallets in every enabled currency (awaited, so the first sign-in finds
+     * them; it never fails the registration) and fresh admin client lists — no
+     * bell: a registration is not a task. What every new client gets
+     * (`ClientCreation.settle`); their COUNTRY tag is derived (0193).
      */
-    await this.walletProvisioning?.openAllEnabledWallets(user.id);
-
-    /*
-     * The client already carries their COUNTRY tag (0193): it is derived from
-     * `users.country`, which registration requires, so there is nothing to
-     * write — and nothing that could drift from the country they gave.
-     */
-
-    /*
-     * Refresh every admin's client list — no bell: see the constructor note.
-     * `void`: registration already waits on wallet provisioning and an SMTP
-     * round trip, and the publisher never throws.
-     */
-    void this.resourceChanged?.publish({ resource: 'clients' });
+    await this.creation.settle(user.id);
 
     /*
      * And a 6-digit CODE beside the link — the registration screen now asks for
@@ -391,16 +340,6 @@ export class AuthService {
    */
   async emailAvailable(email: string): Promise<boolean> {
     return !(await this.users.findByEmail(email));
-  }
-
-  /** Refused, in the sign-up form's own words, when the address is taken. */
-  private async assertEmailAvailable(email: string): Promise<void> {
-    if (!(await this.emailAvailable(email))) throw emailAlreadyRegistered();
-  }
-
-  /** Refused under the phone field when another client already holds the number (E.164). */
-  private async assertPhoneAvailable(phone: string): Promise<void> {
-    if (await this.users.findIdByPhone(phone)) throw phoneAlreadyRegistered();
   }
 
   /**
@@ -857,6 +796,9 @@ export class AuthService {
       // comment in schema.ts. Revoking the refresh families below ends the
       // ability to RENEW; this ends the tokens already out there.
       passwordChangedAt: new Date(),
+      // Chosen by the client (0211) — for a staff-created client, the welcome
+      // link IS this reset, and this is the moment they first have a password.
+      passwordSetAt: new Date(),
       /*
        * A COMPLETED RESET VERIFIES THE ADDRESS.
        *
@@ -1543,6 +1485,7 @@ export class AuthService {
        * changing their password under duress is trying to prevent.
        */
       passwordChangedAt: new Date(),
+      passwordSetAt: new Date(),
       // A pending reset link is a live second key to the account. Someone
       // changing their password because they fear compromise must not leave one
       // sitting in an inbox the attacker may also hold.

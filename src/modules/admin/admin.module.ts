@@ -10,6 +10,8 @@ import { AdminClientsController } from './admin-clients.controller';
 import { AdminClientIdentityController } from './admin-client-identity.controller';
 import { AdminClientIdentityService } from './admin-client-identity.service';
 import { AdminComplianceController } from './admin-compliance.controller';
+import { AdminKycAssistController } from './admin-kyc-assist.controller';
+import { AdminClientCreateController } from './admin-client-create.controller';
 import { AdminRbacController } from './admin-rbac.controller';
 import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { HiddenEmailLookupInterceptor } from './hidden-email-lookup.interceptor';
@@ -24,6 +26,9 @@ import { SignupLinksService } from './signup-links.service';
 import { AdminClientsBulkService } from './admin-clients-bulk.service';
 import { AdminClientsService } from './admin-clients.service';
 import { AdminComplianceService } from './admin-compliance.service';
+import { AdminKycAssistService } from './admin-kyc-assist.service';
+import { AdminClientCreateService } from './admin-client-create.service';
+import { ClientCreation } from '../identity/client-creation';
 import { AdminRbacService } from './admin-rbac.service';
 import { ApiKeysService } from './api-keys.service';
 import { AdminMoneyService } from './admin-money.service';
@@ -68,6 +73,11 @@ const ADMIN_SERVICES = [
   AdminRbacService,
   ApiKeysService,
   AdminComplianceService,
+  // "Complete KYC" (0210): staff do a client's KYC through the client's own actions.
+  AdminKycAssistService,
+  // "New client" (0211): staff create a client by the same checks a sign-up passes.
+  ClientCreation,
+  AdminClientCreateService,
   AdminClientsService,
   AdminTagsService,
   SignupLinksService,
@@ -115,6 +125,8 @@ const ADMIN_SERVICES = [
     AdminTagsController,
     SignupLinksController,
     AdminComplianceController,
+    AdminKycAssistController,
+    AdminClientCreateController,
     AdminRbacController,
     AdminAuditController,
     AdminApiKeysController,

@@ -11,6 +11,12 @@ export type IdentityVersionRow = {
   createdAt: Date;
   frozenAt: Date | null;
   pages: { part: number; path: string }[];
+  /**
+   * The administrator who uploaded a page of it for the client ("Complete KYC",
+   * 0210) — their name, from the upload registry — or null when the client
+   * uploaded every page themselves.
+   */
+  uploadedByStaff: string | null;
   /** The latest decision that covered this version, if any has. */
   decision: {
     seq: number;
@@ -76,6 +82,15 @@ export class ClientIdentityStore {
              coalesce(json_agg(json_build_object('part', p.part, 'path', p.storage_key)
                                ORDER BY p.part)
                         FILTER (WHERE p.document_id IS NOT NULL), '[]') AS pages,
+             -- Who uploaded it, from the registry the upload path already fills.
+             -- uploaded_by_id is text (an admin uuid OR a Portal ID): compared ::text.
+             -- An administrator since removed is still staff, never "the client".
+             (SELECT coalesce(a.name, 'A former administrator')
+                FROM client_document_pages sp
+                JOIN stored_objects o ON o.id = sp.stored_object_id
+                LEFT JOIN admins a ON a.id::text = o.uploaded_by_id
+               WHERE sp.document_id = d.id AND o.uploaded_by_kind = 'admin'
+               ORDER BY sp.part LIMIT 1) AS "uploadedByStaff",
              (SELECT json_build_object('seq', v.seq, 'outcome', v.outcome,
                                        'returnedItems', v.returned_items)
                 FROM client_verification_documents c

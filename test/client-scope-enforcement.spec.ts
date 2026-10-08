@@ -1,5 +1,6 @@
 import { ALL_PERMISSIONS } from './support/all-permissions';
 import { scopedByIdRoutes } from './support/scope-facts';
+import { KYC_TEST_PNG } from './support/kyc-upload';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { actingAs, startHttpTestApp, stopHttpTestApp, type HttpTestContext } from './http-setup';
 import { PasswordService } from '../src/common/security/password.service';
@@ -93,6 +94,10 @@ beforeAll(async () => {
         'kyc.view',
         'kyc.review',
         'kyc.review',
+        // "Complete KYC" (0210) — so the assist probes test territory, not the key.
+        'kyc.assist',
+        // "New client" (0211) — the welcome resend is a by-id write.
+        'clients.create',
         'ib.partners.view',
         'ib.applications.view',
         'ib.commissions.view',
@@ -425,6 +430,42 @@ describe('by-id routes answer 404 for an out-of-scope client, never 403', () => 
           reason: 'scope enforcement probe — a re-verification',
           items: ['passport'],
         }),
+    },
+    /*
+     * "Complete KYC" (0210): staff doing a client's KYC for them. The upload
+     * carries a real file, or the file pipe would answer 400 before the
+     * visibility check could answer 404.
+     */
+    {
+      signature: 'GET /admin/kyc/:userId/assist',
+      run: (s: Session, id: number) => s.get(`/v1/admin/kyc/${id}/assist`),
+    },
+    {
+      signature: 'POST /admin/kyc/:userId/assist/step',
+      run: (s: Session, id: number) =>
+        s.post(`/v1/admin/kyc/${id}/assist/step`, { step: 'personal', data: { city: 'Probe' } }),
+    },
+    {
+      signature: 'POST /admin/kyc/:userId/assist/upload',
+      run: (s: Session, id: number) =>
+        s
+          .post(`/v1/admin/kyc/${id}/assist/upload`, undefined)
+          .field('field', 'selfie')
+          .attach('file', KYC_TEST_PNG, { filename: 'probe.png', contentType: 'image/png' }),
+    },
+    {
+      signature: 'POST /admin/kyc/:userId/assist/submit',
+      run: (s: Session, id: number) => s.post(`/v1/admin/kyc/${id}/assist/submit`, {}),
+    },
+    {
+      signature: 'POST /admin/kyc/:userId/assist/return',
+      run: (s: Session, id: number) =>
+        s.post(`/v1/admin/kyc/${id}/assist/return`, { reason: 'scope enforcement probe' }),
+    },
+    {
+      // "New client" (0211): resending a staff-created client's welcome email.
+      signature: 'POST /admin/clients/:id/welcome',
+      run: (s: Session, id: number) => s.post(`/v1/admin/clients/${id}/welcome`, {}),
     },
     {
       signature: 'PATCH /admin/ib/partners/:userId/active',

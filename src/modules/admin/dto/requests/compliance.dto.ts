@@ -546,3 +546,29 @@ export class CorrectKycIdentityDto {
   @MaxLength(12)
   postalCode?: string;
 }
+
+/**
+ * "Complete KYC" (0210): staff submit a client's KYC for them, through the
+ * client's own submit and its one judge. `approve` approves it right after —
+ * the same `approve` as the review page, so it needs `kyc.review` as well and
+ * is refused before anything is submitted when the caller lacks it.
+ */
+export class AssistSubmitDto {
+  @ApiPropertyOptional({
+    description: 'Approve it immediately after submitting (needs `kyc.review`).',
+    default: false,
+  })
+  @IsOptional()
+  @IsBoolean()
+  approve?: boolean;
+}
+
+/**
+ * "Return to edit" (0210): a KYC waiting for review goes back to open so staff
+ * can complete it for the client. Recorded as a return, like any; the client is
+ * not emailed, because staff are handling it.
+ */
+export class AssistReturnDto {
+  @KycReason('Staff are completing the documents with the client.')
+  reason: string;
+}

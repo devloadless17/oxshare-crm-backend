@@ -263,3 +263,85 @@ export class BulkTagsDto {
   @IsBoolean()
   confirmLeavesScope?: boolean;
 }
+
+/**
+ * Body of `POST /admin/clients` — "New client" (0211): staff create a client for
+ * somebody who cannot sign up themselves.
+ *
+ * The decorators only bound the SHAPE. Every value is judged by the same rules
+ * a sign-up passes (`ClientCreation.check`): the sign-up tier required (names,
+ * date of birth, nationality, phone, residence), the countries offered, a free
+ * email and phone — each refusal under its field.
+ */
+export class CreateClientDto {
+  @ApiProperty({ example: 'samir.khoury@example.com' })
+  @Transform(({ value }: { value: unknown }) =>
+    typeof value === 'string' ? value.trim().toLowerCase() : value,
+  )
+  @IsEmail({}, { message: 'A valid email address is required.' })
+  @MaxLength(255)
+  email: string;
+
+  @ApiProperty({ example: 'Samir' })
+  @IsString()
+  @MaxLength(100)
+  firstName: string;
+
+  @ApiProperty({ example: 'Khoury' })
+  @IsString()
+  @MaxLength(100)
+  lastName: string;
+
+  @ApiProperty({ example: '1948-03-02', description: 'YYYY-MM-DD, 18 or older.' })
+  @IsString()
+  @MaxLength(10)
+  dateOfBirth: string;
+
+  @ApiProperty({ example: 'Lebanese', description: 'From the nationality list.' })
+  @IsString()
+  @MaxLength(100)
+  nationality: string;
+
+  @ApiProperty({ example: '+96170555123', description: 'International format; stored as E.164.' })
+  @IsString()
+  @MaxLength(32)
+  phone: string;
+
+  @ApiProperty({ example: 'Lebanon', description: 'Country of residence, from the offered list.' })
+  @IsString()
+  @MaxLength(100)
+  country: string;
+
+  @ApiPropertyOptional({ example: 'Rue Gouraud 4', maxLength: 200 })
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  address?: string;
+
+  @ApiPropertyOptional({ example: 'Beirut', maxLength: 100 })
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  city?: string;
+
+  @ApiPropertyOptional({ example: 'Mount Lebanon', maxLength: 100 })
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  stateProvince?: string;
+
+  @ApiPropertyOptional({ example: '1103 2080', maxLength: 12 })
+  @IsOptional()
+  @IsString()
+  @MaxLength(12)
+  postalCode?: string;
+
+  @ApiPropertyOptional({
+    enum: ['en', 'ar'],
+    default: 'en',
+    description: "The client's language: their welcome email, every later email and the portal.",
+  })
+  @IsOptional()
+  @IsIn(['en', 'ar'])
+  locale?: 'en' | 'ar';
+}

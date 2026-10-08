@@ -206,6 +206,12 @@ const WRITES_DETAILS: readonly string[] = [
   'ip_allowlist.exempt_remove',
   'ip_allowlist.remove',
   'kyc.approve',
+  // 0210, staff completing a client's KYC: question NAMES, a slot and document type, the
+  // approve flag, the staff member's reason — never an answer (those audit as profile updates).
+  'kyc.assist_return',
+  'kyc.assist_step',
+  'kyc.assist_submit',
+  'kyc.assist_upload',
   'kyc.claim',
   'kyc.identity_correct',
   'kyc.reject',

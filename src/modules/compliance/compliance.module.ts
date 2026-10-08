@@ -16,6 +16,8 @@ import { IdentityModule } from '../identity/identity.module';
   imports: [IdentityModule, AdminAuthModule, PaymentsModule],
   controllers: [KycController, UploadsController],
   providers: [KycClientService, KycReviewService, KycDocumentAccess],
-  exports: [KycReviewService],
+  // `KycClientService` too: staff complete a client's KYC through the client's
+  // own actions ("Complete KYC", 0210), never a copy of them.
+  exports: [KycReviewService, KycClientService],
 })
 export class ComplianceModule {}

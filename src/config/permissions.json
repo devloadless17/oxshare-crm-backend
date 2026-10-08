@@ -10,6 +10,11 @@
         "opens": ["/clients"]
       },
       {
+        "key": "clients.create",
+        "label": "Create a client for someone who cannot sign up",
+        "requires": ["clients.view"]
+      },
+      {
         "key": "clients.edit",
         "label": "Edit a client's details",
         "requires": ["clients.view"]
@@ -40,7 +45,7 @@
         "requires": ["clients.tag"]
       }
     ],
-    "notes": "The client directory and one client's profile. Clients register themselves and are never deleted — every ledger row and audit entry has to keep resolving to a name — so this module has no create and no delete.\n\n`clients.edit` and `clients.email` are DELIBERATELY SEPARATE, and the split is a security boundary rather than tidiness. Correcting a misspelled surname is clerical work a support desk does daily. Changing the address an account signs in with is an account-takeover primitive: set it to your own, run a password reset, and the balance is yours. Granting the first must not silently grant the second, so the everyday role carries `clients.edit` alone and `clients.email` is handed to the few people who handle lockouts."
+    "notes": "The client directory and one client's profile. Clients register themselves, or staff create one for somebody who cannot (`clients.create`, 0211: the same checks as a sign-up, the creator's territory tags, a welcome email to choose their own password). Clients are never deleted — every ledger row and audit entry has to keep resolving to a name — so this module has no delete.\n\n`clients.edit` and `clients.email` are DELIBERATELY SEPARATE, and the split is a security boundary rather than tidiness. Correcting a misspelled surname is clerical work a support desk does daily. Changing the address an account signs in with is an account-takeover primitive: set it to your own, run a password reset, and the balance is yours. Granting the first must not silently grant the second, so the everyday role carries `clients.edit` alone and `clients.email` is handed to the few people who handle lockouts."
   },
   "kyc": {
     "group": "clients",
@@ -71,9 +76,14 @@
         "key": "kyc.identity.correct",
         "label": "Correct a verified client's details",
         "requires": ["kyc.view"]
+      },
+      {
+        "key": "kyc.assist",
+        "label": "Complete a client's KYC for them",
+        "requires": ["kyc.documents.view", "clients.view"]
       }
     ],
-    "notes": "The review queue, the documents clients upload, and the dynamic field builder behind them. Reviewing and configuring are separate: a reviewer decides on submissions, an administrator decides what is asked for."
+    "notes": "The review queue, the documents clients upload, and the dynamic field builder behind them. Reviewing and configuring are separate: a reviewer decides on submissions, an administrator decides what is asked for. `kyc.assist` lets staff answer, upload and submit a client's KYC FOR them (non-technical clients), through the client's own KYC actions and rules, and only while the KYC is open; it needs the documents key because the person filling the form must see the pages they upload, and it never approves — that is still `kyc.review`."
   },
   "trading": {
     "group": "clients",
