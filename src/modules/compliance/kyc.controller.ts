@@ -14,8 +14,6 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { Throttle } from '@nestjs/throttler';
-import { KYC_BUCKET, StoredFilesService } from '../../common/uploads/stored-files.service';
-import { storedPath } from '../../common/uploads/storage/storage-key';
 import { MAX_UPLOAD_BYTES } from './upload-limits';
 import { UploadSizeFilter } from './upload-size.filter';
 import {
@@ -82,7 +80,6 @@ export class KycController {
   constructor(
     private readonly kyc: KycClientService,
     private readonly kycConfig: KycConfigStore,
-    private readonly files: StoredFilesService,
     /* The reason's Arabic, resolved on read (0179) — `rejectionReasonAr`. */
     private readonly reasons: RejectionReasonsStore,
   ) {}
@@ -198,46 +195,15 @@ export class KycController {
     if (!file?.buffer?.length) throw new BadRequestException('No file was uploaded.');
 
     /*
-     * Validation, storage and the registry row, in one call.
-     *
-     * `write` decides the type from the file's own magic bytes, refuses anything
-     * the KYC bucket does not accept (with the message that names the iPhone HEIC
-     * fix), enforces the client's storage quota, computes the SHA-256 that R2
-     * verifies on write, and records the object in `stored_objects` — so "who
-     * uploaded this document and when" is answerable from here on.
+     * Validation, storage, the registry row and the placement, in one call —
+     * the same one staff use when they upload for a client (0210).
      *
      * The owner is the CALLING CLIENT, taken from the session and never from a
      * parameter (R-4.4). A field in the body deciding whose quota is charged and
      * whose documents these are would be the whole distance between "my data" and
      * "anyone's data".
      */
-    const stored = await this.files.write(KYC_BUCKET, file.buffer, file.mimetype, {
-      id: req.user.id,
-      kind: 'client',
-      ownerUserId: req.user.id,
-    });
-
-    try {
-      /*
-       * The submission records the same path shape multer used to produce
-       * (`uploads/kyc/<uuid>.jpg`), so rows written before and after this change
-       * read identically and the frontends' URL builders need no branch. See
-       * `storage/storage-key.ts` for why that mirror is load-bearing.
-       */
-      return await this.kyc.attachFile(
-        req.user.id,
-        dto.field,
-        storedPath(KYC_BUCKET.dir, stored.filename),
-        dto.docType,
-      );
-    } catch (error) {
-      // The object is already stored. If recording it against the submission
-      // fails, it is referenced by nothing — unservable, unreviewable, and
-      // invisible to every screen. Orphaned identity documents are both a cost
-      // problem and a data-retention one, so it goes now.
-      await this.files.remove(KYC_BUCKET, stored.filename);
-      throw error;
-    }
+    return this.kyc.uploadFile(req.user.id, file, dto.field, dto.docType);
   }
 
   @Post('submit')

@@ -138,6 +138,8 @@ export interface KycAttempt {
   submittedAt?: Date;
   reviewedAt?: Date;
   reviewedBy?: string;
+  /** The administrator who submitted this attempt for the client (0210); absent = the client. */
+  submittedByAdminId?: string;
   archivedAt: Date;
 }
 
@@ -154,6 +156,11 @@ export interface KycSubmission {
   reviewedBy?: string;
   reviewedAt?: Date;
   submittedAt?: Date;
+  /**
+   * The administrator who submitted it for the client ("Complete KYC", 0210);
+   * absent when the client submitted it themselves.
+   */
+  submittedByAdminId?: string;
   personalInfo?: PersonalInfo;
   document?: DocumentInfo;
   selfie?: SelfieInfo;
@@ -252,6 +259,7 @@ const toSubmission = (r: Row): KycSubmission => ({
   reviewedBy: r.reviewedBy ?? undefined,
   reviewedAt: r.reviewedAt ?? undefined,
   submittedAt: r.submittedAt ?? undefined,
+  submittedByAdminId: r.submittedByAdminId ?? undefined,
   personalInfo: (r.personalInfo as unknown as PersonalInfo) ?? undefined,
   document: (r.document as unknown as DocumentInfo) ?? undefined,
   selfie: (r.selfie as unknown as SelfieInfo) ?? undefined,
@@ -264,11 +272,18 @@ const toSubmission = (r: Row): KycSubmission => ({
   updatedAt: r.updatedAt,
 });
 
+/**
+ * A write to the live row. The two admin references take `null` to CLEAR them
+ * (release detaches a reviewer; a client's own submit clears a staff one).
+ */
+export type KycPatch = Partial<Omit<KycSubmission, 'reviewedBy' | 'submittedByAdminId'>> & {
+  reviewedBy?: string | null;
+  submittedByAdminId?: string | null;
+};
+
 // Explicit nulls clear columns (e.g. resubmission clears rejection data);
 // absent keys leave them untouched.
-const toColumns = (
-  patch: Partial<Omit<KycSubmission, 'reviewedBy'>> & { reviewedBy?: string | null },
-) => {
+const toColumns = (patch: KycPatch) => {
   const set: Record<string, unknown> = { updatedAt: new Date() };
   const map: Array<[keyof KycSubmission, string]> = [
     ['status', 'status'],
@@ -278,6 +293,7 @@ const toColumns = (
     ['reviewedBy', 'reviewedBy'],
     ['reviewedAt', 'reviewedAt'],
     ['submittedAt', 'submittedAt'],
+    ['submittedByAdminId', 'submittedByAdminId'],
     ['personalInfo', 'personalInfo'],
     ['stepData', 'stepData'],
     ['reverificationRequestedAt', 'reverificationRequestedAt'],
@@ -449,7 +465,7 @@ export class KycStore {
   async transition(
     userId: number,
     from: readonly KycStatus[],
-    patch: Partial<Omit<KycSubmission, 'reviewedBy'>> & { reviewedBy?: string | null },
+    patch: KycPatch,
     executor?: Executor,
     /**
      * Additionally require the row to be UNCLAIMED, or claimed by this admin.
@@ -828,6 +844,8 @@ export class KycStore {
           submittedAt: submission.submittedAt ?? null,
           reviewedAt: submission.reviewedAt ?? null,
           reviewedBy: submission.reviewedBy ?? null,
+          // Who sent it for the client, kept with the attempt it describes (0210).
+          submittedByAdminId: submission.submittedByAdminId ?? null,
           reverification: options.reverification ?? false,
           reasonId: options.reasonId ?? null,
           // What the broker's own steps asked, kept with the attempt it labels.
@@ -861,6 +879,7 @@ export class KycStore {
       submittedAt: r.submittedAt ?? undefined,
       reviewedAt: r.reviewedAt ?? undefined,
       reviewedBy: r.reviewedBy ?? undefined,
+      submittedByAdminId: r.submittedByAdminId ?? undefined,
       archivedAt: r.archivedAt,
     }));
   }

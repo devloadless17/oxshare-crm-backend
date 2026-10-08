@@ -59,6 +59,7 @@ export class ClientIdentityService {
         createdAt: row.createdAt,
         presentedAt: row.frozenAt,
         pages: row.pages,
+        uploadedByStaff: row.uploadedByStaff,
       };
       slots.set(row.slot, [...(slots.get(row.slot) ?? []), version]);
     }
@@ -84,6 +85,8 @@ export interface IdentityVersion {
   /** When it was presented for review — null for a draft. */
   presentedAt: Date | null;
   pages: { part: number; path: string }[];
+  /** The administrator who uploaded it for the client (0210); null = the client. */
+  uploadedByStaff: string | null;
 }
 
 export interface IdentityRecord {

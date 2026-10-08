@@ -103,6 +103,9 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   },
   { action: 'client_tag.unassign', label: 'Tag removed from client', group: 'Clients' },
   { action: 'client_tag.bulk', label: 'Tags changed on many clients at once', group: 'Clients' },
+  // "New client" (0211): staff create a client for somebody who cannot sign up themselves.
+  { action: 'client.created', label: 'Client created by staff', group: 'Clients' },
+  { action: 'client.welcome_resend', label: 'Welcome email sent again', group: 'Clients' },
 
   // ── Verification ──────────────────────────────────────────────────────────
   { action: 'kyc.approve', label: 'KYC approved', group: 'Verification' },
@@ -142,6 +145,23 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
     // goes back to 0 with it, so it is a money-gate event as well as a review one.
     action: 'kyc.reverification_request',
     label: 'KYC re-verification requested',
+    group: 'Verification',
+  },
+  /*
+   * "Complete KYC" (0210): staff doing a client's KYC FOR them, through the
+   * client's own actions. Each its own action, so "what did staff do on this
+   * client's verification" is one filter.
+   */
+  { action: 'kyc.assist_step', label: 'KYC answers saved for a client', group: 'Verification' },
+  {
+    action: 'kyc.assist_upload',
+    label: 'KYC document uploaded for a client',
+    group: 'Verification',
+  },
+  { action: 'kyc.assist_submit', label: 'KYC submitted for a client', group: 'Verification' },
+  {
+    action: 'kyc.assist_return',
+    label: 'KYC returned to complete it for the client',
     group: 'Verification',
   },
 

@@ -75,13 +75,23 @@ export class AdminComplianceService {
    * for a column, which is how a list screen becomes slow without anyone
    * noticing a single slow query.
    */
-  private async withReviewerNames<T extends { reviewedBy?: string }>(
+  private async withReviewerNames<T extends { reviewedBy?: string; submittedByAdminId?: string }>(
     rows: T[],
-  ): Promise<(T & { reviewedByName: string | null })[]> {
-    const names = await this.admins.namesByIds(rows.map((r) => r.reviewedBy ?? '').filter(Boolean));
+  ): Promise<(T & { reviewedByName: string | null; submittedByName: string | null })[]> {
+    const names = await this.admins.namesByIds(
+      rows.flatMap((r) => [r.reviewedBy ?? '', r.submittedByAdminId ?? '']).filter(Boolean),
+    );
     return rows.map((row) => ({
       ...row,
       reviewedByName: row.reviewedBy ? (names.get(row.reviewedBy) ?? null) : null,
+      /*
+       * Who submitted it FOR the client ("Complete KYC", 0210), in the same one
+       * query. An administrator since removed is still staff — never read as
+       * the client having submitted it themselves.
+       */
+      submittedByName: row.submittedByAdminId
+        ? (names.get(row.submittedByAdminId) ?? 'A former administrator')
+        : null,
     }));
   }
 

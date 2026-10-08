@@ -1478,6 +1478,20 @@
       "when": 1789143810750,
       "tag": "0209_rebate_to_partners",
       "breakpoints": true
+    },
+    {
+      "idx": 212,
+      "version": "7",
+      "when": 1789143910750,
+      "tag": "0210_kyc_assist",
+      "breakpoints": true
+    },
+    {
+      "idx": 213,
+      "version": "7",
+      "when": 1789144010750,
+      "tag": "0211_staff_created_clients",
+      "breakpoints": true
     }
   ]
 }

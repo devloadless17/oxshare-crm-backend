@@ -347,6 +347,20 @@ export const users = pgTable(
     signedUpViaAdminId: uuid('signed_up_via_admin_id').references(() => admins.id, {
       onDelete: 'restrict',
     }),
+    /**
+     * The administrator who CREATED this client ("New client", 0211), or NULL
+     * for a client who signed up themselves. Never changed (trigger), like
+     * `signedUpViaAdminId` — which keeps meaning whose LINK brought them.
+     */
+    createdByAdminId: uuid('created_by_admin_id').references(() => admins.id, {
+      onDelete: 'restrict',
+    }),
+    /**
+     * When the client last CHOSE their password (0211). NULL only for a
+     * staff-created client who has not used their welcome link yet — the one
+     * question it answers: may a welcome email be (re)sent?
+     */
+    passwordSetAt: timestamp('password_set_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
@@ -359,6 +373,9 @@ export const users = pgTable(
        commission calculation the engine will eventually run. */
     index('users_referred_by_idx').on(t.referredByIbUserId),
     index('users_signed_up_via_idx').on(t.signedUpViaAdminId),
+    index('users_created_by_admin_id_idx')
+      .on(t.createdByAdminId)
+      .where(sql`${t.createdByAdminId} IS NOT NULL`),
     /*
      * The verification lookup, which is a by-token seek over the whole table.
      *
@@ -997,6 +1014,14 @@ export const kycSubmissions = pgTable(
      */
     reviewedBy: uuid('reviewed_by').references(() => admins.id, { onDelete: 'set null' }),
     /*
+     * The administrator who SUBMITTED it for the client (0210, "Complete KYC");
+     * NULL when the client submitted it themselves. `set null` like
+     * `reviewed_by`: the audit row (`kyc.assist_submit`) is the authoritative copy.
+     */
+    submittedByAdminId: uuid('submitted_by_admin_id').references(() => admins.id, {
+      onDelete: 'set null',
+    }),
+    /*
      * The client's document VERSIONS this submission presents (0151): the KYC
      * layer points at the client's record rather than holding the evidence.
      * Filled from slice 4 of the identity-core plan; NULL until then.
@@ -1037,6 +1062,9 @@ export const kycSubmissions = pgTable(
     index('kyc_submissions_reviewed_by_fk_idx')
       .on(t.reviewedBy)
       .where(sql`${t.reviewedBy} IS NOT NULL`),
+    index('kyc_submissions_submitted_by_admin_id_fk_idx')
+      .on(t.submittedByAdminId)
+      .where(sql`${t.submittedByAdminId} IS NOT NULL`),
     index('kyc_submissions_selfie_document_id_fk_idx')
       .on(t.selfieDocumentId)
       .where(sql`${t.selfieDocumentId} IS NOT NULL`),
@@ -1111,6 +1139,10 @@ export const kycSubmissionAttempts = pgTable(
     submittedAt: timestamp('submitted_at', { withTimezone: true }),
     reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
     reviewedBy: uuid('reviewed_by').references(() => admins.id, { onDelete: 'set null' }),
+    /** Who submitted this attempt for the client (0210); NULL = the client themselves. */
+    submittedByAdminId: uuid('submitted_by_admin_id').references(() => admins.id, {
+      onDelete: 'set null',
+    }),
     archivedAt: timestamp('archived_at', { withTimezone: true }).notNull().defaultNow(),
     /** The document versions this attempt presented, and its decision in the log (0151). */
     identityDocumentId: uuid('identity_document_id').references(() => clientDocuments.id, {
@@ -1153,6 +1185,9 @@ export const kycSubmissionAttempts = pgTable(
     index('kyc_submission_attempts_selfie_document_id_fk_idx')
       .on(t.selfieDocumentId)
       .where(sql`${t.selfieDocumentId} IS NOT NULL`),
+    index('kyc_submission_attempts_submitted_by_admin_id_fk_idx')
+      .on(t.submittedByAdminId)
+      .where(sql`${t.submittedByAdminId} IS NOT NULL`),
     index('kyc_submission_attempts_verification_id_fk_idx')
       .on(t.verificationId)
       .where(sql`${t.verificationId} IS NOT NULL`),

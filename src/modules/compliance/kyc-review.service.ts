@@ -780,7 +780,16 @@ export class KycReviewService {
     reasonId?: string,
     /** The reason as an Arabic reader is shown it (0179); null when there is none. */
     reasonAr: string | null = null,
+    /**
+     * `notifyClient: false` — staff returning a KYC to complete it FOR the
+     * client ("Return to edit", 0210). The decision is recorded exactly as any
+     * return; only the client's bell and email are skipped, because staff are
+     * handling it and a "your verification needs changes" email would ask a
+     * client who could not do it the first time to do it themselves.
+     */
+    options: { notifyClient?: boolean } = {},
   ) {
+    const notifyClient = options.notifyClient ?? true;
     const submission = await this.kycStore.findByUserId(userId);
     if (!submission) throw new NotFoundError('KYC submission not found.');
     const user = await this.users.findById(userId);
@@ -876,17 +885,19 @@ export class KycReviewService {
       await this.users.update(userId, { verificationLevel: 0 }, tx);
       // Same stance as approve(): the row and the decision are one commit. The
       // reason rides in params so the bell can say what to fix.
-      await this.notifications.notify(
-        {
-          recipient: { kind: 'client', id: userId },
-          kind: 'kyc.rejected',
-          params: { reason, ...(reasonAr ? { reasonAr } : {}) },
-        },
-        tx,
-      );
+      if (notifyClient) {
+        await this.notifications.notify(
+          {
+            recipient: { kind: 'client', id: userId },
+            kind: 'kyc.rejected',
+            params: { reason, ...(reasonAr ? { reasonAr } : {}) },
+          },
+          tx,
+        );
+      }
     });
 
-    if (user) {
+    if (user && notifyClient) {
       // Sent inline per FR-ADM-03 — the client is emailed the reason and can retry
       void this.email.sendKycDecisionEmail(
         user.email,

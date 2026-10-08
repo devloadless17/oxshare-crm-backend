@@ -1,7 +1,7 @@
 import { basename } from 'path';
 import { Inject, Injectable } from '@nestjs/common';
 import { KYC_BUCKET, StoredFilesService } from '../../common/uploads/stored-files.service';
-import { filenameFromStored } from '../../common/uploads/storage/storage-key';
+import { filenameFromStored, storedPath } from '../../common/uploads/storage/storage-key';
 import { collectsAnswers, isDataBearingStep } from './step-slugs';
 import { documentTypeFor, typedAnswersFor } from './kyc-answers';
 import { localizeMessage } from '../../common/i18n/localize-message';
@@ -79,30 +79,85 @@ function documentPathsOf(submission: KycSubmission): string[] {
 }
 
 /**
- * Uploads are the client's to make until the submission leaves their hands —
- * see the note in `attachFile` for the two attacks the guard closes.
+ * An administrator completing a client's KYC FOR them ("Complete KYC", 0210).
+ *
+ * Every rule stays the client's — the same open statuses, the same judge, the
+ * same upload checks. Only the record of who acted differs: the profile writer
+ * audits the change under the administrator, the upload registry names them,
+ * and a submission they send carries `submittedByAdminId`. Absent means the
+ * client is acting themselves.
  */
+export interface KycStaff {
+  id: string;
+  email: string;
+}
+
 /**
  * May the client still change their answers? The same two refusals `saveStep`
  * has always given — asked once as a cheap early answer, and again UNDER THE
  * LOCK, where the answer actually decides (see `saveStep`).
+ *
+ * The same rule for staff acting for the client, in words that name what THEY
+ * can do about it: a KYC waiting for review is returned first, an approved one
+ * is sent back for re-verification first.
  */
-function assertOpenForAnswers(submission: { status: KycStatus }): void {
+function assertOpenForAnswers(submission: { status: KycStatus }, staff?: KycStaff): void {
   if (submission.status === 'approved') {
-    throw new AuthorizationError('KYC already approved.');
+    throw new AuthorizationError(
+      staff
+        ? 'This client is already verified. Request re-verification to change their KYC.'
+        : 'KYC already approved.',
+    );
   }
   if (submission.status === 'under_review' || submission.status === 'submitted') {
-    throw new AuthorizationError('KYC is under review. You cannot edit it now.');
+    throw new AuthorizationError(
+      staff
+        ? 'This KYC is waiting for review. Return it to edit it.'
+        : 'KYC is under review. You cannot edit it now.',
+    );
   }
 }
 
-function assertOpenForUploads(submission: { status: KycStatus }): void {
+/**
+ * Uploads are the client's to make until the submission leaves their hands —
+ * see the note in `attachFile` for the two attacks the guard closes.
+ */
+function assertOpenForUploads(submission: { status: KycStatus }, staff?: KycStaff): void {
   if (submission.status === 'approved') {
-    throw new AuthorizationError('KYC already approved.');
+    throw new AuthorizationError(
+      staff
+        ? 'This client is already verified. Request re-verification to change their documents.'
+        : 'KYC already approved.',
+    );
   }
   if (submission.status === 'under_review' || submission.status === 'submitted') {
-    throw new AuthorizationError('KYC is under review. You cannot change your documents now.');
+    throw new AuthorizationError(
+      staff
+        ? 'This KYC is waiting for review. Return it to change its documents.'
+        : 'KYC is under review. You cannot change your documents now.',
+    );
   }
+}
+
+/**
+ * The KYC bucket refuses a file's TYPE in words for a client holding a phone:
+ * the iPhone setting that fixes it. Staff upload from a computer, often a photo
+ * the client sent them, so they are told the formats and the one conversion that
+ * fixes the usual case. The rule is the bucket's, for both.
+ */
+function inStaffWords(error: unknown): unknown {
+  if (error instanceof ValidationError && error.message.endsWith(KYC_BUCKET.rejectionMessage)) {
+    return new ValidationError(
+      'This file is not a JPG, PNG or WebP image or a PDF. Save a photo in HEIC format (the iPhone default) as JPG first.',
+    );
+  }
+  return error;
+}
+
+/** A client who never started, judged as such without writing a row for them. */
+function notStarted(userId: number): KycSubmission {
+  const now = new Date();
+  return { userId, status: 'not_started', stepData: {}, createdAt: now, updatedAt: now };
 }
 
 type StoredPage = { filePath: string } | undefined;
@@ -248,7 +303,10 @@ export class KycClientService {
     steps: readonly KycStepConfig[],
     chosen?: ChosenDocument,
   ): Promise<
-    Omit<KycSubmission, 'formSnapshot' | 'formPolicy' | 'reviewedBy' | 'updatedAt'> & {
+    Omit<
+      KycSubmission,
+      'formSnapshot' | 'formPolicy' | 'reviewedBy' | 'submittedByAdminId' | 'updatedAt'
+    > & {
       steps: StepState[];
     }
   > {
@@ -267,6 +325,8 @@ export class KycClientService {
       formSnapshot: _internal,
       formPolicy: _policy,
       reviewedBy: _desk,
+      // The administrator who submitted it for the client (0210) — the desk's, like `reviewedBy`.
+      submittedByAdminId: _staff,
       updatedAt: _written,
       ...asStored
     } = withPersonalView(submission, user);
@@ -278,11 +338,35 @@ export class KycClientService {
     };
   }
 
+  /**
+   * The client's KYC as staff completing it read it ("Complete KYC", 0210): the
+   * form, the submission as the client would read it, and the one judge's
+   * verdict — WITHOUT creating a row. `getStatus` creates one, which is right
+   * for a client opening their own KYC and wrong for a colleague opening a
+   * client's page: it would put a client who never started into the queue's
+   * counts. A client with no row is judged as `not_started`.
+   */
+  async assistState(userId: number) {
+    const [stored, user, steps] = await Promise.all([
+      this.kycStore.findByUserId(userId),
+      this.users.findById(userId),
+      this.kycConfig.getSteps(),
+    ]);
+    const view = answersInPlace(steps, withPersonalView(stored ?? notStarted(userId), user));
+    return { steps, view, states: stepStates(steps, view, new Date()) };
+  }
+
   // ─── Save step data ────────────────────────────────────────────────────────
-  async saveStep(userId: number, step: string, data: Record<string, unknown>) {
+  async saveStep(
+    userId: number,
+    step: string,
+    data: Record<string, unknown>,
+    /** An administrator completing it for the client (0210); absent = the client. */
+    staff?: KycStaff,
+  ) {
     const submission = await this.kycStore.getOrCreate(userId);
     // The early answer; the deciding one is re-asked under the lock below.
-    assertOpenForAnswers(submission);
+    assertOpenForAnswers(submission, staff);
 
     /*
      * ── A CUSTOM STEP NOW HAS SOMEWHERE TO PUT ITS ANSWERS ──────────────────
@@ -414,7 +498,7 @@ export class KycClientService {
        * the order every writer takes them in, so two of them cannot deadlock.
        */
       const locked = (await this.kycStore.lockForUpdate(userId, tx)) ?? submission;
-      assertOpenForAnswers(locked);
+      assertOpenForAnswers(locked, staff);
 
       const patch: Record<string, unknown> = { status: 'in_progress' };
       if (step === 'document' || step === 'address') {
@@ -455,11 +539,18 @@ export class KycClientService {
          * is judged after normalisation, so re-typing the same phone number
          * differently does not answer a reviewer who returned it.
          */
+        /*
+         * Recorded under whoever made it: the client, or the administrator
+         * completing the KYC for them — the same writer and the same rules
+         * either way, so the audit row is the only difference.
+         */
         const written = await this.profile.update(
           userId,
           identity,
-          { kind: 'client', id: userId, email: user.email },
-          { executor: tx, audit: { via: 'kyc' } },
+          staff
+            ? { kind: 'admin', id: staff.id, email: staff.email }
+            : { kind: 'client', id: userId, email: user.email },
+          { executor: tx, audit: { via: staff ? 'kyc_assist' : 'kyc' } },
         );
         changed.push(...written.changed);
       }
@@ -485,6 +576,59 @@ export class KycClientService {
     return this.statusView(userId, saved, steps, chosen);
   }
 
+  // ─── Upload a file into a step ─────────────────────────────────────────────
+  /**
+   * Store an uploaded file and place it in the submission — the ONE path for
+   * both the client's own upload and staff uploading for them (0210).
+   *
+   * `StoredFilesService.write` decides the type from the bytes, refuses what
+   * the KYC bucket does not accept, charges the CLIENT's allowance and records
+   * the uploader in `stored_objects` — the client, or the administrator acting
+   * for them, which is how the record later says "uploaded by". If placing it
+   * then fails, the stored object goes: referenced by nothing it would be
+   * unservable, unreviewable and an identity document kept for no reason.
+   *
+   * The owner is the client whose KYC this is — from the caller's session for a
+   * client, from the client-scoped route for staff — never from the body.
+   */
+  async uploadFile(
+    userId: number,
+    upload: { buffer: Buffer; mimetype: string },
+    field: string,
+    docType?: string,
+    staff?: KycStaff,
+  ) {
+    const stored = await this.files
+      .write(
+        KYC_BUCKET,
+        upload.buffer,
+        upload.mimetype,
+        staff
+          ? { id: staff.id, kind: 'admin', ownerUserId: userId }
+          : { id: userId, kind: 'client', ownerUserId: userId },
+      )
+      .catch((error: unknown) => {
+        throw staff ? inStaffWords(error) : error;
+      });
+    try {
+      /*
+       * The same path shape multer used to produce (`uploads/kyc/<uuid>.jpg`),
+       * so rows written before and after read identically — see
+       * `storage/storage-key.ts` for why that mirror is load-bearing.
+       */
+      return await this.attachFile(
+        userId,
+        field,
+        storedPath(KYC_BUCKET.dir, stored.filename),
+        docType,
+        staff,
+      );
+    } catch (error) {
+      await this.files.remove(KYC_BUCKET, stored.filename);
+      throw error;
+    }
+  }
+
   // ─── Attach uploaded file to a step ────────────────────────────────────────
   async attachFile(
     userId: number,
@@ -496,6 +640,8 @@ export class KycClientService {
      * it sends none — see the note on `placePage`.
      */
     docType?: string,
+    /** An administrator uploading for the client (0210) — for the refusal's wording. */
+    staff?: KycStaff,
   ) {
     const submission = await this.kycStore.getOrCreate(userId);
 
@@ -518,7 +664,7 @@ export class KycClientService {
      * `frontFilePath` as the danger — it was only ever solved for the
      * post-decision case.
      */
-    assertOpenForUploads(submission);
+    assertOpenForUploads(submission, staff);
 
     const steps = await this.kycConfig.getSteps();
     const canonical = evidenceStepOfSlot(field);
@@ -609,7 +755,7 @@ export class KycClientService {
        * submission may have gone to review since the check above.
        */
       const current = (await this.kycStore.lockForUpdate(userId, tx)) ?? submission;
-      assertOpenForUploads(current);
+      assertOpenForUploads(current, staff);
 
       const patch: Partial<KycSubmission> = {};
       let replacesDocument = false;
@@ -692,7 +838,11 @@ export class KycClientService {
   }
 
   // ─── Submit KYC ────────────────────────────────────────────────────────────
-  async submit(userId: number) {
+  async submit(
+    userId: number,
+    /** An administrator submitting it for the client (0210); absent = the client. */
+    staff?: KycStaff,
+  ) {
     /*
      * The personal step is judged on the PROFILE's values (0139). This used to
      * copy the account's name INTO `personal_info` when the blob was empty — one
@@ -836,6 +986,12 @@ export class KycClientService {
            */
           reviewedBy: null,
           reviewedAt: undefined,
+          /*
+           * Who sent it (0210): the administrator completing it for the client,
+           * or NULL — which also clears a previous staff submission when the
+           * client resubmits themselves.
+           */
+          submittedByAdminId: staff?.id ?? null,
           // What the broker's own steps asked, as the client answered them — the
           // review labels their answers from this, whatever the builder does next.
           formSnapshot: formSnapshotOf(steps),

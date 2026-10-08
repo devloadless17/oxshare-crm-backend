@@ -86,21 +86,30 @@ function httpServer(app: INestApplication): Server {
 }
 
 async function makeApp(recorded: Recorded): Promise<INestApplication> {
+  /*
+   * The REAL `uploadFile` — store, place, and remove the stored object when
+   * placing fails — over this test's in-memory files and a recording
+   * `attachFile`. The upload route has gone through it since staff uploads
+   * (0210) made it the one path for both, so stubbing it out too would leave the
+   * compensating delete below untested.
+   */
+  const kyc = {
+    files: recorded.files,
+    attachFile: (userId: number, field: string, path: string) => {
+      if (recorded.failNext) {
+        recorded.failNext = false;
+        return Promise.reject(new Error('simulated store failure'));
+      }
+      recorded.attached.push({ userId, field, path });
+      return Promise.resolve({ message: 'ok' });
+    },
+  };
   const moduleRef = await Test.createTestingModule({
     controllers: [KycController],
     providers: [
       {
         provide: KycClientService,
-        useValue: {
-          attachFile: (userId: number, field: string, path: string) => {
-            if (recorded.failNext) {
-              recorded.failNext = false;
-              return Promise.reject(new Error('simulated store failure'));
-            }
-            recorded.attached.push({ userId, field, path });
-            return Promise.resolve({ message: 'ok' });
-          },
-        },
+        useValue: { ...kyc, uploadFile: KycClientService.prototype.uploadFile.bind(kyc) },
       },
       { provide: KycConfigStore, useValue: { getSteps: () => Promise.resolve([]) } },
       // The status read resolves a reason's Arabic (0179); uploads never reach it.

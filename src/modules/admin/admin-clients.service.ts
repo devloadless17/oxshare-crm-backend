@@ -1,4 +1,6 @@
 import { SignupLinksStore } from '../../store/signup-links.store';
+import { AdminsStore } from '../../store/admins.store';
+import { welcomeLink } from '../identity/client-creation';
 import { currentFieldMask } from '../../common/logging/request-context';
 import type { DateRange } from '../../common/date-range';
 import { Injectable } from '@nestjs/common';
@@ -297,6 +299,8 @@ export class AdminClientsService {
     private readonly profile: ClientProfileService,
     /** A partner's tags, copied onto a client recorded under them (0195). */
     private readonly signupLinks: SignupLinksStore,
+    /** Who created a client ("New client", 0211), by name. */
+    private readonly admins: AdminsStore,
   ) {}
 
   // ─── Clients list (ADM-01 / ADM-14) ───────────────────────────────────────
@@ -610,6 +614,15 @@ export class AdminClientsService {
       stateProvince: client.stateProvince,
       postalCode: client.postalCode,
       createdAt: client.createdAt,
+      /*
+       * "New client" (0211): who created this client, and whether they still
+       * have to choose their password — what offers "Resend welcome email".
+       */
+      createdByName: client.createdByAdminId
+        ? ((await this.admins.namesByIds([client.createdByAdminId])).get(client.createdByAdminId) ??
+          'A former administrator')
+        : null,
+      awaitingWelcome: Boolean(client.createdByAdminId) && !client.passwordSetAt,
       // The declared tag shape: an assignment also carries who and when, which the
       // profile never declared (the per-client tags route serves provenance).
       tags: tags.map(({ id, slug, label, color, description, createdAt }) => ({
@@ -911,6 +924,13 @@ export class AdminClientsService {
     await this.refreshTokens.revokeAllForSubject('portal', userId);
 
     const token = randomUUID();
+    /*
+     * A client STAFF created who has not chosen a password yet (0211) is sent
+     * the WELCOME at the new address — the link that lets them choose one. A
+     * verification link would confirm an address they still could not sign in
+     * with, and the mistyped address is the usual reason for this change.
+     */
+    const welcome = user.createdByAdminId && !user.passwordSetAt ? welcomeLink() : undefined;
     const updated = (await this.users.update(userId, {
       email,
       /*
@@ -922,6 +942,7 @@ export class AdminClientsService {
       emailVerified: false,
       emailVerificationTokenHash: hashEmailedToken(token),
       emailVerificationExpiry: new Date(Date.now() + 24 * 60 * 60 * 1000),
+      ...(welcome ? welcome.patch : {}),
       /*
        * Cleared with the rest of the cycle. If this client had already verified
        * their PREVIOUS address, the row still carries that redemption — and a
@@ -945,7 +966,17 @@ export class AdminClientsService {
      * record either way.
      */
     // An admin's change: both mails in the client's stored language.
-    await this.email.sendVerificationEmail(email, token, undefined, user.locale);
+    if (welcome) {
+      await this.email.sendClientWelcomeEmail(
+        email,
+        welcome.token,
+        updated.firstName,
+        updated.id,
+        user.locale,
+      );
+    } else {
+      await this.email.sendVerificationEmail(email, token, undefined, user.locale);
+    }
     await this.email.sendEmailChangedNotice(previousEmail, email, user.locale);
 
     return this.profileView(updated, actor);

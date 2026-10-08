@@ -55,8 +55,9 @@ const KNOWN_DYNAMIC = new Set([
   'src/common/date-range.ts sentence',
   'src/common/payments/pay-to-fields.ts first', // the pay-to sentences, each in the catalogue
   'src/common/payments/pay-to-fields.ts errors',
-  'src/modules/identity/auth.service.ts profileError', // client-profile.ts
-  'src/modules/identity/auth.service.ts errors',
+  // The checks every new client passes (0211) — sign-up's, moved out of auth.service.ts.
+  'src/modules/identity/client-creation.ts problem', // client-profile.ts
+  'src/modules/identity/client-creation.ts errors',
   'src/modules/identity/auth.service.ts lockoutMessage(lockedFor)', // lockout-message.ts
   'src/modules/compliance/kyc-client.service.ts message', // refusalFor, sentence file
   'src/modules/compliance/kyc-client.service.ts fields',

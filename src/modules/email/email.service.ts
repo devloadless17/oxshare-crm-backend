@@ -18,6 +18,7 @@ import {
   tradingAccountPasswordReset,
   withdrawalDecision,
   passwordReset,
+  clientWelcome,
   setEmailLogoOrigin,
   smtpTest,
   verifyEmail,
@@ -245,6 +246,11 @@ export class EmailService {
    * code beside it. The CODE is never logged, not even under LOG_EMAIL_LINKS:
    * it signs its holder in, and `email-never-logs-credentials.spec.ts` holds
    * this file to that.
+   *
+   * This link, the reset link and the welcome link carry `lang`, the email's own
+   * language: they are opened signed out, often on a device that never chose
+   * one, and the portal would otherwise answer an Arabic email in English. The
+   * portal remembers it and drops it from the address (`lib/i18n/link-locale.ts`).
    */
   async sendVerificationEmail(
     email: string,
@@ -252,15 +258,33 @@ export class EmailService {
     code?: string,
     locale: Locale = 'en',
   ): Promise<void> {
-    const url = `${this.portalUrl()}/auth/verify-email?token=${token}`;
+    const url = `${this.portalUrl()}/auth/verify-email?token=${token}&lang=${locale}`;
     this.logLink('verification link', email, url);
     await this.send(email, 'verification email', verifyEmail(url, code, locale));
   }
 
   async sendPasswordResetEmail(email: string, token: string, locale: Locale = 'en'): Promise<void> {
-    const url = `${this.portalUrl()}/auth/reset-password?token=${token}`;
+    const url = `${this.portalUrl()}/auth/reset-password?token=${token}&lang=${locale}`;
     this.logLink('password reset link', email, url);
     await this.send(email, 'password reset email', passwordReset(url, locale));
+  }
+
+  /**
+   * "Your account is ready — choose your password" to a client STAFF created
+   * ("New client", 0211). The link is the reset page's, marked `welcome=1` so it
+   * greets them rather than speaking of a reset they never asked for; the token
+   * is a reset token with a longer life (`ClientCreation`).
+   */
+  async sendClientWelcomeEmail(
+    email: string,
+    token: string,
+    firstName: string,
+    portalId: number,
+    locale: Locale = 'en',
+  ): Promise<void> {
+    const url = `${this.portalUrl()}/auth/reset-password?token=${token}&welcome=1&lang=${locale}`;
+    this.logLink('welcome (set password) link', email, url);
+    await this.send(email, 'welcome email', clientWelcome(url, firstName, portalId, locale));
   }
 
   // FR-ADM-03 / ARCH §8.5: approve and reject both notify the client inline.
