@@ -156,6 +156,7 @@ function refusingService(): DealCommissionService {
       .fn()
       .mockRejectedValue(new CommissionRefusedError('total exceeds the revenue')),
     accrueForClosedPosition: vi.fn(),
+    confirmPending: vi.fn(),
   });
 }
 

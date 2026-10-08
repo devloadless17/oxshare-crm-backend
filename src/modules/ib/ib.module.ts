@@ -9,7 +9,6 @@ import { IbCommissionTypesService } from './ib-commission-types.service';
 import { IbOverviewService } from './ib-overview.service';
 import { IbWalletService } from './ib-wallet.service';
 import { CommissionService } from './commission.service';
-import { CommissionScheduler } from './commission.scheduler';
 import { COMMISSION_ACCRUAL } from '../../common/provisioning/commission-accrual.port';
 import { AdminAuthModule } from '../admin/admin-auth.module';
 import { IdentityModule } from '../identity/identity.module';
@@ -59,7 +58,6 @@ import { AdminExportModule } from '../admin/admin-export.module';
     IbOverviewService,
     IbWalletService,
     CommissionService,
-    CommissionScheduler,
     /*
      * The binding for `CommissionAccrualPort`.
      *

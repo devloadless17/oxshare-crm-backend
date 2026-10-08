@@ -1,6 +1,5 @@
 import { Logger } from '@nestjs/common';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { CommissionScheduler } from '../src/modules/ib/commission.scheduler';
 import { DealCommissionScheduler } from '../src/modules/trading/mt5/deal-commission.scheduler';
 import type { DealAccrualRun } from '../src/modules/trading/mt5/deal-commission.service';
 import { ALERT_KINDS } from '../src/common/logging/alerts';
@@ -63,6 +62,21 @@ const alwaysLeads = () =>
     run: (_name: string, _ttlMs: number, work: () => Promise<void>) => work(),
   }) as never;
 
+/** The one commission job over an empty deal queue, so only the PAY half has work. */
+function payingScheduler(confirmPending: ReturnType<typeof vi.fn>): DealCommissionScheduler {
+  return new DealCommissionScheduler(
+    {
+      accruePending: vi.fn().mockResolvedValue(accrualRun()),
+      backlog: vi.fn().mockResolvedValue(0),
+      orphanBacklog: vi.fn().mockResolvedValue(0),
+    } as never,
+    alwaysLeads(),
+    // `null` reads as the hourly default these timings were written against.
+    { getTrading: () => Promise.resolve(null) } as never,
+    { confirmPending } as never,
+  );
+}
+
 let errors: unknown[];
 
 beforeEach(() => {
@@ -89,20 +103,16 @@ function alerts(kind: string) {
   );
 }
 
-describe('the confirm job drains the payable queue', () => {
+describe('the commission job pays the queue it just calculated (one job, 8 Oct 2026)', () => {
   it('keeps going while every batch comes back FULL', async () => {
     const confirmPending = vi
       .fn()
-      .mockResolvedValueOnce({ confirmed: 500, failed: 0, held: 0 })
-      .mockResolvedValueOnce({ confirmed: 500, failed: 0, held: 0 })
-      .mockResolvedValue({ confirmed: 12, failed: 0, held: 0 });
+      .mockResolvedValueOnce({ confirmed: 500, failed: 0 })
+      .mockResolvedValueOnce({ confirmed: 500, failed: 0 })
+      .mockResolvedValue({ confirmed: 12, failed: 0 });
 
-    const scheduler = new CommissionScheduler({ confirmPending } as never, alwaysLeads(), {
-      /* The interval drives the drain BUDGET now (0113), so the stub answers
-         the hourly default this spec's timings were written against. */
-      getTrading: () => Promise.resolve(null),
-    } as never);
-    await scheduler.confirm();
+    const scheduler = payingScheduler(confirmPending);
+    await scheduler.accrue();
 
     /*
      * Three calls, not one. Before this, a thousand matured accruals took three
@@ -112,14 +122,10 @@ describe('the confirm job drains the payable queue', () => {
   });
 
   it('stops on the first SHORT batch, so a quiet hour costs one query', async () => {
-    const confirmPending = vi.fn().mockResolvedValue({ confirmed: 0, failed: 0, held: 0 });
+    const confirmPending = vi.fn().mockResolvedValue({ confirmed: 0, failed: 0 });
 
-    const scheduler = new CommissionScheduler({ confirmPending } as never, alwaysLeads(), {
-      /* The interval drives the drain BUDGET now (0113), so the stub answers
-         the hourly default this spec's timings were written against. */
-      getTrading: () => Promise.resolve(null),
-    } as never);
-    await scheduler.confirm();
+    const scheduler = payingScheduler(confirmPending);
+    await scheduler.accrue();
 
     // A short batch means nothing is due. Asking again cannot find more, and a
     // job that spins on an empty queue is worse than one that trickles.
@@ -135,15 +141,11 @@ describe('the confirm job drains the payable queue', () => {
      */
     const confirmPending = vi
       .fn()
-      .mockResolvedValueOnce({ confirmed: 0, failed: 500, held: 0 })
-      .mockResolvedValue({ confirmed: 1, failed: 0, held: 0 });
+      .mockResolvedValueOnce({ confirmed: 0, failed: 500 })
+      .mockResolvedValue({ confirmed: 1, failed: 0 });
 
-    const scheduler = new CommissionScheduler({ confirmPending } as never, alwaysLeads(), {
-      /* The interval drives the drain BUDGET now (0113), so the stub answers
-         the hourly default this spec's timings were written against. */
-      getTrading: () => Promise.resolve(null),
-    } as never);
-    await scheduler.confirm();
+    const scheduler = payingScheduler(confirmPending);
+    await scheduler.accrue();
 
     expect(confirmPending).toHaveBeenCalledTimes(2);
   });
@@ -158,15 +160,11 @@ describe('the confirm job drains the payable queue', () => {
     const confirmPending = vi.fn().mockImplementation(() => {
       // Every batch full, and each one burns two minutes of the budget.
       vi.advanceTimersByTime(2 * 60_000);
-      return Promise.resolve({ confirmed: 500, failed: 0, held: 0 });
+      return Promise.resolve({ confirmed: 500, failed: 0 });
     });
 
-    const scheduler = new CommissionScheduler({ confirmPending } as never, alwaysLeads(), {
-      /* The interval drives the drain BUDGET now (0113), so the stub answers
-         the hourly default this spec's timings were written against. */
-      getTrading: () => Promise.resolve(null),
-    } as never);
-    await scheduler.confirm();
+    const scheduler = payingScheduler(confirmPending);
+    await scheduler.accrue();
     vi.useRealTimers();
 
     const raised = alerts(ALERT_KINDS.COMMISSION_QUEUE_STALLED);
@@ -197,6 +195,7 @@ describe('the accrual job drains the deal queue', () => {
        * what these timings were written against.
        */
       { getTrading: () => Promise.resolve(null) } as never,
+      { confirmPending: vi.fn().mockResolvedValue({ confirmed: 0, failed: 0 }) } as never,
     );
     await scheduler.accrue();
 
@@ -225,6 +224,7 @@ describe('the accrual job drains the deal queue', () => {
        * what these timings were written against.
        */
       { getTrading: () => Promise.resolve(null) } as never,
+      { confirmPending: vi.fn().mockResolvedValue({ confirmed: 0, failed: 0 }) } as never,
     );
     await scheduler.accrue();
 
@@ -258,6 +258,7 @@ describe('the accrual job drains the deal queue', () => {
        * what these timings were written against.
        */
       { getTrading: () => Promise.resolve(null) } as never,
+      { confirmPending: vi.fn().mockResolvedValue({ confirmed: 0, failed: 0 }) } as never,
     );
     await scheduler.accrue();
 

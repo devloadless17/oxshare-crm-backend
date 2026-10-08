@@ -348,7 +348,7 @@ export class SettingsService {
       throw new ValidationError(
         job.runsOn === 'bridge'
           ? 'This job runs on the MT5 bridge; it cannot be started from here.'
-          : 'Commission runs on its own interval, which is also its hold window; it cannot be started early.',
+          : 'Commission runs on its own interval; it cannot be started early.',
       );
     }
     await this.store.requestJobRun(key);
