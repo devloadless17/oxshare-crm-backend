@@ -1,5 +1,5 @@
 import { ALL_PERMISSIONS } from './support/all-permissions';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { and, desc, eq } from 'drizzle-orm';
 import {
   actingAs,
@@ -681,12 +681,19 @@ describe("a key's audited actions name the key", () => {
       .expect(200);
 
     const [key] = await ctx.db.db.select().from(apiKeys).where(eq(apiKeys.id, id));
-    const [row] = await ctx.db.db
-      .select()
-      .from(auditLog)
-      .where(and(eq(auditLog.actorId, id), eq(auditLog.action, 'export.clients')))
-      .orderBy(desc(auditLog.createdAt))
-      .limit(1);
-    expect(row?.actorEmail).toBe(apiKeyActorLabel(key));
+    // `record()` is fire-and-forget, so the row can land just after the
+    // response does — wait for it rather than racing it.
+    await vi.waitFor(
+      async () => {
+        const [row] = await ctx.db.db
+          .select()
+          .from(auditLog)
+          .where(and(eq(auditLog.actorId, id), eq(auditLog.action, 'export.clients')))
+          .orderBy(desc(auditLog.createdAt))
+          .limit(1);
+        expect(row?.actorEmail).toBe(apiKeyActorLabel(key));
+      },
+      { timeout: 5_000, interval: 50 },
+    );
   });
 });
