@@ -25,6 +25,7 @@ export function commissionStub() {
   return {
     accrueForClosedPosition: vi.fn().mockResolvedValue(0),
     accrueForDeal: vi.fn().mockResolvedValue(0),
+    confirmPending: vi.fn().mockResolvedValue({ confirmed: 0, failed: 0 }),
   };
 }
 

@@ -593,35 +593,14 @@ describe('§14 J2 — step 4: the round turn pays the chain, rebate included', (
   });
 });
 
-describe('§14 J3 — step 5: confirming after the settlement window', () => {
-  it('withholds everything while the window is still open', async () => {
+describe('§14 J3 — step 5: paying the partner', () => {
+  it('confirms straight away — there is no hold window (8 Oct 2026) — and credits the partner', async () => {
     const admin = await actingAs(ctx, 'admin', MASTER);
-    // The commission window lives in Settings → Scheduled jobs (the Trading tab went, 7 Oct 2026).
+    // The interval no longer holds anything back: an hour-long one still pays now.
     const set = await admin.put('/v1/admin/settings/scheduled-jobs/ib.accrueDeals', {
       intervalSeconds: HOLD_SECONDS,
     });
     expect(set.status, JSON.stringify(set.body)).toBeLessThan(400);
-
-    const result = await ctx.app.get(CommissionService).confirmPending();
-    /*
-     * "Nothing was paid" has two very different causes and the service reports
-     * them apart on purpose: nobody earned anything, or everything earned is
-     * still maturing. This asserts the second — the window WITHHOLDS, which is
-     * what makes the next case evidence rather than a coincidence of timing.
-     */
-    expect(result.confirmed).toBe(0);
-    expect(result.held).toBeGreaterThan(0);
-  });
-
-  it('confirms once the window has passed, and credits the partner', async () => {
-    /*
-     * Only the CLOCK moves. The window itself is still read from the live
-     * setting above; ageing the rows is how a one-hour window is crossed inside
-     * a test that must not take an hour.
-     */
-    await ctx.db.db.execute(sql`
-      UPDATE ib_accruals SET created_at = now() - interval '2 hours'
-    `);
 
     const result = await ctx.app.get(CommissionService).confirmPending();
     expect(result.confirmed, 'the matured accruals were not confirmed').toBeGreaterThan(0);

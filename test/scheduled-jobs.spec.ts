@@ -201,8 +201,8 @@ describe('Settings → Scheduled jobs', () => {
     }
   });
 
-  it('the commission pair’s interval IS the Trading setting', async () => {
-    await settings.setJobInterval('ib.confirmAccruals', 120, ACTOR);
+  it('the commission job’s interval IS the Trading setting', async () => {
+    await settings.setJobInterval('ib.accrueDeals', 120, ACTOR);
     const { items } = await settings.listJobs();
     expect(items.find((job) => job.key === 'ib.accrueDeals')?.intervalSeconds).toBe(120);
     expect(audit.record).toHaveBeenCalledWith(
@@ -214,7 +214,7 @@ describe('Settings → Scheduled jobs', () => {
     );
   });
 
-  it('runs a CRM job now — but not the commission pair', async () => {
+  it('runs a CRM job now — but not the commission job', async () => {
     await store.claimJob('payments.reconcileProviders');
     await settings.runJobNow('payments.reconcileProviders', ACTOR);
     expect((await row('payments.reconcileProviders')).lastStartedAt).toBeNull();

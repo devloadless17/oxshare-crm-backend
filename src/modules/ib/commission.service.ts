@@ -1,5 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { and, eq, gt, inArray, isNull, lt, lte, or, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, lt, or, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db, Executor } from '../../database/db';
 import { ibAccrualBatches, ibAccruals, ibLevels, users } from '../../database/schema';
@@ -56,8 +56,9 @@ import {
  * and a reversed trade would leave a partner holding money recoverable only by
  * a compensating entry with no record of what it compensates.
  *
- * So an accrual writes a `pending` row and moves no money. Nothing a partner
- * can spend exists until `confirmPending` runs, a settlement window later.
+ * So an accrual writes a `pending` row and moves no money; `confirmPending`
+ * credits it. Since 8 Oct 2026 there is no settlement window between the two:
+ * the one commission job runs both, back to back.
  *
  * ## Every step is idempotent, deliberately
  *
@@ -76,14 +77,12 @@ import {
  * class only fetches, persists and moves money.
  */
 /*
- * `DEFAULT_HOLD_HOURS` was 24 here, and the reasoning was the reversal window
- * rather than the number: long enough that a bad deposit is caught by the
- * desk's daily rhythm before the money is spendable.
- *
- * That reasoning survives; the constant does not. The window is
- * `ib_commission_interval_seconds` now (0113), an admin setting rather than a
- * deploy, and its default of one hour is what the old 24h hold and the hourly
- * job produced together. See `holdSeconds` for what shortening it costs.
+ * NO HOLD WINDOW (owner, 8 Oct 2026). An accrual is payable the moment it is
+ * written: the one commission job calculates a run's closed trades and pays
+ * them in the same run (`DealCommissionScheduler`). The hold (24h, then the
+ * commission interval since 0113) only delayed partners — a paid commission is
+ * still reversible (`reverseAccrual` debits it back), and partner withdrawals
+ * are approved by a person.
  */
 
 @Injectable()
@@ -182,45 +181,6 @@ export class CommissionService implements CommissionAccrualPort {
    * refuses an over-payment is `checkPlausible` below, per trade — see the note
    * where the cap used to sit in `commission.ts`.
    */
-
-  /**
-   * How long an accrual is held before it may be confirmed — SECONDS.
-   *
-   * ## It is a SETTING again (0113), and it is the same number as the job's
-   *
-   * This was `IB_COMMISSION_HOLD_HOURS` from 0104: a column, then an
-   * environment variable, on the reasoning that commission is configured on
-   * one page and a second screen deciding partner pay is a "two places"
-   * problem. That reasoning holds for AMOUNTS and does not reach this — how
-   * OFTEN somebody is paid is not how MUCH, and the IB Levels page has no
-   * opinion about it.
-   *
-   * What made the env variable untenable is that it was never the whole
-   * answer. The delay a partner actually experiences is this window PLUS the
-   * job's period, and shortening either alone changes almost nothing: a
-   * one-minute run against a 24-hour hold still pays nothing for a day. Both
-   * now read `ib_commission_interval_seconds`, so the configured number IS the
-   * delay.
-   *
-   * ⚠️ SHORTENING THIS REMOVES A REVIEW WINDOW, and that is its whole purpose.
-   * 24 hours existed so a bad deposit is caught by the desk's daily rhythm
-   * BEFORE the commission on it is spendable. At 60s the money is in a
-   * partner's wallet before anybody could look, and a reversal then claws back
-   * a balance they may already have moved.
-   *
-   * ASYNC again, because it reads the settings row. It was made synchronous in
-   * 0104 when there was nothing left to await; there is again.
-   */
-  private async holdSeconds(): Promise<number> {
-    /*
-     * `tradingTermsFrom` normalises a bad or missing row to the DEFAULT rather
-     * than to the minimum — deliberately, and this is the call site that makes
-     * it matter. The failure mode of a corrupt row must not be "pay every
-     * commission a minute after the trade", which is the one outcome nobody
-     * would choose on purpose.
-     */
-    return tradingTermsFrom(await this.settings.getTrading()).ibCommissionIntervalSeconds;
-  }
 
   /**
    * Accrue on a CLOSED POSITION — the only thing that earns a partner anything.
@@ -700,16 +660,13 @@ export class CommissionService implements CommissionAccrualPort {
     limit = 500,
     /** Skip rows whose credit already failed at or after this instant (one drain run). */
     skipFailedSince?: Date,
-  ): Promise<{ confirmed: number; failed: number; held: number }> {
-    const payableFrom = new Date(Date.now() - (await this.holdSeconds()) * 1_000);
-
+  ): Promise<{ confirmed: number; failed: number }> {
     const pending = await this.db
       .select()
       .from(ibAccruals)
       .where(
         and(
           eq(ibAccruals.status, 'pending'),
-          lte(ibAccruals.createdAt, payableFrom),
           skipFailedSince
             ? or(
                 isNull(ibAccruals.lastConfirmFailedAt),
@@ -725,17 +682,6 @@ export class CommissionService implements CommissionAccrualPort {
        */
       .orderBy(sql`${ibAccruals.lastConfirmFailedAt} ASC NULLS FIRST`, ibAccruals.createdAt)
       .limit(limit);
-
-    /*
-     * Counted separately and REPORTED, because "nothing was paid" has two very
-     * different causes: nobody earned anything, or everything earned is still
-     * maturing. An operator watching the log needs to tell them apart before
-     * concluding the engine has stopped.
-     */
-    const [{ held = 0 } = {}] = await this.db
-      .select({ held: sql<number>`count(*)::int` })
-      .from(ibAccruals)
-      .where(and(eq(ibAccruals.status, 'pending'), gt(ibAccruals.createdAt, payableFrom)));
 
     let confirmed = 0;
     let failed = 0;
@@ -1009,7 +955,7 @@ export class CommissionService implements CommissionAccrualPort {
     }
     await this.notifySummaries(payouts);
 
-    return { confirmed, failed, held };
+    return { confirmed, failed };
   }
 
   /**

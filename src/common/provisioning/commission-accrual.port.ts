@@ -131,6 +131,17 @@ export interface CommissionAccrualPort {
     symbol?: string | null;
     symbolPath?: string | null;
   }): Promise<number>;
+
+  /**
+   * Credit pending accruals into the partners' commission wallets — up to
+   * `limit`, skipping rows that already failed since `skipFailedSince` (one
+   * drain run). Idempotent per accrual. The second half of the one commission
+   * job (owner, 8 Oct 2026): it runs right after the trades are calculated.
+   */
+  confirmPending(
+    limit?: number,
+    skipFailedSince?: Date,
+  ): Promise<{ confirmed: number; failed: number }>;
 }
 
 /**

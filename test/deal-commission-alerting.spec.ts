@@ -67,6 +67,7 @@ function schedulerReturning(...runs: DealAccrualRun[]): DealCommissionScheduler 
      * what these timings were written against.
      */
     { getTrading: () => Promise.resolve(null) } as never,
+    { confirmPending: vi.fn().mockResolvedValue({ confirmed: 0, failed: 0 }) } as never,
   );
 }
 

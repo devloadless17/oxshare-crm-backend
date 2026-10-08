@@ -154,75 +154,34 @@ afterEach(async () => {
   await ctx.db.execute(sql`DELETE FROM trading_settings`);
 });
 
-describe('the settlement window decides what is payable', () => {
-  it('HOLDS an accrual younger than the window, and says it is holding', async () => {
+/*
+ * NO HOLD WINDOW (owner, 8 Oct 2026). The one commission job calculates and
+ * pays in the same run, so an accrual is payable the moment it is written —
+ * whatever the interval is set to. These cases used to assert the window.
+ */
+describe('an accrual is payable the moment it is written', () => {
+  it('pays an accrual written a second ago, even on a day-long interval', async () => {
     const partner = await makeClient('hold-young-partner@test.local');
     const client = await makeClient('hold-young-client@test.local');
-    await accrue(partner, client, '00000000-0000-4000-8000-00000000e001', 1);
+    await accrue(partner, client, '00000000-0000-4000-8000-00000000e001', 0);
 
     const result = await (await serviceWithHold(24 * 3600)).confirmPending();
 
-    expect(result.confirmed).toBe(0);
-    /*
-     * `held` is reported separately, and that is the point: "nothing was paid"
-     * has two causes — nobody earned anything, or everything earned is still
-     * maturing — and an operator watching the log has to tell a working engine
-     * from a stopped one.
-     */
-    expect(result.held).toBe(1);
+    expect(result).toEqual({ confirmed: 1, failed: 0 });
   });
 
-  it('CONFIRMS an accrual older than the window', async () => {
-    const partner = await makeClient('hold-old-partner@test.local');
-    const client = await makeClient('hold-old-client@test.local');
-    await accrue(partner, client, '00000000-0000-4000-8000-00000000e002', 25);
-
-    const result = await (await serviceWithHold(24 * 3600)).confirmPending();
-
-    expect(result.confirmed).toBe(1);
-    expect(result.held).toBe(0);
-  });
-
-  /*
-   * The boundary, which is where an off-by-one lives. An accrual exactly at the
-   * window is payable — the predicate is "created at or before now minus the
-   * window", so equality pays rather than waiting another whole cycle.
-   */
-  it('pays an accrual sitting exactly on the boundary', async () => {
-    const partner = await makeClient('hold-edge-partner@test.local');
-    const client = await makeClient('hold-edge-client@test.local');
-    // A minute past 24h: enough to be unambiguously at-or-before the cutoff
-    // without depending on how long the test itself takes to run.
-    await accrue(partner, client, '00000000-0000-4000-8000-00000000e003', 24.02);
-
-    const result = await (await serviceWithHold(24 * 3600)).confirmPending();
-    expect(result.confirmed).toBe(1);
-  });
-
-  it('separates the mature from the maturing in one run', async () => {
+  it('pays old and new together in one run', async () => {
     const partner = await makeClient('hold-mixed-partner@test.local');
     const client = await makeClient('hold-mixed-client@test.local');
     await accrue(partner, client, '00000000-0000-4000-8000-00000000e004', 48);
-    await accrue(partner, client, '00000000-0000-4000-8000-00000000e005', 2);
+    await accrue(partner, client, '00000000-0000-4000-8000-00000000e005', 0);
 
-    const result = await (await serviceWithHold(24 * 3600)).confirmPending();
+    const result = await (await serviceWithHold(undefined)).confirmPending();
 
-    expect(result.confirmed).toBe(1);
-    expect(result.held).toBe(1);
+    expect(result.confirmed).toBe(2);
   });
 });
 
-/*
- * ── ONE CREDIT PER RUN, NOT ONE PER TRADE (0116) ──────────────────────────
- *
- * Commission confirms every minute, so the old per-accrual credit wrote one
- * ledger row per closed trade per earner and turned a client's wallet history
- * into a column of two-dollar credits.
- *
- * These cases pin BOTH halves of the fix, because either alone would be a bug:
- * the ledger must collapse, and `ib_accruals` must NOT — the per-trade rows are
- * the audit trail and the only thing that makes one cancelled trade reversible.
- */
 describe('a payout run credits a wallet once', () => {
   it('writes ONE ledger entry for many accruals, and keeps every accrual row', async () => {
     const partner = await makeClient('batch-partner@test.local');
@@ -302,101 +261,7 @@ describe('a payout run credits a wallet once', () => {
   });
 });
 
-describe('how the window is configured', () => {
-  it('defaults to one hour when nothing is configured', async () => {
-    const partner = await makeClient('hold-default-partner@test.local');
-    const client = await makeClient('hold-default-client@test.local');
-    /* Half an hour old, under the default one-hour window. */
-    await accrue(partner, client, '00000000-0000-4000-8000-00000000e006', 0.5);
-
-    expect((await (await serviceWithHold(undefined)).confirmPending()).held).toBe(1);
-  });
-
-  /*
-   * The point of making this a setting: a broker who wants near-instant payouts
-   * sets a minute, and a partner is paid a minute after the trade rather than a
-   * day. 60s is the floor — see `normaliseIbCommissionInterval` for why it is
-   * about the job's own runtime rather than about commercial policy.
-   */
-  it('pays within the minute when the interval is set to its floor', async () => {
-    const partner = await makeClient('hold-fast-partner@test.local');
-    const client = await makeClient('hold-fast-client@test.local');
-    /* Two minutes old, so a 60s window has matured it. */
-    await accrue(partner, client, '00000000-0000-4000-8000-00000000e007', 2 / 60);
-
-    expect((await (await serviceWithHold(60)).confirmPending()).confirmed).toBe(1);
-  });
-
-  /*
-   * ⚠️ THE FAILURE MODE THAT MATTERS, and it survived the move off the
-   * environment unchanged.
-   *
-   * A value the system cannot honour must fall back to the DEFAULT, never to
-   * the minimum. "Pay every commission the instant it is calculated" is the one
-   * outcome nobody would choose deliberately, and falling back to the floor
-   * would produce exactly that on a corrupt row.
-   *
-   * Written straight past the CHECK constraint with a raw UPDATE, because that
-   * is the only way this state arises: a row restored from a dump taken before
-   * the constraint existed. The form cannot save it.
-   */
-  it('falls back to the default on an impossible stored value, never to paying instantly', async () => {
-    const partner = await makeClient('hold-junk-partner@test.local');
-    const client = await makeClient('hold-junk-client@test.local');
-    await accrue(partner, client, '00000000-0000-4000-8000-00000000e008', 0.05);
-
-    /*
-     * The impossible value is injected at the STORE, not into the table.
-     *
-     * An earlier version of this test dropped the CHECK constraint, wrote a
-     * zero and added the constraint back. That is a schema mutation inside a
-     * suite that shares its database: when the assertion between the two
-     * statements failed, the constraint stayed dropped and the NEXT test — the
-     * one asserting the floor is enforced — failed for a reason that had
-     * nothing to do with it. A test that can corrupt its neighbours is worse
-     * than the coverage it buys.
-     *
-     * Stubbing the read reaches the same line of code. `holdSeconds` calls
-     * `tradingTermsFrom(await settings.getTrading())`, so a row carrying an
-     * impossible value exercises exactly the normalising this is about.
-     */
-    const corrupt = {
-      getTrading: () =>
-        Promise.resolve({
-          maxDemoDeposit: '1000000',
-          ibMaxLevels: 2,
-          /* Below the floor: only reachable from a dump older than the CHECK. */
-          ibCommissionIntervalSeconds: 0,
-          ibMaxTotalPayoutPct: '100.0000',
-          ibMaxPayoutPerLot: '50.00000000',
-          updatedBy: null,
-          updatedAt: new Date(),
-        }),
-    } as unknown as AppSettingsStore;
-
-    const service = new CommissionService(
-      ctx.db,
-      wallets,
-      dispatch,
-      corrupt,
-      emailStubAs(),
-      /* The territory gate on `reverseAccrual`, unreached by `confirmPending`. */
-      { assertVisible: () => Promise.resolve() } as never,
-      new IbStore(ctx.db),
-    );
-    const result = await service.confirmPending();
-
-    /* The default hour, not the floor — so a corrupt row cannot make the
-       platform pay faster than anybody configured. */
-    expect(result.confirmed).toBe(0);
-    expect(result.held).toBe(1);
-  });
-
-  /*
-   * The database refuses what the fallback above only compensates for. Both
-   * matter: this stops a bad value being STORED, that one stops a bad value
-   * that predates the constraint from being HONOURED.
-   */
+describe('how the interval is configured', () => {
   it('refuses to store an interval below the floor', async () => {
     await expect(serviceWithHold(30)).rejects.toThrow();
   });

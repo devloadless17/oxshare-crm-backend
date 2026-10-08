@@ -1,10 +1,20 @@
-import { Injectable, Logger, OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
+import {
+  Inject,
+  Injectable,
+  Logger,
+  OnApplicationBootstrap,
+  OnModuleDestroy,
+} from '@nestjs/common';
 import { DealCommissionService, type DealAccrualRun } from './deal-commission.service';
 import { AppSettingsStore } from '../../../store/app-settings.store';
 import { tradingTermsFrom } from '../../../common/trading-terms';
 import { pendingMigrationHint } from '../../../common/logging/pending-migration';
 import { ALERT_KINDS, raiseAlert } from '../../../common/logging/alerts';
 import { JobLeaseService } from '../../../common/scheduling/job-lease.service';
+import {
+  COMMISSION_ACCRUAL,
+  type CommissionAccrualPort,
+} from '../../../common/provisioning/commission-accrual.port';
 
 /**
  * Refused deals beyond which this is a SETTINGS problem rather than a blip.
@@ -49,7 +59,16 @@ const ACCRUE_BATCH = 200;
  * competing for the same rows finish slower than one, so the margin is there to
  * make overlap rare rather than to make it safe.
  */
-const BUDGET_FRACTION = 0.75;
+const BUDGET_FRACTION = 0.5;
+
+/**
+ * The PAY half's share of the interval (owner, 8 Oct 2026 — one job: calculate,
+ * then pay). With the calculate half's 0.5 the run stays under the interval.
+ */
+const PAY_BUDGET_FRACTION = 0.25;
+
+/** One bite of the pay queue; each accrual is its own transaction. */
+const CONFIRM_BATCH = 500;
 
 /**
  * Drains the deal → commission queue, on a schedule.
@@ -112,6 +131,8 @@ export class DealCommissionScheduler implements OnApplicationBootstrap, OnModule
     private readonly deals: DealCommissionService,
     private readonly leases: JobLeaseService,
     private readonly settings: AppSettingsStore,
+    /** The pay half — `CommissionService` behind the port (IbModule is @Global). */
+    @Inject(COMMISSION_ACCRUAL) private readonly commissions: CommissionAccrualPort,
   ) {}
 
   onApplicationBootstrap(): void {
@@ -208,12 +229,20 @@ export class DealCommissionScheduler implements OnApplicationBootstrap, OnModule
      * shorter than the work would hand the job to a second instance while the
      * first was still draining.
      */
-    const budgetMs = (await this.intervalMs()) * BUDGET_FRACTION;
-    await this.leases.run('ib.accrueDeals', 2 * budgetMs, async () => {
+    const intervalMs = await this.intervalMs();
+    const budgetMs = intervalMs * BUDGET_FRACTION;
+    const payBudgetMs = intervalMs * PAY_BUDGET_FRACTION;
+    await this.leases.run('ib.accrueDeals', 2 * (budgetMs + payBudgetMs), async () => {
       // Recorded for Settings → Scheduled jobs (0167); never breaks the run.
       const startedAt = new Date();
       try {
         await this.runOnce(budgetMs);
+        /*
+         * ONE JOB (owner, 8 Oct 2026): what was just calculated is paid now,
+         * not by a second job one hold window later. Runs even when the
+         * calculate half had nothing — a credit that failed last run retries.
+         */
+        await this.payDue(payBudgetMs);
         await this.recordRun(startedAt);
       } catch (error) {
         await this.recordRun(startedAt, error);
@@ -237,6 +266,54 @@ export class DealCommissionScheduler implements OnApplicationBootstrap, OnModule
     } catch {
       /* a status line must not break the accrual it describes */
     }
+  }
+
+  /**
+   * The PAY half: credit every pending accrual, in small batches, until the
+   * queue is short or the budget is spent. A failed credit stays pending and
+   * is retried next run; rows that failed in THIS run are skipped so a queue
+   * of failures cannot spin (0182).
+   */
+  private async payDue(budgetMs: number): Promise<void> {
+    const startedAt = Date.now();
+    let confirmed = 0;
+    let failed = 0;
+    let batches = 0;
+    try {
+      for (;;) {
+        const run = await this.commissions.confirmPending(CONFIRM_BATCH, new Date(startedAt));
+        confirmed += run.confirmed;
+        failed += run.failed;
+        batches += 1;
+        if (run.confirmed + run.failed < CONFIRM_BATCH) break;
+        if (Date.now() - startedAt >= budgetMs) {
+          raiseAlert(
+            this.logger,
+            ALERT_KINDS.COMMISSION_QUEUE_STALLED,
+            'notify',
+            `The commission pay step hit its ${Math.round(budgetMs / 1000)}s budget with the ` +
+              `queue still full: ${confirmed} credited across ${batches} batches and more were ` +
+              'due. The rest is paid on the next run; if this repeats, accruals are being earned ' +
+              'faster than they are credited.',
+            { credited: confirmed, batches },
+          );
+          break;
+        }
+      }
+    } catch (error) {
+      this.logger.error(
+        'The commission pay step could not RUN. Every accrual remains pending and is paid on ' +
+          `the next run: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return;
+    }
+    if (failed > 0) {
+      this.logger.warn(
+        `${failed} commission accrual(s) could not be credited and remain pending; they are ` +
+          'retried on the next run.',
+      );
+    }
+    if (confirmed > 0) this.logger.log(`Paid ${confirmed} commission accrual(s).`);
   }
 
   private async runOnce(budgetMs: number): Promise<void> {

@@ -46,18 +46,10 @@ export const SCHEDULED_JOBS = [
     max: 3600,
     hidden: true,
   },
-  // ── Commission — ONE interval for both, kept in trading_settings (also the hold window) ──
+  // ── Commission — ONE job: calculate closed trades, then pay them (owner, 8 Oct 2026). Its
+  //    interval lives in trading_settings; there is no hold window any more. ──
   {
     key: 'ib.accrueDeals',
-    group: 'commission',
-    runsOn: 'crm',
-    defaultSeconds: 3600,
-    min: 60,
-    max: 2_678_400,
-    sharedInterval: 'commission',
-  },
-  {
-    key: 'ib.confirmAccruals',
     group: 'commission',
     runsOn: 'crm',
     defaultSeconds: 3600,
