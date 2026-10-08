@@ -150,9 +150,15 @@ export class TransferExecutor {
        * The bridge's words are English and technical; an Arabic reader is told
        * the fixed sentence instead (0179), and the English keeps the detail.
        */
+      // The bridge's own sentence when it gave one ("…does not have enough free
+      // funds… Nothing was moved.", 8 Oct 2026), not the HTTP wrapping around it.
+      const reason =
+        error instanceof ExternalServiceError && typeof error.details?.reason === 'string'
+          ? error.details.reason
+          : message;
       await this.transfers.fail(
         transferId,
-        `MT5 refused the movement: ${message}`,
+        `MT5 refused the movement: ${reason}`,
         systemSentenceArabic(MT5_REFUSED_SENTENCE),
       );
       this.logger.warn(`Transfer ${transferId} failed on MT5: ${message}`);

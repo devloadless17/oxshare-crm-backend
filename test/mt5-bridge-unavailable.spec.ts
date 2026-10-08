@@ -83,3 +83,42 @@ describe('Mt5BridgeClient on a 503 from the bridge', () => {
     expect((error as ExternalServiceError).upstreamStatus).toBe(503);
   });
 });
+
+describe('Mt5BridgeClient on a refused balance movement (8 Oct 2026)', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('carries the bridge sentence as the reason, and keeps the 400 a transfer fails on', async () => {
+    const reason =
+      'The trading account does not have enough free funds for this movement (open trades hold margin). Nothing was moved.';
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockImplementation(() =>
+          Promise.resolve(
+            new Response(
+              JSON.stringify({ error: reason, code: 'MT_RET_REQUEST_NO_MONEY', refused: true }),
+              { status: 400 },
+            ),
+          ),
+        ),
+    );
+
+    const error = (await new Mt5BridgeClient(config)
+      .balance({
+        login: '1001',
+        amount: '-35.00',
+        type: 'balance',
+        comment: 't',
+        idempotencyKey: 'k',
+      })
+      .catch((e: unknown) => e)) as ExternalServiceError;
+
+    // 400 is the status `isDefiniteRefusal` fails a transfer on — not a body echo.
+    expect(error.upstreamStatus).toBe(400);
+    expect(error.details).toEqual({ reason });
+    expect(error.message).toBe(
+      `MT5 bridge returned 400 for POST /accounts/1001/balance: ${reason}`,
+    );
+  });
+});
