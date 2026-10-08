@@ -230,6 +230,17 @@ export interface Mt5Deal {
 /** The pause before a read's one retry after the bridge answers 503. */
 const UNAVAILABLE_RETRY_MS = 1_500;
 
+/** The `error` sentence of a bridge error body, when it is JSON and has one. */
+function bridgeReason(text: string): string | undefined {
+  try {
+    const body: unknown = JSON.parse(text);
+    const error = (body as { error?: unknown } | null)?.error;
+    return typeof error === 'string' && error.trim() ? error.trim().slice(0, 300) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 @Injectable()
 export class Mt5BridgeClient {
   private readonly logger = new Logger(Mt5BridgeClient.name);
@@ -625,9 +636,17 @@ export class Mt5BridgeClient {
         this.logger.error(
           `MT5 bridge ${method} ${path} -> ${response.status}: ${text.slice(0, 300)}`,
         );
+        /*
+         * The bridge's own sentence, when it gave one (8 Oct 2026): a refused
+         * balance movement answers `{ error: "The trading account does not have
+         * enough free funds …" }`, and that is what a failed transfer should
+         * say — not the JSON around it. Carried as a detail, so the message
+         * keeps its one shape (and its Arabic).
+         */
+        const reason = bridgeReason(text);
         throw new ExternalServiceError(
-          `MT5 bridge returned ${response.status} for ${method} ${path}: ${text.slice(0, 200)}`,
-          undefined,
+          `MT5 bridge returned ${response.status} for ${method} ${path}: ${reason ?? text.slice(0, 200)}`,
+          reason ? { reason } : undefined,
           response.status,
         );
       }
