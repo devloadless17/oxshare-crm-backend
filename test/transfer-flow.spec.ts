@@ -873,7 +873,7 @@ describe('the client is told a transfer completed only when it WAITED (0140)', (
  * owner's ruling (every transfer, not only the first). Refused before any hold;
  * an operator's own credit is not held to it.
  */
-describe("a product group's minimum deposit", () => {
+describe("a product group's minimum deposit, on transfers", () => {
   async function accountOnMinimum(userId: number, minimum: string): Promise<string> {
     const { rows } = await ctx.db.execute<{ id: string }>(sql`
       WITH p AS (
@@ -889,39 +889,25 @@ describe("a product group's minimum deposit", () => {
     return rows[0].id;
   }
 
-  const into = (userId: number, accountId: string, amount: string, enforce?: boolean) =>
+  const into = (userId: number, accountId: string, amount: string) =>
     transfers.request({
       userId,
       tradingAccountId: accountId,
       direction: 'wallet_to_account',
       amount,
       currency: 'USD',
-      ...(enforce === undefined ? {} : { enforceProductMinimum: enforce }),
     });
 
-  it('refuses a transfer below it, under the amount, holding nothing', async () => {
+  /*
+   * The minimum is checked ONCE, when the client opens the account (owner,
+   * 9 Oct 2026 — see account-open-product-choice.spec.ts). A transfer into an
+   * account, first or later, is any amount.
+   */
+  it('does not hold a transfer to it — any amount goes in', async () => {
     const userId = await makeClient('min-below@test.local');
     const accountId = await accountOnMinimum(userId, '100');
 
-    const refused = await into(userId, accountId, '99.99').catch((error: unknown) => error);
-    expect(refused).toBeInstanceOf(DomainValidationError);
-    expect((refused as { fields?: Record<string, string> }).fields?.amount).toBe(
-      'The minimum transfer into this account is 100.00 USD.',
-    );
-    expect((await walletOf(userId)).onHold).toBe('0.00000000');
-  });
-
-  it('takes a transfer of exactly the minimum, and every one after it is held to it too', async () => {
-    const userId = await makeClient('min-equal@test.local');
-    const accountId = await accountOnMinimum(userId, '100');
-
-    await expect(into(userId, accountId, '100')).resolves.toBeDefined();
-    await expect(into(userId, accountId, '50')).rejects.toThrow(/minimum transfer/);
-  });
-
-  it("does not hold an operator's own credit to it", async () => {
-    const userId = await makeClient('min-admin@test.local');
-    const accountId = await accountOnMinimum(userId, '100');
-    await expect(into(userId, accountId, '10', false)).resolves.toBeDefined();
+    await expect(into(userId, accountId, '10')).resolves.toBeDefined();
+    await expect(into(userId, accountId, '0.50')).resolves.toBeDefined();
   });
 });
