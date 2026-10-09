@@ -236,3 +236,49 @@ describe('commission accruals mask the out-of-scope client (#4)', () => {
     expect(byPartner.total).toBe(0);
   });
 });
+
+describe('the trade behind each payout (owner, 9 Oct 2026)', () => {
+  async function dealAccrual(clientId: number, login: string): Promise<void> {
+    const { rows } = await ctx.db.execute<{ id: string }>(sql`
+      INSERT INTO mt5_deals (mt5_deal_id, login, mt5_order_id, mt5_position_id, symbol, action,
+                             entry, volume, price, profit, commission, swap, comment, dealt_at, source)
+      VALUES (${'scope-' + login}, ${login}, ${'scope-' + login}, ${'scope-' + login}, 'XAUUSD',
+              1, 1, 2.5, 2400, 0, 0, 0, '', now(), 'sweep')
+      RETURNING id
+    `);
+    await ctx.db.execute(sql`
+      INSERT INTO ib_accruals
+        (ib_user_id, client_user_id, source_type, source_id, depth, rate_value,
+         base_amount, amount, currency, status)
+      VALUES (${partnerId}, ${clientId}, 'deal', ${rows[0].id}, 1, '100.0000',
+              '37.50000000', '37.50000000', 'USD', 'confirmed')
+    `);
+  }
+
+  beforeAll(async () => {
+    await dealAccrual(inScopeClientId, '7700001');
+    await dealAccrual(outScopeClientId, '7700002');
+  });
+
+  it('names the login, symbol and lots — and hides them with an outside client', async () => {
+    const { rows } = await store.findAccrualsPage({
+      page: 1,
+      limit: 10,
+      scope: scopeOf([tagId], false),
+    });
+    const deals = rows.filter((r) => r.accrual.sourceType === 'deal');
+    expect(deals).toHaveLength(2);
+    const mine = deals.find((r) => !r.clientMasked);
+    expect(mine?.trade).toEqual({ login: '7700001', symbol: 'XAUUSD', lots: '2.50000000' });
+    const theirs = deals.find((r) => r.clientMasked);
+    expect(theirs?.trade).toBeNull();
+    expect(JSON.stringify(rows)).not.toContain('7700002');
+  });
+
+  it('reports no trade on a row that did not come from a deal', async () => {
+    const { rows } = await store.findAccrualsPage({ page: 1, limit: 10, scope: UNRESTRICTED });
+    const other = rows.filter((r) => r.accrual.sourceType !== 'deal');
+    expect(other.length).toBeGreaterThan(0);
+    expect(other.every((r) => r.trade === null)).toBe(true);
+  });
+});

@@ -394,7 +394,8 @@ export class AdminIbController {
   @ApiOperation({
     summary: 'Partner commission accruals, filterable',
     description:
-      'Every accrual with the partner who earned it and the client whose deposit generated it. ' +
+      'Every accrual with the partner who earned it, the client whose closed trade generated it, ' +
+      'and that trade (`trade`: MT5 login, symbol, lots — null when masked or not from a deal). ' +
       '`totals` sums by status across the whole filtered set, as decimal strings (§6.1).',
   })
   @ApiQuery({ name: 'page', required: false })

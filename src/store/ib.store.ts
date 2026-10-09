@@ -25,6 +25,7 @@ import {
   ibApplications,
   ibLevels,
   ibPrograms,
+  mt5Deals,
   users,
 } from '../database/schema';
 import {
@@ -885,6 +886,13 @@ export class IbStore {
          * payout from either era.
          */
         termsName: sql<string | null>`COALESCE(${ibLevels.name}, ${ibPrograms.name})`,
+        /*
+         * The TRADE the money came from (owner, 9 Oct 2026): the client's MT5
+         * login, the symbol and the lots of the closing deal. Null for a row
+         * not sourced from a deal. The client's own data, so it is masked with
+         * the client below.
+         */
+        trade: { login: mt5Deals.login, symbol: mt5Deals.symbol, lots: mt5Deals.volume },
         clientInScope: clientInScopeExpr,
         partnerInScope: partnerInScopeExpr,
         partner: {
@@ -907,6 +915,10 @@ export class IbStore {
       .innerJoin(client, eq(client.id, ibAccruals.clientUserId))
       .leftJoin(ibLevels, eq(ibLevels.id, ibAccruals.levelId))
       .leftJoin(ibPrograms, eq(ibPrograms.id, ibAccruals.programId))
+      .leftJoin(
+        mt5Deals,
+        and(eq(ibAccruals.sourceType, 'deal'), eq(mt5Deals.id, ibAccruals.sourceId)),
+      )
       .where(where)
       // `id` breaks the tie. `status` and `depth` have a handful of values, so
       // ties across a page boundary are the norm — without it, paging such a
@@ -967,6 +979,7 @@ export class IbStore {
           sourceId: clientInScope ? row.accrual.sourceId : null,
         },
         client: clientInScope ? row.client : hide(),
+        trade: clientInScope ? row.trade : null,
         partner: partnerInScope ? row.partner : hide(),
         clientMasked: !clientInScope,
         partnerMasked: !partnerInScope,
