@@ -191,3 +191,12 @@ describe('a cursor on an enum sort (IB applications by status)', () => {
     expect(new Set([...appIds(first), ...appIds(second)]).size).toBe(50);
   });
 });
+
+describe('page numbers stop at the first 10,000 rows', () => {
+  it('serves a page inside them and refuses one past them', async () => {
+    const session = await actingAs(ctx, 'admin', ADMIN);
+    await session.get(`${LIST}&page=400`).expect(200); // rows 9,976–10,000
+    await session.get(`${LIST}&page=401`).expect(400);
+    await session.get('/v1/admin/clients?q=paging-&limit=500&page=21').expect(400);
+  });
+});

@@ -346,7 +346,16 @@ export function phoneSearchTerm(q: string): string | undefined {
  * same rule as a hidden email.
  */
 function phoneMatch(digits: string, person: typeof users, mask: FieldMask): SQL | undefined {
-  if (!mask.includes('client.phone')) return sql`${person.phone}::text LIKE ${`%${digits}%`}`;
+  /*
+   * A SUFFIX, not an infix (9 Oct 2026): a local number typed without its
+   * country code is the END of the stored E.164, so the reversed phone is a
+   * prefix scan on `users_phone_reverse_idx` (0215) — one index range at any
+   * size, where `%digits%` read every row once the table outgrew the trigram's
+   * reach.
+   */
+  if (!mask.includes('client.phone')) {
+    return sql`reverse(${person.phone}::text) LIKE ${`${[...digits].reverse().join('')}%`}`;
+  }
   const e164 = `+${digits}`;
   return /^\+[1-9]\d{7,14}$/.test(e164) ? eq(person.phone, e164) : undefined;
 }
@@ -410,6 +419,26 @@ export function clientIdentitySearch(
     return byPhone ? sql`(${eq(person.id, portalId)} OR ${byPhone})` : eq(person.id, portalId);
   }
   const fragment = `%${escapeLike(q.trim())}%`;
+
+  /*
+   * ONE OR TWO LETTERS: a PREFIX of the email, the first name or the last name
+   * (9 Oct 2026). A trigram index cannot serve a pattern shorter than three
+   * characters, so `%ab%` read the whole table; three prefix ranges on 0215's
+   * pattern indexes are bounded at any size. Hidden fields are never matched
+   * by a fragment.
+   */
+  if (q.trim().length < 3) {
+    const prefix = `${escapeLike(q.trim().toLowerCase())}%`;
+    const ranges: SQL[] = [];
+    if (!mask.includes('client.email')) ranges.push(sql`lower(${person.email}) LIKE ${prefix}`);
+    if (!mask.includes('client.firstName')) {
+      ranges.push(sql`lower(${person.firstName}) LIKE ${prefix}`);
+    }
+    if (!mask.includes('client.lastName')) {
+      ranges.push(sql`lower(${person.lastName}) LIKE ${prefix}`);
+    }
+    return ranges.length === 0 ? sql`false` : sql`(${sql.join(ranges, sql` OR `)})`;
+  }
 
   const emailHidden = mask.includes('client.email');
   const nameHidden = mask.includes('client.firstName') || mask.includes('client.lastName');

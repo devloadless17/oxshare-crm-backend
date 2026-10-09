@@ -841,6 +841,8 @@ export const SERVER_MESSAGES_AR: Readonly<Record<string, string>> = {
     'الانتقال إلى الصفحة السابقة يحتاج مؤشر الصفحة الحالية.',
   'dir=last takes no cursor: it starts from the end.':
     'الانتقال إلى الصفحة الأخيرة لا يقبل مؤشراً: يبدأ من النهاية.',
+  'Page numbers reach the first 10,000 rows. Use Next or Last (the cursor) beyond them.':
+    'أرقام الصفحات تغطي أول 10,000 صف. استخدم التالي أو الأخيرة بعدها.',
   'This search is too broad to answer quickly. Narrow it and try again.':
     'هذا البحث واسع جداً للإجابة بسرعة. ضيّقه وحاول مرة أخرى.',
   'Withdrawal amount must be positive.': 'يجب أن يكون مبلغ السحب موجباً.',
