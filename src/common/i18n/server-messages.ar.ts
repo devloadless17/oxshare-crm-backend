@@ -1111,4 +1111,12 @@ export const SERVER_MESSAGES_AR: Readonly<Record<string, string>> = {
   // The MT5 login lookup refuses a login owned outside the reader's territory (7 Oct 2026).
   'Login {1} already belongs to a client outside your territory.':
     'رقم الدخول {1} يخص عميلًا خارج نطاقك.',
+  // A client's Follow-up and Result notes (0212).
+  'Choose a valid follow-up date.': 'اختر تاريخ متابعة صالحًا.',
+  'The follow-up date is in the past.': 'تاريخ المتابعة في الماضي.',
+  'Choose today or a later date.': 'اختر اليوم أو تاريخًا لاحقًا.',
+  'The follow-up date is more than five years away.': 'تاريخ المتابعة بعد أكثر من خمس سنوات.',
+  'Choose a date within the next five years.': 'اختر تاريخًا خلال السنوات الخمس القادمة.',
+  'Cannot filter by follow-up "{1}". Allowed: {2}.':
+    'لا يمكن التصفية حسب المتابعة "{1}". القيم المسموح بها: {2}.',
 };
