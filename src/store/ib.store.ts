@@ -16,6 +16,16 @@ import {
 } from 'drizzle-orm';
 import { Inject, Injectable } from '@nestjs/common';
 import { orderTerms, type SortOrder } from '../common/sorting';
+import {
+  cappedTotal,
+  keysetSeek,
+  TOTAL_CAP,
+  walkOrder,
+  wrapPage,
+  type CursorPosition,
+  type PageDirection,
+  type SeekCast,
+} from '../common/pagination';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db, Executor } from '../database/db';
 import {
@@ -259,6 +269,10 @@ export class IbStore {
     order?: SortOrder;
     /** When it was SUBMITTED — `[from, until)`, `common/date-range.ts`. Narrows the tabs too. */
     range?: DateRange;
+    /** Keyset position — R-2.4. When present, `page` is ignored. */
+    cursor?: CursorPosition;
+    /** Previous / Last walk the same index backward — `pageDirection`. */
+    paging?: PageDirection;
   }) {
     const scope = filter.scope ?? UNRESTRICTED;
     const visible = and(
@@ -286,7 +300,8 @@ export class IbStore {
     const matches = q ? clientIdentitySearch(q) : undefined;
 
     const sortKey: IbApplicationSortKey = filter.sort ?? DEFAULT_IB_APPLICATION_SORT;
-    const direction = filter.order ?? 'desc';
+    // The order the QUERY walks: the list's own, reversed for Previous / Last.
+    const direction = walkOrder(filter.order ?? 'desc', filter.paging);
     const sortColumn: SQLWrapper = IB_APPLICATION_SORT_COLUMNS[sortKey];
 
     const where = and(
@@ -295,6 +310,25 @@ export class IbStore {
       visible,
       matches,
     );
+    const seekCast: Record<IbApplicationSortKey, SeekCast> = {
+      submittedAt: 'timestamptz',
+      status: 'ib_application_status',
+      userEmail: 'text',
+      userFirstName: 'text',
+    };
+    const pageWhere = filter.cursor
+      ? and(
+          where,
+          keysetSeek(
+            sortColumn,
+            ibApplications.id,
+            filter.cursor,
+            direction,
+            seekCast[sortKey],
+            'uuid',
+          ),
+        )
+      : where;
 
     const rows = await this.db
       .select({
@@ -321,46 +355,84 @@ export class IbStore {
          * and that is a real state rather than a reason to drop the row.
          */
         agencyName: agencies.name,
+        // The sort value as text, for the cursor (microseconds intact).
+        cursorValue: sql<string>`${sortColumn}::text`,
       })
       .from(ibApplications)
       .innerJoin(users, eq(users.id, ibApplications.userId))
       .leftJoin(agencies, eq(agencies.id, ibApplications.agencyId))
-      .where(where)
+      .where(pageWhere)
       // `id` is the total-order tiebreak. Without it, two applications sharing a
       // status — which is most of the queue — sit either side of an OFFSET
       // boundary in an order Postgres may change between queries, so paging can
       // show one twice and another never. See `orderTerms`.
       .orderBy(...orderTerms(sortColumn, ibApplications.id, direction))
-      .limit(filter.limit)
-      .offset((filter.page - 1) * filter.limit);
+      // One extra row answers "is there more" with no second query.
+      .limit(filter.limit + 1)
+      .offset(filter.cursor || filter.paging ? 0 : (filter.page - 1) * filter.limit);
+    const paged = wrapPage(
+      rows,
+      (row) => row.application.id,
+      filter.limit,
+      sortKey,
+      filter.paging ? { ...filter.paging, fromCursor: Boolean(filter.cursor) } : undefined,
+    );
 
-    const [{ value: total }] = await this.db
-      .select({ value: count() })
-      .from(ibApplications)
-      .innerJoin(users, eq(users.id, ibApplications.userId))
-      .where(where);
+    // Counted up to TOTAL_CAP + 1 rows (`cappedTotal`).
+    const [{ value: counted }] = await this.db.select({ value: count() }).from(
+      this.db
+        .select({ one: sql`1` })
+        .from(ibApplications)
+        .innerJoin(users, eq(users.id, ibApplications.userId))
+        .where(where)
+        .limit(TOTAL_CAP + 1)
+        .as('counted'),
+    );
+    const total = cappedTotal(counted);
 
     /*
-     * Per-status counts for the tab labels, computed by the database in ONE
-     * grouped query rather than three round trips. Scoped identically — a count
-     * that ignored visibility would tell a limited admin there are twelve
-     * pending applications and then show them four.
+     * Per-status counts for the tab labels, each read through its own
+     * `(status, …)` index and stopped at TOTAL_CAP + 1 — bounded however many
+     * partners the broker approves. Scoped identically: a count that ignored
+     * visibility would tell a limited admin there are twelve pending
+     * applications and then show them four.
      */
-    const grouped = await this.db
-      .select({ status: ibApplications.status, value: count() })
-      .from(ibApplications)
-      .innerJoin(users, eq(users.id, ibApplications.userId))
-      .where(visible)
-      .groupBy(ibApplications.status);
+    const grouped = (
+      await this.db.execute(
+        sql`SELECT s.status::text AS status, (
+              SELECT count(*)::int FROM (
+                SELECT 1 FROM ${ibApplications}
+                INNER JOIN ${users} ON ${users.id} = ${ibApplications.userId}
+                WHERE ${ibApplications.status} = s.status
+                ${visible ? sql`AND ${visible}` : sql``}
+                LIMIT ${TOTAL_CAP + 1}
+              ) one
+            ) AS value
+            FROM unnest(enum_range(NULL::ib_application_status)) AS s(status)`,
+      )
+    ).rows as { status: IbApplicationStatus; value: number }[];
 
     const counts: Record<IbApplicationStatus, number> = {
       pending: 0,
       approved: 0,
       rejected: 0,
     };
-    for (const row of grouped) counts[row.status] = row.value;
+    /** The statuses whose count stopped at TOTAL_CAP — render "10,000+". */
+    const countsCapped: IbApplicationStatus[] = [];
+    for (const row of grouped) {
+      counts[row.status] = Math.min(row.value, TOTAL_CAP);
+      if (row.value > TOTAL_CAP) countsCapped.push(row.status);
+    }
 
-    return { rows, total, counts };
+    return {
+      rows: paged.rows,
+      total: total.total,
+      totalCapped: total.totalCapped,
+      counts,
+      countsCapped,
+      nextCursor: paged.nextCursor,
+      prevCursor: paged.prevCursor,
+    };
   }
 
   // ── accounts ───────────────────────────────────────────────────────────────
@@ -619,6 +691,10 @@ export class IbStore {
     q?: string;
     /** `true` active partners only, `false` suspended only, absent both. */
     active?: boolean;
+    /** Keyset position — R-2.4. When present, `page` is ignored. */
+    cursor?: CursorPosition;
+    /** Previous / Last walk the same index backward — `pageDirection`. */
+    paging?: PageDirection;
   }) {
     const visible = clientScopePredicate(filter.scope ?? UNRESTRICTED, users.id);
     const term = filter.q?.trim();
@@ -644,8 +720,29 @@ export class IbStore {
       WHERE parent.id = ${ibAccounts.parentIbUserId}${parentVisible ? sql` AND ${parentVisible}` : sql``})`;
 
     const sortKey: IbPartnerSortKey = filter.sort ?? DEFAULT_IB_PARTNER_SORT;
-    const direction = filter.order ?? 'desc';
+    // The order the QUERY walks: the list's own, reversed for Previous / Last.
+    const direction = walkOrder(filter.order ?? 'desc', filter.paging);
     const sortColumn: SQLWrapper = IB_PARTNER_SORT_COLUMNS[sortKey];
+    const seekCast: Record<IbPartnerSortKey, SeekCast> = {
+      approvedAt: 'timestamptz',
+      level: 'integer',
+      referralCode: 'text',
+      userEmail: 'text',
+      userFirstName: 'text',
+    };
+    const pageWhere = filter.cursor
+      ? and(
+          where,
+          keysetSeek(
+            sortColumn,
+            ibAccounts.userId,
+            filter.cursor,
+            direction,
+            seekCast[sortKey],
+            'integer',
+          ),
+        )
+      : where;
 
     const rows = await this.db
       .select({
@@ -658,6 +755,8 @@ export class IbStore {
           lastName: users.lastName,
         },
         parentPortalId,
+        // The sort value as text, for the cursor (microseconds intact).
+        cursorValue: sql<string>`${sortColumn}::text`,
       })
       .from(ibAccounts)
       .innerJoin(users, eq(users.id, ibAccounts.userId))
@@ -673,24 +772,44 @@ export class IbStore {
        * `account.level` carries what the programme name used to: which terms
        * this partner is on.
        */
-      .where(where)
+      .where(pageWhere)
       // `user_id` is this table's PRIMARY KEY — one partner account per client —
       // so it is the unique tiebreak here, where the applications queue uses
       // `id`. Load-bearing for the same reason: a catalogue has a handful of
       // programmes, so ties across a page boundary are the norm rather than the
       // exception when sorting by `programName`.
       .orderBy(...orderTerms(sortColumn, ibAccounts.userId, direction))
-      .limit(filter.limit)
-      .offset((filter.page - 1) * filter.limit);
+      // One extra row answers "is there more" with no second query.
+      .limit(filter.limit + 1)
+      .offset(filter.cursor || filter.paging ? 0 : (filter.page - 1) * filter.limit);
+    const paged = wrapPage(
+      rows,
+      (row) => row.account.userId,
+      filter.limit,
+      sortKey,
+      filter.paging ? { ...filter.paging, fromCursor: Boolean(filter.cursor) } : undefined,
+    );
 
-    // The SAME `where`, so the total counts exactly the rows a page can show.
-    const [{ value: total }] = await this.db
-      .select({ value: count() })
-      .from(ibAccounts)
-      .innerJoin(users, eq(users.id, ibAccounts.userId))
-      .where(where);
+    // The SAME `where`, so the total counts exactly the rows a page can show —
+    // up to TOTAL_CAP + 1 of them (`cappedTotal`).
+    const [{ value: counted }] = await this.db.select({ value: count() }).from(
+      this.db
+        .select({ one: sql`1` })
+        .from(ibAccounts)
+        .innerJoin(users, eq(users.id, ibAccounts.userId))
+        .where(where)
+        .limit(TOTAL_CAP + 1)
+        .as('counted'),
+    );
+    const total = cappedTotal(counted);
 
-    return { rows, total };
+    return {
+      rows: paged.rows,
+      total: total.total,
+      totalCapped: total.totalCapped,
+      nextCursor: paged.nextCursor,
+      prevCursor: paged.prevCursor,
+    };
   }
 
   /**
@@ -758,6 +877,10 @@ export class IbStore {
     createdBefore?: Date;
     /** `false` skips the count and the per-status sums — an export shows neither. */
     withTotals?: boolean;
+    /** Keyset position — R-2.4. When present, `page` is ignored. */
+    cursor?: CursorPosition;
+    /** Previous / Last walk the same index backward — `pageDirection`. */
+    paging?: PageDirection;
   }) {
     /*
      * Each accrual names TWO people, and the reader may hold territory over
@@ -850,8 +973,28 @@ export class IbStore {
     );
 
     const sortKey: IbAccrualSortKey = filter.sort ?? DEFAULT_IB_ACCRUAL_SORT;
-    const direction = filter.order ?? 'desc';
+    // The order the QUERY walks: the list's own, reversed for Previous / Last.
+    const direction = walkOrder(filter.order ?? 'desc', filter.paging);
     const sortColumn: SQLWrapper = IB_ACCRUAL_SORT_COLUMNS[sortKey];
+    const seekCast: Record<IbAccrualSortKey, SeekCast> = {
+      createdAt: 'timestamptz',
+      amount: 'numeric',
+      status: 'ib_accrual_status',
+      depth: 'integer',
+    };
+    const pageWhere = filter.cursor
+      ? and(
+          where,
+          keysetSeek(
+            sortColumn,
+            ibAccruals.id,
+            filter.cursor,
+            direction,
+            seekCast[sortKey],
+            'uuid',
+          ),
+        )
+      : where;
 
     // True when the client on the row is inside the reader's territory. An
     // unrestricted reader has no predicate, so every row is in scope.
@@ -895,6 +1038,8 @@ export class IbStore {
         trade: { login: mt5Deals.login, symbol: mt5Deals.symbol, lots: mt5Deals.volume },
         clientInScope: clientInScopeExpr,
         partnerInScope: partnerInScopeExpr,
+        // The sort value as text, for the cursor (full precision).
+        cursorValue: sql<string>`${sortColumn}::text`,
         partner: {
           id: partner.id,
           portalId: partner.id,
@@ -919,13 +1064,21 @@ export class IbStore {
         mt5Deals,
         and(eq(ibAccruals.sourceType, 'deal'), eq(mt5Deals.id, ibAccruals.sourceId)),
       )
-      .where(where)
+      .where(pageWhere)
       // `id` breaks the tie. `status` and `depth` have a handful of values, so
       // ties across a page boundary are the norm — without it, paging such a
       // sort can repeat one row and skip another.
       .orderBy(...orderTerms(sortColumn, ibAccruals.id, direction))
-      .limit(filter.limit)
-      .offset((filter.page - 1) * filter.limit);
+      // One extra row answers "is there more" with no second query.
+      .limit(filter.limit + 1)
+      .offset(filter.cursor || filter.paging ? 0 : (filter.page - 1) * filter.limit);
+    const paged = wrapPage(
+      rawRows,
+      (row) => row.accrual.id,
+      filter.limit,
+      sortKey,
+      filter.paging ? { ...filter.paging, fromCursor: Boolean(filter.cursor) } : undefined,
+    );
 
     /*
      * Mask the out-of-scope client's IDENTITY and strip the internal flag. The
@@ -935,7 +1088,7 @@ export class IbStore {
      * rather than a blank that reads as missing data. The accrual amounts are
      * untouched: the partner earned them and may review them.
      */
-    const rows = rawRows.map(({ clientInScope, partnerInScope, ...row }) => {
+    const rows = paged.rows.map(({ clientInScope, partnerInScope, ...row }) => {
       /*
        * EITHER PERSON can be the out-of-scope one, and the masks are applied
        * independently. A commission is visible through its partner, so the
@@ -994,13 +1147,51 @@ export class IbStore {
      * presented on the ledger. The join cannot change the count: `ib_user_id`
      * is NOT NULL with a foreign key.
      */
-    if (filter.withTotals === false) return { rows, total: rows.length, totals: [] };
+    const cursors = { nextCursor: paged.nextCursor, prevCursor: paged.prevCursor };
+    if (filter.withTotals === false) {
+      return {
+        rows,
+        total: rows.length,
+        totalCapped: false,
+        totals: [],
+        totalsOmitted: true,
+        ...cursors,
+      };
+    }
 
-    const [{ value: total }] = await this.db
-      .select({ value: count() })
-      .from(ibAccruals)
-      .innerJoin(partner, eq(partner.id, ibAccruals.ibUserId))
-      .where(where);
+    // Counted up to TOTAL_CAP + 1 rows (`cappedTotal`): a commission is
+    // written per trade, so this is one of the platform's fastest-growing tables.
+    const [{ value: counted }] = await this.db.select({ value: count() }).from(
+      this.db
+        .select({ one: sql`1` })
+        .from(ibAccruals)
+        .innerJoin(partner, eq(partner.id, ibAccruals.ibUserId))
+        .where(where)
+        .limit(TOTAL_CAP + 1)
+        .as('counted'),
+    );
+    const total = cappedTotal(counted);
+
+    /*
+     * The money SUMS only over a BOUNDED set — a period with a start, a partner,
+     * a client, a search or one row. Unbounded ("All time", nobody chosen) the
+     * sum reads every commission ever written, one per trade, which grows
+     * without limit; the screen then asks the reader to narrow it instead of
+     * waiting on it. The page opens on Today, so it shows them by default.
+     */
+    const bounded = Boolean(
+      filter.range?.from || filter.ibUserId || filter.clientUserId || filter.q?.trim() || filter.id,
+    );
+    if (!bounded) {
+      return {
+        rows,
+        total: total.total,
+        totalCapped: total.totalCapped,
+        totals: [],
+        totalsOmitted: true,
+        ...cursors,
+      };
+    }
 
     /*
      * Totals by STATUS, summed in SQL over the whole filtered set rather than
@@ -1022,7 +1213,14 @@ export class IbStore {
       .where(where)
       .groupBy(ibAccruals.status);
 
-    return { rows, total, totals };
+    return {
+      rows,
+      total: total.total,
+      totalCapped: total.totalCapped,
+      totals,
+      totalsOmitted: false,
+      ...cursors,
+    };
   }
 
   /**

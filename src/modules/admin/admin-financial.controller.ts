@@ -460,6 +460,12 @@ export class AdminFinancialController {
   @ApiQuery({ name: 'page', required: false, description: 'Legacy offset paging. Prefer cursor.' })
   @ApiQuery({ name: 'limit', required: false })
   @ApiQuery({ name: 'cursor', required: false, description: 'Opaque keyset cursor (R-2.4).' })
+  @ApiQuery({
+    name: 'dir',
+    required: false,
+    enum: ['next', 'prev', 'last'],
+    description: 'prev: the page before ?cursor. last: the final page (no cursor).',
+  })
   @ApiQuery({ name: 'sort', required: false, enum: Object.keys(ADMIN_TRANSACTION_SORT_COLUMNS) })
   @ApiQuery({ name: 'order', required: false, enum: ['asc', 'desc'] })
   @ApiQuery({
@@ -480,6 +486,7 @@ export class AdminFinancialController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('cursor') cursor?: string,
+    @Query('dir') dir?: string,
     @Query('sort') sort?: string,
     @Query('order') order?: string,
   ) {
@@ -497,6 +504,7 @@ export class AdminFinancialController {
         page,
         limit,
         cursor,
+        dir,
         sort,
         order,
       },
@@ -526,6 +534,12 @@ export class AdminFinancialController {
   @ApiQuery({ name: 'limit', required: false })
   @ApiQuery({ name: 'cursor', required: false, description: 'Opaque keyset cursor (R-2.4).' })
   @ApiQuery({
+    name: 'dir',
+    required: false,
+    enum: ['next', 'prev', 'last'],
+    description: 'prev: the page before ?cursor. last: the final page (no cursor).',
+  })
+  @ApiQuery({
     name: 'sort',
     required: false,
     enum: Object.keys(ADMIN_TRANSACTION_SORT_COLUMNS),
@@ -552,6 +566,7 @@ export class AdminFinancialController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('cursor') cursor?: string,
+    @Query('dir') dir?: string,
     @Query('sort') sort?: string,
     @Query('order') order?: string,
   ) {
@@ -574,6 +589,7 @@ export class AdminFinancialController {
         page,
         limit,
         cursor,
+        dir,
         // Validated in the service against the allowlist, where the column
         // mapping lives — the listWithdrawals rule.
         sort,

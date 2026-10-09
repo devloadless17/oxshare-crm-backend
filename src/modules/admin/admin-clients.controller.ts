@@ -141,7 +141,13 @@ export class AdminClientsController {
   @ApiQuery({ name: 'page', required: false, description: 'Legacy offset paging. Prefer cursor.' })
   @ApiQuery({ name: 'limit', required: false })
   @ApiQuery({ name: 'cursor', required: false, description: 'Opaque keyset cursor (R-2.4).' })
-  @ApiQuery({ name: 'withTotal', required: false, description: 'Counting is a full scan.' })
+  @ApiQuery({ name: 'withTotal', required: false, description: 'Counts up to 10,001 rows.' })
+  @ApiQuery({
+    name: 'dir',
+    required: false,
+    enum: ['next', 'prev', 'last'],
+    description: 'prev: the page before ?cursor. last: the final page (no cursor).',
+  })
   @ApiQuery({
     name: 'q',
     required: false,
@@ -203,6 +209,7 @@ export class AdminClientsController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('cursor') cursor?: string,
+    @Query('dir') dir?: string,
     @Query('withTotal') withTotal?: string,
     @Query('q') q?: string,
     @Query('type') type?: string,
@@ -226,6 +233,7 @@ export class AdminClientsController {
         page,
         limit,
         cursor,
+        dir,
         withTotal,
         // Bounded because it reaches a trigram predicate: a very long term is
         // cheap to send and expensive for Postgres to answer.

@@ -1,3 +1,4 @@
+import { sql, type SQL, type SQLWrapper } from 'drizzle-orm';
 import { ValidationError } from './errors/domain-errors';
 
 /**
@@ -22,9 +23,118 @@ import { ValidationError } from './errors/domain-errors';
  * many should I throw away".
  */
 
-/** Rows per page. Capped so one caller cannot ask for the whole table. */
+/**
+ * Rows per page. Capped so one caller cannot ask for the whole table.
+ *
+ * 500 since 9 Oct 2026 (the buyer asked for it): a keyset page costs the same
+ * index descent at any size, so the ceiling bounds the payload, not the query.
+ */
 export const DEFAULT_PAGE_SIZE = 25;
-export const MAX_PAGE_SIZE = 100;
+export const MAX_PAGE_SIZE = 500;
+
+/**
+ * The most a list COUNTS before saying "10,000+".
+ *
+ * An exact `count(*)` reads every matching row on every request, so it is the
+ * one part of a list whose cost grows with the business. Counting stops at
+ * TOTAL_CAP + 1 rows: the same cost on day one and in year ten. It equals the
+ * bulk "all matching" ceiling on purpose — a total under it is exact, which is
+ * what bulk needs to confirm what it will touch.
+ */
+export const TOTAL_CAP = 10_000;
+
+/** A capped total, as every list returns it. */
+export interface CappedTotal {
+  /** Exact when `totalCapped` is false; TOTAL_CAP when it is. */
+  total: number;
+  /** True when more than TOTAL_CAP rows match: render "10,000+". */
+  totalCapped: boolean;
+}
+
+/** `count` from a query bounded at TOTAL_CAP + 1 rows. */
+export function cappedTotal(count: number): CappedTotal {
+  return count > TOTAL_CAP
+    ? { total: TOTAL_CAP, totalCapped: true }
+    : { total: count, totalCapped: false };
+}
+
+/**
+ * Which way a page walks (`?dir=`). First and Next walk FORWARD in the list's
+ * order; Previous and Last walk BACKWARD — the same index read the other way,
+ * so every page costs the same at any depth, including the last one.
+ *
+ *  - (none)   first page, or the page after `cursor`
+ *  - `prev`   the page before `cursor` — a cursor is required
+ *  - `last`   the final page — a cursor is refused (there is nothing to seek from)
+ */
+export interface PageDirection {
+  backward: boolean;
+}
+
+export function pageDirection(dir: string | undefined, cursor: string | undefined): PageDirection {
+  if (dir === undefined || dir === '' || dir === 'next') return { backward: false };
+  if (dir === 'prev') {
+    if (!cursor) throw new ValidationError('dir=prev needs the cursor of the page you are on.');
+    return { backward: true };
+  }
+  if (dir === 'last') {
+    if (cursor) throw new ValidationError('dir=last takes no cursor: it starts from the end.');
+    return { backward: true };
+  }
+  throw new ValidationError('dir must be one of: next, prev, last.');
+}
+
+/**
+ * Two-way paging for a cursor caller (the console's First / Previous / Next /
+ * Last); `undefined` for a legacy offset caller (`?page=` with no cursor and no
+ * `dir`), which keeps the one-way shape until it is gone.
+ */
+export function twoWayPaging(query: {
+  page?: string;
+  cursor?: string;
+  dir?: string;
+}): PageDirection | undefined {
+  const paging = pageDirection(query.dir, query.cursor);
+  return query.cursor || query.dir !== undefined || query.page === undefined ? paging : undefined;
+}
+
+/**
+ * What a cursor's value is cast to before it is compared — the sort column's
+ * own type, from a CLOSED set (never request text). An enum compares in its
+ * declared order, which is how its index is ordered.
+ */
+export type SeekCast =
+  | 'timestamptz'
+  | 'numeric'
+  | 'integer'
+  | 'text'
+  | 'kyc_status'
+  | 'ib_application_status'
+  | 'ib_accrual_status';
+
+/**
+ * The keyset seek: `(sort, tiebreak) < (value, id)` as ONE row comparison, `>`
+ * when the query walks ascending. The tiebreak (a unique column) makes the
+ * order total, so rows sharing a sort value are neither skipped nor repeated
+ * at a page boundary.
+ */
+export function keysetSeek(
+  column: SQLWrapper,
+  tiebreak: SQLWrapper,
+  cursor: CursorPosition,
+  walk: 'asc' | 'desc',
+  cast: SeekCast,
+  idCast: 'uuid' | 'integer',
+): SQL {
+  const comparator = walk === 'asc' ? sql`>` : sql`<`;
+  return sql`(${column}, ${tiebreak}) ${comparator} (${cursor.value}::${sql.raw(cast)}, ${cursor.id}::${sql.raw(idCast)})`;
+}
+
+/** The ORDER a query must use: the list's own, reversed when walking backward. */
+export function walkOrder(order: 'asc' | 'desc', paging?: PageDirection): 'asc' | 'desc' {
+  if (!paging?.backward) return order;
+  return order === 'asc' ? 'desc' : 'asc';
+}
 
 /** The sort column every list defaults to, and the only one most of them offer. */
 export const DEFAULT_SORT_KEY = 'createdAt';
@@ -201,6 +311,13 @@ export interface CursorPage<T> {
   /** Pass back as `?cursor=` for the next page. `null` means this is the last. */
   nextCursor: string | null;
   /**
+   * Pass back as `?cursor=…&dir=prev` for the page before. `null` on the first
+   * page. Only set when the caller is paging by cursor.
+   */
+  prevCursor?: string | null;
+  /** True when `total` stopped at TOTAL_CAP — see `cappedTotal`. */
+  totalCapped?: boolean;
+  /**
    * Present only when the caller asked for it (`?withTotal=true`).
    *
    * Counting is the expensive half — a full scan of the filtered set, on every
@@ -264,9 +381,20 @@ function cursorValueOf(value: unknown): string {
 export function buildCursorPage<T extends { id: string | number; createdAt: Date | string }>(
   rows: T[],
   limit: number,
-  total?: number,
+  total?: number | CappedTotal,
   sort: string = DEFAULT_SORT_KEY,
+  /**
+   * Set by callers that page by cursor in both directions. A BACKWARD walk
+   * fetched its rows in the reversed order; they are put back in the list's
+   * order here, and the cursors minted from the right ends. `fromCursor` says
+   * whether the page was reached from another (so something lies beyond it).
+   */
+  paging?: PageDirection & { fromCursor: boolean },
 ): CursorPage<T> {
+  const capped = typeof total === 'object' ? total : undefined;
+  const count = typeof total === 'object' ? total.total : total;
+  if (paging) return twoWayPage(rows, limit, count, capped, sort, paging);
+
   const hasMore = rows.length > limit;
   const items = hasMore ? rows.slice(0, limit) : rows;
   const last = items[items.length - 1];
@@ -311,7 +439,50 @@ export function buildCursorPage<T extends { id: string | number; createdAt: Date
             id: String(last.id),
           })
         : null,
-    ...(total === undefined ? {} : { total }),
+    ...(count === undefined ? {} : { total: count }),
+    ...(capped ? { totalCapped: capped.totalCapped } : {}),
+  };
+}
+
+/** A page's cursor, minted from one of its rows. */
+function cursorAt(row: Record<string, unknown> & { id: string | number }, sort: string): string {
+  return encodeCursor({
+    sort,
+    value: fullPrecisionValue(row['cursorValue'], row[sort], sort),
+    id: String(row.id),
+  });
+}
+
+/**
+ * A page that knows both its neighbours. Forward: the extra row says whether a
+ * NEXT page exists, and a page reached from a cursor always has a previous one.
+ * Backward: rows came in reversed order, the extra row says whether a PREVIOUS
+ * page exists, and a page reached from a cursor always has a next one (`last`
+ * has none: it IS the end).
+ */
+function twoWayPage<T extends { id: string | number; createdAt: Date | string }>(
+  rows: T[],
+  limit: number,
+  count: number | undefined,
+  capped: CappedTotal | undefined,
+  sort: string,
+  paging: PageDirection & { fromCursor: boolean },
+): CursorPage<T> {
+  const more = rows.length > limit;
+  const taken = more ? rows.slice(0, limit) : rows;
+  const items = paging.backward ? [...taken].reverse() : taken;
+  const first = items[0] as (T & Record<string, unknown>) | undefined;
+  const last = items[items.length - 1] as (T & Record<string, unknown>) | undefined;
+
+  const hasNext = paging.backward ? paging.fromCursor : more;
+  const hasPrev = paging.backward ? more : paging.fromCursor;
+
+  return {
+    items: items.map((row) => stripCursorValue(row)),
+    nextCursor: hasNext && last ? cursorAt(last, sort) : null,
+    prevCursor: hasPrev && first ? cursorAt(first, sort) : null,
+    ...(count === undefined ? {} : { total: count }),
+    ...(capped ? { totalCapped: capped.totalCapped } : {}),
   };
 }
 
@@ -362,4 +533,34 @@ function stripCursorValue<T>(row: T): T {
   if (!row || typeof row !== 'object' || !('cursorValue' in row)) return row;
   const { cursorValue: _cursorValue, ...rest } = row as Record<string, unknown>;
   return rest as T;
+}
+
+/**
+ * A page around rows of ANY shape: each row selects its sort value as text
+ * (`cursorValue`) and names its unique id; the rows come back as they went in,
+ * without `cursorValue`, beside both cursors. For stores whose rows are nested
+ * (`{ application, user }`) and shared with exports that must not change shape.
+ */
+export function wrapPage<R extends { cursorValue: string }>(
+  rows: R[],
+  idOf: (row: R) => string | number,
+  limit: number,
+  sort: string,
+  paging: (PageDirection & { fromCursor: boolean }) | undefined,
+): { rows: Omit<R, 'cursorValue'>[]; nextCursor: string | null; prevCursor: string | null } {
+  const page = buildCursorPage(
+    rows.map((row) => ({ id: idOf(row), createdAt: '', cursorValue: row.cursorValue, row })),
+    limit,
+    undefined,
+    sort,
+    paging,
+  );
+  return {
+    rows: page.items.map(({ row }) => {
+      const { cursorValue: _cursorValue, ...rest } = row;
+      return rest;
+    }),
+    nextCursor: page.nextCursor,
+    prevCursor: page.prevCursor ?? null,
+  };
 }

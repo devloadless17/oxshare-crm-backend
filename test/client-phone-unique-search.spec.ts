@@ -127,7 +127,7 @@ describe('every client search finds a client by phone', () => {
     expect(await idsFor('+961 78 123 987', mask)).toEqual([holder]);
   });
 
-  it('the fragment reads the trigram index, not every client', async () => {
+  it('a local number reads the reversed-phone index (a suffix), not every client', async () => {
     // One connection: a pooled SET would land on another session than the EXPLAIN.
     const plan = await ctx.db.db.transaction(async (tx) => {
       await tx.execute(sql`SET LOCAL enable_seqscan = off`);
@@ -136,6 +136,6 @@ describe('every client search finds a client by phone', () => {
       `);
       return rows.map((r) => r['QUERY PLAN']).join('\n');
     });
-    expect(plan).toMatch(/users_phone_trgm_idx/);
+    expect(plan).toMatch(/users_phone_reverse_idx/);
   });
 });

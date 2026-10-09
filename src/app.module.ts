@@ -33,6 +33,7 @@ import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { MiddlewareConsumer, NestModule } from '@nestjs/common';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
+import { ShallowPageInterceptor } from './common/http/shallow-page.interceptor';
 import { FieldMaskInterceptor } from './common/security/field-mask.interceptor';
 import { ResponseProjectionInterceptor } from './common/security/response-projection.interceptor';
 import { E2eFixturesModule } from './modules/e2e-fixtures/e2e-fixtures.module';
@@ -215,6 +216,8 @@ import { PlatformDefaults } from './database/platform-defaults';
      * already cut to its declared shape. See response-projection.interceptor.ts.
      */
     { provide: APP_INTERCEPTOR, useClass: ResponseProjectionInterceptor },
+    // Page numbers stop at the first 10,000 rows; the cursor goes beyond.
+    { provide: APP_INTERCEPTOR, useClass: ShallowPageInterceptor },
     // Global baseline throttle; sensitive routes tighten it with @Throttle.
     { provide: APP_GUARD, useClass: ThrottlerGuard },
     /*

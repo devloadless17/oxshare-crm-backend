@@ -30,7 +30,7 @@ import { EmailService } from '../email/email.service';
 import { MoneyRuleError, NotFoundError, ValidationError } from '../../common/errors/domain-errors';
 import { AdminAuditService } from './admin-audit.service';
 import { assertActorCan, assertActorCanAny } from '../../common/security/actor';
-import { decodeCursor } from '../../common/pagination';
+import { decodeCursor, twoWayPaging } from '../../common/pagination';
 import { enumQuery } from '../../common/query-params';
 import { ledgerEntryTypeEnum, tradingAccounts } from '../../database/schema';
 import { ClientVisibilityService } from '../../common/security/client-visibility.service';
@@ -1003,6 +1003,8 @@ export class AdminMoneyService {
       page?: string;
       limit?: string;
       cursor?: string;
+      /** `prev` / `last` walk backward — `pageDirection`. */
+      dir?: string;
       sort?: string;
       order?: string;
       /** `[from, until)` — `common/date-range.ts`. */
@@ -1040,6 +1042,7 @@ export class AdminMoneyService {
       sort,
       order,
       range: query.range,
+      paging: twoWayPaging(query),
     });
 
     /*
@@ -1773,6 +1776,8 @@ export class AdminMoneyService {
       page?: string;
       limit?: string;
       cursor?: string;
+      /** `prev` / `last` walk backward — `pageDirection`. */
+      dir?: string;
       range?: DateRange;
     },
     actor: AuthenticatedAdmin,
@@ -1813,6 +1818,7 @@ export class AdminMoneyService {
       limit: parseInt(query.limit ?? '50', 10) || 50,
       cursor: query.cursor ? decodeCursor(query.cursor) : undefined,
       range: query.range,
+      paging: twoWayPaging(query),
     });
     return { ...page, maskedFields: maskedFieldsFor('client', actor.fieldMask) };
   }
@@ -1860,6 +1866,8 @@ export class AdminMoneyService {
       page?: string;
       limit?: string;
       cursor?: string;
+      /** `prev` / `last` walk backward — `pageDirection`. */
+      dir?: string;
       sort?: string;
       order?: string;
     },
@@ -1912,10 +1920,12 @@ export class AdminMoneyService {
       page: rawPage,
       limit: rawLimit,
       cursor: rawCursor,
+      dir: _d,
       sort: _s,
       order: _o,
       ...filters
     } = query;
+    void _d;
     void _s;
     void _o;
 
@@ -1930,6 +1940,7 @@ export class AdminMoneyService {
       cursor: rawCursor ? decodeCursor(rawCursor, sort) : undefined,
       sort,
       order,
+      paging: twoWayPaging(query),
     });
 
     /*

@@ -1,3 +1,4 @@
+import { MAX_PAGE_SIZE } from '../src/common/pagination';
 import { ALL_PERMISSIONS } from './support/all-permissions';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import {
@@ -157,7 +158,7 @@ describe('what the ledger returns', () => {
   it('bounds the page size rather than trusting the querystring', async () => {
     const session = await actingAs(ctx, 'admin', FULL);
     const res = await session.get(`${LEDGER}?limit=100000`).expect(200);
-    expect((res.body as { limit: number }).limit).toBeLessThanOrEqual(100);
+    expect((res.body as { limit: number }).limit).toBeLessThanOrEqual(MAX_PAGE_SIZE);
   });
 
   it('validates entryType instead of casting it into the query', async () => {

@@ -22,7 +22,12 @@ import {
   or,
   sql,
 } from 'drizzle-orm';
-import type { CursorPosition } from '../common/pagination';
+import {
+  type CursorPosition,
+  type PageDirection,
+  TOTAL_CAP,
+  walkOrder,
+} from '../common/pagination';
 import { PROFILE_FIELD_KEYS, type ProfileKey } from '../common/profile/client-profile';
 import { sortKey, sortOrder } from '../common/sorting';
 import { parseLocale, type Locale } from '../common/i18n/locale';
@@ -341,7 +346,16 @@ export function phoneSearchTerm(q: string): string | undefined {
  * same rule as a hidden email.
  */
 function phoneMatch(digits: string, person: typeof users, mask: FieldMask): SQL | undefined {
-  if (!mask.includes('client.phone')) return sql`${person.phone}::text LIKE ${`%${digits}%`}`;
+  /*
+   * A SUFFIX, not an infix (9 Oct 2026): a local number typed without its
+   * country code is the END of the stored E.164, so the reversed phone is a
+   * prefix scan on `users_phone_reverse_idx` (0215) — one index range at any
+   * size, where `%digits%` read every row once the table outgrew the trigram's
+   * reach.
+   */
+  if (!mask.includes('client.phone')) {
+    return sql`reverse(${person.phone}::text) LIKE ${`${[...digits].reverse().join('')}%`}`;
+  }
   const e164 = `+${digits}`;
   return /^\+[1-9]\d{7,14}$/.test(e164) ? eq(person.phone, e164) : undefined;
 }
@@ -405,6 +419,26 @@ export function clientIdentitySearch(
     return byPhone ? sql`(${eq(person.id, portalId)} OR ${byPhone})` : eq(person.id, portalId);
   }
   const fragment = `%${escapeLike(q.trim())}%`;
+
+  /*
+   * ONE OR TWO LETTERS: a PREFIX of the email, the first name or the last name
+   * (9 Oct 2026). A trigram index cannot serve a pattern shorter than three
+   * characters, so `%ab%` read the whole table; three prefix ranges on 0215's
+   * pattern indexes are bounded at any size. Hidden fields are never matched
+   * by a fragment.
+   */
+  if (q.trim().length < 3) {
+    const prefix = `${escapeLike(q.trim().toLowerCase())}%`;
+    const ranges: SQL[] = [];
+    if (!mask.includes('client.email')) ranges.push(sql`lower(${person.email}) LIKE ${prefix}`);
+    if (!mask.includes('client.firstName')) {
+      ranges.push(sql`lower(${person.firstName}) LIKE ${prefix}`);
+    }
+    if (!mask.includes('client.lastName')) {
+      ranges.push(sql`lower(${person.lastName}) LIKE ${prefix}`);
+    }
+    return ranges.length === 0 ? sql`false` : sql`(${sql.join(ranges, sql` OR `)})`;
+  }
 
   const emailHidden = mask.includes('client.email');
   const nameHidden = mask.includes('client.firstName') || mask.includes('client.lastName');
@@ -1082,8 +1116,10 @@ export class UsersStore {
     scope?: ClientScope;
     /** Keyset position — R-2.4. When present, `page` is ignored. */
     cursor?: CursorPosition;
-    /** Counting is opt-in: it is a full scan of the filtered set. */
+    /** Counting is opt-in. It stops at TOTAL_CAP + 1 rows (`cappedTotal`). */
     withTotal?: boolean;
+    /** Previous / Last walk the same index backward — see `pageDirection`. */
+    paging?: PageDirection;
     /** When they REGISTERED — `[from, until)`, `common/date-range.ts`. */
     registered?: DateRange;
     /** Exactly these clients (picked rows, e.g. "export selected"). Scope still applies. */
@@ -1101,7 +1137,8 @@ export class UsersStore {
     if (filter.ids)
       conditions.push(filter.ids.length > 0 ? inArray(users.id, [...filter.ids]) : sql`false`);
     const sortKey: ClientSortKey = filter.sort ?? DEFAULT_CLIENT_SORT;
-    const direction = filter.order ?? 'desc';
+    // The order the QUERY walks: the list's own, reversed for Previous / Last.
+    const direction = walkOrder(filter.order ?? 'desc', filter.paging);
     const sortColumn: SQLWrapper = CLIENT_SORT_COLUMNS[sortKey];
 
     /*
@@ -1240,6 +1277,8 @@ export class UsersStore {
      * always to `timestamptz`. `::timestamptz` on an email address is a runtime
      * error at the database, from a value that looked fine in the URL.
      */
+    // The total counts the FILTERED list, never "what follows the cursor".
+    const countConditions = [...conditions];
     if (filter.cursor) {
       const comparator = direction === 'asc' ? sql`>` : sql`<`;
       const cast =
@@ -1385,12 +1424,21 @@ export class UsersStore {
        * The join costs nothing here: `kyc_submissions.user_id` is the primary
        * key, so it is a unique index lookup and cannot multiply rows.
        */
-      const [countRow] = await db
-        .select({ value: sql<number>`count(*)::int` })
+      /*
+       * CAPPED at TOTAL_CAP + 1 rows, so it costs the same at any size: the
+       * caller turns 10,001 into "10,000+" (`cappedTotal`). The cursor's seek is
+       * left out — a total counts the whole filtered list, not what follows
+       * this page.
+       */
+      const counted = db
+        .select({ one: sql`1` })
         .from(users)
         .leftJoin(kycSubmissions, eq(kycSubmissions.userId, users.id))
         .leftJoin(clientFollowups, eq(clientFollowups.userId, users.id))
-        .where(where);
+        .where(and(...countConditions))
+        .limit(TOTAL_CAP + 1)
+        .as('counted');
+      const [countRow] = await db.select({ value: sql<number>`count(*)::int` }).from(counted);
       total = countRow.value;
     }
 

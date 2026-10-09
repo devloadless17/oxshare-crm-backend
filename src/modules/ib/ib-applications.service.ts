@@ -1,3 +1,4 @@
+import { decodeCursor, pageSize, twoWayPaging } from '../../common/pagination';
 import type { DateRange } from '../../common/date-range';
 import { ibAccountView } from './ib-views';
 import { Inject, Injectable, Optional } from '@nestjs/common';
@@ -568,11 +569,22 @@ export class IbApplicationsService {
       sort?: string;
       order?: string;
       range?: DateRange;
+      /** Keyset position from a previous page. */
+      cursor?: string;
+      /** `prev` / `last` walk backward — `pageDirection`. */
+      dir?: string;
     },
     scope: ClientScope,
   ) {
     const page = Math.max(1, filter.page ?? 1);
-    const limit = Math.min(100, Math.max(1, filter.limit ?? 20));
+    const limit = pageSize(filter.limit ?? 20);
+    // Validated BEFORE the cursor is decoded: the cursor names the sort it is for.
+    const sort = sortKey(
+      filter.sort,
+      IB_APPLICATION_SORT_COLUMNS,
+      DEFAULT_IB_APPLICATION_SORT,
+      'partner applications',
+    );
     const result = await this.ib.findPageWithUsers({
       id: filter.id,
       status: filter.status,
@@ -583,13 +595,14 @@ export class IbApplicationsService {
       scope,
       // R-2.5. An unrecognised key is a 400 naming the allowed ones, never a
       // silent fallback — a sort the server ignored is a lie the UI tells.
-      sort: sortKey(
-        filter.sort,
-        IB_APPLICATION_SORT_COLUMNS,
-        DEFAULT_IB_APPLICATION_SORT,
-        'partner applications',
-      ),
+      sort,
       order: sortOrder(filter.order),
+      cursor: filter.cursor ? decodeCursor(filter.cursor, sort, undefined, 'uuid') : undefined,
+      paging: twoWayPaging({
+        page: filter.page === undefined ? undefined : String(filter.page),
+        cursor: filter.cursor,
+        dir: filter.dir,
+      }),
     });
 
     /*
@@ -1140,19 +1153,32 @@ export class IbApplicationsService {
       order?: string;
       q?: string;
       active?: boolean;
+      /** Keyset position from a previous page. */
+      cursor?: string;
+      /** `prev` / `last` walk backward — `pageDirection`. */
+      dir?: string;
     },
     scope: ClientScope,
   ) {
     const page = Math.max(1, filter.page ?? 1);
-    const limit = Math.min(100, Math.max(1, filter.limit ?? 20));
+    const limit = pageSize(filter.limit ?? 20);
+    // Validated BEFORE the cursor is decoded: the cursor names the sort it is for.
+    const sort = sortKey(filter.sort, IB_PARTNER_SORT_COLUMNS, DEFAULT_IB_PARTNER_SORT, 'partners');
     const result = await this.ib.findPartnersPage({
       page,
       limit,
       scope,
-      sort: sortKey(filter.sort, IB_PARTNER_SORT_COLUMNS, DEFAULT_IB_PARTNER_SORT, 'partners'),
+      sort,
       order: sortOrder(filter.order),
       q: filter.q,
       active: filter.active,
+      // A partner is keyed by their Portal ID: the cursor's id is an integer.
+      cursor: filter.cursor ? decodeCursor(filter.cursor, sort, undefined, 'integer') : undefined,
+      paging: twoWayPaging({
+        page: filter.page === undefined ? undefined : String(filter.page),
+        cursor: filter.cursor,
+        dir: filter.dir,
+      }),
     });
 
     /*
@@ -1205,6 +1231,9 @@ export class IbApplicationsService {
      */
     return {
       total: result.total,
+      totalCapped: result.totalCapped,
+      nextCursor: result.nextCursor,
+      prevCursor: result.prevCursor,
       rows: withAgency.map((row) => ({
         account: {
           userId: row.account.userId,
@@ -1452,11 +1481,17 @@ export class IbApplicationsService {
       status?: string;
       kind?: string;
       range?: DateRange;
+      /** Keyset position from a previous page. */
+      cursor?: string;
+      /** `prev` / `last` walk backward — `pageDirection`. */
+      dir?: string;
     },
     scope: ClientScope,
   ) {
     const page = Math.max(1, filter.page ?? 1);
-    const limit = Math.min(100, Math.max(1, filter.limit ?? 25));
+    const limit = pageSize(filter.limit ?? 25);
+    // Validated BEFORE the cursor is decoded: the cursor names the sort it is for.
+    const sort = sortKey(filter.sort, IB_ACCRUAL_SORT_COLUMNS, DEFAULT_IB_ACCRUAL_SORT, 'accruals');
     return this.ib.findAccrualsPage({
       page,
       limit,
@@ -1468,8 +1503,14 @@ export class IbApplicationsService {
       q: filter.q,
       status: filter.status,
       kind: filter.kind,
-      sort: sortKey(filter.sort, IB_ACCRUAL_SORT_COLUMNS, DEFAULT_IB_ACCRUAL_SORT, 'accruals'),
+      sort,
       order: sortOrder(filter.order),
+      cursor: filter.cursor ? decodeCursor(filter.cursor, sort, undefined, 'uuid') : undefined,
+      paging: twoWayPaging({
+        page: filter.page === undefined ? undefined : String(filter.page),
+        cursor: filter.cursor,
+        dir: filter.dir,
+      }),
     });
   }
 

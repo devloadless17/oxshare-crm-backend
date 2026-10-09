@@ -15,7 +15,7 @@ import {
 } from '../../store/audit-log.store';
 import { sortKey, sortOrder } from '../../common/sorting';
 import type { Executor } from '../../database/db';
-import { decodeCursor } from '../../common/pagination';
+import { decodeCursor, twoWayPaging } from '../../common/pagination';
 import { actorHasPermission } from '../../common/security/actor';
 
 /**
@@ -158,6 +158,8 @@ export class AdminAuditService {
       page?: string;
       limit?: string;
       cursor?: string;
+      /** `prev` / `last` walk backward — `pageDirection`. */
+      dir?: string;
       action?: string;
       subjectType?: string;
       actorId?: string;
@@ -217,6 +219,7 @@ export class AdminAuditService {
       // believed — and OFFSET over an append-only table that only grows is
       // exactly where a gap appears.
       cursor: query.cursor ? decodeCursor(query.cursor, sort) : undefined,
+      paging: twoWayPaging(query),
       action: query.action,
       subjectType: query.subjectType,
       /*

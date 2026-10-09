@@ -13,7 +13,13 @@ import type { ListTransactionsQueryDto } from '../dto/transaction-query.dto';
 import { clientIdentitySearch } from '../../../store/users.store';
 import type { TransactionView } from '../transaction-view';
 import { money } from '../../wallet/money';
-import { buildCursorPage, pageSize, type CursorPosition } from '../../../common/pagination';
+import {
+  buildCursorPage,
+  pageSize,
+  walkOrder,
+  type CursorPosition,
+  type PageDirection,
+} from '../../../common/pagination';
 import {
   type DateRange,
   dateRangeQuery,
@@ -712,13 +718,16 @@ export class TransactionQueries {
     order?: SortOrder;
     /** When requested — `[from, until)`, `common/date-range.ts`. Narrows the tabs too. */
     range?: DateRange;
+    /** Previous / Last walk the same index backward — `pageDirection`. */
+    paging?: PageDirection;
   }) {
     const page = Math.max(1, filter.page ?? 1);
     const limit = pageSize(filter.limit);
     const db = this.db;
 
     const sortKey: WithdrawalSortKey = filter.sort ?? DEFAULT_WITHDRAWAL_SORT;
-    const direction = filter.order ?? 'desc';
+    // The order the QUERY walks: the list's own, reversed for Previous / Last.
+    const direction = walkOrder(filter.order ?? 'desc', filter.paging);
     const sortColumn: SQLWrapper = WITHDRAWAL_SORT_COLUMNS[sortKey];
 
     const conditions = [eq(transactions.direction, 'withdrawal')];
@@ -968,6 +977,7 @@ export class TransactionQueries {
       limit,
       total,
       sortKey,
+      filter.paging ? { ...filter.paging, fromCursor: Boolean(filter.cursor) } : undefined,
     );
 
     // Who pays each request NOW (0168): the provider for an automated payout
@@ -1024,7 +1034,15 @@ export class TransactionQueries {
       },
     }));
 
-    return { items, nextCursor: paged.nextCursor, total, page, limit, counts };
+    return {
+      items,
+      nextCursor: paged.nextCursor,
+      prevCursor: paged.prevCursor,
+      total,
+      page,
+      limit,
+      counts,
+    };
   }
 
   /**
@@ -1966,12 +1984,14 @@ export class TransactionQueries {
       /** R-2.5 server-side sort. Validated by `sortKey` before it gets here. */
       sort?: AdminTransactionSortKey;
       order?: SortOrder;
+      /** Previous / Last walk the same indexes backward — `pageDirection`. */
+      paging?: PageDirection;
     },
   ) {
     const page = Math.max(1, filter.page ?? 1);
     const limit = pageSize(filter.limit);
     const sortKey: AdminTransactionSortKey = filter.sort ?? DEFAULT_ADMIN_TRANSACTION_SORT;
-    const direction = filter.order ?? 'desc';
+    const direction = walkOrder(filter.order ?? 'desc', filter.paging);
     const sortSpec = ADMIN_TRANSACTION_SORT_COLUMNS[sortKey];
 
     const { countSource, page: pageOf, conditionsFor, whereOf } = this.adminMovements(filter);
@@ -2059,6 +2079,7 @@ export class TransactionQueries {
       limit,
       total,
       sortKey,
+      filter.paging ? { ...filter.paging, fromCursor: Boolean(filter.cursor) } : undefined,
     );
 
     const items = paged.items.map((row) => ({
@@ -2079,7 +2100,16 @@ export class TransactionQueries {
       },
     }));
 
-    return { items, nextCursor: paged.nextCursor, total, page, limit, counts, directionCounts };
+    return {
+      items,
+      nextCursor: paged.nextCursor,
+      prevCursor: paged.prevCursor,
+      total,
+      page,
+      limit,
+      counts,
+      directionCounts,
+    };
   }
 
   /**

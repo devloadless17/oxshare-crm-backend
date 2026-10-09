@@ -205,6 +205,12 @@ export class AdminHoldingsController {
   @ApiQuery({ name: 'page', required: false, description: 'Legacy offset paging. Prefer cursor.' })
   @ApiQuery({ name: 'limit', required: false })
   @ApiQuery({ name: 'cursor', required: false, description: 'Opaque keyset cursor (R-2.4).' })
+  @ApiQuery({
+    name: 'dir',
+    required: false,
+    enum: ['next', 'prev', 'last'],
+    description: 'prev: the page before ?cursor. last: the final page (no cursor).',
+  })
   @ApiQuery({ name: 'withTotal', required: false, description: 'Counting is a full scan.' })
   @ApiQuery({
     name: 'sort',
@@ -224,6 +230,7 @@ export class AdminHoldingsController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('cursor') cursor?: string,
+    @Query('dir') dir?: string,
     @Query('withTotal') withTotal?: string,
     @Query('sort') sort?: string,
     @Query('order') order?: string,
@@ -244,6 +251,7 @@ export class AdminHoldingsController {
         page,
         limit,
         cursor,
+        dir,
         withTotal,
         // `sort`/`order` are validated in the service against the allowlist,
         // which is where the column mapping lives. Validating here too would put
@@ -387,6 +395,12 @@ export class AdminHoldingsController {
   @ApiQuery({ name: 'page', required: false, description: 'Legacy offset paging. Prefer cursor.' })
   @ApiQuery({ name: 'limit', required: false })
   @ApiQuery({ name: 'cursor', required: false, description: 'Opaque keyset cursor (R-2.4).' })
+  @ApiQuery({
+    name: 'dir',
+    required: false,
+    enum: ['next', 'prev', 'last'],
+    description: 'prev: the page before ?cursor. last: the final page (no cursor).',
+  })
   @ApiQuery({ name: 'withTotal', required: false, description: 'Counting is a full scan.' })
   @ApiQuery({
     name: 'sort',
@@ -412,6 +426,7 @@ export class AdminHoldingsController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('cursor') cursor?: string,
+    @Query('dir') dir?: string,
     @Query('withTotal') withTotal?: string,
     @Query('sort') sort?: string,
     @Query('order') order?: string,
@@ -439,6 +454,7 @@ export class AdminHoldingsController {
         page,
         limit,
         cursor,
+        dir,
         withTotal,
         sort,
         order,
@@ -471,8 +487,15 @@ export class AdminHoldingsController {
       'Prices and money are strings (§6.1).',
   })
   @ApiOkResponse({ type: ClientClosedPositionsPageDto })
-  @ApiQuery({ name: 'page', required: false })
+  @ApiQuery({ name: 'page', required: false, description: 'Legacy offset paging. Prefer cursor.' })
   @ApiQuery({ name: 'limit', required: false })
+  @ApiQuery({ name: 'cursor', required: false, description: 'Opaque keyset cursor (R-2.4).' })
+  @ApiQuery({
+    name: 'dir',
+    required: false,
+    enum: ['next', 'prev', 'last'],
+    description: 'prev: the page before ?cursor. last: the final page (no cursor).',
+  })
   @ScopedToClients(
     'AdminHoldingsService.listClientClosedPositions applies clientScopePredicate to trading_accounts.user_id, in the WHERE clause.',
   )
@@ -481,11 +504,15 @@ export class AdminHoldingsController {
     @Param('id', ClientRefPipe) id: number,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
+    @Query('cursor') cursor?: string,
+    @Query('dir') dir?: string,
   ) {
     return this.holdings.listClientClosedPositions({
       userId: id,
       page,
       limit,
+      cursor,
+      dir,
       scope: req.admin.clientScope,
     });
   }
@@ -507,8 +534,15 @@ export class AdminHoldingsController {
     description: '`amount` is a decimal string (§6.1), never a number.',
   })
   @ApiOkResponse({ type: ClientTransactionsPageDto })
-  @ApiQuery({ name: 'page', required: false })
+  @ApiQuery({ name: 'page', required: false, description: 'Legacy offset paging. Prefer cursor.' })
   @ApiQuery({ name: 'limit', required: false })
+  @ApiQuery({ name: 'cursor', required: false, description: 'Opaque keyset cursor (R-2.4).' })
+  @ApiQuery({
+    name: 'dir',
+    required: false,
+    enum: ['next', 'prev', 'last'],
+    description: 'prev: the page before ?cursor. last: the final page (no cursor).',
+  })
   @ScopedToClients(
     'AdminHoldingsService.listClientTransactions applies clientScopePredicate to transactions.user_id, in the WHERE clause.',
   )
@@ -517,11 +551,15 @@ export class AdminHoldingsController {
     @Param('id', ClientRefPipe) id: number,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
+    @Query('cursor') cursor?: string,
+    @Query('dir') dir?: string,
   ) {
     return this.holdings.listClientTransactions({
       userId: id,
       page,
       limit,
+      cursor,
+      dir,
       scope: req.admin.clientScope,
     });
   }

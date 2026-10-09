@@ -100,8 +100,15 @@ export class AdminComplianceController {
     required: false,
     description: 'A Portal ID (digits, matched exactly) or free text over email and name.',
   })
-  @ApiQuery({ name: 'page', required: false })
+  @ApiQuery({ name: 'page', required: false, description: 'Legacy offset paging. Prefer cursor.' })
   @ApiQuery({ name: 'limit', required: false })
+  @ApiQuery({ name: 'cursor', required: false, description: 'Opaque keyset cursor (R-2.4).' })
+  @ApiQuery({
+    name: 'dir',
+    required: false,
+    enum: ['next', 'prev', 'last'],
+    description: 'prev: the page before ?cursor. last: the final page (no cursor).',
+  })
   @ApiQuery({ name: 'sort', required: false, enum: Object.keys(KYC_SORT_COLUMNS) })
   @ApiQuery({ name: 'order', required: false, enum: ['asc', 'desc'] })
   @ApiDateRangeQueries('submitted')
@@ -112,6 +119,8 @@ export class AdminComplianceController {
     @Query('q') q?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
+    @Query('cursor') cursor?: string,
+    @Query('dir') dir?: string,
     @Query('sort') sort?: string,
     @Query('order') order?: string,
     @Query('from') from?: string,
@@ -132,6 +141,8 @@ export class AdminComplianceController {
         range: dateRangeQuery(from, to),
         page,
         limit,
+        cursor,
+        dir,
         // Validated in the service against KYC_SORT_COLUMNS — the one place the
         // column mapping lives.
         sort,

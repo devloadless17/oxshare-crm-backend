@@ -1,3 +1,4 @@
+import { pageSize, type CursorPosition, type PageDirection } from '../../common/pagination';
 import type { DateRange } from '../../common/date-range';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { AdminsStore } from '../../store/admins.store';
@@ -174,10 +175,14 @@ export class KycReviewService {
       sort?: KycSortKey;
       order?: SortOrder;
       range?: DateRange;
+      /** Keyset position, already decoded against the sort — R-2.4. */
+      cursor?: CursorPosition;
+      /** Previous / Last walk backward — `pageDirection`. */
+      paging?: PageDirection;
     } = {},
   ) {
     const page = Math.max(1, filter.page ?? 1);
-    const limit = Math.min(100, Math.max(1, filter.limit ?? 25));
+    const limit = pageSize(filter.limit);
 
     // One joined query, filtered/sorted/paginated in SQL, plus one grouped
     // count. The previous version loaded every submission and then issued one
@@ -194,6 +199,8 @@ export class KycReviewService {
       scope: filter.scope,
       sort: filter.sort,
       order: filter.order,
+      cursor: filter.cursor,
+      paging: filter.paging,
     });
   }
 

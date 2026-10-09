@@ -15,7 +15,13 @@ import {
   ReferrerAlreadySetError,
   ValidationError,
 } from '../../common/errors/domain-errors';
-import { buildCursorPage, decodeCursor, pageSize } from '../../common/pagination';
+import {
+  buildCursorPage,
+  cappedTotal,
+  decodeCursor,
+  pageDirection,
+  pageSize,
+} from '../../common/pagination';
 import { AdminAuditService } from './admin-audit.service';
 import { assertActorCan } from '../../common/security/actor';
 import { maskedFieldsFor } from '../../common/security/field-mask';
@@ -358,6 +364,8 @@ export class AdminClientsService {
       page?: string;
       limit?: string;
       cursor?: string;
+      /** `prev` / `last` walk backward — `pageDirection`. */
+      dir?: string;
       withTotal?: string;
       q?: string;
       type?: string;
@@ -441,9 +449,11 @@ export class AdminClientsService {
     // Validated as a Portal ID at the edge (ClientRefPipe), which refuses a
     // malformed value loudly rather than ignoring it — see `filterOf`.
 
+    const paging = pageDirection(query.dir, query.cursor);
     const { rows, total } = await this.users.findPage({
       page,
       limit,
+      paging,
       // Keyed by the Portal ID (0159): the cursor's id is an integer.
       cursor: query.cursor ? decodeCursor(query.cursor, sort, undefined, 'integer') : undefined,
       // Counting is a full scan of the filtered set. Requested explicitly, or
@@ -457,7 +467,18 @@ export class AdminClientsService {
       scope: actor.clientScope,
     });
 
-    const paged = buildCursorPage(rows, limit, total, sort);
+    /*
+     * Two-way paging for a cursor caller (the console: First / Previous / Next /
+     * Last). The legacy offset caller keeps the one-way shape until it is gone.
+     */
+    const twoWay = Boolean(query.cursor) || query.dir !== undefined || query.page === undefined;
+    const paged = buildCursorPage(
+      rows,
+      limit,
+      total === undefined ? undefined : cappedTotal(total),
+      sort,
+      twoWay ? { ...paging, fromCursor: Boolean(query.cursor) } : undefined,
+    );
 
     // Tags for the whole page in ONE query — never per row. 25 extra round
     // trips per keystroke of the search box is the N+1 ARCHITECTURE §5 names.

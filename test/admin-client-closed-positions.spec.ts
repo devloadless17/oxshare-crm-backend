@@ -265,3 +265,38 @@ describe("a client's closed positions", () => {
     expect(second.rows.map((row) => row.ticket)).toEqual(['40']);
   });
 });
+
+describe('a heavy trader across several logins', () => {
+  it('pages First → Next → Previous and Last over every login, each deal once, newest first', async () => {
+    for (const login of ['82001', '82002', '82003']) await account(clientId, login);
+    // 300 closing deals spread over three logins, many sharing one instant.
+    await ctx.db.execute(sql`
+      INSERT INTO mt5_deals
+        (mt5_deal_id, login, mt5_position_id, symbol, action, entry, volume, price, profit,
+         commission, swap, dealt_at, source)
+      SELECT 'h' || g, (ARRAY['82001','82002','82003'])[1 + g % 3], 'hp' || g, 'EURUSD', 1, 1,
+             '0.10000000', '1.1', '1', '0', '0',
+             timestamptz '2026-10-01T00:00:00Z' + ((g / 4) || ' seconds')::interval, 'sweep'
+      FROM generate_series(1, 300) g`);
+
+    const pageOf = (q: { cursor?: string; dir?: string }) =>
+      holdings.listClientClosedPositions({ userId: clientId, limit: 25, ...q });
+    const ids = (p: Awaited<ReturnType<typeof pageOf>>) => p.rows.map((r) => r.id);
+
+    const first = await pageOf({});
+    expect(first).toMatchObject({ total: 300, totalCapped: false, prevCursor: null });
+    const second = await pageOf({ cursor: first.nextCursor! });
+    const back = await pageOf({ cursor: second.prevCursor!, dir: 'prev' });
+    expect(ids(back)).toEqual(ids(first));
+
+    const walked = [...first.rows, ...second.rows];
+    expect(new Set(walked.map((r) => r.id)).size).toBe(50);
+    const times = walked.map((r) => new Date(r.closedAt).getTime());
+    expect(times).toEqual([...times].sort((a, b) => b - a));
+
+    const last = await pageOf({ dir: 'last' });
+    expect(last.nextCursor).toBeNull();
+    expect(last.rows).toHaveLength(25);
+    expect(ids(last).some((id) => ids(first).includes(id))).toBe(false);
+  });
+});

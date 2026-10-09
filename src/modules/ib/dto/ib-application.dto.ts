@@ -994,8 +994,27 @@ export class IbPartnerListResponseDto {
   @ApiProperty({ type: [IbPartnerRowDto] })
   rows: IbPartnerRowDto[];
   @NotClientField('a count of rows, not an attribute of any person')
-  @ApiProperty({ description: 'Every partner matching the filters that this reader may see.' })
+  @ApiProperty({
+    description: 'Partners matching the filters that this reader may see, counted up to 10,001.',
+  })
   total: number;
+  @NotClientField('a count of rows, not an attribute of any person')
+  @ApiProperty({ description: 'True when more than 10,000 match: total is then 10,000.' })
+  totalCapped: boolean;
+  @NotClientField('a paging position, not an attribute of any person')
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    description: 'Pass back as ?cursor= for the next page.',
+  })
+  nextCursor: string | null;
+  @NotClientField('a paging position, not an attribute of any person')
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    description: 'Pass back as ?cursor=…&dir=prev for the page before; null on the first page.',
+  })
+  prevCursor: string | null;
   @NotClientField('the mask reporting on ITSELF, so the screen can say hidden rather than empty')
   @ApiProperty({ type: [String] })
   maskedFields: string[];

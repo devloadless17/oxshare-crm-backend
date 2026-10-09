@@ -1,3 +1,4 @@
+import { decodeCursor, twoWayPaging } from '../../common/pagination';
 import type { DateRange } from '../../common/date-range';
 import { Inject, Injectable } from '@nestjs/common';
 import { v4 as uuidv4 } from 'uuid';
@@ -102,6 +103,10 @@ export class AdminComplianceService {
       q?: string;
       page?: string;
       limit?: string;
+      /** Keyset position from a previous page. */
+      cursor?: string;
+      /** `prev` / `last` walk backward — `pageDirection`. */
+      dir?: string;
       sort?: string;
       order?: string;
       range?: DateRange;
@@ -117,6 +122,8 @@ export class AdminComplianceService {
      * either key now; the three DECISIONS below stay `kyc.review` only.
      */
     assertActorCanAny(actor, ['kyc.view', 'kyc.review'], 'list KYC submissions');
+    // Validated BEFORE the cursor is decoded: the cursor names the sort it is for.
+    const sort = sortKey(query.sort, KYC_SORT_COLUMNS, DEFAULT_KYC_SORT, 'KYC submissions');
     const page = await this.kycService.listAll({
       // `needs_review` is a SET, not a column value — see kyc.store.ts.
       ...(query.status === NEEDS_REVIEW
@@ -131,8 +138,11 @@ export class AdminComplianceService {
       scope: actor.clientScope,
       // R-2.5. An unrecognised key is a 400 naming the allowed ones, never a
       // silent fallback to the default ordering.
-      sort: sortKey(query.sort, KYC_SORT_COLUMNS, DEFAULT_KYC_SORT, 'KYC submissions'),
+      sort,
       order: sortOrder(query.order),
+      // Keyed by the client (Portal ID), so the cursor's id is an integer.
+      cursor: query.cursor ? decodeCursor(query.cursor, sort, undefined, 'integer') : undefined,
+      paging: twoWayPaging(query),
     });
     /*
      * RBAC-03 ON THE QUEUE. The mask was computed and alias-expanded for every

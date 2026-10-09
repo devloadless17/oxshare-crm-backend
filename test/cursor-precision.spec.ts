@@ -136,6 +136,7 @@ describe('no paging call site mints its cursor from a Date', () => {
    * right.
    */
   const CALLERS = [
+    'src/store/kyc.store.ts',
     'src/modules/admin/admin-clients.service.ts',
     'src/modules/admin/admin-holdings.service.ts',
     'src/modules/payments/queries/transaction-queries.ts',
