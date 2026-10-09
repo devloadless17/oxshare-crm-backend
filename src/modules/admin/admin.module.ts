@@ -9,6 +9,8 @@ import { SignupLinksController } from './signup-links.controller';
 import { AdminClientsController } from './admin-clients.controller';
 import { AdminClientIdentityController } from './admin-client-identity.controller';
 import { AdminClientIdentityService } from './admin-client-identity.service';
+import { AdminClientFollowupController } from './admin-client-followup.controller';
+import { AdminClientFollowupService } from './admin-client-followup.service';
 import { AdminComplianceController } from './admin-compliance.controller';
 import { AdminKycAssistController } from './admin-kyc-assist.controller';
 import { AdminClientCreateController } from './admin-client-create.controller';
@@ -60,6 +62,7 @@ import { AdminExportModule } from './admin-export.module';
 const ADMIN_SERVICES = [
   AdminIpAllowlistService,
   AdminClientIdentityService,
+  AdminClientFollowupService,
   AdminAuthService,
   /*
    * What an administrator may do to their OWN account, kept apart from
@@ -122,6 +125,7 @@ const ADMIN_SERVICES = [
     AdminAuthController,
     AdminClientsController,
     AdminClientIdentityController,
+    AdminClientFollowupController,
     AdminTagsController,
     SignupLinksController,
     AdminComplianceController,

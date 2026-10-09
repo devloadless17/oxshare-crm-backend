@@ -51,7 +51,6 @@ export interface BulkTagResult {
  *     refused (409 `BULK_TARGET_CHANGED`) rather than acted on;
  *   - a change taking clients out of the actor's view needs the confirmation,
  *     with how many (409 `TAG_CHANGE_LEAVES_SCOPE`, `fields.count`);
- *   - a country tag is refused (derived, 0193);
  *   - one `client_tag.bulk` audit row, plus a per-client row carrying its
  *     `bulkId` for every client that really changed, in the change's own
  *     transaction.
@@ -122,13 +121,6 @@ export class AdminClientsBulkService {
     const found = await this.tags.findByIds([...add, ...remove]);
     if (found.length !== add.length + remove.length) {
       throw new ValidationError('A chosen tag no longer exists. Reload and try again.');
-    }
-    const country = found.find((tag) => tag.countryCode);
-    if (country) {
-      throw new ValidationError(
-        `"${country.label}" is a country tag: a client carries it while they live there. ` +
-          "Change the client's country instead.",
-      );
     }
 
     const { ids, skippedOutOfScope } = await this.resolveTarget(input.target, actor);

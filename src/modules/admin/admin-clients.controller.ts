@@ -1,4 +1,5 @@
-import { ApiDateRangeQueries, dateRangeQuery } from '../../common/date-range';
+import { ApiDateRangeQueries, dateRangeQuery, rangeBound } from '../../common/date-range';
+import { FOLLOW_UP_FILTERS } from '../../common/client-follow-up';
 import { Throttle } from '@nestjs/throttler';
 // Part of the `admin` controller surface, split by concern.
 //
@@ -14,6 +15,7 @@ import { Throttle } from '@nestjs/throttler';
 import {
   BadRequestException,
   Body,
+  applyDecorators,
   Controller,
   Get,
   Param,
@@ -109,6 +111,8 @@ export class AdminClientsController {
             referredBy: filter.referredBy,
             referred: filter.referred,
             registered: dateRangeQuery(filter.from, filter.to),
+            followUp: filter.followUp,
+            followUpDueBy: rangeBound(filter.followUpDueBy, 'followUpDueBy', true),
           },
         },
         add: dto.add,
@@ -146,7 +150,11 @@ export class AdminClientsController {
   @ApiQuery({ name: 'type', required: false, enum: userTypeEnum.enumValues })
   @ApiQuery({ name: 'status', required: false, enum: userStatusEnum.enumValues })
   @ApiQuery({ name: 'level', required: false, enum: [0, 1] })
-  @ApiQuery({ name: 'country', required: false, description: 'Exact match on the country tag.' })
+  @ApiQuery({
+    name: 'country',
+    required: false,
+    description: "Exact match on the client's country.",
+  })
   @ApiQuery({
     name: 'emailVerified',
     required: false,
@@ -183,6 +191,7 @@ export class AdminClientsController {
       'nobody introduced. On users.referred_by_ib_user_id, so a referred client who later ' +
       'became a partner still counts. Any other value is a 400.',
   })
+  @ApiFollowUpQueries()
   @ApiQuery({ name: 'sort', required: false, enum: Object.keys(CLIENT_SORT_COLUMNS) })
   @ApiQuery({ name: 'order', required: false, enum: ['asc', 'desc'] })
   @ApiDateRangeQueries('registration')
@@ -209,6 +218,8 @@ export class AdminClientsController {
     @Query('order') order?: string,
     @Query('from') from?: string,
     @Query('to') to?: string,
+    @Query('followUp') followUp?: string,
+    @Query('followUpDueBy') followUpDueBy?: string,
   ) {
     return this.clients.listClients(
       {
@@ -243,6 +254,9 @@ export class AdminClientsController {
         // Validated in the service: `true`, `false` or absent, anything else a 400.
         referred: referralsOnly(req.admin, referred),
         registered: dateRangeQuery(from, to),
+        // `followUp` is validated in the service (`filterOf`), like `referred`.
+        followUp,
+        followUpDueBy: rangeBound(followUpDueBy, 'followUpDueBy', true),
         // `sort`/`order` are validated in the service against the SORTABLE_COLUMNS
         // allowlist, which is where the column mapping lives. Validating here too
         // would put the allowlist in two places.
@@ -314,7 +328,11 @@ export class AdminClientsController {
   @ApiQuery({ name: 'type', required: false, enum: userTypeEnum.enumValues })
   @ApiQuery({ name: 'status', required: false, enum: userStatusEnum.enumValues })
   @ApiQuery({ name: 'level', required: false, enum: [0, 1] })
-  @ApiQuery({ name: 'country', required: false, description: 'Exact match on the country tag.' })
+  @ApiQuery({
+    name: 'country',
+    required: false,
+    description: "Exact match on the client's country.",
+  })
   @ApiQuery({
     name: 'emailVerified',
     required: false,
@@ -349,6 +367,7 @@ export class AdminClientsController {
       'nobody introduced. On users.referred_by_ib_user_id, so a referred client who later ' +
       'became a partner still counts. Any other value is a 400.',
   })
+  @ApiFollowUpQueries()
   @ApiQuery({ name: 'sort', required: false, enum: Object.keys(CLIENT_SORT_COLUMNS) })
   @ApiQuery({ name: 'order', required: false, enum: ['asc', 'desc'] })
   @ApiDateRangeQueries('registration')
@@ -386,6 +405,8 @@ export class AdminClientsController {
     @Query('from') from?: string,
     @Query('to') to?: string,
     @Query('ids') ids?: string,
+    @Query('followUp') followUp?: string,
+    @Query('followUpDueBy') followUpDueBy?: string,
   ) {
     const chosen = exportFormat(format);
     const query = {
@@ -409,6 +430,8 @@ export class AdminClientsController {
       referred: referralsOnly(req.admin, referred),
       registered: dateRangeQuery(from, to),
       ids: exportIds(ids),
+      followUp,
+      followUpDueBy: rangeBound(followUpDueBy, 'followUpDueBy', true),
       sort,
       order,
     };
@@ -580,4 +603,25 @@ function exportIds(raw: string | undefined): number[] | undefined {
  */
 function referralsOnly(actor: AuthenticatedAdmin, referred: string | undefined) {
   return actorHasPermission(actor, 'clients.view') ? referred : 'true';
+}
+
+/** `?followUp=` and `?followUpDueBy=`, shared by the list and its export (0212). */
+function ApiFollowUpQueries(): MethodDecorator {
+  return applyDecorators(
+    ApiQuery({
+      name: 'followUp',
+      required: false,
+      enum: FOLLOW_UP_FILTERS,
+      description:
+        "The staff's follow-up date: `due` — before `followUpDueBy`; `upcoming` — at or after " +
+        'it; `none` — no date. Any other value is a 400.',
+    }),
+    ApiQuery({
+      name: 'followUpDueBy',
+      required: false,
+      description:
+        'The cut-off for `due`/`upcoming`: the end of the reader’s today, as an ISO date-time ' +
+        'with its offset (a calendar date means the end of that UTC day). Now when omitted.',
+    }),
+  );
 }

@@ -27,7 +27,8 @@ import {
 
 const PASSWORD = 'admin-password-123';
 const FULL = { email: 'create-full@oxshare.com', name: 'Create Full' };
-const DESK = { email: 'create-desk@oxshare.com', name: 'Lebanon Desk' };
+const DESK = { email: 'create-desk@oxshare.com', name: 'Owner Desk' };
+const NOBODY = { email: 'create-nobody@oxshare.com', name: 'No Territory' };
 const VIEWER = { email: 'create-viewer@oxshare.com', name: 'Viewer Only' };
 
 let ctx: HttpTestContext;
@@ -58,12 +59,17 @@ beforeAll(async () => {
   ctx = await startHttpTestApp();
   const db = ctx.db.db;
   const passwords = new PasswordService();
-  const [lebanon] = await db.select().from(clientTags).where(eq(clientTags.countryCode, 'LB'));
+  const [book] = await db
+    .insert(clientTags)
+    .values({ slug: 'create-book', label: 'Owner book' })
+    .returning();
 
   for (const [who, permissions, seesAll] of [
     [FULL, ALL_PERMISSIONS, true],
-    // A country desk: sees Lebanon's clients and nobody else's.
+    // An owner: sees the clients in their book and nobody else's.
     [DESK, ['clients.view', 'clients.create'], false],
+    // No territory and no sight of every client: sees nobody.
+    [NOBODY, ['clients.view', 'clients.create'], false],
     [VIEWER, ['clients.view'], true],
   ] as const) {
     const [role] = await db
@@ -87,7 +93,7 @@ beforeAll(async () => {
   }
   await db
     .insert(adminClientTagScopes)
-    .values({ adminId: adminIds[DESK.email], tagId: lebanon.id, createdBy: adminIds[FULL.email] });
+    .values({ adminId: adminIds[DESK.email], tagId: book.id, createdBy: adminIds[FULL.email] });
 
   // The token goes in the email and nowhere else — so the email is where the test reads it.
   vi.spyOn(ctx.app.get(EmailService), 'sendClientWelcomeEmail').mockImplementation(
@@ -158,14 +164,14 @@ describe('staff create a client', () => {
   });
 
   it('a client the creator could not open afterwards is refused, and nothing is kept', async () => {
-    const desk = await signIn(DESK);
-    const elsewhere = details({ country: 'Jordan', nationality: 'Jordanian' });
-    const res = await desk
-      .post('/v1/admin/clients', elsewhere)
-      .set('Idempotency-Key', randomUUID());
+    const nobody = await signIn(NOBODY);
+    const unseen = details();
+    const res = await nobody.post('/v1/admin/clients', unseen).set('Idempotency-Key', randomUUID());
     expect(res.status).toBe(409);
-    expect(await userByEmail(elsewhere.email)).toBeUndefined();
+    expect(await userByEmail(unseen.email)).toBeUndefined();
 
+    // An owner's new client lands in their book, so they can open it.
+    const desk = await signIn(DESK);
     const theirs = details();
     const ok = await desk.post('/v1/admin/clients', theirs).set('Idempotency-Key', randomUUID());
     expect(ok.status).toBe(201);

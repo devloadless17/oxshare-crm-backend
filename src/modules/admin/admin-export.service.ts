@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import type { DateRange } from '../../common/date-range';
+import { followUpFilter } from '../../common/client-follow-up';
 import { decodeCursor, type CursorPosition } from '../../common/pagination';
 import { DEFAULT_AUDIT_SORT } from '../../store/audit-log.store';
 import { formatProofDetails } from '../../common/payments/proof-fields';
@@ -192,6 +193,14 @@ export class AdminExportService {
       },
     },
     { header: 'Registered at', value: (r) => r.createdAt },
+    /*
+     * The staff's notes (0212), so the file a desk works a call list from says
+     * what was agreed and when to call. Free text: `cell()` neutralises a note
+     * that opens like a formula and quotes its line breaks.
+     */
+    { header: 'Follow-up', value: (r) => r.followUp },
+    { header: 'Follow-up date', value: (r) => r.followUpAt },
+    { header: 'Result', value: (r) => r.result },
   ];
 
   /**
@@ -261,6 +270,10 @@ export class AdminExportService {
       referred: referredFilter(query.referred),
       registered: query.registered,
       ids: query.ids,
+      // The list's follow-up filter, parsed by the same function, so a filtered
+      // screen never exports an unfiltered file.
+      followUp: followUpFilter(query.followUp),
+      followUpDueBy: query.followUpDueBy,
       sort,
       order,
       // The whole point. Row-level visibility, in the WHERE clause.
@@ -1102,6 +1115,9 @@ export interface ClientExportQuery {
   referredBy?: number;
   /** The Referrals page's `?referred=true` — the file is that page's rows. */
   referred?: string;
+  /** The list's follow-up filter (0212): `due` | `upcoming` | `none`. */
+  followUp?: string;
+  followUpDueBy?: Date;
   sort?: string;
   order?: string;
 }
@@ -1125,6 +1141,10 @@ export interface ClientExportRow {
   /** Absent when nobody introduced them, or for a reader without `ib.view`. */
   referrer?: ClientRowReferrer;
   createdAt: Date;
+  /** The staff's notes (0212); NULL when none were written. */
+  followUp: string | null;
+  result: string | null;
+  followUpAt: Date | null;
 }
 
 export interface WithdrawalExportRow {

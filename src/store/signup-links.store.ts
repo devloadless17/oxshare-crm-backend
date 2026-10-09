@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db, Executor } from '../database/db';
@@ -19,7 +19,7 @@ export interface SignupArrival {
   tagIds: string[];
 }
 
-/** A tag an administrator's link gives — their territory, minus countries. */
+/** A tag an administrator's link gives — a tag of their territory. */
 export interface SignupLinkTag {
   id: string;
   slug: string;
@@ -41,8 +41,7 @@ export interface SignupCounts {
  * territory tags AS THEY ARE AT THAT MOMENT — read here, live — so changing an
  * administrator's book on the Admin users page changes where their link sends
  * clients, at once, with no copy anywhere to go stale (0195's per-link tags
- * did exactly that). Countries are excluded: a client carries their OWN
- * country, derived (0193).
+ * did exactly that).
  */
 @Injectable()
 export class SignupLinksStore {
@@ -51,7 +50,7 @@ export class SignupLinksStore {
     private readonly auditLog: AuditLogStore,
   ) {}
 
-  /** The tags an administrator's link gives right now: their territory, minus countries. */
+  /** The tags an administrator's link gives right now: their territory. */
   async tagsFor(adminId: string, executor?: Executor): Promise<SignupLinkTag[]> {
     const rows = await (executor ?? this.db)
       .select({
@@ -62,7 +61,7 @@ export class SignupLinksStore {
       })
       .from(adminClientTagScopes)
       .innerJoin(clientTags, eq(clientTags.id, adminClientTagScopes.tagId))
-      .where(and(eq(adminClientTagScopes.adminId, adminId), isNull(clientTags.countryCode)))
+      .where(eq(adminClientTagScopes.adminId, adminId))
       .orderBy(clientTags.label);
     return rows.map((row) => ({ ...row, color: row.color ?? undefined }));
   }
@@ -85,8 +84,7 @@ export class SignupLinksStore {
 
   /**
    * The tags a partner's clients inherit: every tag ASSIGNED to the partner's
-   * own client row. Their country is theirs, not their clients' — derived, so
-   * not in `client_tag_assignments` to begin with.
+   * own client row.
    */
   async partnerTagIds(ibUserId: number, executor?: Executor): Promise<string[]> {
     const rows = await (executor ?? this.db)

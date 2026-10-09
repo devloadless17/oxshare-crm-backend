@@ -8477,6 +8477,29 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "followUp",
+            "required": false,
+            "in": "query",
+            "description": "The staff's follow-up date: `due` — before `followUpDueBy`; `upcoming` — at or after it; `none` — no date. Any other value is a 400.",
+            "schema": {
+              "enum": [
+                "due",
+                "upcoming",
+                "none"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "followUpDueBy",
+            "required": false,
+            "in": "query",
+            "description": "The cut-off for `due`/`upcoming`: the end of the reader’s today, as an ISO date-time with its offset (a calendar date means the end of that UTC day). Now when omitted.",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -8722,6 +8745,29 @@
             "required": false,
             "in": "query",
             "description": "Export selected: Portal IDs, comma-separated, at most 1000. Narrows the file; scope and masking still apply.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "followUp",
+            "required": false,
+            "in": "query",
+            "description": "The staff's follow-up date: `due` — before `followUpDueBy`; `upcoming` — at or after it; `none` — no date. Any other value is a 400.",
+            "schema": {
+              "enum": [
+                "due",
+                "upcoming",
+                "none"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "followUpDueBy",
+            "required": false,
+            "in": "query",
+            "description": "The cut-off for `due`/`upcoming`: the end of the reader’s today, as an ISO date-time with its offset (a calendar date means the end of that UTC day). Now when omitted.",
             "schema": {
               "type": "string"
             }
@@ -9042,6 +9088,88 @@
           }
         ],
         "summary": "Every document a client has handed the platform, each with where it stands",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/clients/{id}/followup": {
+      "get": {
+        "description": "The staff’s working notes about a client: what to do next (with an optional date) and how the last contact went. Never shown to the client. A client with no notes reads as both empty, version 0.",
+        "operationId": "AdminClientFollowupController_get",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientFollowUpDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "A client's Follow-up and Result notes",
+        "tags": [
+          "admin"
+        ]
+      },
+      "put": {
+        "description": "Both notes and the date, together. Send back the `version` the GET returned: a save made from an older version answers **409 FOLLOWUP_STALE** and changes nothing, so a colleague’s words are never silently replaced. A save that changes nothing succeeds whatever its version. Every change is recorded in the audit log as `client.followup_update`, before and after.",
+        "operationId": "AdminClientFollowupController_save",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateClientFollowUpDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClientFollowUpDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Save a client's Follow-up and Result (requires clients.followup.edit)",
         "tags": [
           "admin"
         ]
@@ -23741,6 +23869,14 @@
           "to": {
             "type": "string",
             "description": "Registered to."
+          },
+          "followUp": {
+            "type": "string",
+            "description": "due | upcoming | none — the follow-up date (0212)."
+          },
+          "followUpDueBy": {
+            "type": "string",
+            "description": "The cut-off for due/upcoming: end of the reader’s today."
           }
         }
       },
@@ -23835,11 +23971,6 @@
           },
           "description": {
             "type": "string"
-          },
-          "countryCode": {
-            "type": "string",
-            "description": "Set on a COUNTRY tag (ISO code, 0193): carried by every client living there, derived from their country — never assigned, renamed or deleted; only its colour is editable.",
-            "example": "LB"
           },
           "createdAt": {
             "format": "date-time",
@@ -23971,6 +24102,22 @@
                 "$ref": "#/components/schemas/ClientRowReferrerDto"
               }
             ]
+          },
+          "followUp": {
+            "type": "string",
+            "nullable": true,
+            "description": "What to do next. Null when empty."
+          },
+          "result": {
+            "type": "string",
+            "nullable": true,
+            "description": "How the last contact went. Null when empty."
+          },
+          "followUpAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "When to follow up. Null for no date."
           }
         },
         "required": [
@@ -23980,7 +24127,10 @@
           "status",
           "emailVerified",
           "kycStatus",
-          "verificationLevel"
+          "verificationLevel",
+          "followUp",
+          "result",
+          "followUpAt"
         ]
       },
       "ClientListResponseDto": {
@@ -24888,6 +25038,109 @@
           "hidden"
         ]
       },
+      "ClientFollowUpEditorDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "name": {
+            "type": "string",
+            "example": "Omar Farah"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ]
+      },
+      "ClientFollowUpDto": {
+        "type": "object",
+        "properties": {
+          "followUp": {
+            "type": "string",
+            "nullable": true,
+            "example": "Call back after payday; wants to fund 500 USD.",
+            "description": "What to do next. Null when empty."
+          },
+          "result": {
+            "type": "string",
+            "nullable": true,
+            "example": "Interested. Asked for the gold spreads by email.",
+            "description": "How the last contact went. Null when empty."
+          },
+          "followUpAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "When to follow up. Null for no date."
+          },
+          "version": {
+            "type": "integer",
+            "example": 3,
+            "description": "Send it back with the next save. 0 when nothing was ever written for this client. A save made from an older version answers 409 FOLLOWUP_STALE."
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "updatedBy": {
+            "nullable": true,
+            "description": "Null when nothing was ever saved, or the administrator was since removed.",
+            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ClientFollowUpEditorDto"
+              }
+            ]
+          }
+        },
+        "required": [
+          "followUp",
+          "result",
+          "followUpAt",
+          "version",
+          "updatedAt",
+          "updatedBy"
+        ]
+      },
+      "UpdateClientFollowUpDto": {
+        "type": "object",
+        "properties": {
+          "followUp": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 2000,
+            "description": "What to do next. Empty or null clears it."
+          },
+          "result": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 2000,
+            "description": "How the last contact went. Empty or null clears it."
+          },
+          "followUpAt": {
+            "type": "string",
+            "nullable": true,
+            "example": "2026-10-12T10:00:00+03:00",
+            "description": "When to follow up: an ISO date-time WITH its offset, so it means the same moment everywhere. Null for no date. A newly chosen date may not lie in the past or more than five years ahead."
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 0,
+            "example": 3,
+            "description": "The version these notes were edited from, as GET returned it."
+          }
+        },
+        "required": [
+          "followUp",
+          "result",
+          "followUpAt",
+          "version"
+        ]
+      },
       "ClientTagWithCountDto": {
         "type": "object",
         "properties": {
@@ -24906,11 +25159,6 @@
           },
           "description": {
             "type": "string"
-          },
-          "countryCode": {
-            "type": "string",
-            "description": "Set on a COUNTRY tag (ISO code, 0193): carried by every client living there, derived from their country — never assigned, renamed or deleted; only its colour is editable.",
-            "example": "LB"
           },
           "createdAt": {
             "format": "date-time",
@@ -24990,11 +25238,6 @@
           },
           "description": {
             "type": "string"
-          },
-          "countryCode": {
-            "type": "string",
-            "description": "Set on a COUNTRY tag (ISO code, 0193): carried by every client living there, derived from their country — never assigned, renamed or deleted; only its colour is editable.",
-            "example": "LB"
           },
           "createdAt": {
             "format": "date-time",

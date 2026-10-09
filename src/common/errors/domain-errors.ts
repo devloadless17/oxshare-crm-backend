@@ -436,6 +436,18 @@ export class KycBuilderOutdatedError extends DomainError {
 }
 
 /**
+ * A client's Follow-up and Result saved from a version a colleague has since
+ * changed. → 409 `FOLLOWUP_STALE`
+ *
+ * Its own code because the console answers it by showing the colleague's words
+ * beside the editor's own, not by marking a field: nothing typed is wrong. The
+ * later save is refused rather than silently replacing the earlier one.
+ */
+export class FollowUpStaleError extends DomainError {
+  readonly code = 'FOLLOWUP_STALE';
+}
+
+/**
  * Repairing a client's referral attribution, refused. THREE CODES, NOT ONE. → 400
  *
  * They need three different sentences and one status makes the screen guess:

@@ -1,8 +1,8 @@
 import { SignupLinksStore } from '../../store/signup-links.store';
 import { AdminsStore } from '../../store/admins.store';
 import { welcomeLink } from '../identity/client-creation';
-import { currentFieldMask } from '../../common/logging/request-context';
 import type { DateRange } from '../../common/date-range';
+import { followUpFilter } from '../../common/client-follow-up';
 import { Injectable } from '@nestjs/common';
 import { UsersStore, clientSortKey, clientSortOrder, type User } from '../../store/users.store';
 import { IbStore } from '../../store/ib.store';
@@ -241,6 +241,10 @@ export interface ClientListFilterQuery {
   referredBy?: number;
   referred?: string;
   registered?: DateRange;
+  /** `due` | `upcoming` | `none` — the staff's follow-up date (0212). */
+  followUp?: string;
+  /** The end of the reader's today, for `due`/`upcoming`; now when omitted. */
+  followUpDueBy?: Date;
 }
 
 export async function assertClientTagExists(
@@ -255,11 +259,6 @@ export async function assertClientTagExists(
       throw new ValidationError(
         `There is no client tag "${slug}". Check the tag list for the current names.`,
       );
-    }
-    // A country tag IS the client's country (0193): filtering by it answers "is
-    // this client from X?" one guess at a time — the refusal `?country=` makes.
-    if (tag.countryCode && currentFieldMask().includes('client.country')) {
-      throw new ValidationError('Cannot filter by country: that field is hidden from your role.');
     }
   }
 }
@@ -327,6 +326,8 @@ export class AdminClientsService {
       referredBy: query.referredBy,
       referred: referredFilter(query.referred),
       registered: query.registered,
+      followUp: followUpFilter(query.followUp),
+      followUpDueBy: query.followUpDueBy,
     };
   }
 
@@ -371,6 +372,8 @@ export class AdminClientsService {
       sort?: string;
       order?: string;
       registered?: DateRange;
+      followUp?: string;
+      followUpDueBy?: Date;
     },
     actor: AuthenticatedAdmin,
   ) {

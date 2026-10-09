@@ -152,8 +152,7 @@ beforeAll(async () => {
    * THE OUT-OF-SCOPE CLIENT CARRIES ANOTHER DESK'S TAG, so the boundary is
    * between two desks rather than between a desk and nobody. (Before 0193 an
    * untagged client sat in the intake pool, legitimately visible to a scoped
-   * reader; today every client carries their country tag and none of the
-   * fixture's countries is in this territory.)
+   * reader; today an untagged client is seen only by those who see everyone.)
    */
   await db.insert(clientTagAssignments).values([
     { userId: mineId, tagId: tag.id },

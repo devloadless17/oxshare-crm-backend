@@ -26,8 +26,6 @@ import {
  *     the other desk and no longer to the actor;
  *   - an unconfirmed change that would hide the client is REFUSED AND NOT
  *     WRITTEN (409 TAG_CHANGE_LEAVES_SCOPE);
- *   - a COUNTRY desk counts (0193): the client keeps their country tag whatever
- *     else changes, so that desk keeps them and nothing is asked;
  *   - two concurrent removals cannot together hide a client unconfirmed — the
  *     per-client lock makes the second one see the first;
  *   - a client outside the actor's territory is still a 404, whatever the tag.
@@ -39,8 +37,6 @@ const MASTER = { email: 'handoff-master@oxshare.com', password: PASSWORD };
 const DESK_A = { email: 'handoff-desk-a@oxshare.com', password: PASSWORD };
 /** Territory: desk B. The desk clients are handed to. */
 const DESK_B = { email: 'handoff-desk-b@oxshare.com', password: PASSWORD };
-/** Territory: desk A, plus the country every fixture client lives in ("Unknown"). */
-const INTAKE = { email: 'handoff-intake@oxshare.com', password: PASSWORD };
 /** Territory: desks A and C, no grant — for the concurrency case. */
 const DESK_AC = { email: 'handoff-desk-ac@oxshare.com', password: PASSWORD };
 
@@ -57,10 +53,8 @@ let deskB: string;
 let deskC: string;
 /** Tagged desk A — handed to desk B by DESK_A. */
 let handoffClient: number;
-/** No chosen tags — routed to desk B by INTAKE, the country desk. */
-let newClient: number;
-/** Tagged desk A — INTAKE removes it; the client stays in its country. */
-let returningClient: number;
+/** Tagged desk A — the query-validation case. */
+let deskAClient: number;
 /** Tagged desks A and C — the concurrency case. */
 let raceClient: number;
 /** Tagged desk B only — outside DESK_A's territory. */
@@ -140,13 +134,8 @@ beforeAll(async () => {
       .insert(adminClientTagScopes)
       .values(territory.map((tagId) => ({ adminId: admin.id, tagId, createdBy: admin.id })));
   };
-  const [unknownCountry] = await db
-    .select({ id: clientTags.id })
-    .from(clientTags)
-    .where(eq(clientTags.countryCode, 'ZZ'));
   await scopedAdmin(DESK_A, 'Desk A', [deskA]);
   await scopedAdmin(DESK_B, 'Desk B', [deskB]);
-  await scopedAdmin(INTAKE, 'Intake', [deskA, unknownCountry.id]);
   await scopedAdmin(DESK_AC, 'Desk AC', [deskA, deskC]);
 
   const client = async (label: string, tags: string[]) => {
@@ -167,8 +156,7 @@ beforeAll(async () => {
     return row.id;
   };
   handoffClient = await client('handoff', [deskA]);
-  newClient = await client('new', []);
-  returningClient = await client('returning', [deskA]);
+  deskAClient = await client('desk-a', [deskA]);
   raceClient = await client('race', [deskA, deskC]);
   deskBClient = await client('deskb', [deskB]);
 });
@@ -182,14 +170,9 @@ describe('a desk hands a client to another desk', () => {
     const deskAdmin = await actingAs(ctx, 'admin', DESK_A);
     const res = await deskAdmin.post(`${CLIENTS}/${handoffClient}/tags/${deskB}`).expect(201);
 
-    const body = res.body as {
-      stillVisible: boolean;
-      assignments: { id: string; countryCode?: string }[];
-    };
+    const body = res.body as ChangeBody;
     expect(body.stillVisible).toBe(true);
-    // The chosen tags; the derived country tag rides along (0193).
-    const chosen = body.assignments.filter((t) => !t.countryCode).map((t) => t.id);
-    expect(chosen.sort()).toEqual([deskA, deskB].sort());
+    expect(body.assignments.map((t) => t.id).sort()).toEqual([deskA, deskB].sort());
   });
 
   it('asks before removing our own tag — refused AND NOT WRITTEN until confirmed', async () => {
@@ -232,33 +215,6 @@ describe('a desk hands a client to another desk', () => {
   });
 });
 
-describe('a country desk (0193)', () => {
-  it('routes a client to another desk and KEEPS them: the country tag stays, so nothing is asked', async () => {
-    const intake = await actingAs(ctx, 'admin', INTAKE);
-    // Visible through the country tag alone: no chosen tag at all.
-    await intake.get(`${CLIENTS}/${newClient}`).expect(200);
-
-    const routed = await intake.post(`${CLIENTS}/${newClient}/tags/${deskB}`).expect(201);
-    expect((routed.body as ChangeBody).stillVisible).toBe(true);
-    expect(await tagIdsOf(newClient)).toEqual([deskB]);
-
-    await intake.get(`${CLIENTS}/${newClient}`).expect(200);
-    const deskBAdmin = await actingAs(ctx, 'admin', DESK_B);
-    await deskBAdmin.get(`${CLIENTS}/${newClient}`).expect(200);
-  });
-
-  it('is NOT asked when removing a last chosen tag: the client stays in its country', async () => {
-    const intake = await actingAs(ctx, 'admin', INTAKE);
-    const res = await intake.del(`${CLIENTS}/${returningClient}/tags/${deskA}`).expect(200);
-
-    const body = res.body as { stillVisible: boolean; assignments: { countryCode?: string }[] };
-    expect(body.stillVisible).toBe(true);
-    // Only the derived country tag is left.
-    expect(body.assignments.map((tag) => tag.countryCode)).toEqual(['ZZ']);
-    await intake.get(`${CLIENTS}/${returningClient}`).expect(200);
-  });
-});
-
 describe('the confirmation is judged on the tags as they really are', () => {
   it('two concurrent removals cannot together hide a client unconfirmed', async () => {
     /*
@@ -280,7 +236,7 @@ describe('the confirmation is judged on the tags as they really are', () => {
   it('refuses a confirmation value other than "true" rather than guessing', async () => {
     const deskAdmin = await actingAs(ctx, 'admin', DESK_A);
     const res = await deskAdmin.post(
-      `${CLIENTS}/${returningClient}/tags/${deskB}?confirmLeavesScope=yes`,
+      `${CLIENTS}/${deskAClient}/tags/${deskB}?confirmLeavesScope=yes`,
     );
     expect(res.status).toBe(400);
   });

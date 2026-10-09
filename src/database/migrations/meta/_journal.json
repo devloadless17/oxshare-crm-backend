@@ -1492,6 +1492,20 @@
       "when": 1789144010750,
       "tag": "0211_staff_created_clients",
       "breakpoints": true
+    },
+    {
+      "idx": 214,
+      "version": "7",
+      "when": 1789144110750,
+      "tag": "0212_client_followups",
+      "breakpoints": true
+    },
+    {
+      "idx": 215,
+      "version": "7",
+      "when": 1789144210750,
+      "tag": "0213_remove_country_tags",
+      "breakpoints": true
     }
   ]
 }

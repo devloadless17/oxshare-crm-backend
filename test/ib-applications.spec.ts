@@ -169,7 +169,7 @@ beforeEach(async () => {
   // Territory rows reference users; clear them (and the tags) before the users
   // they point at — the scope test below assigns a tag to a partner.
   await ctx.db.execute(sql`DELETE FROM client_tag_assignments`);
-  await ctx.db.execute(sql`DELETE FROM client_tags WHERE country_code IS NULL`);
+  await ctx.db.execute(sql`DELETE FROM client_tags`);
   /*
    * Wallets reference users with ON DELETE RESTRICT, so they go first.
    *

@@ -1597,9 +1597,9 @@ and every count grew with the book. Now each is 10–60 ms, and these rules keep
   union's output, a Portal ID search read every movement to find eight.
 - **Method names are looked up for the rows SHOWN** (`methodNamesOf`, after the page is cut), never
   inside the union: there they ran for every row a search or sort discarded.
-- **Scope is ONE `EXISTS` over `client_tag_memberships`** since 0193 (the intake pool and its
-  anti-join are gone: every client carries their country tag). `client-scope-twin.spec.ts` pins the
-  SQL to its in-memory twin, country desks included.
+- **Scope is ONE `EXISTS` over `client_tag_assignments`** (the intake pool and its anti-join went in
+  0193; country tags and their view in 0213). `client-scope-twin.spec.ts` pins the SQL to its
+  in-memory twin.
 
 ## Validation
 
