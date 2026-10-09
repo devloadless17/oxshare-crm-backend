@@ -1,5 +1,5 @@
 import { sql, type SQL, type SQLWrapper } from 'drizzle-orm';
-import { clientTagMemberships } from '../../database/schema';
+import { clientTagAssignments } from '../../database/schema';
 
 /**
  * Row-level client visibility: which clients an administrator may see at all.
@@ -33,9 +33,8 @@ export interface ClientScope {
   /** True when this actor sees every client — the explicit grant (0154). */
   unrestricted: boolean;
   /**
-   * The territory: a client carrying ANY of these tags is visible. A tag here
-   * may be a chosen tag (an owner's book, "O_F") or a COUNTRY tag (a desk);
-   * membership of either is read from `client_tag_memberships` (0193).
+   * The territory: a client carrying ANY of these tags is visible. A tag is an
+   * owner's book ("O_F") or a desk — whoever is responsible for the client.
    */
   tagIds: readonly string[];
 }
@@ -59,9 +58,9 @@ export const UNRESTRICTED: ClientScope = Object.freeze({ unrestricted: true, tag
  * sight in the system the result of an absence. A row carrying tags is
  * restricted whatever the flag says, so nothing can widen by accident.
  *
- * D-60's intake grant ("also sees clients with no tag") is gone since 0193:
- * every client carries their country tag, so no client is untagged — a desk
- * that should see new clients from a country holds that country's tag.
+ * D-60's intake grant ("also sees clients with no tag") is gone since 0193. A
+ * client nobody's book holds yet is seen by the administrators who see every
+ * client, who give them an owner (bulk "Add tags").
  *
  * Both arguments are REQUIRED: the caller holds the row, so the caller passes
  * the flag. A default right for one caller and wrong for another is how a grant
@@ -89,12 +88,9 @@ export function scopeOf(tagIds: readonly string[], seesAllClients: boolean): Cli
  * scoped tags, which would silently duplicate them in a paginated list and
  * corrupt the keyset seek.
  *
- * It reads `client_tag_memberships` (0193), the view of assigned tags UNION ALL
- * the country tag derived from `users.country`. Postgres inlines the view and
- * pushes the user id into both branches: the assigned branch reads
- * `client_tag_assignments_pkey`, the derived one a users-pk → countries →
- * `client_tags_country_code_uq` lookup. A country territory therefore costs one
- * index probe per row, like a chosen tag.
+ * It reads `client_tag_assignments` through its primary key (user, tag): one
+ * index probe per row. (Country tags, which 0193 derived through a view, were
+ * removed in 0213.)
  *
  * Fully parameterised. Never string interpolation.
  */
@@ -112,7 +108,7 @@ export function clientScopePredicate(
     sql`, `,
   );
   return sql`EXISTS (
-    SELECT 1 FROM ${clientTagMemberships} scope_m
+    SELECT 1 FROM ${clientTagAssignments} scope_m
     WHERE scope_m.user_id = ${clientIdColumn}
       AND scope_m.tag_id IN (${tagList})
   )`;
@@ -122,9 +118,7 @@ export function clientScopePredicate(
  * Would this actor see a client carrying exactly `tagIds`? The in-memory twin
  * of `clientScopePredicate`.
  *
- * `tagIds` must be the client's MEMBERSHIPS — the derived country tag
- * included (`ClientTagsStore.tagIdsForClient` returns exactly that) — or a
- * country desk would be told it cannot see its own client.
+ * `tagIds` are the client's tags (`ClientTagsStore.tagIdsForClient`).
  *
  * It exists for the one question the SQL predicate cannot answer: a tag set
  * that is not stored yet ("if this tag is removed, does the client stay in the

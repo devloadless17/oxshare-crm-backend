@@ -12,6 +12,7 @@ import {
   eq,
   getTableColumns,
   gt,
+  gte,
   inArray,
   isNotNull,
   isNull,
@@ -29,12 +30,14 @@ import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db, Executor } from '../database/db';
 import {
-  clientTagMemberships,
+  clientFollowups,
+  clientTagAssignments,
   clientTags,
   ibAccounts,
   kycSubmissions,
   users,
 } from '../database/schema';
+import type { FollowUpFilter } from '../common/client-follow-up';
 import {
   clientScopePredicate,
   UNRESTRICTED,
@@ -1085,6 +1088,13 @@ export class UsersStore {
     registered?: DateRange;
     /** Exactly these clients (picked rows, e.g. "export selected"). Scope still applies. */
     ids?: readonly number[];
+    /**
+     * The staff's follow-up date (0212): `due` before `followUpDueBy`, `upcoming`
+     * at or after it, `none` without one. `followUpDueBy` is the end of the
+     * READER's today, which only their browser knows; now when omitted.
+     */
+    followUp?: FollowUpFilter;
+    followUpDueBy?: Date;
   }) {
     const db = this.db;
     const conditions: SQL[] = [...withinRange(users.createdAt, filter.registered)];
@@ -1143,8 +1153,7 @@ export class UsersStore {
      * directly.
      */
     // One slug or several, comma-separated, ANY of them (validated by the
-    // service: each exists, at most 20). Memberships (0193): a country tag
-    // matches on the client's country.
+    // service: each exists, at most 20).
     const slugs = (filter.tagSlug ?? '')
       .split(',')
       .map((slug) => slug.trim())
@@ -1152,7 +1161,7 @@ export class UsersStore {
     if (slugs.length > 0) {
       conditions.push(
         sql`EXISTS (
-          SELECT 1 FROM ${clientTagMemberships} ta
+          SELECT 1 FROM ${clientTagAssignments} ta
           JOIN ${clientTags} t ON t.id = ta.tag_id
           WHERE ta.user_id = ${users.id} AND t.slug IN (${sql.join(
             slugs.map((slug) => sql`${slug}`),
@@ -1175,6 +1184,26 @@ export class UsersStore {
     if (typeof filter.referred === 'boolean') {
       conditions.push(
         filter.referred ? isNotNull(users.referredByIbUserId) : isNull(users.referredByIbUserId),
+      );
+    }
+
+    /*
+     * On the LEFT-joined notes row: a client nobody wrote notes about has no row,
+     * so their date reads NULL — `none`, and never `due` or `upcoming`.
+     */
+    if (filter.followUp) {
+      const at = clientFollowups.followUpAt;
+      const dueBy = filter.followUpDueBy;
+      conditions.push(
+        filter.followUp === 'none'
+          ? isNull(at)
+          : filter.followUp === 'due'
+            ? dueBy
+              ? lt(at, dueBy)
+              : sql`${at} < now()`
+            : dueBy
+              ? gte(at, dueBy)
+              : sql`${at} >= now()`,
       );
     }
 
@@ -1292,6 +1321,14 @@ export class UsersStore {
        * the name of a partner the reader may not see.
        */
       referredByIbUserId: users.referredByIbUserId,
+      /*
+       * The staff's two notes and the follow-up date (0212), so the list can show
+       * what is due and the CSV carries what the desk wrote. Not maskable: they
+       * are the staff's words, not the client's personal details (0208).
+       */
+      followUp: clientFollowups.followUp,
+      result: clientFollowups.result,
+      followUpAt: clientFollowups.followUpAt,
     };
 
     // OFFSET is kept for one release so both frontends can move at their own
@@ -1321,6 +1358,9 @@ export class UsersStore {
        * and the one an operator most wants to see.
        */
       .leftJoin(kycSubmissions, eq(kycSubmissions.userId, users.id))
+      // LEFT for the same reason, and it cannot multiply rows: `user_id` is the
+      // notes table's primary key.
+      .leftJoin(clientFollowups, eq(clientFollowups.userId, users.id))
       .where(where)
       .orderBy(orderBy(sortColumn), orderBy(users.id))
       // One extra row answers "is there a next page" with no second query and
@@ -1349,6 +1389,7 @@ export class UsersStore {
         .select({ value: sql<number>`count(*)::int` })
         .from(users)
         .leftJoin(kycSubmissions, eq(kycSubmissions.userId, users.id))
+        .leftJoin(clientFollowups, eq(clientFollowups.userId, users.id))
         .where(where);
       total = countRow.value;
     }

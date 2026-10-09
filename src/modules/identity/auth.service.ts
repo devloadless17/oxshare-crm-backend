@@ -178,8 +178,7 @@ export class AuthService {
     /*
      * Sign-up links and partner tags (0198): the tags a new client ARRIVES
      * with, written in the registration's own transaction. Optional for the
-     * positional reason above; absent, a client arrives with the country tag
-     * alone, as before.
+     * positional reason above; absent, a client arrives with no tag, as before.
      */
     @Optional()
     private readonly signupLinks?: SignupLinksStore,

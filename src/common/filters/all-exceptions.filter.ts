@@ -21,6 +21,7 @@ import {
   SignupLinkTakenError,
   KycConfigStaleError,
   KycBuilderOutdatedError,
+  FollowUpStaleError,
   ReferralCodeUnknownError,
   ReferralPartnerInactiveError,
   ReferralSelfError,
@@ -94,6 +95,8 @@ const DOMAIN_STATUS = new Map<new (...args: never[]) => DomainError, HttpStatus>
   // The KYC form changed under the operator's edit — reload, not a field to fix.
   [KycConfigStaleError, HttpStatus.CONFLICT],
   [KycBuilderOutdatedError, HttpStatus.CONFLICT],
+  // A client's notes changed under the editor's save — show both, not a field error.
+  [FollowUpStaleError, HttpStatus.CONFLICT],
   // A field the verification has locked — nothing wrong with the value, the
   // record's state refuses it. Carries `fields`, like a validation error.
   [ProfileLockedError, HttpStatus.CONFLICT],

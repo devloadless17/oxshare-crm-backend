@@ -14,7 +14,6 @@ import {
   numeric,
   pgEnum,
   pgTable,
-  pgView,
   primaryKey,
   smallint,
   text,
@@ -287,8 +286,8 @@ export const users = pgTable(
      */
     /**
      * The country of residence, by the platform's English name. NOT NULL with a
-     * foreign key to `countries` (0193): every client has a country, so every
-     * client carries a country TAG (derived — see `client_tag_memberships`).
+     * foreign key to `countries` (0193): every client has a country. It is a
+     * detail and a filter, never a tag (country tags were removed in 0213).
      * "Unknown" (ZZ) only for an import that has none.
      */
     country: varchar('country', { length: 100 })
@@ -492,7 +491,7 @@ export const admins = pgTable(
      * only this grants: with no tags and this false, an admin sees no client.
      * An empty territory used to mean everyone, which made the widest sight the
      * result of an absence. (D-60's intake grant, `sees_untriaged`, went with
-     * 0193: every client carries their country tag, so none is untagged.)
+     * 0193. A client in nobody's book is seen only by these administrators.)
      */
     seesAllClients: boolean('sees_all_clients').notNull().default(true),
     /**
@@ -766,7 +765,7 @@ export const apiKeys = pgTable(
  * on `users.country`. The same list as `WORLD_COUNTRIES`
  * (common/kyc/country-options.ts), plus ZZ "Unknown" for imports —
  * `test/countries-table.spec.ts` fails the day the package and this table
- * disagree. The anchor of both `users.country` and every country tag.
+ * disagree. The anchor of `users.country`.
  */
 export const countries = pgTable('countries', {
   code: char('code', { length: 2 }).primaryKey(),
@@ -797,22 +796,10 @@ export const clientTags = pgTable(
     /** Chip colour token for the admin UI. Presentation, hence nullable. */
     color: varchar('color', { length: 32 }),
     description: text('description'),
-    /**
-     * Set on a COUNTRY tag (0193) — one per country, created by the migration.
-     * Its clients are DERIVED from `users.country`, never assigned: a trigger
-     * refuses one in `client_tag_assignments`, and another refuses deleting it
-     * or changing its country or slug. Colour stays editable.
-     */
-    countryCode: char('country_code', { length: 2 }).references(() => countries.code, {
-      onDelete: 'restrict',
-    }),
     createdBy: uuid('created_by'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [
-    uniqueIndex('client_tags_slug_uq').on(t.slug),
-    uniqueIndex('client_tags_country_code_uq').on(t.countryCode),
-  ],
+  (t) => [uniqueIndex('client_tags_slug_uq').on(t.slug)],
 );
 
 export const clientTagAssignments = pgTable(
@@ -850,21 +837,54 @@ export const clientTagAssignments = pgTable(
 );
 
 /**
- * THE tags a client carries (0193): every assigned tag, plus the country tag
- * derived from `users.country`. Read-only, defined in SQL by the migration;
- * every question of the form "which tags does this client carry" or "which
- * clients carry this tag" — the scope predicate, the chips, the counts, the
- * `?tag=` filter — reads THIS, so a country tag can never be counted by one
- * screen and missed by another. Writes go to `client_tag_assignments`.
- * `assigned_by` is NULL and `assigned_at` is the client's creation on a derived
- * row.
+ * The staff's two notes about a client (0212, the buyer's request): FOLLOW-UP
+ * (what to do next, with an optional date to do it by) and RESULT (how the last
+ * contact went). Free text, never shown to the client. One row per client; a
+ * missing row means both are empty.
+ *
+ * Beside `users`, not on it: `users` is the one home of the client's IDENTITY
+ * (0139), and these are the desk's working notes about them.
+ *
+ * `version` is the conflict check: a save names the version it was made from,
+ * and a save from an older one is refused (409 FOLLOWUP_STALE) rather than
+ * silently replacing a colleague's words. The history of every change is the
+ * audit log (`client.followup_update`, before and after).
  */
-export const clientTagMemberships = pgView('client_tag_memberships', {
-  userId: integer('user_id').notNull(),
-  tagId: uuid('tag_id').notNull(),
-  assignedBy: uuid('assigned_by'),
-  assignedAt: timestamp('assigned_at', { withTimezone: true }).notNull(),
-}).existing();
+export const clientFollowups = pgTable(
+  'client_followups',
+  {
+    // CASCADE, unlike the tag assignments above: notes are about the client and
+    // carry no money or verification history that must outlive them.
+    userId: integer('user_id')
+      .primaryKey()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    followUp: text('follow_up'),
+    result: text('result'),
+    /** When to follow up — the clients list's due filter and sort. */
+    followUpAt: timestamp('follow_up_at', { withTimezone: true }),
+    // SET NULL: "last edited by" empties when an administrator is removed; the
+    // audit rows still name them.
+    updatedByAdminId: uuid('updated_by_admin_id').references(() => admins.id, {
+      onDelete: 'set null',
+    }),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+    version: integer('version').notNull().default(1),
+  },
+  (t) => [
+    check(
+      'client_followups_follow_up_ck',
+      sql`${t.followUp} IS NULL OR (char_length(${t.followUp}) BETWEEN 1 AND 2000 AND ${t.followUp} = btrim(${t.followUp}))`,
+    ),
+    check(
+      'client_followups_result_ck',
+      sql`${t.result} IS NULL OR (char_length(${t.result}) BETWEEN 1 AND 2000 AND ${t.result} = btrim(${t.result}))`,
+    ),
+    check('client_followups_version_ck', sql`${t.version} >= 1`),
+    index('client_followups_follow_up_at_idx')
+      .on(t.followUpAt)
+      .where(sql`${t.followUpAt} IS NOT NULL`),
+  ],
+);
 
 /**
  * Row-level client visibility: the tags whose clients this administrator may

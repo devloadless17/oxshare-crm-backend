@@ -755,15 +755,6 @@ export class ClientTagDto {
   @ApiProperty() label: string;
   @ApiPropertyOptional() color?: string;
   @ApiPropertyOptional() description?: string;
-  @ApiPropertyOptional({
-    description:
-      'Set on a COUNTRY tag (ISO code, 0193): carried by every client living there, derived from their country — never assigned, renamed or deleted; only its colour is editable.',
-    example: 'LB',
-  })
-  @NotClientField(
-    'the country a TAG stands for, part of the tag catalogue; which clients carry it is derived from their own country',
-  )
-  countryCode?: string;
   @ApiProperty() createdAt: Date;
 }
 
@@ -865,6 +856,10 @@ export class ClientRowReferrerDto {
   })
   outsideTerritory: boolean;
 }
+
+/** Why the follow-up notes are not maskable — the owner's rule, 0208. */
+const FOLLOW_UP_NOTE =
+  "the staff's own working note about the client, not a personal detail (masking covers personal details only, 0208)";
 
 /**
  * Every field below the id is OPTIONAL, and that is the RBAC-03 wire contract
@@ -973,6 +968,32 @@ export class ClientRowDto {
     'not a client-owned attribute — referrer describes the record rather than the person',
   )
   referrer?: ClientRowReferrerDto;
+
+  /*
+   * The staff's Follow-up and Result notes and the follow-up date (0212), for the
+   * list's columns and its "due" marker. The notes are edited on the client page
+   * (`PUT /admin/clients/:id/followup`).
+   */
+  @NotClientField(FOLLOW_UP_NOTE)
+  @ApiProperty({ type: String, nullable: true, description: 'What to do next. Null when empty.' })
+  followUp: string | null;
+
+  @NotClientField(FOLLOW_UP_NOTE)
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    description: 'How the last contact went. Null when empty.',
+  })
+  result: string | null;
+
+  @NotClientField(FOLLOW_UP_NOTE)
+  @ApiProperty({
+    type: String,
+    format: 'date-time',
+    nullable: true,
+    description: 'When to follow up. Null for no date.',
+  })
+  followUpAt: Date | null;
 }
 
 @NoClientFields(

@@ -294,6 +294,33 @@
       }
     ]
   },
+  "followUp": {
+    "groupName": "Follow-up notes",
+    "description": "The staff's own notes about a client (0212)",
+    "fields": [
+      {
+        "key": "client.followUp",
+        "label": "Follow-up",
+        "maskable": false,
+        "reason": "The staff's own working note about the client, not a personal detail.",
+        "$locked": "Oct 2026 (owner): masking covers the client's personal details only."
+      },
+      {
+        "key": "client.result",
+        "label": "Result",
+        "maskable": false,
+        "reason": "The staff's own working note about the client, not a personal detail.",
+        "$locked": "Oct 2026 (owner): masking covers the client's personal details only."
+      },
+      {
+        "key": "client.followUpAt",
+        "label": "Follow-up date",
+        "maskable": false,
+        "reason": "When the staff plan to follow up, not a personal detail.",
+        "$locked": "Oct 2026 (owner): masking covers the client's personal details only."
+      }
+    ]
+  },
   "activity": {
     "groupName": "Activity",
     "description": "Where the client connects from",

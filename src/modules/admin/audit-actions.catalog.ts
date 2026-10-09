@@ -79,6 +79,12 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   },
   { action: 'client.email_change', label: 'Client sign-in email changed', group: 'Clients' },
   /*
+   * The staff's Follow-up and Result notes on a client (0212), before and after.
+   * These rows ARE the notes' history: the client page's "History" link opens
+   * the log filtered to this action and client.
+   */
+  { action: 'client.followup_update', label: 'Client follow-up edited', group: 'Clients' },
+  /*
    * A reader whose role hides client emails found a client by a COMPLETE
    * address (D-82). The subject is the client found; the typed text is never
    * stored. See `HiddenEmailLookupInterceptor`.

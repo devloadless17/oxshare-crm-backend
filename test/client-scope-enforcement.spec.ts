@@ -98,6 +98,8 @@ beforeAll(async () => {
         'kyc.assist',
         // "New client" (0211) — the welcome resend is a by-id write.
         'clients.create',
+        // Follow-up and Result (0212) — the save is a by-id write.
+        'clients.followup.edit',
         'ib.partners.view',
         'ib.applications.view',
         'ib.commissions.view',
@@ -466,6 +468,21 @@ describe('by-id routes answer 404 for an out-of-scope client, never 403', () => 
       // "New client" (0211): resending a staff-created client's welcome email.
       signature: 'POST /admin/clients/:id/welcome',
       run: (s: Session, id: number) => s.post(`/v1/admin/clients/${id}/welcome`, {}),
+    },
+    // The staff's Follow-up and Result notes (0212).
+    {
+      signature: 'GET /admin/clients/:id/followup',
+      run: (s: Session, id: number) => s.get(`/v1/admin/clients/${id}/followup`),
+    },
+    {
+      signature: 'PUT /admin/clients/:id/followup',
+      run: (s: Session, id: number) =>
+        s.put(`/v1/admin/clients/${id}/followup`, {
+          followUp: 'scope probe',
+          result: null,
+          followUpAt: null,
+          version: 0,
+        }),
     },
     {
       signature: 'PATCH /admin/ib/partners/:userId/active',

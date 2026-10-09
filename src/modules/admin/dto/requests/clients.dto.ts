@@ -211,6 +211,14 @@ export class BulkClientFilterDto {
   @IsString()
   from?: string;
   @ApiPropertyOptional({ description: 'Registered to.' }) @IsOptional() @IsString() to?: string;
+  @ApiPropertyOptional({ description: 'due | upcoming | none — the follow-up date (0212).' })
+  @IsOptional()
+  @IsString()
+  followUp?: string;
+  @ApiPropertyOptional({ description: 'The cut-off for due/upcoming: end of the reader’s today.' })
+  @IsOptional()
+  @IsString()
+  followUpDueBy?: string;
 }
 
 /** Who a bulk action is for: picked rows, or every row matching a filter. */

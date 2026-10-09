@@ -30,10 +30,9 @@ import { SIGN_UP_DETAILS } from './support/registration';
  *   - every administrator HAS a link word, made from their name, unique;
  *   - a sign-up gets the administrator's territory tags read LIVE — change the
  *     territory and the next sign-up follows it (0195's copied tags drifted);
- *     never a country (the client has their own);
  *   - a suspended administrator's, a retired or an unknown word tags nobody and
  *     never refuses the sign-up;
- *   - a partner's assigned tags come along too (never the partner's country);
+ *   - a partner's assigned tags come along too;
  *   - who brought a client is recorded once and cannot be rewritten;
  *   - your own link you rename freely; another administrator's needs
  *     admins.edit; a taken word is a 409 under the field.
@@ -49,7 +48,6 @@ const OTHER = { email: 'signup-other@oxshare.com', password: PASSWORD };
 let bookTag: string;
 let laterTag: string;
 let partnerTag: string;
-let lebanon: string;
 let deskId: string;
 let otherId: string;
 let deskSlug: string;
@@ -96,10 +94,6 @@ beforeAll(async () => {
       ])
       .returning()
   ).map((tag) => tag.id);
-  [{ id: lebanon }] = await db
-    .select({ id: clientTags.id })
-    .from(clientTags)
-    .where(eq(clientTags.countryCode, 'LB'));
 
   const [role] = await db
     .insert(roles)
@@ -126,11 +120,9 @@ beforeAll(async () => {
   deskId = desk.id;
   otherId = other.id;
   deskSlug = desk.signupSlug;
-  // A country in the territory: a desk AND a book. The link gives the book only.
-  await db.insert(adminClientTagScopes).values([
-    { adminId: desk.id, tagId: bookTag, createdBy: desk.id },
-    { adminId: desk.id, tagId: lebanon, createdBy: desk.id },
-  ]);
+  await db
+    .insert(adminClientTagScopes)
+    .values([{ adminId: desk.id, tagId: bookTag, createdBy: desk.id }]);
 
   const [partner] = await db
     .insert(users)
@@ -163,7 +155,7 @@ describe('every administrator has a link word', () => {
 });
 
 describe('a sign-up through an administrator’s link', () => {
-  it('gets their territory tags — never the country in it — and records who brought them', async () => {
+  it('gets their territory tags and records who brought them', async () => {
     const email = await register('desk', { acquisitionCode: ` ${deskSlug.toUpperCase()}/ ` });
     const { user, tagIds } = await arrivedWith(email);
     expect(tagIds).toEqual([bookTag]);
@@ -212,7 +204,7 @@ describe('a sign-up through an administrator’s link', () => {
     expect((await arrivedWith(email)).tagIds).toEqual([]);
   });
 
-  it('under a partner too: both books, never the partner’s country', async () => {
+  it('under a partner too: both books', async () => {
     const email = await register('partner', {
       acquisitionCode: deskSlug,
       referralCode: partnerCode,

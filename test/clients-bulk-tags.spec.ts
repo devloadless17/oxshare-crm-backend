@@ -23,7 +23,6 @@ import {
  *     BULK_TARGET_CHANGED with the new number, and nothing changes;
  *   - moving clients out of the actor's view needs the confirmation (409 with
  *     how many), then hands them over;
- *   - a country tag is refused;
  *   - one bulk audit row plus one per real change, all carrying the bulkId;
  *   - a replayed request (same Idempotency-Key) changes nothing twice.
  */
@@ -136,19 +135,6 @@ describe('picked clients', () => {
       .send({ target: { ids: ours }, add: [label] })
       .expect(201);
     expect(res.body).toMatchObject({ matched: 3, changed: 0, unchanged: 3 });
-  });
-
-  it('refuses a country tag', async () => {
-    const [lebanon] = await ctx.db.db
-      .select({ id: clientTags.id })
-      .from(clientTags)
-      .where(eq(clientTags.countryCode, 'LB'));
-    const desk = await actingAs(ctx, 'admin', DESK);
-    const res = await desk
-      .post(BULK)
-      .set('Idempotency-Key', randomUUID())
-      .send({ target: { ids: ours }, add: [lebanon.id] });
-    expect(res.status).toBe(400);
   });
 });
 

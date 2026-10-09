@@ -35,6 +35,11 @@
         "requires": ["clients.view"]
       },
       {
+        "key": "clients.followup.edit",
+        "label": "Write a client's follow-up and result notes",
+        "requires": ["clients.view"]
+      },
+      {
         "key": "clients.tag",
         "label": "Add or remove a client's tags",
         "requires": ["clients.view"]

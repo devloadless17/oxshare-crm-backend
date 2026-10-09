@@ -10,6 +10,7 @@ import { OfferedCountriesStore } from './offered-countries.store';
 import { PaymentProviderExchangesStore } from './payment-provider-exchanges.store';
 import { ProductsStore } from './products.store';
 import { ClientIdentityStore } from './client-identity.store';
+import { ClientFollowupsStore } from './client-followups.store';
 import { ClientTagsStore } from './client-tags.store';
 import { SignupLinksStore } from './signup-links.store';
 import { DepositProofsStore } from './deposit-proofs.store';
@@ -41,6 +42,7 @@ const STORES = [
   OfferedCountriesStore,
   ProductsStore,
   ClientIdentityStore,
+  ClientFollowupsStore,
   ClientTagsStore,
   SignupLinksStore,
   DepositProofsStore,

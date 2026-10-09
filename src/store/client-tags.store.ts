@@ -1,9 +1,8 @@
-import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
-import { currentFieldMask } from '../common/logging/request-context';
+import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db, Executor } from '../database/db';
-import { clientTagAssignments, clientTagMemberships, clientTags, users } from '../database/schema';
+import { clientTagAssignments, clientTags, users } from '../database/schema';
 import {
   clientScopePredicate,
   territoryCounts,
@@ -16,11 +15,6 @@ export interface ClientTag {
   label: string;
   color?: string;
   description?: string;
-  /**
-   * Set on a COUNTRY tag (0193): its clients are those whose country it is,
-   * derived — it is never assigned, renamed or deleted, only recoloured.
-   */
-  countryCode?: string;
   createdAt: Date;
 }
 
@@ -61,7 +55,6 @@ type TagColumns = {
   label: string;
   color: string | null;
   description: string | null;
-  countryCode: string | null;
   createdAt: Date;
 };
 
@@ -71,20 +64,8 @@ const toTag = (r: TagColumns): ClientTag => ({
   label: r.label,
   color: r.color ?? undefined,
   description: r.description ?? undefined,
-  countryCode: r.countryCode ?? undefined,
   createdAt: r.createdAt,
 });
-
-/**
- * A COUNTRY tag on a client IS the client's country (0193), so a reader whose
- * role hides `client.country` is shown none: the chip would spell out the very
- * field the mask withholds (found by `field-mask-matrix.spec.ts`). Read from
- * the request's mask, like every other masked READ — the RBAC-03 interceptor
- * cannot know a tag's label is a country. Undefined (no condition) otherwise.
- */
-function countryTagsReadable() {
-  return currentFieldMask().includes('client.country') ? isNull(clientTags.countryCode) : undefined;
-}
 
 /**
  * ADM-14 client labels.
@@ -127,7 +108,7 @@ export class ClientTagsStore {
    * listed the tag.
    */
   async findAllWithCounts(scope: ClientScope): Promise<ClientTagWithCount[]> {
-    const counts = territoryCounts(scope, clientTagMemberships.userId);
+    const counts = territoryCounts(scope, clientTagAssignments.userId);
     const rows = await this.db
       .select({
         id: clientTags.id,
@@ -135,7 +116,6 @@ export class ClientTagsStore {
         label: clientTags.label,
         color: clientTags.color,
         description: clientTags.description,
-        countryCode: clientTags.countryCode,
         createdAt: clientTags.createdAt,
         // LEFT JOIN + count of the joined key, so a tag nobody carries reports
         // 0 rather than vanishing from the list. The scope splits the count
@@ -145,7 +125,7 @@ export class ClientTagsStore {
         clientsOutsideScope: counts.outside,
       })
       .from(clientTags)
-      .leftJoin(clientTagMemberships, eq(clientTagMemberships.tagId, clientTags.id))
+      .leftJoin(clientTagAssignments, eq(clientTagAssignments.tagId, clientTags.id))
       .groupBy(clientTags.id)
       .orderBy(asc(clientTags.label));
 
@@ -232,14 +212,13 @@ export class ClientTagsStore {
         label: clientTags.label,
         color: clientTags.color,
         description: clientTags.description,
-        countryCode: clientTags.countryCode,
         createdAt: clientTags.createdAt,
-        assignedBy: clientTagMemberships.assignedBy,
-        assignedAt: clientTagMemberships.assignedAt,
+        assignedBy: clientTagAssignments.assignedBy,
+        assignedAt: clientTagAssignments.assignedAt,
       })
-      .from(clientTagMemberships)
-      .innerJoin(clientTags, eq(clientTags.id, clientTagMemberships.tagId))
-      .where(and(eq(clientTagMemberships.userId, userId), countryTagsReadable()))
+      .from(clientTagAssignments)
+      .innerJoin(clientTags, eq(clientTags.id, clientTagAssignments.tagId))
+      .where(eq(clientTagAssignments.userId, userId))
       .orderBy(asc(clientTags.label));
     return rows.map((row) => ({
       ...toTag(row),
@@ -261,18 +240,17 @@ export class ClientTagsStore {
 
     const rows = await this.db
       .select({
-        userId: clientTagMemberships.userId,
+        userId: clientTagAssignments.userId,
         id: clientTags.id,
         slug: clientTags.slug,
         label: clientTags.label,
         color: clientTags.color,
         description: clientTags.description,
-        countryCode: clientTags.countryCode,
         createdAt: clientTags.createdAt,
       })
-      .from(clientTagMemberships)
-      .innerJoin(clientTags, eq(clientTags.id, clientTagMemberships.tagId))
-      .where(and(inArray(clientTagMemberships.userId, [...userIds]), countryTagsReadable()))
+      .from(clientTagAssignments)
+      .innerJoin(clientTags, eq(clientTags.id, clientTagAssignments.tagId))
+      .where(inArray(clientTagAssignments.userId, [...userIds]))
       .orderBy(asc(clientTags.label));
 
     for (const row of rows) {
@@ -295,8 +273,7 @@ export class ClientTagsStore {
    */
   /**
    * `assignedBy: null` is the SYSTEM assigning — registration attaching a
-   * sign-up link's or a partner's tags. Never a country tag: those are derived,
-   * and a trigger refuses one here (0193).
+   * sign-up link's or a partner's tags.
    */
   async assign(
     userId: number,
@@ -346,14 +323,12 @@ export class ClientTagsStore {
 
   /**
    * The ids of the tags a client carries — what a tag change is judged on.
-   * MEMBERSHIPS, the derived country tag included: a country desk must be
-   * told it keeps the client after an owner tag is removed.
    */
   async tagIdsForClient(userId: number, executor?: Executor): Promise<string[]> {
     const rows = await (executor ?? this.db)
-      .select({ tagId: clientTagMemberships.tagId })
-      .from(clientTagMemberships)
-      .where(eq(clientTagMemberships.userId, userId));
+      .select({ tagId: clientTagAssignments.tagId })
+      .from(clientTagAssignments)
+      .where(eq(clientTagAssignments.userId, userId));
     return rows.map((row) => row.tagId);
   }
 
@@ -379,8 +354,7 @@ export class ClientTagsStore {
    * and a single change on the same client take turns and two bulks cannot
    * deadlock. Judged under those locks:
    *   - how many clients would LEAVE the actor's territory — refused unless
-   *     confirmed (`onLeaves` decides), measured on memberships so a country
-   *     desk keeps its clients;
+   *     confirmed (`onLeaves` decides);
    *   - no client may end with more than `maxPerClient` chosen tags.
    * Returns, per client, what actually changed — so the audit records only real
    * changes, and a replay writes nothing.
@@ -427,7 +401,7 @@ export class ClientTagsStore {
           await tx.execute<{ n: number }>(sql`
             WITH t(id) AS (SELECT unnest(${idList})),
             after AS (
-              SELECT m.user_id, m.tag_id FROM ${clientTagMemberships} m
+              SELECT m.user_id, m.tag_id FROM ${clientTagAssignments} m
                WHERE m.user_id = ANY(${idList}) AND NOT (m.tag_id = ANY(${remove}))
               UNION ALL
               SELECT t.id, a FROM t CROSS JOIN unnest(${add}) AS a
@@ -492,12 +466,12 @@ export class ClientTagsStore {
    * The SAME predicate the lists use, negated in the WHERE clause.
    */
   async countClientsForTagOutside(tagId: string, scope: ClientScope): Promise<number> {
-    const visible = clientScopePredicate(scope, clientTagMemberships.userId);
+    const visible = clientScopePredicate(scope, clientTagAssignments.userId);
     if (visible === undefined) return 0;
     const [row] = await this.db
       .select({ n: sql<number>`count(*)::int` })
-      .from(clientTagMemberships)
-      .where(and(eq(clientTagMemberships.tagId, tagId), sql`NOT (${visible})`));
+      .from(clientTagAssignments)
+      .where(and(eq(clientTagAssignments.tagId, tagId), sql`NOT (${visible})`));
     return row?.n ?? 0;
   }
 
@@ -505,8 +479,8 @@ export class ClientTagsStore {
   async countClientsForTag(tagId: string): Promise<number> {
     const [row] = await this.db
       .select({ n: sql<number>`count(*)::int` })
-      .from(clientTagMemberships)
-      .where(eq(clientTagMemberships.tagId, tagId));
+      .from(clientTagAssignments)
+      .where(eq(clientTagAssignments.tagId, tagId));
     return row?.n ?? 0;
   }
 }
