@@ -2447,6 +2447,29 @@
             }
           },
           {
+            "name": "cursor",
+            "required": false,
+            "in": "query",
+            "description": "Opaque keyset cursor (R-2.4).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dir",
+            "required": false,
+            "in": "query",
+            "description": "prev: the page before ?cursor. last: the final page (no cursor).",
+            "schema": {
+              "enum": [
+                "next",
+                "prev",
+                "last"
+              ],
+              "type": "string"
+            }
+          },
+          {
             "name": "sort",
             "required": false,
             "in": "query",
@@ -2832,6 +2855,29 @@
             }
           },
           {
+            "name": "cursor",
+            "required": false,
+            "in": "query",
+            "description": "Opaque keyset cursor (R-2.4).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dir",
+            "required": false,
+            "in": "query",
+            "description": "prev: the page before ?cursor. last: the final page (no cursor).",
+            "schema": {
+              "enum": [
+                "next",
+                "prev",
+                "last"
+              ],
+              "type": "string"
+            }
+          },
+          {
             "name": "ibUserId",
             "required": false,
             "in": "query",
@@ -2994,6 +3040,29 @@
             "required": false,
             "in": "query",
             "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "required": false,
+            "in": "query",
+            "description": "Opaque keyset cursor (R-2.4).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dir",
+            "required": false,
+            "in": "query",
+            "description": "prev: the page before ?cursor. last: the final page (no cursor).",
+            "schema": {
+              "enum": [
+                "next",
+                "prev",
+                "last"
+              ],
               "type": "string"
             }
           },
@@ -5879,7 +5948,7 @@
             "name": "limit",
             "required": false,
             "in": "query",
-            "description": "Rows per page, 1–100. Defaults to 25.",
+            "description": "Rows per page, 1–500. Defaults to 25.",
             "schema": {
               "example": 25,
               "type": "number"
@@ -5948,7 +6017,7 @@
             "name": "limit",
             "required": false,
             "in": "query",
-            "description": "Rows per page, 1–100. Defaults to 25.",
+            "description": "Rows per page, 1–500. Defaults to 25.",
             "schema": {
               "example": 25,
               "type": "number"
@@ -6173,6 +6242,20 @@
             "in": "query",
             "description": "Opaque keyset cursor (R-2.4).",
             "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dir",
+            "required": false,
+            "in": "query",
+            "description": "prev: the page before ?cursor. last: the final page (no cursor).",
+            "schema": {
+              "enum": [
+                "next",
+                "prev",
+                "last"
+              ],
               "type": "string"
             }
           },
@@ -8307,10 +8390,24 @@
             }
           },
           {
+            "name": "dir",
+            "required": false,
+            "in": "query",
+            "description": "prev: the page before ?cursor. last: the final page (no cursor).",
+            "schema": {
+              "enum": [
+                "next",
+                "prev",
+                "last"
+              ],
+              "type": "string"
+            }
+          },
+          {
             "name": "withTotal",
             "required": false,
             "in": "query",
-            "description": "Counting is a full scan.",
+            "description": "Counts up to 10,001 rows.",
             "schema": {
               "type": "string"
             }
@@ -9674,6 +9771,7 @@
             "name": "page",
             "required": false,
             "in": "query",
+            "description": "Legacy offset paging. Prefer cursor.",
             "schema": {
               "type": "string"
             }
@@ -9683,6 +9781,29 @@
             "required": false,
             "in": "query",
             "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "required": false,
+            "in": "query",
+            "description": "Opaque keyset cursor (R-2.4).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dir",
+            "required": false,
+            "in": "query",
+            "description": "prev: the page before ?cursor. last: the final page (no cursor).",
+            "schema": {
+              "enum": [
+                "next",
+                "prev",
+                "last"
+              ],
               "type": "string"
             }
           },
@@ -11503,6 +11624,20 @@
             }
           },
           {
+            "name": "dir",
+            "required": false,
+            "in": "query",
+            "description": "prev: the page before ?cursor. last: the final page (no cursor).",
+            "schema": {
+              "enum": [
+                "next",
+                "prev",
+                "last"
+              ],
+              "type": "string"
+            }
+          },
+          {
             "name": "action",
             "required": false,
             "in": "query",
@@ -12015,6 +12150,20 @@
             }
           },
           {
+            "name": "dir",
+            "required": false,
+            "in": "query",
+            "description": "prev: the page before ?cursor. last: the final page (no cursor).",
+            "schema": {
+              "enum": [
+                "next",
+                "prev",
+                "last"
+              ],
+              "type": "string"
+            }
+          },
+          {
             "name": "sort",
             "required": false,
             "in": "query",
@@ -12329,6 +12478,20 @@
             "in": "query",
             "description": "Opaque keyset cursor (R-2.4).",
             "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dir",
+            "required": false,
+            "in": "query",
+            "description": "prev: the page before ?cursor. last: the final page (no cursor).",
+            "schema": {
+              "enum": [
+                "next",
+                "prev",
+                "last"
+              ],
               "type": "string"
             }
           },
@@ -12967,6 +13130,14 @@
           },
           {
             "name": "cursor",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dir",
             "required": true,
             "in": "query",
             "schema": {
@@ -13748,6 +13919,20 @@
             }
           },
           {
+            "name": "dir",
+            "required": false,
+            "in": "query",
+            "description": "prev: the page before ?cursor. last: the final page (no cursor).",
+            "schema": {
+              "enum": [
+                "next",
+                "prev",
+                "last"
+              ],
+              "type": "string"
+            }
+          },
+          {
             "name": "sort",
             "required": false,
             "in": "query",
@@ -13951,6 +14136,20 @@
             "in": "query",
             "description": "Opaque keyset cursor (R-2.4).",
             "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dir",
+            "required": false,
+            "in": "query",
+            "description": "prev: the page before ?cursor. last: the final page (no cursor).",
+            "schema": {
+              "enum": [
+                "next",
+                "prev",
+                "last"
+              ],
               "type": "string"
             }
           },
@@ -14337,6 +14536,7 @@
             "name": "page",
             "required": false,
             "in": "query",
+            "description": "Legacy offset paging. Prefer cursor.",
             "schema": {
               "type": "string"
             }
@@ -14346,6 +14546,29 @@
             "required": false,
             "in": "query",
             "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "required": false,
+            "in": "query",
+            "description": "Opaque keyset cursor (R-2.4).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dir",
+            "required": false,
+            "in": "query",
+            "description": "prev: the page before ?cursor. last: the final page (no cursor).",
+            "schema": {
+              "enum": [
+                "next",
+                "prev",
+                "last"
+              ],
               "type": "string"
             }
           }
@@ -14390,6 +14613,7 @@
             "name": "page",
             "required": false,
             "in": "query",
+            "description": "Legacy offset paging. Prefer cursor.",
             "schema": {
               "type": "string"
             }
@@ -14399,6 +14623,29 @@
             "required": false,
             "in": "query",
             "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "required": false,
+            "in": "query",
+            "description": "Opaque keyset cursor (R-2.4).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dir",
+            "required": false,
+            "in": "query",
+            "description": "prev: the page before ?cursor. last: the final page (no cursor).",
+            "schema": {
+              "enum": [
+                "next",
+                "prev",
+                "last"
+              ],
               "type": "string"
             }
           }
@@ -17331,7 +17578,21 @@
           },
           "total": {
             "type": "number",
-            "description": "Every partner matching the filters that this reader may see."
+            "description": "Partners matching the filters that this reader may see, counted up to 10,001."
+          },
+          "totalCapped": {
+            "type": "boolean",
+            "description": "True when more than 10,000 match: total is then 10,000."
+          },
+          "nextCursor": {
+            "type": "string",
+            "nullable": true,
+            "description": "Pass back as ?cursor= for the next page."
+          },
+          "prevCursor": {
+            "type": "string",
+            "nullable": true,
+            "description": "Pass back as ?cursor=…&dir=prev for the page before; null on the first page."
           },
           "maskedFields": {
             "type": "array",
@@ -17343,6 +17604,9 @@
         "required": [
           "rows",
           "total",
+          "totalCapped",
+          "nextCursor",
+          "prevCursor",
           "maskedFields"
         ]
       },
@@ -20610,6 +20874,15 @@
           "nextCursor": {
             "type": "string",
             "nullable": true
+          },
+          "prevCursor": {
+            "type": "string",
+            "nullable": true,
+            "description": "Pass back as ?cursor=…&dir=prev for the page before; null on the first page."
+          },
+          "totalCapped": {
+            "type": "boolean",
+            "description": "True when more than 10,000 rows match: total is then 10,000 (\"10,000+\")."
           },
           "total": {
             "type": "number",
@@ -24152,9 +24425,18 @@
             "type": "string",
             "nullable": true
           },
+          "prevCursor": {
+            "type": "string",
+            "nullable": true,
+            "description": "Pass back as ?cursor=…&dir=prev for the page before; null on the first page."
+          },
           "total": {
             "type": "number",
-            "description": "Only when ?withTotal=true. Counting 219,000 rows is a full scan."
+            "description": "Only when ?withTotal=true. Counted up to 10,001 rows: see totalCapped."
+          },
+          "totalCapped": {
+            "type": "boolean",
+            "description": "True when more than 10,000 rows match: total is then 10,000 (\"10,000+\")."
           },
           "page": {
             "type": "number"
@@ -25874,6 +26156,27 @@
             "additionalProperties": {
               "type": "number"
             }
+          },
+          "countsCapped": {
+            "description": "The tab counts that stopped at 10,000 — render each as \"10,000+\".",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "nextCursor": {
+            "type": "string",
+            "nullable": true,
+            "description": "Pass back as ?cursor= for the next page."
+          },
+          "prevCursor": {
+            "type": "string",
+            "nullable": true,
+            "description": "Pass back as ?cursor=…&dir=prev for the page before; null on the first page."
+          },
+          "totalCapped": {
+            "type": "boolean",
+            "description": "True when more than 10,000 rows match: total is then 10,000."
           }
         },
         "required": [
@@ -25881,7 +26184,11 @@
           "total",
           "page",
           "limit",
-          "counts"
+          "counts",
+          "countsCapped",
+          "nextCursor",
+          "prevCursor",
+          "totalCapped"
         ]
       },
       "KycAttemptDto": {
@@ -27205,6 +27512,15 @@
             "type": "string",
             "nullable": true
           },
+          "prevCursor": {
+            "type": "string",
+            "nullable": true,
+            "description": "Pass back as ?cursor=…&dir=prev for the page before; null on the first page."
+          },
+          "totalCapped": {
+            "type": "boolean",
+            "description": "True when more than 10,000 rows match: total is then 10,000 (\"10,000+\")."
+          },
           "total": {
             "type": "number"
           },
@@ -27819,6 +28135,15 @@
           "nextCursor": {
             "type": "string",
             "nullable": true
+          },
+          "prevCursor": {
+            "type": "string",
+            "nullable": true,
+            "description": "Pass back as ?cursor=…&dir=prev for the page before; null on the first page."
+          },
+          "totalCapped": {
+            "type": "boolean",
+            "description": "True when more than 10,000 rows match: total is then 10,000 (\"10,000+\")."
           },
           "total": {
             "type": "number"
@@ -28724,6 +29049,15 @@
             "type": "string",
             "nullable": true
           },
+          "prevCursor": {
+            "type": "string",
+            "nullable": true,
+            "description": "Pass back as ?cursor=…&dir=prev for the page before; null on the first page."
+          },
+          "totalCapped": {
+            "type": "boolean",
+            "description": "True when more than 10,000 rows match: total is then 10,000 (\"10,000+\")."
+          },
           "total": {
             "type": "number"
           },
@@ -29230,6 +29564,15 @@
             "type": "string",
             "nullable": true
           },
+          "prevCursor": {
+            "type": "string",
+            "nullable": true,
+            "description": "Pass back as ?cursor=…&dir=prev for the page before; null on the first page."
+          },
+          "totalCapped": {
+            "type": "boolean",
+            "description": "True when more than 10,000 rows match: total is then 10,000 (\"10,000+\")."
+          },
           "total": {
             "type": "number"
           },
@@ -29370,6 +29713,15 @@
             "type": "string",
             "nullable": true
           },
+          "prevCursor": {
+            "type": "string",
+            "nullable": true,
+            "description": "Pass back as ?cursor=…&dir=prev for the page before; null on the first page."
+          },
+          "totalCapped": {
+            "type": "boolean",
+            "description": "True when more than 10,000 rows match: total is then 10,000 (\"10,000+\")."
+          },
           "total": {
             "type": "number"
           },
@@ -29499,7 +29851,22 @@
             }
           },
           "total": {
-            "type": "number"
+            "type": "number",
+            "description": "Counted up to 10,001 rows: see totalCapped."
+          },
+          "totalCapped": {
+            "type": "boolean",
+            "description": "True when more than 10,000 positions match (\"10,000+\")."
+          },
+          "nextCursor": {
+            "type": "string",
+            "nullable": true,
+            "description": "Pass back as ?cursor= for the next page."
+          },
+          "prevCursor": {
+            "type": "string",
+            "nullable": true,
+            "description": "Pass back as ?cursor=…&dir=prev for the page before; null on the first page."
           },
           "page": {
             "type": "number"
@@ -29511,6 +29878,9 @@
         "required": [
           "rows",
           "total",
+          "totalCapped",
+          "nextCursor",
+          "prevCursor",
           "page",
           "limit"
         ]
@@ -29591,7 +29961,22 @@
             }
           },
           "total": {
-            "type": "number"
+            "type": "number",
+            "description": "Counted up to 10,001 rows: see totalCapped."
+          },
+          "totalCapped": {
+            "type": "boolean",
+            "description": "True when more than 10,000 movements match (\"10,000+\")."
+          },
+          "nextCursor": {
+            "type": "string",
+            "nullable": true,
+            "description": "Pass back as ?cursor= for the next page."
+          },
+          "prevCursor": {
+            "type": "string",
+            "nullable": true,
+            "description": "Pass back as ?cursor=…&dir=prev for the page before; null on the first page."
           },
           "page": {
             "type": "number"
@@ -29603,6 +29988,9 @@
         "required": [
           "rows",
           "total",
+          "totalCapped",
+          "nextCursor",
+          "prevCursor",
           "page",
           "limit"
         ]
