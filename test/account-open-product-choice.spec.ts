@@ -332,3 +332,74 @@ describe("a product's cap on accounts per client", () => {
     expect(await recordedProduct(row.id)).toBe(cappedId);
   });
 });
+
+describe("a group's minimum deposit, checked when the account is opened (owner, 9 Oct 2026)", () => {
+  let richId: number;
+  let poorId: number;
+  let minProductId: string;
+
+  async function client(email: string, usd: string | null): Promise<number> {
+    const { rows } = await ctx.db.execute<{ id: number }>(sql`
+      INSERT INTO users (email, password_hash, first_name, last_name)
+      VALUES (${email}, 'x', 'Min', 'Holder') RETURNING id
+    `);
+    if (usd !== null) {
+      await ctx.db.execute(sql`
+        INSERT INTO wallets (user_id, currency, kind, balance) VALUES (${rows[0].id}, 'USD', 'main', ${usd})
+      `);
+    }
+    return rows[0].id;
+  }
+
+  beforeAll(async () => {
+    minProductId = await product('Choice Minimum');
+    await ctx.db.execute(sql`
+      INSERT INTO trading_product_groups (product_id, environment, mt5_group, currency, min_deposit)
+      VALUES (${minProductId}, 'live', 'real\\Min50', 'USD', 50)
+    `);
+    richId = await client('open-min-rich@oxshare-e2e.test', '50');
+    poorId = await client('open-min-poor@oxshare-e2e.test', '49.99');
+  });
+
+  const open = (userId: number) =>
+    ownAccounts.createOwnAccount({
+      userId,
+      environment: 'live',
+      group: 'real\\Min50',
+      productId: minProductId,
+    });
+
+  it('opens when the wallet already holds the minimum — and moves nothing', async () => {
+    await expect(open(richId)).resolves.toBeDefined();
+    const { rows } = await ctx.db.execute<{ balance: string }>(
+      sql`SELECT balance FROM wallets WHERE user_id = ${richId}`,
+    );
+    expect(rows[0].balance).toBe('50.00000000');
+  });
+
+  it('refuses below it, before MT5, and says how much is needed', async () => {
+    await expect(open(poorId)).rejects.toThrow(
+      /minimum deposit of 50\.00 USD\. Your USD wallet has 49\.99 USD available/,
+    );
+    expect(createOnMt5).not.toHaveBeenCalled();
+  });
+
+  it('counts only what is AVAILABLE — money on hold does not count', async () => {
+    const heldId = await client('open-min-held@oxshare-e2e.test', '80');
+    await ctx.db.execute(sql`UPDATE wallets SET on_hold = 40 WHERE user_id = ${heldId}`);
+    await expect(open(heldId)).rejects.toThrow(/has 40\.00 USD available/);
+  });
+
+  it('refuses a client with no wallet in that currency at all', async () => {
+    const noneId = await client('open-min-none@oxshare-e2e.test', null);
+    await expect(open(noneId)).rejects.toThrow(/has 0\.00 USD available/);
+  });
+
+  it('does not hold the console to it', async () => {
+    const row = await accounts.createAccount(
+      { userId: poorId, group: 'real\\Min50', productId: minProductId, environment: 'live' },
+      ADMIN,
+    );
+    expect(await recordedProduct(row.id)).toBe(minProductId);
+  });
+});

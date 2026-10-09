@@ -977,8 +977,8 @@ export const SERVER_MESSAGES_AR: Readonly<Record<string, string>> = {
     'لديك بالفعل {1} حساب من النوع «{2}»، وهو الحد الأقصى للعميل الواحد. تواصل مع الدعم إذا احتجت إلى حساب آخر.',
   "You already have {1} '{2}' accounts, the most one client may hold. Contact support if you need another.":
     'لديك بالفعل {1} حسابات من النوع «{2}»، وهو الحد الأقصى للعميل الواحد. تواصل مع الدعم إذا احتجت إلى حساب آخر.',
-  'The minimum transfer into this account is {1} {2}.':
-    'الحد الأدنى للتحويل إلى هذا الحساب هو {1} {2}.',
+  'This account needs a minimum deposit of {1} {2}. Your {3} wallet has {4} {5} available — deposit to your wallet first, then open the account.':
+    'يتطلب هذا الحساب حداً أدنى للإيداع قدره {1} {2}. المتاح في محفظتك بعملة {3} هو {4} {5} — أودِع في محفظتك أولاً، ثم افتح الحساب.',
   'minDeposit must be an amount, e.g. 100 or 250.50 (up to 8 decimals)':
     'يجب أن تكون القيمة مبلغاً، مثل 100 أو 250.50 (حتى 8 خانات عشرية).',
   'A live account cannot be opened with a starting balance. Fund it from your wallet once it is open.':

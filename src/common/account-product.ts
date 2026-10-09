@@ -118,7 +118,10 @@ export const PRODUCT_NAME_AR = sql<string | null>`CASE
 END`;
 
 /**
- * The MINIMUM a client's transfer into this account must reach (0201), or NULL.
+ * The account's group MINIMUM DEPOSIT (0201), or NULL — shown as a hint only.
+ * Since 9 Oct 2026 it is enforced once, when the client OPENS the account
+ * (`Mt5OwnAccountsService.assertWalletCoversMinimum`); transfers and deposits
+ * into an open account are any amount.
  *
  * Read off the offer the account was opened on: its RECORDED product, and the
  * group of that product the account sits in now (case-insensitively, as MT5
@@ -128,8 +131,7 @@ END`;
  * group-derived fallback above is for NAMING a legacy account, never for
  * refusing money into it.
  *
- * The one definition, read by `TransfersService` (the refusal), the deposit
- * door and the client's account list (the hint) alike. Needs no join: it is a
+ * Read by the client's account list. Needs no join: it is a
  * correlated subquery over `trading_accounts`.
  */
 export const ACCOUNT_MIN_DEPOSIT = sql<string | null>`(

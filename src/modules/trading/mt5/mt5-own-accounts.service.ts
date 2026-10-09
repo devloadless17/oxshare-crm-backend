@@ -4,7 +4,13 @@ import Decimal from 'decimal.js';
 import { and, eq, ne, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../../database/database.module';
 import type { Db } from '../../../database/db';
-import { tradingAccounts, users } from '../../../database/schema';
+import {
+  currencies,
+  tradingAccounts,
+  tradingProductGroups,
+  users,
+  wallets,
+} from '../../../database/schema';
 import { Mt5BridgeClient, assertBridgeConfigured } from './mt5-bridge.client';
 import { EmailService } from '../../email/email.service';
 import { requestLocale } from '../../../common/i18n/locale';
@@ -53,6 +59,61 @@ export class Mt5OwnAccountsService {
    * Not a lock: two opens racing past it can both pass, as with the cap it
    * replaced. The price is one account over a cap, never money.
    */
+  /**
+   * The group's MINIMUM DEPOSIT, checked once — when the client opens the
+   * account (owner, 9 Oct 2026). Their wallet in the group's currency must
+   * already hold at least that much AVAILABLE (balance less holds). Nothing is
+   * moved: they fund the account afterwards, by any amount — transfers into an
+   * account are no longer held to the minimum. Before the bridge, so a refusal
+   * creates nothing on MT5. The console (`createAccount`) is not held to it.
+   */
+  private async assertWalletCoversMinimum(
+    userId: number,
+    group: string,
+    productId: string | null,
+  ): Promise<void> {
+    if (!productId) return;
+    const [rule] = await this.db
+      .select({
+        minDeposit: tradingProductGroups.minDeposit,
+        currency: tradingProductGroups.currency,
+        decimals: currencies.decimals,
+      })
+      .from(tradingProductGroups)
+      .leftJoin(currencies, eq(currencies.code, tradingProductGroups.currency))
+      .where(
+        and(
+          eq(tradingProductGroups.productId, productId),
+          eq(tradingProductGroups.environment, 'live'),
+          sql`lower(${tradingProductGroups.mt5Group}) = lower(${group})`,
+        ),
+      )
+      .limit(1);
+    if (!rule?.minDeposit) return;
+
+    const [wallet] = await this.db
+      .select({ available: sql<string>`(${wallets.balance} - ${wallets.onHold})::text` })
+      .from(wallets)
+      .where(
+        and(
+          eq(wallets.userId, userId),
+          eq(wallets.kind, 'main'),
+          eq(wallets.currency, rule.currency),
+        ),
+      )
+      .limit(1);
+    const available = new Decimal(wallet?.available ?? '0');
+    if (available.greaterThanOrEqualTo(rule.minDeposit)) return;
+
+    const decimals = rule.decimals ?? 2;
+    const shown = `${new Decimal(rule.minDeposit).toFixed(decimals)} ${rule.currency}`;
+    throw new ValidationError(
+      `This account needs a minimum deposit of ${shown}. Your ${rule.currency} wallet has ` +
+        `${available.toFixed(decimals)} ${rule.currency} available — deposit to your wallet ` +
+        'first, then open the account.',
+    );
+  }
+
   private async assertUnderProductCap(userId: number, productId: string | null): Promise<void> {
     // Unreachable from self-service (the offer names a product); nothing to count against.
     if (!productId) return;
@@ -154,6 +215,9 @@ export class Mt5OwnAccountsService {
     // Before the bridge, for the reason the admin path gives.
     const productId = await this.accounts.productForGroup(input.group, input.productId);
     await this.assertUnderProductCap(client.id, productId);
+    if (input.environment === 'live') {
+      await this.assertWalletCoversMinimum(client.id, input.group, productId);
+    }
 
     const created = await this.bridge.createAccount({
       group: input.group,

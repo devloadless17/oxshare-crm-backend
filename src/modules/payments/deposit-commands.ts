@@ -173,13 +173,7 @@ export class DepositCommands {
     this.paymentMethods.assertAmountWithin(paymentMethod, amount);
 
     if (params.destinationTradingAccountId) {
-      await this.assertFundableAccount(
-        params.userId,
-        params.destinationTradingAccountId,
-        amount,
-        currency,
-        decimals,
-      );
+      await this.assertFundableAccount(params.userId, params.destinationTradingAccountId);
     }
 
     const wallet = await this.wallets.getOrCreateWallet(params.userId, currency);
@@ -396,13 +390,7 @@ export class DepositCommands {
   }
 
   /** A deposit may be routed on only to the client's own LIVE account. */
-  private async assertFundableAccount(
-    userId: number,
-    accountId: string,
-    amount: Decimal,
-    currency: string,
-    decimals: number,
-  ): Promise<void> {
+  private async assertFundableAccount(userId: number, accountId: string): Promise<void> {
     /*
      * The chosen trading account, validated NOW rather than at settlement.
      *
@@ -426,16 +414,6 @@ export class DepositCommands {
       throw new ValidationError(
         'Only live trading accounts can be funded. Demo accounts trade practice money and are not linked to your wallet.',
       );
-    }
-    /*
-     * The account's product minimum (0201), refused HERE rather than by the
-     * onward transfer: that leg runs after the money has landed and never fails
-     * the deposit, so a deposit below the minimum would quietly stop in the
-     * wallet. Only in the account's own currency — another currency cannot be
-     * transferred onward at all, which the transfer refuses with its own reason.
-     */
-    if (account.currency === currency) {
-      await this.transfers.assertMeetsMinimum(account.id, amount, currency, decimals);
     }
   }
 
