@@ -227,14 +227,16 @@ describeSortIndexes(
 
 // ── The KYC review queue ─────────────────────────────────────────────────────
 //
-// `submitted_at` is NULLABLE and the query pins NULLS LAST in both directions,
-// so the index declares the same — otherwise the planner sorts instead.
+// "Submitted" sorts on coalesce(submitted_at, created_at) since 0214: never
+// null, so a cursor can seek on it both ways, and indexed as that expression.
 describeSortIndexes(
   'the KYC review queue',
   'kyc_submissions',
   'user_id',
   {
-    submittedAt: { sql: 'kyc_submissions.submitted_at', nullsLast: true },
+    submittedAt: {
+      sql: 'coalesce(kyc_submissions.submitted_at, kyc_submissions.created_at)',
+    },
     status: { sql: 'kyc_submissions.status' },
     createdAt: { sql: 'kyc_submissions.created_at' },
     userEmail: { sql: 'users.email', on: 'users' },

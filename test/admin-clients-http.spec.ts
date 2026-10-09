@@ -1,3 +1,4 @@
+import { MAX_PAGE_SIZE } from '../src/common/pagination';
 import { ALL_PERMISSIONS } from './support/all-permissions';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { actingAs, startHttpTestApp, stopHttpTestApp, type HttpTestContext } from './http-setup';
@@ -186,7 +187,7 @@ describe('valid filters keep working', () => {
     const session = await actingAs(ctx, 'admin', ADMIN);
     const res = await session.get(`${CLIENTS}?limit=100000`).expect(200);
     const body = res.body as { limit: number };
-    expect(body.limit).toBeLessThanOrEqual(100);
+    expect(body.limit).toBeLessThanOrEqual(MAX_PAGE_SIZE);
   });
 });
 

@@ -722,7 +722,7 @@ describe('a PORTAL ID search is a point lookup on every screen', () => {
       SELECT id FROM audit_log WHERE ${auditClientSearch(portalClient.portalId)}
     `);
     expect(text, `the audit Portal ID search cannot use its index:\n${text}`).toMatch(
-      /audit_log_client_id_idx/,
+      /audit_log_client_(id|created_id)_idx/,
     );
   });
 

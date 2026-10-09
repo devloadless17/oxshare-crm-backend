@@ -1,7 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { type DateRange, withinRange } from '../../common/date-range';
 import Decimal from 'decimal.js';
-import { and, count, desc, eq, isNotNull, lte, or, sql, type SQL } from 'drizzle-orm';
+import { and, asc, count, desc, eq, isNotNull, lte, or, sql, type SQL } from 'drizzle-orm';
 import type { getDb } from '../../database/db';
 import {
   currencies,
@@ -22,7 +22,14 @@ import {
   ValidationError,
 } from '../../common/errors/domain-errors';
 import { DRIZZLE_DB } from '../../database/database.module';
-import { buildCursorPage, pageSize, type CursorPosition } from '../../common/pagination';
+import {
+  buildCursorPage,
+  cappedTotal,
+  pageSize,
+  TOTAL_CAP,
+  type CursorPosition,
+  type PageDirection,
+} from '../../common/pagination';
 import {
   clientScopePredicate,
   UNRESTRICTED,
@@ -586,9 +593,13 @@ export class WalletService {
     cursor?: CursorPosition;
     /** When posted — `[from, until)`, `common/date-range.ts`. */
     range?: DateRange;
+    /** Previous / Last walk the same index backward — `pageDirection`. */
+    paging?: PageDirection;
   }) {
     const page = Math.max(1, filter.page ?? 1);
     const limit = pageSize(filter.limit);
+    // Newest first; Previous / Last read the same index the other way.
+    const backward = Boolean(filter.paging?.backward);
     const db = this.db;
 
     const conditions = this.entryConditions(filter);
@@ -599,9 +610,12 @@ export class WalletService {
      * while new ones are written is a reconciliation that balances against the
      * wrong set of rows.
      */
+    // The total counts the FILTERED ledger, never "what follows the cursor".
+    const countWhere = conditions.length > 0 ? and(...conditions) : undefined;
     if (filter.cursor) {
+      const comparator = backward ? sql`>` : sql`<`;
       conditions.push(
-        sql`(${ledgerEntries.createdAt}, ${ledgerEntries.id}) < (${filter.cursor.value}::timestamptz, ${filter.cursor.id}::uuid)`,
+        sql`(${ledgerEntries.createdAt}, ${ledgerEntries.id}) ${comparator} (${filter.cursor.value}::timestamptz, ${filter.cursor.id}::uuid)`,
       );
     }
     const where = conditions.length > 0 ? and(...conditions) : undefined;
@@ -663,7 +677,11 @@ export class WalletService {
       .innerJoin(wallets, eq(ledgerEntries.walletId, wallets.id))
       .leftJoin(users, eq(users.id, wallets.userId))
       .where(where)
-      .orderBy(desc(ledgerEntries.createdAt), desc(ledgerEntries.id))
+      .orderBy(
+        ...(backward
+          ? [asc(ledgerEntries.createdAt), asc(ledgerEntries.id)]
+          : [desc(ledgerEntries.createdAt), desc(ledgerEntries.id)]),
+      )
       .limit(limit + 1)
       .offset(usingCursor ? 0 : (page - 1) * limit);
 
@@ -675,16 +693,32 @@ export class WalletService {
      * the bad version is a count over a DIFFERENT row set than the page, which
      * reports a total nobody can page to.
      */
-    const countQuery = db
-      .select({ value: sql<number>`count(*)::int` })
-      .from(ledgerEntries)
-      .innerJoin(wallets, eq(ledgerEntries.walletId, wallets.id))
-      .leftJoin(users, eq(users.id, wallets.userId))
-      .where(where);
+    // Counted up to TOTAL_CAP + 1 rows (`cappedTotal`): the ledger never stops
+    // growing, and an exact count grew with it on every page view.
+    const countQuery = db.select({ value: sql<number>`count(*)::int` }).from(
+      db
+        .select({ one: sql`1` })
+        .from(ledgerEntries)
+        .innerJoin(wallets, eq(ledgerEntries.walletId, wallets.id))
+        .leftJoin(users, eq(users.id, wallets.userId))
+        .where(countWhere)
+        .limit(TOTAL_CAP + 1)
+        .as('counted'),
+    );
     // Independent reads: run them together rather than one after the other.
     const [rows, [{ value: total }]] = await Promise.all([rowsQuery, countQuery]);
 
-    return { ...buildCursorPage(rows, limit, total), page, limit };
+    return {
+      ...buildCursorPage(
+        rows,
+        limit,
+        cappedTotal(total),
+        undefined,
+        filter.paging ? { ...filter.paging, fromCursor: Boolean(filter.cursor) } : undefined,
+      ),
+      page,
+      limit,
+    };
   }
 
   /**

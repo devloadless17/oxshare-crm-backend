@@ -16,6 +16,14 @@ import type { FormPolicy } from '../common/kyc/identity-core';
 import { clientIdentitySearch } from './users.store';
 import { Inject, Injectable } from '@nestjs/common';
 import { orderTerms, type SortOrder } from '../common/sorting';
+import {
+  buildCursorPage,
+  cappedTotal,
+  type CursorPosition,
+  type PageDirection,
+  TOTAL_CAP,
+  walkOrder,
+} from '../common/pagination';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db, Executor } from '../database/db';
 import { kycSubmissionAttempts, kycSubmissions, users } from '../database/schema';
@@ -51,7 +59,13 @@ export type KycStatus =
  * for its name and email display, so sorting by them costs no extra join.
  */
 export const KYC_SORT_COLUMNS = {
-  submittedAt: kycSubmissions.submittedAt,
+  /*
+   * When it was SUBMITTED — or started, while it is still a draft — the same
+   * instant the period filter reads. Never null, so a cursor can seek on it in
+   * both directions (a null sorts nowhere a `<` can reach), and indexed as this
+   * exact expression (0214).
+   */
+  submittedAt: sql`coalesce(${kycSubmissions.submittedAt}, ${kycSubmissions.createdAt})`,
   status: kycSubmissions.status,
   createdAt: kycSubmissions.createdAt,
   userEmail: users.email,
@@ -559,12 +573,17 @@ export class KycStore {
     order?: SortOrder;
     /** When it was submitted (a draft: started) — `[from, until)`, `common/date-range.ts`. */
     range?: DateRange;
+    /** Keyset position — R-2.4. When present, `page` is ignored. */
+    cursor?: CursorPosition;
+    /** Previous / Last walk the same index backward — `pageDirection`. */
+    paging?: PageDirection;
   }) {
     const db = this.db;
     const conditions: SQL[] = [];
 
     const sortKey: KycSortKey = filter.sort ?? DEFAULT_KYC_SORT;
-    const direction = filter.order ?? 'desc';
+    // The order the QUERY walks: the list's own, reversed for Previous / Last.
+    const direction = walkOrder(filter.order ?? 'desc', filter.paging);
     const sortColumn: SQLWrapper = KYC_SORT_COLUMNS[sortKey];
 
     /*
@@ -625,6 +644,26 @@ export class KycStore {
       visibility.push(clientIdentitySearch(filter.q));
     }
     conditions.push(...visibility);
+    // The total counts the FILTERED queue, never "what follows the cursor".
+    const totalWhere = conditions.length > 0 ? and(...conditions) : undefined;
+    if (filter.cursor) {
+      /*
+       * Keyset seek — R-2.4: a reviewer works down this queue while clients
+       * keep submitting, the case OFFSET skips a row on. The value is cast to
+       * the sort's own type (a status compares in the ENUM's order, which is
+       * how its index is ordered), and `user_id` is the tiebreak.
+       */
+      const cast =
+        sortKey === 'submittedAt' || sortKey === 'createdAt'
+          ? sql`${filter.cursor.value}::timestamptz`
+          : sortKey === 'status'
+            ? sql`${filter.cursor.value}::kyc_status`
+            : sql`${filter.cursor.value}::text`;
+      const comparator = direction === 'asc' ? sql`>` : sql`<`;
+      conditions.push(
+        sql`(${sortColumn}, ${kycSubmissions.userId}) ${comparator} (${cast}, ${filter.cursor.id}::integer)`,
+      );
+    }
     const where = conditions.length > 0 ? and(...conditions) : undefined;
     /** Scope and search, without the status narrowing — for the tab counts. */
     const countsWhere = visibility.length > 0 ? and(...visibility) : undefined;
@@ -663,6 +702,8 @@ export class KycStore {
           reviewedBy: kycSubmissions.reviewedBy,
           createdAt: kycSubmissions.createdAt,
           updatedAt: kycSubmissions.updatedAt,
+          // The sort value as text, for the cursor (microseconds intact).
+          cursorValue: sql<string>`${sortColumn}::text`,
           // The PROFILE's country of residence — its one home since 0139.
           country: users.country,
           user: {
@@ -692,20 +733,20 @@ export class KycStore {
          * `(col DESC, user_id DESC)` composites — a b-tree is readable backwards
          * only when every column of the ORDER BY agrees.
          */
-        .orderBy(
-          ...orderTerms(sortColumn, kycSubmissions.userId, direction, {
-            // Only `submittedAt` is nullable here — null for every application
-            // still being filled in, which must not lead the queue.
-            nullsLast: sortKey === 'submittedAt',
-          }),
-        )
-        .limit(filter.limit)
-        .offset((filter.page - 1) * filter.limit),
-      db
-        .select({ value: sql<number>`count(*)::int` })
-        .from(kycSubmissions)
-        .innerJoin(users, eq(kycSubmissions.userId, users.id))
-        .where(where),
+        .orderBy(...orderTerms(sortColumn, kycSubmissions.userId, direction))
+        // One extra row answers "is there more" with no second query.
+        .limit(filter.limit + 1)
+        .offset(filter.cursor || filter.paging ? 0 : (filter.page - 1) * filter.limit),
+      // Counted up to TOTAL_CAP + 1 rows (`cappedTotal`).
+      db.select({ value: sql<number>`count(*)::int` }).from(
+        db
+          .select({ one: sql`1` })
+          .from(kycSubmissions)
+          .innerJoin(users, eq(kycSubmissions.userId, users.id))
+          .where(totalWhere)
+          .limit(TOTAL_CAP + 1)
+          .as('counted'),
+      ),
       /*
        * Every STATUS this reader may see — so a tab count stays right while a
        * status filter is applied, without ever reaching past their territory.
@@ -714,22 +755,39 @@ export class KycStore {
        * inner join cannot change the count because `user_id` is NOT NULL with
        * a foreign key.
        */
+      /*
+       * Each status counted up to TOTAL_CAP + 1 rows, through its own
+       * `(status, …)` index — one bounded read per status instead of a GROUP BY
+       * over every submission ever made. The waiting tabs are far below the cap
+       * and stay exact; a decided tab past it reads "10,000+".
+       */
       db
-        .select({
-          status: kycSubmissions.status,
-          value: sql<number>`count(*)::int`,
-        })
-        .from(kycSubmissions)
-        .innerJoin(users, eq(kycSubmissions.userId, users.id))
-        .where(countsWhere)
-        .groupBy(kycSubmissions.status),
+        .execute(
+          sql`SELECT s.status::text AS status, (
+                SELECT count(*)::int FROM (
+                  SELECT 1 FROM ${kycSubmissions}
+                  INNER JOIN ${users} ON ${users.id} = ${kycSubmissions.userId}
+                  WHERE ${kycSubmissions.status} = s.status
+                  ${countsWhere ? sql`AND ${countsWhere}` : sql``}
+                  LIMIT ${TOTAL_CAP + 1}
+                ) one
+              ) AS value
+              FROM unnest(enum_range(NULL::kyc_status)) AS s(status)`,
+        )
+        .then((r) => r.rows as { status: string; value: number }[]),
     ]);
 
     const counts: Record<string, number> = { all: 0 };
+    /** The statuses whose count stopped at TOTAL_CAP — render "10,000+". */
+    const countsCapped: string[] = [];
     for (const row of statusCounts) {
-      counts[row.status] = row.value;
-      counts['all'] += row.value;
+      if (row.value === 0) continue;
+      const capped = row.value > TOTAL_CAP;
+      if (capped) countsCapped.push(row.status);
+      counts[row.status] = capped ? TOTAL_CAP : row.value;
+      counts['all'] += counts[row.status];
     }
+    if (countsCapped.length > 0) countsCapped.push('all');
     /*
      * The pseudo-status, counted HERE so it has one definition.
      *
@@ -751,9 +809,25 @@ export class KycStore {
       (sum, status) => sum + (counts[status] ?? 0),
       0,
     );
+    if (NEEDS_REVIEW_STATUSES.some((st) => countsCapped.includes(st))) {
+      countsCapped.push(NEEDS_REVIEW);
+    }
+
+    // The page, its two cursors, and the total capped at TOTAL_CAP.
+    const paged = buildCursorPage(
+      rows.map((r) => ({ ...r, id: r.userId })),
+      filter.limit,
+      cappedTotal(countRow.value),
+      sortKey,
+      filter.paging ? { ...filter.paging, fromCursor: Boolean(filter.cursor) } : undefined,
+    );
 
     return {
-      items: rows.map((r) => ({
+      nextCursor: paged.nextCursor,
+      prevCursor: paged.prevCursor ?? null,
+      totalCapped: paged.totalCapped ?? false,
+      countsCapped,
+      items: paged.items.map((r) => ({
         userId: r.userId,
         status: r.status,
         submittedAt: r.submittedAt ?? undefined,
@@ -765,7 +839,7 @@ export class KycStore {
         personalInfo: r.country ? { country: r.country } : undefined,
         user: r.user,
       })),
-      total: countRow.value,
+      total: paged.total ?? 0,
       page: filter.page,
       limit: filter.limit,
       counts,

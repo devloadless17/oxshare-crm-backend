@@ -232,6 +232,12 @@ export class AdminMoneyController {
   @ApiQuery({ name: 'limit', required: false })
   @ApiQuery({ name: 'cursor', required: false, description: 'Opaque keyset cursor (R-2.4).' })
   @ApiQuery({
+    name: 'dir',
+    required: false,
+    enum: ['next', 'prev', 'last'],
+    description: 'prev: the page before ?cursor. last: the final page (no cursor).',
+  })
+  @ApiQuery({
     name: 'sort',
     required: false,
     enum: Object.keys(WITHDRAWAL_SORT_COLUMNS),
@@ -257,6 +263,7 @@ export class AdminMoneyController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('cursor') cursor?: string,
+    @Query('dir') dir?: string,
     @Query('sort') sort?: string,
     @Query('order') order?: string,
     @Query('id') id?: string,
@@ -275,6 +282,7 @@ export class AdminMoneyController {
         page,
         limit,
         cursor,
+        dir,
         // `sort`/`order` are validated in the service against the allowlist,
         // which is where the column mapping lives. Validating here too would put
         // the allowlist in two places.
@@ -981,6 +989,7 @@ export class AdminMoneyController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('cursor') cursor?: string,
+    @Query('dir') dir?: string,
     @Query('from') from?: string,
     @Query('to') to?: string,
   ) {
@@ -1001,6 +1010,7 @@ export class AdminMoneyController {
         page,
         limit,
         cursor,
+        dir,
         range: dateRangeQuery(from, to),
       },
       req.admin,

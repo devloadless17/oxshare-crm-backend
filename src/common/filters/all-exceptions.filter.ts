@@ -153,6 +153,7 @@ function httpCodeFor(status: number): string {
 const PG_CONFLICT = '23505'; // unique_violation
 const PG_FK_VIOLATION = '23503'; // foreign_key_violation
 const PG_INVALID_TEXT = '22P02'; // invalid_text_representation — e.g. a non-UUID id
+const PG_QUERY_CANCELED = '57014'; // query_canceled — the statement timeout fired
 
 /**
  * body-parser's "too large", by its own marker rather than by message text.
@@ -600,6 +601,19 @@ export class AllExceptionsFilter implements ExceptionFilter {
         status: HttpStatus.BAD_REQUEST,
         message: 'A value in the request is not a valid identifier.',
         code: 'INVALID_IDENTIFIER',
+      };
+    }
+
+    /*
+     * A read that ran past its time limit (9 Oct 2026). It is the search or
+     * filter that is too broad, not a fault: the reader can narrow it and try
+     * again, so they are told that — a 500 would read as the system being down.
+     */
+    if (pgCode === PG_QUERY_CANCELED) {
+      return {
+        status: HttpStatus.UNPROCESSABLE_ENTITY,
+        message: 'This search is too broad to answer quickly. Narrow it and try again.',
+        code: 'SEARCH_TOO_BROAD',
       };
     }
 

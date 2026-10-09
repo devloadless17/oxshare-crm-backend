@@ -200,6 +200,12 @@ export class AdminAuditController {
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
   @ApiQuery({ name: 'cursor', required: false, description: 'Opaque keyset cursor (R-2.4).' })
+  @ApiQuery({
+    name: 'dir',
+    required: false,
+    enum: ['next', 'prev', 'last'],
+    description: 'prev: the page before ?cursor. last: the final page (no cursor).',
+  })
   @ApiQuery({ name: 'action', required: false })
   @ApiQuery({ name: 'subjectType', required: false })
   @ApiQuery({
@@ -232,6 +238,7 @@ export class AdminAuditController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('cursor') cursor?: string,
+    @Query('dir') dir?: string,
     @Query('action') action?: string,
     @Query('subjectType') subjectType?: string,
     @Query('actorId') actorId?: string,
@@ -252,6 +259,7 @@ export class AdminAuditController {
       page,
       limit,
       cursor,
+      dir,
       action: searchQuery(action, 'action'),
       subjectType: searchQuery(subjectType, 'subjectType'),
       /*

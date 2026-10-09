@@ -837,6 +837,12 @@ export const SERVER_MESSAGES_AR: Readonly<Record<string, string>> = {
     'لا يمكن رفض إلا إيداع قيد الانتظار؛ حالة هذا الإيداع: {1}.',
   'Malformed cursor. Omit it to start from the first page.':
     'مؤشر الصفحات غير صالح. احذفه للبدء من الصفحة الأولى.',
+  'dir=prev needs the cursor of the page you are on.':
+    'الانتقال إلى الصفحة السابقة يحتاج مؤشر الصفحة الحالية.',
+  'dir=last takes no cursor: it starts from the end.':
+    'الانتقال إلى الصفحة الأخيرة لا يقبل مؤشراً: يبدأ من النهاية.',
+  'This search is too broad to answer quickly. Narrow it and try again.':
+    'هذا البحث واسع جداً للإجابة بسرعة. ضيّقه وحاول مرة أخرى.',
   'Withdrawal amount must be positive.': 'يجب أن يكون مبلغ السحب موجباً.',
   'The minimum withdrawal is {1} {2}.': 'الحد الأدنى للسحب هو {1} {2}.',
   'The maximum single withdrawal is {1} {2}. Please split the request or contact support.':

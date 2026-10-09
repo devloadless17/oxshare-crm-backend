@@ -717,6 +717,41 @@ export class KycListResponseDto {
     'a money, paging or configuration value on the RECORD, carrying no client attribute',
   )
   counts: Record<string, number>;
+
+  @ApiProperty({
+    type: [String],
+    description: 'The tab counts that stopped at 10,000 — render each as "10,000+".',
+  })
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  countsCapped: string[];
+
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    description: 'Pass back as ?cursor= for the next page.',
+  })
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  nextCursor: string | null;
+
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    description: 'Pass back as ?cursor=…&dir=prev for the page before; null on the first page.',
+  })
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  prevCursor: string | null;
+
+  @ApiProperty({ description: 'True when more than 10,000 rows match: total is then 10,000.' })
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  totalCapped: boolean;
 }
 
 /** RBAC-03 — one maskable (or deliberately unmaskable) client field. */
@@ -1441,12 +1476,30 @@ export class ClientListResponseDto {
   nextCursor: string | null;
 
   @ApiPropertyOptional({
-    description: 'Only when ?withTotal=true. Counting 219,000 rows is a full scan.',
+    type: String,
+    nullable: true,
+    description: 'Pass back as ?cursor=…&dir=prev for the page before; null on the first page.',
+  })
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  prevCursor?: string | null;
+
+  @ApiPropertyOptional({
+    description: 'Only when ?withTotal=true. Counted up to 10,001 rows: see totalCapped.',
   })
   @NotClientField(
     'a money, paging or configuration value on the RECORD, carrying no client attribute',
   )
   total?: number;
+
+  @ApiPropertyOptional({
+    description: 'True when more than 10,000 rows match: total is then 10,000 ("10,000+").',
+  })
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  totalCapped?: boolean;
   @NotClientField(
     'a money, paging or configuration value on the RECORD, carrying no client attribute',
   )
@@ -1791,6 +1844,24 @@ export class AuditListResponseDto {
    */
   @ApiProperty({ type: String, nullable: true })
   nextCursor: string | null;
+
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    description: 'Pass back as ?cursor=…&dir=prev for the page before; null on the first page.',
+  })
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  prevCursor?: string | null;
+
+  @ApiPropertyOptional({
+    description: 'True when more than 10,000 rows match: total is then 10,000 ("10,000+").',
+  })
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  totalCapped?: boolean;
   @ApiProperty() total: number;
   @ApiProperty() page: number;
   @ApiProperty() limit: number;
@@ -2207,6 +2278,24 @@ export class WithdrawalListResponseDto {
   @ApiProperty({ type: String, nullable: true })
   nextCursor: string | null;
 
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    description: 'Pass back as ?cursor=…&dir=prev for the page before; null on the first page.',
+  })
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  prevCursor?: string | null;
+
+  @ApiPropertyOptional({
+    description: 'True when more than 10,000 rows match: total is then 10,000 ("10,000+").',
+  })
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  totalCapped?: boolean;
+
   @NotClientField(
     'a money, paging or configuration value on the RECORD, carrying no client attribute',
   )
@@ -2447,6 +2536,24 @@ export class AdminTransactionListResponseDto {
   )
   @ApiProperty({ type: String, nullable: true })
   nextCursor: string | null;
+
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    description: 'Pass back as ?cursor=…&dir=prev for the page before; null on the first page.',
+  })
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  prevCursor?: string | null;
+
+  @ApiPropertyOptional({
+    description: 'True when more than 10,000 rows match: total is then 10,000 ("10,000+").',
+  })
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  totalCapped?: boolean;
   @NotClientField(
     'a money, paging or configuration value on the RECORD, carrying no client attribute',
   )
@@ -2677,6 +2784,24 @@ export class WalletListResponseDto {
   @ApiProperty({ type: [WalletRowDto] }) items: WalletRowDto[];
   /** Pass back as `?cursor=` for the next page; `null` on the last (R-2.4). */
   @ApiProperty({ type: String, nullable: true }) nextCursor: string | null;
+
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    description: 'Pass back as ?cursor=…&dir=prev for the page before; null on the first page.',
+  })
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  prevCursor?: string | null;
+
+  @ApiPropertyOptional({
+    description: 'True when more than 10,000 rows match: total is then 10,000 ("10,000+").',
+  })
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  totalCapped?: boolean;
   @ApiProperty() total: number;
   @ApiProperty() page: number;
   @ApiProperty() limit: number;
@@ -2807,6 +2932,24 @@ export class TradingAccountRowDto {
 export class TradingAccountListResponseDto {
   @ApiProperty({ type: [TradingAccountRowDto] }) items: TradingAccountRowDto[];
   @ApiProperty({ type: String, nullable: true }) nextCursor: string | null;
+
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    description: 'Pass back as ?cursor=…&dir=prev for the page before; null on the first page.',
+  })
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  prevCursor?: string | null;
+
+  @ApiPropertyOptional({
+    description: 'True when more than 10,000 rows match: total is then 10,000 ("10,000+").',
+  })
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  totalCapped?: boolean;
   @ApiProperty() total: number;
   @ApiProperty() page: number;
   @ApiProperty() limit: number;
@@ -3247,7 +3390,21 @@ export class ClientClosedPositionRowDto {
 )
 export class ClientClosedPositionsPageDto {
   @ApiProperty({ type: [ClientClosedPositionRowDto] }) rows: ClientClosedPositionRowDto[];
-  @ApiProperty() total: number;
+  @ApiProperty({ description: 'Counted up to 10,001 rows: see totalCapped.' }) total: number;
+  @ApiProperty({ description: 'True when more than 10,000 positions match ("10,000+").' })
+  totalCapped: boolean;
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    description: 'Pass back as ?cursor= for the next page.',
+  })
+  nextCursor: string | null;
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    description: 'Pass back as ?cursor=…&dir=prev for the page before; null on the first page.',
+  })
+  prevCursor: string | null;
   @ApiProperty() page: number;
   @ApiProperty() limit: number;
 }
@@ -3283,7 +3440,21 @@ export class ClientTransactionRowDto {
 )
 export class ClientTransactionsPageDto {
   @ApiProperty({ type: [ClientTransactionRowDto] }) rows: ClientTransactionRowDto[];
-  @ApiProperty() total: number;
+  @ApiProperty({ description: 'Counted up to 10,001 rows: see totalCapped.' }) total: number;
+  @ApiProperty({ description: 'True when more than 10,000 movements match ("10,000+").' })
+  totalCapped: boolean;
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    description: 'Pass back as ?cursor= for the next page.',
+  })
+  nextCursor: string | null;
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    description: 'Pass back as ?cursor=…&dir=prev for the page before; null on the first page.',
+  })
+  prevCursor: string | null;
   @ApiProperty() page: number;
   @ApiProperty() limit: number;
 }

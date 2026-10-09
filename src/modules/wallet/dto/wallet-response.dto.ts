@@ -1,4 +1,4 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { ClientField, NotClientField } from '../../../common/security/client-field.decorator';
 
 // Response DTOs for the client-facing wallet endpoints.
@@ -245,6 +245,24 @@ export class LedgerListResponseDto {
   @NotClientField('a paging control, not an attribute of any person')
   @ApiProperty({ type: String, nullable: true })
   nextCursor: string | null;
+
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    description: 'Pass back as ?cursor=…&dir=prev for the page before; null on the first page.',
+  })
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  prevCursor?: string | null;
+
+  @ApiPropertyOptional({
+    description: 'True when more than 10,000 rows match: total is then 10,000 ("10,000+").',
+  })
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  totalCapped?: boolean;
 
   @NotClientField('a paging control, not an attribute of any person')
   @ApiProperty({ description: 'Total matching entries, ignoring pagination.' })

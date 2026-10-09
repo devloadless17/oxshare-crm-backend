@@ -18,8 +18,12 @@ import { clientScopePredicate, type ClientScope } from '../common/security/clien
 import {
   DEFAULT_PAGE_SIZE,
   buildCursorPage,
+  cappedTotal,
   pageSize,
+  TOTAL_CAP,
+  walkOrder,
   type CursorPosition,
+  type PageDirection,
 } from '../common/pagination';
 import type { SortOrder } from '../common/sorting';
 import { Inject, Injectable } from '@nestjs/common';
@@ -447,6 +451,8 @@ export class AuditLogStore {
        * full scan each time. `total` is then 0. Default `true`.
        */
       withTotal?: boolean;
+      /** Previous / Last walk the same index backward — `pageDirection`. */
+      paging?: PageDirection;
     } = {},
   ) {
     const page = Math.max(1, filter.page ?? 1);
@@ -455,7 +461,8 @@ export class AuditLogStore {
       : pageSize(filter.limit);
 
     const sortKey: AuditSortKey = filter.sort ?? DEFAULT_AUDIT_SORT;
-    const direction = filter.order ?? 'desc';
+    // The order the QUERY walks: the list's own, reversed for Previous / Last.
+    const direction = walkOrder(filter.order ?? 'desc', filter.paging);
     const sortColumn: SQLWrapper = AUDIT_SORT_COLUMNS[sortKey];
 
     const conditions: SQL[] = [...withinRange(auditLog.createdAt, filter.range)];
@@ -525,6 +532,8 @@ export class AuditLogStore {
         ) as SQL,
       );
     }
+    // The total counts the FILTERED trail, never "what follows the cursor".
+    const countWhere = conditions.length > 0 ? and(...conditions) : undefined;
     /*
      * Keyset seek — R-2.4. The audit log is append-only and grows forever, so it
      * is the list most certain to reach a depth where OFFSET hurts. It is also
@@ -587,10 +596,26 @@ export class AuditLogStore {
       .limit(limit + 1)
       .offset(usingCursor ? 0 : (page - 1) * limit);
 
+    /*
+     * Counted up to TOTAL_CAP + 1 rows (`cappedTotal`): the audit log is the
+     * table "guaranteed to be the largest", and an exact count grew with it on
+     * every page view.
+     */
     const total =
       filter.withTotal === false
-        ? 0
-        : (await db.select({ value: count() }).from(auditLog).where(where))[0].value;
+        ? cappedTotal(0)
+        : cappedTotal(
+            (
+              await db.select({ value: count() }).from(
+                db
+                  .select({ one: sql`1` })
+                  .from(auditLog)
+                  .where(countWhere)
+                  .limit(TOTAL_CAP + 1)
+                  .as('counted'),
+              )
+            )[0].value,
+          );
 
     // The sort key is stamped into the cursor so it cannot be replayed under a
     // different ordering — `decodeCursor` refuses one that was, rather than
@@ -603,6 +628,7 @@ export class AuditLogStore {
       limit,
       total,
       sortKey,
+      filter.paging ? { ...filter.paging, fromCursor: Boolean(filter.cursor) } : undefined,
     );
 
     return { ...page_, page, limit };

@@ -1,3 +1,4 @@
+import { MAX_PAGE_SIZE } from '../src/common/pagination';
 import { ALL_PERMISSIONS } from './support/all-permissions';
 import { legacyRoute } from './support/payment-route';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -468,7 +469,7 @@ describe('validation — a typo is a 400 with a sentence, never a 500', () => {
   it('bounds the page size rather than trusting the querystring', async () => {
     const session = await actingAs(ctx, 'admin', FULL);
     const res = await session.get(`${LIST}?limit=100000`).expect(200);
-    expect((res.body as { limit: number }).limit).toBeLessThanOrEqual(100);
+    expect((res.body as { limit: number }).limit).toBeLessThanOrEqual(MAX_PAGE_SIZE);
   });
 });
 

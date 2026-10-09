@@ -52,10 +52,18 @@ import {
 } from '../../common/security/client-scope';
 import {
   buildCursorPage,
+  cappedTotal,
   decodeCursor,
   pageSize,
+  keysetSeek,
+  TOTAL_CAP,
+  twoWayPaging,
+  walkOrder,
+  wrapPage,
+  type CappedTotal,
   type CursorPosition,
   type CursorValueShape,
+  type PageDirection,
 } from '../../common/pagination';
 import { sortKey, sortOrder, type SortOrder } from '../../common/sorting';
 import { assertActorCan } from '../../common/security/actor';
@@ -325,6 +333,8 @@ export class AdminHoldingsService {
       page?: string;
       limit?: string;
       cursor?: string;
+      /** `prev` / `last` walk backward — `pageDirection`. */
+      dir?: string;
       withTotal?: string;
       sort?: string;
       order?: string;
@@ -376,6 +386,7 @@ export class AdminHoldingsService {
       page: Math.max(1, Number.parseInt(query.page ?? '1', 10) || 1),
       limit: pageSize(query.limit),
       cursor,
+      paging: twoWayPaging(query),
       withTotal: query.withTotal !== 'false',
       sort,
       order,
@@ -476,6 +487,7 @@ export class AdminHoldingsService {
     page: number;
     limit: number;
     cursor?: CursorPosition;
+    paging?: PageDirection;
     withTotal: boolean;
     sort: WalletSortKey;
     order: SortOrder;
@@ -484,17 +496,21 @@ export class AdminHoldingsService {
     const db = this.db;
     const sortColumn: SQLWrapper = WALLET_SORT_COLUMNS[filter.sort];
     const conditions = this.walletConditions(filter);
+    // The order the QUERY walks: the list's own, reversed for Previous / Last.
+    const walk = walkOrder(filter.order, filter.paging);
+    // The total counts the FILTERED list, never "what follows the cursor".
+    const countWhere = conditions.length > 0 ? and(...conditions) : undefined;
 
     if (filter.cursor) {
       const kind = seekKindFor(filter.sort);
-      conditions.push(seekTerms(sortColumn, kind, filter.cursor, wallets.id, filter.order));
+      conditions.push(seekTerms(sortColumn, kind, filter.cursor, wallets.id, walk));
     }
 
     const where = conditions.length > 0 ? and(...conditions) : undefined;
     const usingCursor = Boolean(filter.cursor) || filter.page <= 1;
     // Both keys in the SAME direction — a b-tree reads backwards only when every
     // column of the ORDER BY agrees, which is the shape migration 0038 creates.
-    const orderBy = filter.order === 'asc' ? asc : desc;
+    const orderBy = walk === 'asc' ? asc : desc;
 
     const rows = await db
       .select({
@@ -530,14 +546,19 @@ export class AdminHoldingsService {
       .limit(filter.limit + 1)
       .offset(usingCursor ? 0 : (filter.page - 1) * filter.limit);
 
-    let total: number | undefined;
+    // Counted up to TOTAL_CAP + 1 rows (`cappedTotal`).
+    let total: CappedTotal | undefined;
     if (filter.withTotal) {
-      const [countRow] = await db
-        .select({ value: sql<number>`count(*)::int` })
-        .from(wallets)
-        .innerJoin(users, eq(wallets.userId, users.id))
-        .where(where);
-      total = countRow.value;
+      const [countRow] = await db.select({ value: sql<number>`count(*)::int` }).from(
+        db
+          .select({ one: sql`1` })
+          .from(wallets)
+          .innerJoin(users, eq(wallets.userId, users.id))
+          .where(countWhere)
+          .limit(TOTAL_CAP + 1)
+          .as('counted'),
+      );
+      total = cappedTotal(countRow.value);
     }
 
     /*
@@ -547,7 +568,13 @@ export class AdminHoldingsService {
      * allowlist's keys already — so the rows go in as they are, and the API
      * shaping happens afterwards.
      */
-    const paged = buildCursorPage(rows, filter.limit, total, filter.sort);
+    const paged = buildCursorPage(
+      rows,
+      filter.limit,
+      total,
+      filter.sort,
+      filter.paging ? { ...filter.paging, fromCursor: Boolean(filter.cursor) } : undefined,
+    );
 
     return {
       items: paged.items.map((r) => ({
@@ -582,7 +609,9 @@ export class AdminHoldingsService {
         },
       })),
       nextCursor: paged.nextCursor,
-      total: total ?? 0,
+      prevCursor: paged.prevCursor,
+      total: total?.total ?? 0,
+      totalCapped: total?.totalCapped ?? false,
       page: filter.page,
       limit: filter.limit,
     };
@@ -721,6 +750,8 @@ export class AdminHoldingsService {
       page?: string;
       limit?: string;
       cursor?: string;
+      /** `prev` / `last` walk backward — `pageDirection`. */
+      dir?: string;
       withTotal?: string;
       sort?: string;
       order?: string;
@@ -778,6 +809,7 @@ export class AdminHoldingsService {
       page: Math.max(1, Number.parseInt(query.page ?? '1', 10) || 1),
       limit: pageSize(query.limit),
       cursor,
+      paging: twoWayPaging(query),
       withTotal: query.withTotal !== 'false',
       sort,
       order,
@@ -884,6 +916,7 @@ export class AdminHoldingsService {
     page: number;
     limit: number;
     cursor?: CursorPosition;
+    paging?: PageDirection;
     withTotal: boolean;
     sort: TradingAccountSortKey;
     order: SortOrder;
@@ -893,15 +926,19 @@ export class AdminHoldingsService {
     const db = this.db;
     const sortColumn: SQLWrapper = TRADING_ACCOUNT_SORT_COLUMNS[filter.sort];
     const conditions = this.tradingAccountConditions(filter);
+    // The order the QUERY walks: the list's own, reversed for Previous / Last.
+    const walk = walkOrder(filter.order, filter.paging);
+    // The total counts the FILTERED list, never "what follows the cursor".
+    const countWhere = conditions.length > 0 ? and(...conditions) : undefined;
 
     if (filter.cursor) {
       const kind = seekKindFor(filter.sort);
-      conditions.push(seekTerms(sortColumn, kind, filter.cursor, tradingAccounts.id, filter.order));
+      conditions.push(seekTerms(sortColumn, kind, filter.cursor, tradingAccounts.id, walk));
     }
 
     const where = conditions.length > 0 ? and(...conditions) : undefined;
     const usingCursor = Boolean(filter.cursor) || filter.page <= 1;
-    const orderBy = filter.order === 'asc' ? asc : desc;
+    const orderBy = walk === 'asc' ? asc : desc;
 
     /*
      * `login` is the one nullable sort column, so its null placement is PINNED
@@ -911,7 +948,12 @@ export class AdminHoldingsService {
      * "lowest login first" leads with rows that have no login at all.
      */
     const nullsLast = filter.sort === NULLABLE_TRADING_ACCOUNT_SORT;
-    const primary = nullsLast ? sql`${orderBy(sortColumn)} NULLS LAST` : orderBy(sortColumn);
+    // Walking backward mirrors the list exactly, so its nulls come FIRST.
+    const primary = nullsLast
+      ? filter.paging?.backward
+        ? sql`${orderBy(sortColumn)} NULLS FIRST`
+        : sql`${orderBy(sortColumn)} NULLS LAST`
+      : orderBy(sortColumn);
 
     const rows = await db
       .select({
@@ -970,17 +1012,28 @@ export class AdminHoldingsService {
       .limit(filter.limit + 1)
       .offset(usingCursor ? 0 : (filter.page - 1) * filter.limit);
 
-    let total: number | undefined;
+    // Counted up to TOTAL_CAP + 1 rows (`cappedTotal`).
+    let total: CappedTotal | undefined;
     if (filter.withTotal) {
-      const [countRow] = await db
-        .select({ value: sql<number>`count(*)::int` })
-        .from(tradingAccounts)
-        .leftJoin(users, eq(tradingAccounts.userId, users.id))
-        .where(where);
-      total = countRow.value;
+      const [countRow] = await db.select({ value: sql<number>`count(*)::int` }).from(
+        db
+          .select({ one: sql`1` })
+          .from(tradingAccounts)
+          .leftJoin(users, eq(tradingAccounts.userId, users.id))
+          .where(countWhere)
+          .limit(TOTAL_CAP + 1)
+          .as('counted'),
+      );
+      total = cappedTotal(countRow.value);
     }
 
-    const paged = buildCursorPage(rows, filter.limit, total, filter.sort);
+    const paged = buildCursorPage(
+      rows,
+      filter.limit,
+      total,
+      filter.sort,
+      filter.paging ? { ...filter.paging, fromCursor: Boolean(filter.cursor) } : undefined,
+    );
 
     return {
       items: paged.items.map((r) => ({
@@ -1013,7 +1066,9 @@ export class AdminHoldingsService {
             : null,
       })),
       nextCursor: paged.nextCursor,
-      total: total ?? 0,
+      prevCursor: paged.prevCursor,
+      total: total?.total ?? 0,
+      totalCapped: total?.totalCapped ?? false,
       page: filter.page,
       limit: filter.limit,
     };
@@ -1127,52 +1182,156 @@ export class AdminHoldingsService {
     userId: number;
     page?: string | number;
     limit?: string | number;
+    /** Keyset position from a previous page — `nextCursor` / `prevCursor`. */
+    cursor?: string;
+    /** `prev` / `last` walk backward — `pageDirection`. */
+    dir?: string;
     scope?: ClientScope;
   }) {
     // Visibility first, so an out-of-scope client is a 404 like every sibling.
     await this.visibility.assertVisible(filter.userId, filter.scope ?? UNRESTRICTED);
 
-    const page = Math.max(1, Number.parseInt(String(filter.page ?? '1'), 10) || 1);
     const limit = pageSize(filter.limit);
+    const rawPage = filter.page === undefined ? undefined : String(filter.page);
+    const paging = twoWayPaging({ page: rawPage, cursor: filter.cursor, dir: filter.dir });
+    // The legacy offset caller (an older console) still pages by number.
+    const page = paging ? 1 : Math.max(1, Number.parseInt(rawPage ?? '1', 10) || 1);
+    const offset = (page - 1) * limit;
+    const cursor = filter.cursor
+      ? decodeCursor(filter.cursor, 'closedAt', 'timestamptz')
+      : undefined;
     const scoped = clientScopePredicate(filter.scope ?? UNRESTRICTED, tradingAccounts.userId);
 
-    const where = and(
-      eq(tradingAccounts.userId, filter.userId),
-      inArray(mt5Deals.action, [...TRADE_ACTIONS]),
-      inArray(mt5Deals.entry, [...CLOSING_ENTRIES]),
-      ...(scoped ? [scoped] : []),
-    );
-
-    const closing = await this.db
+    // The client's MT5 accounts — what a deal names (by LOGIN, see `historyMine`).
+    const accounts = await this.db
       .select({
-        id: mt5Deals.id,
-        ticket: mt5Deals.mt5DealId,
-        positionId: mt5Deals.mt5PositionId,
-        login: mt5Deals.login,
-        symbol: mt5Deals.symbol,
-        action: mt5Deals.action,
-        volume: mt5Deals.volume,
-        closePrice: mt5Deals.price,
-        profit: mt5Deals.profit,
-        commission: mt5Deals.commission,
-        swap: mt5Deals.swap,
-        closedAt: mt5Deals.dealtAt,
+        login: tradingAccounts.login,
         currency: tradingAccounts.currency,
         environment: tradingAccounts.environment,
       })
-      .from(mt5Deals)
-      // By LOGIN, because that is what a deal names — see `historyMine`.
-      .innerJoin(tradingAccounts, eq(tradingAccounts.login, mt5Deals.login))
-      .where(where)
-      .orderBy(desc(mt5Deals.dealtAt), desc(mt5Deals.id))
-      .limit(limit)
-      .offset((page - 1) * limit);
+      .from(tradingAccounts)
+      .where(
+        and(
+          eq(tradingAccounts.userId, filter.userId),
+          isNotNull(tradingAccounts.login),
+          ...(scoped ? [scoped] : []),
+        ),
+      );
+    const accountOf = new Map(accounts.map((a) => [a.login as string, a]));
+    const logins = [...accountOf.keys()];
+    if (logins.length === 0) {
+      return {
+        rows: [],
+        total: 0,
+        totalCapped: false,
+        nextCursor: null,
+        prevCursor: null,
+        page,
+        limit,
+      };
+    }
 
-    const [{ value: total = 0 } = {}] = await this.db
-      .select({ value: sql<number>`count(*)::int` })
-      .from(mt5Deals)
-      .innerJoin(tradingAccounts, eq(tradingAccounts.login, mt5Deals.login))
-      .where(where);
+    /*
+     * ONE INDEX WALK PER LOGIN, merged (9 Oct 2026). A client trades on several
+     * MT5 accounts, and no single index orders their deals across all of them —
+     * so the page used to sort every closing deal the client ever made. Each
+     * login now reads `(login, dealt_at, id)` (0214) newest-first, at most one
+     * page's worth, and the handful of streams are merged: a heavy trader with a
+     * million deals costs the same as a new one.
+     */
+    const backward = Boolean(paging?.backward);
+    const order = backward ? sql`ASC` : sql`DESC`;
+    const seek = cursor
+      ? sql`AND (d.dealt_at, d.id) ${backward ? sql`>` : sql`<`} (${cursor.value}::timestamptz, ${cursor.id}::uuid)`
+      : sql``;
+    const closingOnly = sql`d.action IN (${sql.join(
+      TRADE_ACTIONS.map((a) => sql`${a}`),
+      sql`, `,
+    )}) AND d.entry IN (${sql.join(
+      CLOSING_ENTRIES.map((e) => sql`${e}`),
+      sql`, `,
+    )})`;
+    const loginList = sql`ARRAY[${sql.join(
+      logins.map((l) => sql`${l}`),
+      sql`, `,
+    )}]::varchar[]`;
+
+    const [page_, counted] = await Promise.all([
+      this.db.execute(sql`
+        SELECT p.* FROM unnest(${loginList}) AS l(login)
+        CROSS JOIN LATERAL (
+          SELECT d.id, d.mt5_deal_id AS ticket, d.mt5_position_id AS position_id, d.login,
+                 d.symbol, d.action, d.volume, d.price AS close_price, d.profit,
+                 d.commission, d.swap, d.dealt_at AS closed_at,
+                 d.dealt_at::text AS cursor_value
+          FROM mt5_deals d
+          WHERE d.login = l.login AND ${closingOnly} ${seek}
+          ORDER BY d.dealt_at ${order}, d.id ${order}
+          LIMIT ${offset + limit + 1}
+        ) p
+        ORDER BY p.closed_at ${order}, p.id ${order}
+        LIMIT ${limit + 1} OFFSET ${offset}`),
+      // Counted up to TOTAL_CAP + 1 rows (`cappedTotal`), per login and overall.
+      this.db.execute(sql`
+        SELECT count(*)::int AS value FROM (
+          SELECT 1 FROM unnest(${loginList}) AS l(login)
+          CROSS JOIN LATERAL (
+            SELECT 1 FROM mt5_deals d
+            WHERE d.login = l.login AND ${closingOnly}
+            LIMIT ${TOTAL_CAP + 1}
+          ) one
+          LIMIT ${TOTAL_CAP + 1}
+        ) counted`),
+    ]);
+
+    type DealRow = {
+      id: string;
+      ticket: string;
+      position_id: string | null;
+      login: string;
+      symbol: string;
+      action: number;
+      volume: string;
+      close_price: string;
+      profit: string;
+      commission: string;
+      swap: string;
+      closed_at: string;
+      cursor_value: string;
+    };
+    const total = cappedTotal((counted.rows[0] as { value: number }).value);
+    const paged = buildCursorPage(
+      (page_.rows as DealRow[]).map((row) => ({
+        id: row.id,
+        createdAt: row.closed_at,
+        closedAt: row.closed_at,
+        cursorValue: row.cursor_value,
+        row,
+      })),
+      limit,
+      total,
+      'closedAt',
+      paging ? { ...paging, fromCursor: Boolean(filter.cursor) } : undefined,
+    );
+    const closing = paged.items.map(({ row }) => {
+      const account = accountOf.get(row.login);
+      return {
+        id: row.id,
+        ticket: row.ticket,
+        positionId: row.position_id,
+        login: row.login,
+        symbol: row.symbol,
+        action: row.action,
+        volume: row.volume,
+        closePrice: row.close_price,
+        profit: row.profit,
+        commission: row.commission,
+        swap: row.swap,
+        closedAt: new Date(row.closed_at),
+        currency: account?.currency ?? '',
+        environment: account?.environment ?? 'live',
+      };
+    });
 
     /*
      * The opening deals for THIS page, in one query. Matched in memory on
@@ -1197,6 +1356,9 @@ export class AdminHoldingsService {
             .from(mt5Deals)
             .where(
               and(
+                // With the login, `(login, mt5_position_id)` serves this lookup;
+                // a position id alone is unique only per MT5 server.
+                inArray(mt5Deals.login, logins),
                 inArray(mt5Deals.mt5PositionId, positionIds),
                 eq(mt5Deals.entry, ENTRY_IN),
                 inArray(mt5Deals.action, [...TRADE_ACTIONS]),
@@ -1246,7 +1408,15 @@ export class AdminHoldingsService {
       };
     });
 
-    return { rows, total, page, limit };
+    return {
+      rows,
+      total: total.total,
+      totalCapped: total.totalCapped,
+      nextCursor: paged.nextCursor,
+      prevCursor: paged.prevCursor ?? null,
+      page,
+      limit,
+    };
   }
 
   /**
@@ -1261,6 +1431,10 @@ export class AdminHoldingsService {
     userId: number;
     page?: string | number;
     limit?: string | number;
+    /** Keyset position from a previous page — `nextCursor` / `prevCursor`. */
+    cursor?: string;
+    /** `prev` / `last` walk backward — `pageDirection`. */
+    dir?: string;
     scope?: ClientScope;
   }) {
     /*
@@ -1280,11 +1454,25 @@ export class AdminHoldingsService {
      */
     await this.visibility.assertVisible(filter.userId, filter.scope ?? UNRESTRICTED);
 
-    const page = Math.max(1, Number.parseInt(String(filter.page ?? '1'), 10) || 1);
+    const rawPage = filter.page === undefined ? undefined : String(filter.page);
+    const paging = twoWayPaging({ page: rawPage, cursor: filter.cursor, dir: filter.dir });
+    // The legacy offset caller (an older console) still pages by number.
+    const page = paging ? 1 : Math.max(1, Number.parseInt(rawPage ?? '1', 10) || 1);
     const limit = pageSize(filter.limit);
     const scoped = clientScopePredicate(filter.scope ?? UNRESTRICTED, transactions.userId);
+    const cursor = filter.cursor
+      ? decodeCursor(filter.cursor, 'createdAt', 'timestamptz')
+      : undefined;
+    // Newest first through `(user_id, created_at, id)`; Previous / Last walk it backward.
+    const walk = walkOrder('desc', paging);
 
     const where = and(eq(transactions.userId, filter.userId), ...(scoped ? [scoped] : []));
+    const pageWhere = cursor
+      ? and(
+          where,
+          keysetSeek(transactions.createdAt, transactions.id, cursor, walk, 'timestamptz', 'uuid'),
+        )
+      : where;
 
     const rows = await this.db
       .select({
@@ -1310,6 +1498,8 @@ export class AdminHoldingsService {
         providerRef: transactions.providerRef,
         createdAt: transactions.createdAt,
         settledAt: transactions.settledAt,
+        // The sort value as text, for the cursor (microseconds intact).
+        cursorValue: sql<string>`${transactions.createdAt}::text`,
       })
       .from(transactions)
       .leftJoin(paymentMethods, eq(paymentMethods.key, transactions.methodKey))
@@ -1317,16 +1507,44 @@ export class AdminHoldingsService {
         withdrawalPaymentMethods,
         eq(withdrawalPaymentMethods.key, transactions.withdrawalMethodKey),
       )
-      .where(where)
-      .orderBy(desc(transactions.createdAt), desc(transactions.id))
-      .limit(limit)
+      .where(pageWhere)
+      .orderBy(
+        ...(walk === 'asc'
+          ? [asc(transactions.createdAt), asc(transactions.id)]
+          : [desc(transactions.createdAt), desc(transactions.id)]),
+      )
+      // One extra row answers "is there more" with no second query.
+      .limit(limit + 1)
       .offset((page - 1) * limit);
+    const paged = wrapPage(
+      rows,
+      (row) => row.id,
+      limit,
+      'createdAt',
+      paging ? { ...paging, fromCursor: Boolean(filter.cursor) } : undefined,
+    );
 
-    const [{ value: total = 0 } = {}] = await this.db
+    // Counted up to TOTAL_CAP + 1 rows (`cappedTotal`).
+    const [{ value: counted = 0 } = {}] = await this.db
       .select({ value: sql<number>`count(*)::int` })
-      .from(transactions)
-      .where(where);
+      .from(
+        this.db
+          .select({ one: sql`1` })
+          .from(transactions)
+          .where(where)
+          .limit(TOTAL_CAP + 1)
+          .as('counted'),
+      );
+    const total = cappedTotal(counted);
 
-    return { rows, total, page, limit };
+    return {
+      rows: paged.rows,
+      total: total.total,
+      totalCapped: total.totalCapped,
+      nextCursor: paged.nextCursor,
+      prevCursor: paged.prevCursor,
+      page,
+      limit,
+    };
   }
 }

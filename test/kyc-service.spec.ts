@@ -1,3 +1,4 @@
+import { MAX_PAGE_SIZE } from '../src/common/pagination';
 import { OfferedCountriesStore } from '../src/store/offered-countries.store';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { storageStub } from './storage-stub';
@@ -1620,7 +1621,7 @@ describe('listAll', () => {
     const h = build();
     await h.review.listAll({ limit: 100_000 });
     expect(h.kycStore.findPageWithUsers).toHaveBeenCalledWith(
-      expect.objectContaining({ limit: 100 }),
+      expect.objectContaining({ limit: MAX_PAGE_SIZE }),
     );
   });
 

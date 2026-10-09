@@ -118,6 +118,13 @@ export class AdminIbController {
   })
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
+  @ApiQuery({ name: 'cursor', required: false, description: 'Opaque keyset cursor (R-2.4).' })
+  @ApiQuery({
+    name: 'dir',
+    required: false,
+    enum: ['next', 'prev', 'last'],
+    description: 'prev: the page before ?cursor. last: the final page (no cursor).',
+  })
   @ApiQuery({ name: 'sort', required: false, enum: Object.keys(IB_APPLICATION_SORT_COLUMNS) })
   @ApiQuery({ name: 'order', required: false, enum: ['asc', 'desc'] })
   @ApiQuery({
@@ -136,6 +143,8 @@ export class AdminIbController {
     @Query('q') q?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
+    @Query('cursor') cursor?: string,
+    @Query('dir') dir?: string,
     @Query('sort') sort?: string,
     @Query('order') order?: string,
     @Query('id') id?: string,
@@ -152,6 +161,8 @@ export class AdminIbController {
         q,
         page: parsePositive(page),
         limit: parsePositive(limit),
+        cursor,
+        dir,
         // Validated in the service against the allowlist, which is where the
         // column mapping lives.
         sort,
@@ -400,6 +411,13 @@ export class AdminIbController {
   })
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
+  @ApiQuery({ name: 'cursor', required: false, description: 'Opaque keyset cursor (R-2.4).' })
+  @ApiQuery({
+    name: 'dir',
+    required: false,
+    enum: ['next', 'prev', 'last'],
+    description: 'prev: the page before ?cursor. last: the final page (no cursor).',
+  })
   @ApiQuery({ name: 'ibUserId', required: false, description: 'Restrict to one partner.' })
   @ApiQuery({ name: 'clientUserId', required: false, description: 'Restrict to one client.' })
   @ApiQuery({
@@ -444,6 +462,8 @@ export class AdminIbController {
     @Query('to') to?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
+    @Query('cursor') cursor?: string,
+    @Query('dir') dir?: string,
     @Query('ibUserId', ClientRefPipe) ibUserId?: number,
     @Query('clientUserId', ClientRefPipe) clientUserId?: number,
     @Query('q') q?: string,
@@ -459,6 +479,8 @@ export class AdminIbController {
         range: dateRangeQuery(from, to),
         page: parsePositive(page),
         limit: parsePositive(limit),
+        cursor,
+        dir,
         /*
          * SHAPE-CHECKED AT THE EDGE, so the refusal names the parameter.
          *
@@ -584,6 +606,13 @@ export class AdminIbController {
   @ApiOkResponse({ type: IbPartnerListResponseDto })
   @ApiQuery({ name: 'page', required: false })
   @ApiQuery({ name: 'limit', required: false })
+  @ApiQuery({ name: 'cursor', required: false, description: 'Opaque keyset cursor (R-2.4).' })
+  @ApiQuery({
+    name: 'dir',
+    required: false,
+    enum: ['next', 'prev', 'last'],
+    description: 'prev: the page before ?cursor. last: the final page (no cursor).',
+  })
   @ApiQuery({ name: 'sort', required: false, enum: Object.keys(IB_PARTNER_SORT_COLUMNS) })
   @ApiQuery({ name: 'order', required: false, enum: ['asc', 'desc'] })
   @ApiQuery({
@@ -597,6 +626,8 @@ export class AdminIbController {
     @Req() req: Request & { admin: AuthenticatedAdmin },
     @Query('page') page?: string,
     @Query('limit') limit?: string,
+    @Query('cursor') cursor?: string,
+    @Query('dir') dir?: string,
     @Query('sort') sort?: string,
     @Query('order') order?: string,
     @Query('q') q?: string,
@@ -606,6 +637,8 @@ export class AdminIbController {
       {
         page: parsePositive(page),
         limit: parsePositive(limit),
+        cursor,
+        dir,
         sort,
         order,
         q,
