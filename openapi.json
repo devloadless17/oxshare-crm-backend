@@ -8366,7 +8366,7 @@
             "name": "country",
             "required": false,
             "in": "query",
-            "description": "Exact match on the country tag.",
+            "description": "Exact match on the client's country.",
             "schema": {
               "type": "string"
             }
@@ -8628,7 +8628,7 @@
             "name": "country",
             "required": false,
             "in": "query",
-            "description": "Exact match on the country tag.",
+            "description": "Exact match on the client's country.",
             "schema": {
               "type": "string"
             }
