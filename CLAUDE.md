@@ -1615,9 +1615,18 @@ and every count grew with the book. Now each is 10–60 ms, and these rules keep
   `transaction_state` on every arm. The transfer arm's CASE is indexed as that exact expression (0165),
   and `admin-sort-indexes.spec.ts` asserts no Sort node. The status sort is the enum's LIFECYCLE
   order, the same as the withdrawal queue's, and is no longer alphabetical.
-- **Conditions go INSIDE the arms** (`MovementArm`): scope, one client, and the search (`searched`
-  resolves the clients once; the payments arm also matches deposit evidence by id). Matched on the
-  union's output, a Portal ID search read every movement to find eight.
+- **The admin list's conditions go OUTSIDE the union** (`movementsCte(..., outer = true)`, 11 Oct
+  2026): scope, one client, the desk's routes and the search (`searched` resolves the clients once;
+  payments also match deposit evidence by id) define `combined` over the bare `movements` union.
+  ⚠️ Until then they sat INSIDE each arm, and this file said they must. An arm with its own WHERE
+  is kept as a separate sub-select, planned without the outer ORDER BY and LIMIT, so it never walks
+  an index in order: the desk, any search and every filtered tab fetched and sorted every matching
+  movement to show 25 (2 s on Deposits under 25 administrators at 3M movements). A condition outside
+  is still pushed into every arm and uses each arm's own index. Keep enum columns un-cast in the
+  arms (`t.direction`, never `::text`): a cast hides the column from the planner's statistics. The
+  client's own history keeps its owner inside the arms (few rows, and its rebate arm is a join).
+  The stored-totals query is the opposite case: no ordering, so its filter goes INSIDE each half
+  and reads by key.
 - **Method names are looked up for the rows SHOWN** (`methodNamesOf`, after the page is cut), never
   inside the union: there they ran for every row a search or sort discarded.
 - **Scope is ONE `EXISTS` over `client_tag_assignments`** (the intake pool and its anti-join went in
