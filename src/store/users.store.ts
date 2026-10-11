@@ -360,6 +360,9 @@ function phoneMatch(digits: string, person: typeof users, mask: FieldMask): SQL 
   return /^\+[1-9]\d{7,14}$/.test(e164) ? eq(person.phone, e164) : undefined;
 }
 
+/** One address, whole: something@host.tld, nothing around it. */
+const COMPLETE_EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+
 /**
  * How EVERY client search in the system matches a client — one definition.
  *
@@ -442,6 +445,14 @@ export function clientIdentitySearch(
 
   const emailHidden = mask.includes('client.email');
   const nameHidden = mask.includes('client.firstName') || mask.includes('client.lastName');
+  /*
+   * A COMPLETE address is an exact lookup (11 Oct 2026): `lower(email) = …` is
+   * one probe of 0215's index, where the fuzzy match below took 200 ms at a
+   * million clients to find the same single row.
+   */
+  if (!emailHidden && COMPLETE_EMAIL.test(q.trim())) {
+    return sql`lower(${person.email}) = ${q.trim().toLowerCase()}`;
+  }
   if (!emailHidden && !nameHidden) {
     return sql`(coalesce(${person.email}, '') || ' ' || coalesce(${person.firstName}, '') || ' ' || coalesce(${person.lastName}, '')) ILIKE ${fragment}`;
   }
