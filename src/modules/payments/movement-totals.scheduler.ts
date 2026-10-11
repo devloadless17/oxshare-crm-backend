@@ -31,6 +31,8 @@ export class MovementTotalsScheduler {
       const { rows } = await this.db.execute<{ folded: number }>(
         sql`SELECT fold_movement_totals() AS folded`,
       );
+      // A partner's earnings are kept the same way (0217), and folded with them.
+      await this.db.execute(sql`SELECT fold_partner_earnings()`);
       return rows[0]?.folded ?? 0;
     } catch (error) {
       this.logger.warn(

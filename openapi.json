@@ -28221,6 +28221,12 @@
               "type": "number"
             }
           },
+          "countsCapped": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "maskedFields": {
             "type": "array",
             "items": {
@@ -28234,7 +28240,8 @@
           "total",
           "page",
           "limit",
-          "counts"
+          "counts",
+          "countsCapped"
         ]
       },
       "CreditWalletDto": {
@@ -29140,6 +29147,12 @@
               "type": "number"
             }
           },
+          "countsCapped": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "maskedFields": {
             "type": "array",
             "items": {
@@ -29154,7 +29167,8 @@
           "page",
           "limit",
           "counts",
-          "directionCounts"
+          "directionCounts",
+          "countsCapped"
         ]
       },
       "ClientRegistrationWindowDto": {

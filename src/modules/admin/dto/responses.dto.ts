@@ -2316,6 +2316,12 @@ export class WithdrawalListResponseDto {
   )
   @ApiProperty({ type: 'object', additionalProperties: { type: 'number' } })
   counts: Record<string, number>;
+  /** The tabs whose count stopped at 10,000: shown as "10,000+". Empty when all are exact. */
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  @ApiProperty({ type: [String] })
+  countsCapped: string[];
   /**
    * RBAC-03: the `withdrawal.*` keys hidden from this viewer, omitted from
    * every row's `user`.
@@ -2589,6 +2595,12 @@ export class AdminTransactionListResponseDto {
   )
   @ApiProperty({ type: 'object', additionalProperties: { type: 'number' } })
   directionCounts: Record<string, number>;
+  /** The tabs whose count stopped at 10,000: shown as "10,000+". Empty when all are exact. */
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  @ApiProperty({ type: [String] })
+  countsCapped: string[];
   /**
    * RBAC-03 — which `financial.*` catalog keys were REMOVED from these rows
    * for this viewer, so the screen can say "hidden by your permissions"

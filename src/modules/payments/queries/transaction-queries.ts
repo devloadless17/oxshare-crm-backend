@@ -681,7 +681,6 @@ export class TransactionQueries {
     private readonly db: Db,
     private readonly providers: PaymentProviderRegistry,
   ) {}
-
   /**
    * The client a transaction belongs to, or undefined.
    *
@@ -1055,6 +1054,8 @@ export class TransactionQueries {
       page,
       limit,
       counts,
+      // Every count on this desk is exact; the field is the lists' shared shape.
+      countsCapped: [] as string[],
     };
   }
 
@@ -2168,18 +2169,29 @@ export class TransactionQueries {
           ),
     ]);
 
+    /** The tabs whose count stopped at the cap: the console shows them as "10,000+". */
+    const countsCapped: string[] = [];
     const counts: Record<string, number> = { all: 0 };
     for (const row of stateRows.rows as unknown as { state: string; value: number }[]) {
       if (row.value === 0) continue;
       // Stored totals are exact; a capped facet stops at TOTAL_CAP + 1.
       counts[row.state] = totals ? row.value : Math.min(row.value, TOTAL_CAP);
       counts['all'] += counts[row.state];
+      if (!totals && row.value > TOTAL_CAP) countsCapped.push(row.state);
     }
     const directionCounts: Record<string, number> = { all: 0 };
     for (const row of directionRows.rows as unknown as { direction: string; value: number }[]) {
       if (row.value === 0) continue;
       directionCounts[row.direction] = totals ? row.value : Math.min(row.value, TOTAL_CAP);
       directionCounts['all'] += directionCounts[row.direction];
+      if (!totals && row.value > TOTAL_CAP) countsCapped.push(row.direction);
+    }
+    // A sum holding a capped part is itself "at least", on both rows of tabs:
+    // they describe the same set of movements.
+    if (countsCapped.length > 0) {
+      countsCapped.push('all');
+      counts['all'] = Math.min(counts['all'], TOTAL_CAP);
+      directionCounts['all'] = Math.min(directionCounts['all'], TOTAL_CAP);
     }
 
     const total = filter.state ? (counts[filter.state] ?? 0) : counts['all'];
@@ -2232,6 +2244,7 @@ export class TransactionQueries {
       limit,
       counts,
       directionCounts,
+      countsCapped,
     };
   }
 

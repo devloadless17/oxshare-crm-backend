@@ -1316,49 +1316,56 @@ export class IbStore {
     const byPartner = new Map<number, PartnerEarnings[]>();
     if (ibUserIds.length === 0) return byPartner;
 
-    const rows = await this.db
-      .select({
-        ibUserId: ibAccruals.ibUserId,
-        currency: ibAccruals.currency,
-        status: ibAccruals.status,
-        amount: sql<string>`coalesce(sum(${ibAccruals.amount}), 0)::text`,
-      })
-      .from(ibAccruals)
-      .where(
-        and(
-          inArray(ibAccruals.ibUserId, ibUserIds),
-          inArray(ibAccruals.status, ['confirmed', 'pending']),
-          /*
-           * ── COMMISSION ONLY. A REBATE IS NOT THIS PARTNER'S EARNING ───────
-           *
-           * ⚠️ This summed EVERY accrual carrying the partner's id, and a
-           * rebate row carries it too — `ibUserId` there is the partner whose
-           * rung PRICED the rebate, while the money is paid to
-           * `clientUserId`. `confirmPending` says so in as many words:
-           * "attribution, not entitlement".
-           *
-           * So a partner's lifetime earnings were inflated by money that went
-           * to their clients. Measured on this database: one partner earned
-           * 20.79 and the figure read 41.58, because their client's rebate
-           * happened to equal their commission. It is not a rounding
-           * discrepancy — it is a different person's money added in.
-           *
-           * The wallet was always right; only this display total was wrong,
-           * which is the worst shape for it: an operator reconciling the
-           * partner's commission wallet against the number on screen finds a
-           * gap and no explanation for it.
-           *
-           * Since 0209 (7 Oct 2026) a rebate is PARTNER money, paid into that
-           * same commission wallet — so the rule is "what was paid to the
-           * partner": every row not paid to a client. That counts commission
-           * and new rebates, and still leaves out the legacy client rebates
-           * the paragraph above is about.
-           */
-          eq(ibAccruals.paidToClient, false),
-        ),
-      )
-      .groupBy(ibAccruals.ibUserId, ibAccruals.currency, ibAccruals.status)
-      .orderBy(asc(ibAccruals.currency));
+    /*
+     * ── COMMISSION ONLY. A REBATE IS NOT THIS PARTNER'S EARNING ───────
+     *
+     * ⚠️ This summed EVERY accrual carrying the partner's id, and a
+     * rebate row carries it too — `ibUserId` there is the partner whose
+     * rung PRICED the rebate, while the money is paid to
+     * `clientUserId`. `confirmPending` says so in as many words:
+     * "attribution, not entitlement".
+     *
+     * So a partner's lifetime earnings were inflated by money that went
+     * to their clients. Measured on this database: one partner earned
+     * 20.79 and the figure read 41.58, because their client's rebate
+     * happened to equal their commission. It is not a rounding
+     * discrepancy — it is a different person's money added in.
+     *
+     * The wallet was always right; only this display total was wrong,
+     * which is the worst shape for it: an operator reconciling the
+     * partner's commission wallet against the number on screen finds a
+     * gap and no explanation for it.
+     *
+     * Since 0209 (7 Oct 2026) a rebate is PARTNER money, paid into that
+     * same commission wallet — so the rule is "what was paid to the
+     * partner": every row not paid to a client. That counts commission
+     * and new rebates, and still leaves out the legacy client rebates
+     * the paragraph above is about.
+     */
+    /*
+     * Read from the KEPT totals plus the changes not yet folded into them
+     * (0217), in one statement — exact at every instant, and the same cost for a
+     * partner with ten accruals or ten million. Summing the accruals themselves
+     * grew with each partner's success, on every page view.
+     */
+    const ids = sql.join(
+      ibUserIds.map((id) => sql`${id}::integer`),
+      sql`, `,
+    );
+    const rows = (
+      await this.db.execute(sql`
+        SELECT ib_user_id AS "ibUserId", currency, status::text AS status, sum(total)::text AS amount
+          FROM (
+            SELECT ib_user_id, currency, status, total FROM ib_partner_earning_totals
+             WHERE ib_user_id IN (${ids}) AND status IN ('confirmed', 'pending')
+            UNION ALL
+            SELECT ib_user_id, currency, status, total FROM ib_partner_earning_deltas
+             WHERE ib_user_id IN (${ids}) AND status IN ('confirmed', 'pending')
+          ) earned
+         GROUP BY ib_user_id, currency, status
+        HAVING sum(total) <> 0
+         ORDER BY currency`)
+    ).rows as unknown as { ibUserId: number; currency: string; status: string; amount: string }[];
 
     for (const row of rows) {
       const entries = byPartner.get(row.ibUserId) ?? [];
