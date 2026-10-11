@@ -44,10 +44,13 @@ export const EDGE_HEADERS = {
 /**
  * Headers only a proxy adds. `X-Forwarded-For` is read from Caddy's copy of it
  * (the chain), because the live header has already been replaced.
+ *
+ * NOT `Via`: Caddy adds its own (`1.1 Caddy`) to every request it forwards, so
+ * it is on a plain browser request too. Listed, it made every direct request
+ * look forwarded (seen on production's `/health/edge`, 11 Oct 2026).
  */
 const PROXY_MARKERS = [
   'cdn-loop',
-  'via',
   'forwarded',
   'cf-connecting-ip',
   'true-client-ip',
