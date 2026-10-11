@@ -20,10 +20,12 @@ const BEHIND_UNKNOWN_CDN = request({
   'cdn-loop': 'cloudflare; loops=1',
   'cf-connecting-ip': '94.187.15.248',
 });
+/** A plain browser request, as Caddy forwards it: its own `Via` is always there. */
 const DIRECT = request({
   'x-oxshare-peer': '213.204.85.249',
   'x-oxshare-peer-trusted': 'false',
   'x-oxshare-forwarded-chain': '',
+  via: '1.1 Caddy',
 });
 const BEHIND_TRUSTED_CDN = request({
   'x-oxshare-peer': '104.22.40.137',
@@ -86,6 +88,8 @@ describe('the watch on a proxy nobody declared', () => {
 
   it('draws no conclusion where Caddy is not in the path', () => {
     const observer = new UntrustedProxyObserver();
-    expect(feed(observer, request({ 'x-forwarded-for': '1.2.3.4', via: 'x' }), 500)).toBeNull();
+    expect(
+      feed(observer, request({ 'x-forwarded-for': '1.2.3.4', 'cdn-loop': 'x' }), 500),
+    ).toBeNull();
   });
 });
