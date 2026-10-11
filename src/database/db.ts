@@ -34,7 +34,11 @@ export function getDb(): NodePgDatabase<typeof schema> {
       ssl: isLocal ? false : { rejectUnauthorized: true },
       // Bounded pool + timeouts: an unbounded pool on a money system turns one
       // slow query into total connection starvation.
-      max: Number(process.env['DB_POOL_MAX'] ?? 10),
+      // 20, not 10: at 10, twenty-five administrators working at once queued for
+      // a connection and every list answered in ~450 ms instead of ~50 (load
+      // test, 11 Oct 2026). Two instances overlap during a release, so keep
+      // 2 × this well under Postgres's max_connections (100).
+      max: Number(process.env['DB_POOL_MAX'] ?? 20),
       idleTimeoutMillis: 30_000,
       connectionTimeoutMillis: 10_000,
       statement_timeout: 30_000,

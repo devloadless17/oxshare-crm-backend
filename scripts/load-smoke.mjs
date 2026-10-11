@@ -23,7 +23,7 @@
  * so they stay. It refuses to run against anything but localhost.
  */
 import 'dotenv/config';
-import { randomUUID } from 'node:crypto';
+import { createHmac, randomUUID } from 'node:crypto';
 import pg from 'pg';
 
 const API = process.env.API ?? 'http://localhost:3001';
@@ -55,6 +55,60 @@ async function signIn(surface, credentials) {
     body: JSON.stringify(credentials),
   });
   if (!res.ok) throw new Error(`${surface} sign-in answered ${res.status}: ${await res.text()}`);
+  // An administrator's password is half a sign-in (0191): finish the authenticator step.
+  const session = surface === 'admin' ? await finishAuthenticator(res, origin) : res;
+  return jarOf(session, origin);
+}
+
+/** RFC 6238 (SHA-1, 6 digits, 30 s) — what the API checks. */
+function totp(secret) {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  let bits = '';
+  for (const ch of secret.replace(/[\s=]+/g, '').toUpperCase()) {
+    bits += alphabet.indexOf(ch).toString(2).padStart(5, '0');
+  }
+  const key = Buffer.from((bits.match(/.{8}/g) ?? []).map((b) => Number.parseInt(b, 2)));
+  const counter = Buffer.alloc(8);
+  counter.writeBigUInt64BE(BigInt(Math.floor(Date.now() / 1000 / 30)));
+  const h = createHmac('sha1', key).update(counter).digest();
+  const o = h[h.length - 1] & 0xf;
+  return String((h.readUInt32BE(o) & 0x7fffffff) % 1_000_000).padStart(6, '0');
+}
+
+/**
+ * Enrols the load test's own administrator afresh and answers the code. Only an
+ * `e2e-*@oxshare.com` test account is ever reset — never a person's.
+ */
+async function finishAuthenticator(login, origin) {
+  const body = await login
+    .clone()
+    .json()
+    .catch(() => ({}));
+  if (!body.challengeToken) return login;
+  if (body.step !== 'totp_setup') {
+    throw new Error(
+      `${ADMIN.email} already has an authenticator. Run with ADMIN_EMAIL=e2e-admin@oxshare.com ` +
+        '(a test account this script resets), never a real administrator.',
+    );
+  }
+  const post = (path, data) =>
+    fetch(API + path, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', origin },
+      body: JSON.stringify(data),
+    });
+  const setup = await post('/v1/admin/auth/totp/setup', { challengeToken: body.challengeToken });
+  if (!setup.ok) throw new Error(`authenticator setup answered ${setup.status}`);
+  const { secret } = await setup.json();
+  const verify = await post('/v1/admin/auth/totp/verify', {
+    challengeToken: body.challengeToken,
+    code: totp(secret),
+  });
+  if (!verify.ok) throw new Error(`authenticator code answered ${verify.status}`);
+  return verify;
+}
+
+function jarOf(res, origin) {
   const jar = new Map();
   for (const line of res.headers.getSetCookie()) {
     const [pair] = line.split(';');
@@ -198,6 +252,14 @@ async function money(admin, db) {
 const db = new pg.Client({ connectionString: process.env.DATABASE_URL });
 await db.connect();
 try {
+  if (/^e2e-[a-z0-9-]+@oxshare\.com$/i.test(ADMIN.email)) {
+    // A test account enrols afresh each run; a real administrator is never reset.
+    await db.query(
+      'UPDATE admins SET totp_secret=NULL, totp_pending_secret=NULL, totp_enabled_at=NULL, ' +
+        'totp_last_step=NULL WHERE email=$1',
+      [ADMIN.email],
+    );
+  }
   const admin = await signIn('admin', ADMIN);
   const client = await signIn('portal', CLIENT);
   let failures = 0;
@@ -209,6 +271,14 @@ try {
     '/v1/admin/withdrawals?limit=25',
     '/v1/admin/wallets?limit=25',
     '/v1/admin/kyc?limit=25',
+    '/v1/admin/deposits?limit=25&state=pending',
+    '/v1/admin/trading-accounts?limit=25',
+    '/v1/admin/clients?limit=500',
+    '/v1/admin/transactions?limit=25&dir=last',
+    '/v1/admin/transactions?limit=25&state=success&direction=deposit',
+    '/v1/admin/transactions?limit=25&q=smith',
+    '/v1/admin/withdrawals?limit=25&state=pending',
+    '/v1/admin/deposits?limit=25&state=success',
     '/v1/admin/audit-log?limit=25',
     '/v1/admin/stats/overview',
     '/v1/admin/notifications?limit=20',

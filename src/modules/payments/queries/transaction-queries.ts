@@ -229,6 +229,8 @@ interface MovementArm {
   id: SQL;
   /** True for `transactions` — the one table a deposit's evidence lives in. */
   payments: boolean;
+  /** The same fact as SQL, for a clause that must hold on any arm's rows. */
+  isPayment: SQL;
   /**
    * `(direction, provider_code, channel_code)` on the payments arm (0168): the
    * route a movement took, for filters that ask who settles it. Null on the arms
@@ -1218,7 +1220,33 @@ export class TransactionQueries {
     armWhere: (arm: MovementArm) => SQL,
     includeRebates: boolean,
     prelude?: SQL,
+    /**
+     * Apply `armWhere` ONCE, outside the union, instead of inside every arm.
+     *
+     * ⚠️ For any caller that pages or counts a LARGE set (the admin list).
+     * Postgres keeps an arm that has its own WHERE as a separate sub-select and
+     * plans it with no knowledge of the outer ORDER BY and LIMIT, so it never
+     * walks an index in order: it fetched and sorted every matching movement to
+     * show 25. Measured at 3M movements, 11 Oct 2026: the Deposits desk 250 ms
+     * alone and 2 s under 25 administrators; 2 ms with the clause outside. A
+     * clause outside is still pushed into every arm and still reads each arm's
+     * own index. The pinned-owner callers keep theirs inside: one client's rows
+     * are few, and their rebate arm is a join that is never flattened anyway.
+     */
+    outer = false,
   ): SQL {
+    const arm = (columns: MovementArm): SQL => (outer ? sql`` : armWhere(columns));
+    const whole = outer
+      ? armWhere({
+          owner: sql`movements.user_id`,
+          id: sql`movements.id`,
+          payments: true,
+          isPayment: sql`movements.kind = 'payment'`,
+          // NULL on the arms with no route, so no route list can match them.
+          route: sql`(movements.direction, movements.route_provider, movements.route_channel)`,
+          methodKeys: [sql`movements.method_key`, sql`movements.withdrawal_method_key`],
+        })
+      : undefined;
     /*
      * THE REBATE ARM, conditional (0116).
      *
@@ -1274,7 +1302,7 @@ export class TransactionQueries {
            * rebate — see reverseAccrual, which posts an adjustment precisely so
            * a clawback does not net against what was earned.
            */
-          'deposit'::text,
+          'deposit'::transaction_direction,
           le.amount,
           w.currency,
           /*
@@ -1339,7 +1367,9 @@ export class TransactionQueries {
             ELSE 'Rebate'
           END::varchar                            AS arm_method_name,
           'rebate'::text                          AS kind,
-          NULL::uuid                              AS trading_account_id
+          NULL::uuid                              AS trading_account_id,
+          NULL::varchar                           AS route_provider,
+          NULL::varchar                           AS route_channel
         /*
          * The rebate predicate rides on the JOIN, not on a WHERE.
          *
@@ -1368,7 +1398,7 @@ export class TransactionQueries {
            */
           ON b.id = CASE WHEN le.reference_type = 'accrual_batch' AND le.reference_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
                          THEN le.reference_id::uuid END
-        ${armWhere({ owner: sql`w.user_id`, id: sql`le.id`, payments: false, route: null })}
+        ${arm({ owner: sql`w.user_id`, id: sql`le.id`, payments: false, isPayment: sql`FALSE`, route: null })}
       `
       : sql``;
 
@@ -1383,12 +1413,18 @@ export class TransactionQueries {
      * `transaction_state` on every arm for the same reason (0165).
      */
     return sql`
-      WITH ${prelude ? sql`${prelude},` : sql``} combined AS (
+      WITH ${prelude ? sql`${prelude},` : sql``} ${whole ? sql`movements` : sql`combined`} AS (
         SELECT
           t.id,
           t.user_id,
           t.wallet_id,
-          t.direction::text                       AS direction,
+          /*
+           * The ENUM, in every arm: cast to text here, a direction filter reaches
+           * the planner as an expression it has no statistics for, it expects a
+           * handful of rows where half the table matches, and sorts every row
+           * of the tab to show 25 (11 Oct 2026).
+           */
+          t.direction                             AS direction,
           t.amount,
           t.currency,
           t.state                                 AS state,
@@ -1419,13 +1455,23 @@ export class TransactionQueries {
            */
           NULL::varchar                           AS arm_method_name,
           'payment'::text                         AS kind,
-          NULL::uuid                              AS trading_account_id
+          NULL::uuid                              AS trading_account_id,
+          -- The route (0168), for the admin list's desk filter.
+          t.provider_code                         AS route_provider,
+          t.channel_code                          AS route_channel
         FROM transactions t
-        ${armWhere({
+        ${arm({
           owner: sql`t.user_id`,
           id: sql`t.id`,
           payments: true,
-          route: sql`(t.direction::text, t.provider_code, t.channel_code)`,
+          isPayment: sql`TRUE`,
+          /*
+           * The enum itself, never `::text`: a cast hides the column from the
+           * planner's statistics, it then expects a handful of rows where half
+           * the table matches, and sorts every pending deposit to show 25
+           * (2 s on the desk under load, 11 Oct 2026). Compare with enum values.
+           */
+          route: sql`(t.direction, t.provider_code, t.channel_code)`,
           methodKeys: [sql`t.method_key`, sql`t.withdrawal_method_key`],
         })}
 
@@ -1435,7 +1481,7 @@ export class TransactionQueries {
           tr.id,
           tr.user_id,
           tr.wallet_id,
-          CASE WHEN tr.direction = 'account_to_wallet' THEN 'deposit' ELSE 'withdrawal' END,
+          CASE WHEN tr.direction = 'account_to_wallet' THEN 'deposit' ELSE 'withdrawal' END::transaction_direction,
           tr.amount,
           tr.currency,
           /*
@@ -1482,9 +1528,11 @@ export class TransactionQueries {
           tr.created_at,
           NULL::varchar                           AS arm_method_name,
           'transfer'::text                        AS kind,
-          tr.trading_account_id
+          tr.trading_account_id,
+          NULL::varchar,                          -- route_provider
+          NULL::varchar                           -- route_channel
         FROM transfers tr
-        ${armWhere({ owner: sql`tr.user_id`, id: sql`tr.id`, payments: false, route: null })}
+        ${arm({ owner: sql`tr.user_id`, id: sql`tr.id`, payments: false, isPayment: sql`FALSE`, route: null })}
 
         UNION ALL
 
@@ -1520,7 +1568,7 @@ export class TransactionQueries {
           iwt.id,
           iwt.user_id,
           iwt.to_wallet_id                        AS wallet_id,
-          'deposit'::text,
+          'deposit'::transaction_direction,
           iwt.amount,
           iwt.currency,
           'success'::transaction_state,
@@ -1553,12 +1601,14 @@ export class TransactionQueries {
           iwt.created_at,
           NULL::varchar                           AS arm_method_name,
           'commission_transfer'::text             AS kind,
-          NULL::uuid                              AS trading_account_id
+          NULL::uuid                              AS trading_account_id,
+          NULL::varchar                           AS route_provider,
+          NULL::varchar                           AS route_channel
         FROM ib_wallet_transfers iwt
-        ${armWhere({ owner: sql`iwt.user_id`, id: sql`iwt.id`, payments: false, route: null })}
+        ${arm({ owner: sql`iwt.user_id`, id: sql`iwt.id`, payments: false, isPayment: sql`FALSE`, route: null })}
 
         ${rebateArm}
-      )
+      )${whole ? sql`, combined AS (SELECT movements.* FROM movements${whole})` : sql``}
     `;
   }
 
@@ -1834,7 +1884,10 @@ export class TransactionQueries {
       ? sql.join(
           this.providers
             .deskDecidedRoutes()
-            .map((r) => sql`(${r.direction}, ${r.providerCode}, ${r.channelCode})`),
+            .map(
+              (r) =>
+                sql`(${r.direction}::transaction_direction, ${r.providerCode}, ${r.channelCode})`,
+            ),
           sql`, `,
         )
       : undefined;
@@ -1845,7 +1898,7 @@ export class TransactionQueries {
         )
       : undefined;
     const cte = this.movementsCte(
-      ({ owner, id, payments, route, methodKeys }) => {
+      ({ owner, id, payments, isPayment, route, methodKeys }) => {
         const conditions: SQL[] = [];
         // A person decides it (0168) — only a payment can be one.
         if (deskRoutes) conditions.push(route ? sql`${route} IN (${deskRoutes})` : sql`FALSE`);
@@ -1858,8 +1911,9 @@ export class TransactionQueries {
           );
         }
         /*
-         * In the ARM's WHERE clause: an out-of-scope movement never enters the
-         * union, so it also cannot appear in the counts, the summary or the
+         * In the definition of `combined` itself, upstream of every reader: an
+         * out-of-scope movement never enters it, so it also cannot appear in
+         * the counts, the summary or the
          * export computed from it — the same rule `listForAdmin` states for the
          * withdrawal queue, applied one level deeper.
          */
@@ -1872,7 +1926,9 @@ export class TransactionQueries {
         if (searched) {
           const byClient = sql`${owner} = ANY(ARRAY(SELECT searched.id FROM searched))`;
           conditions.push(
-            payments && evidence ? sql`(${byClient} OR ${id} = ANY(ARRAY(${evidence})))` : byClient,
+            payments && evidence
+              ? sql`(${byClient} OR (${isPayment} AND ${id} = ANY(ARRAY(${evidence}))))`
+              : byClient,
           );
         }
         return whereOf(conditions);
@@ -1892,6 +1948,8 @@ export class TransactionQueries {
       },
       false,
       searched,
+      // Outside the union: see `outer` on movementsCte.
+      true,
     );
 
     /*
@@ -1954,7 +2012,7 @@ export class TransactionQueries {
     const conditionsFor = (omit: { state?: boolean; direction?: boolean } = {}): SQL[] => {
       const conditions: SQL[] = [];
       if (!omit.direction && filter.direction) {
-        conditions.push(sql`combined.direction = ${filter.direction}`);
+        conditions.push(sql`combined.direction = ${filter.direction}::transaction_direction`);
       }
       if (filter.kind) conditions.push(sql`combined.kind = ${filter.kind}`);
       if (!omit.state && filter.state) conditions.push(sql`combined.state = ${filter.state}`);
@@ -2077,7 +2135,7 @@ export class TransactionQueries {
                   // state index, and a bare text parameter is refused by the enum.
                   axis === 'state'
                     ? sql`combined.state = ${value}::transaction_state`
-                    : sql`combined.direction = ${value}`,
+                    : sql`combined.direction = ${value}::transaction_direction`,
                 ])} LIMIT ${TOTAL_CAP + 1}
               ) capped
             ) AS value`,

@@ -82,6 +82,48 @@ jobs:
           fi
           exit $fail
 
+      # The CDN's own switches, checked from outside so nobody has to open its dashboard.
+      # Each of these has broken a site like this one; DEPLOYMENT.md, "Behind Cloudflare".
+      - name: The CDN is not challenging the API or rewriting the pages
+        env:
+          API: https://api-admin.oxshare.com
+          PAGES: https://portal.oxshare.com https://admin-dashboard.oxshare.com
+        run: |
+          set -u
+          fail=0
+          # A browser's fetch and a payment provider's webhook cannot solve a challenge.
+          for probe in "GET $API/v1/profile/options" "POST $API/v1/payments/providers/threepay/webhook"; do
+            method=${probe%% *}; url=${probe#* }
+            head=$(curl -s -o /dev/null -D - --max-time 15 -X "$method" -H 'Content-Type: application/json' --data '{}' "$url")
+            if echo "$head" | grep -qi '^cf-mitigated' || ! echo "$head" | grep -qi '^content-type: application/json'; then
+              echo "::error::$method $url was answered by the CDN, not by the API (a bot challenge or a block). The portal, the console and the payment webhooks are refused the same way: exempt the API host from it."
+              fail=1
+            else
+              echo "$method $url: answered by the API"
+            fi
+          done
+          # Scripts the CDN injects into a page are refused by the apps' Content-Security-Policy.
+          for page in $PAGES; do
+            html=$(curl -s -L --max-time 20 "$page/")
+            if echo "$html" | grep -qiE 'rocket-loader|email-protection|__cf_email__'; then
+              echo "::error::$page is being rewritten by the CDN (Rocket Loader or Email Obfuscation). Turn both off for this name."
+              fail=1
+            else
+              echo "$page: served as built"
+            fi
+          done
+          # Plain HTTP must end at HTTPS. Caddy's own redirect is a 308; anything else means the
+          # CDN is redirecting first, which is in the way of the certificate renewal (HTTP-01).
+          for host in api-admin.oxshare.com portal.oxshare.com admin-dashboard.oxshare.com; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "http://$host/")
+            case "$code" in
+              308) echo "http://$host: redirected to HTTPS by Caddy" ;;
+              301|302|307) echo "::warning::http://$host answers $code, so the CDN redirects to HTTPS before Caddy does ('Always Use HTTPS'). The site is fine; watch the next certificate renewal, or turn that switch off." ;;
+              *) echo "::error::http://$host answered $code instead of a redirect to HTTPS."; fail=1 ;;
+            esac
+          done
+          exit $fail
+
       # Caddy believes a forwarded address only from the ranges listed in the Caddyfile. If
       # Cloudflare starts using a range that is not there, its visitors are counted under
       # Cloudflare's address again. Cloudflare publishes the list; this compares the two.

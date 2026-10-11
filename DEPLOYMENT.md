@@ -393,6 +393,13 @@ needs, and what was checked:
   `src/common/security/edge-trust.ts`): Caddy tells the API how each request arrived, and a quarter
   of public traffic forwarded by an untrusted machine raises it, naming the machine. The daily
   `certificate-watch.yml` run asks `/health/edge` from outside as well.
+- **The dashboard settings below are checked from OUTSIDE every morning** by `certificate-watch.yml`
+  (no challenge on the API or the webhooks, pages not rewritten, plain HTTP redirected by Caddy).
+  All were correct on 11 Oct 2026. Only "Full" against "Full (strict)" cannot be told apart from outside.
+- **Logs**: the access log keeps 10 GB (compressed once rotated) and the API's log 1 GB, set in
+  `docker-compose.prod.yml`. It was 50 MB, about an hour. Caddy takes a changed compose setting only
+  when recreated: `docker compose -f docker-compose.prod.yml --env-file .env --env-file release.env
+up -d --no-deps caddy` (a few seconds of refused connections; a release does not do it).
 - **Cloudflare dashboard, required**:
   - SSL/TLS mode **Full (strict)**. "Flexible" makes Cloudflare call this server over plain HTTP,
     which Caddy redirects to HTTPS: an endless redirect.

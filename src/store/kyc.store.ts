@@ -665,6 +665,12 @@ export class KycStore {
       );
     }
     const where = conditions.length > 0 ? and(...conditions) : undefined;
+    /*
+     * Only a search reads `users`. Without one the counts skip the join: it can
+     * drop nothing (user_id is a NOT NULL foreign key) and cost one client
+     * lookup per submission counted — most of the page's time at a million.
+     */
+    const joinsUsers = Boolean(filter.q?.trim());
     /** Scope and search, without the status narrowing — for the tab counts. */
     const countsWhere = visibility.length > 0 ? and(...visibility) : undefined;
 
@@ -766,7 +772,7 @@ export class KycStore {
           sql`SELECT s.status::text AS status, (
                 SELECT count(*)::int FROM (
                   SELECT 1 FROM ${kycSubmissions}
-                  INNER JOIN ${users} ON ${users.id} = ${kycSubmissions.userId}
+                  ${joinsUsers ? sql`INNER JOIN ${users} ON ${users.id} = ${kycSubmissions.userId}` : sql``}
                   WHERE ${kycSubmissions.status} = s.status
                   ${countsWhere ? sql`AND ${countsWhere}` : sql``}
                   LIMIT ${TOTAL_CAP + 1}
