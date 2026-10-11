@@ -92,7 +92,9 @@ jobs:
           set -u
           fail=0
           # A browser's fetch and a payment provider's webhook cannot solve a challenge.
-          for probe in "GET $API/v1/profile/options" "POST $API/v1/payments/providers/threepay/webhook"; do
+          # The webhook probe names a provider that does not exist: the API answers 404 itself.
+          # A real provider's address would log a failed-signature alert every morning.
+          for probe in "GET $API/v1/profile/options" "POST $API/v1/payments/providers/watch-probe/webhook"; do
             method=${probe%% *}; url=${probe#* }
             head=$(curl -s -o /dev/null -D - --max-time 15 -X "$method" -H 'Content-Type: application/json' --data '{}' "$url")
             if echo "$head" | grep -qi '^cf-mitigated' || ! echo "$head" | grep -qi '^content-type: application/json'; then
