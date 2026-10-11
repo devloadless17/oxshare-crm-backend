@@ -402,7 +402,14 @@ export class IbStore {
         sql`SELECT s.status::text AS status, (
               SELECT count(*)::int FROM (
                 SELECT 1 FROM ${ibApplications}
-                INNER JOIN ${users} ON ${users.id} = ${ibApplications.userId}
+                ${
+                  // Only a territory reads the client. Without one the join can
+                  // drop nothing (user_id is a NOT NULL foreign key) and costs
+                  // one lookup per application counted.
+                  scope.unrestricted
+                    ? sql``
+                    : sql`INNER JOIN ${users} ON ${users.id} = ${ibApplications.userId}`
+                }
                 WHERE ${ibApplications.status} = s.status
                 ${visible ? sql`AND ${visible}` : sql``}
                 LIMIT ${TOTAL_CAP + 1}
