@@ -1500,6 +1500,28 @@
         ]
       }
     },
+    "/health/edge": {
+      "get": {
+        "operationId": "HealthController_edge",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EdgeDto"
+                }
+              }
+            }
+          }
+        },
+        "summary": "The address the API resolved for the caller, and how the request arrived.",
+        "tags": [
+          "health"
+        ]
+      }
+    },
     "/v1/platforms": {
       "get": {
         "description": "Always returns every platform the portal offers, in presentation order. A platform the operator has not configured has a null url — which the portal renders as \"not available yet\" rather than as a link that goes nowhere.",
@@ -16212,6 +16234,45 @@
           "status",
           "timestamp",
           "dependencies"
+        ]
+      },
+      "EdgeDto": {
+        "type": "object",
+        "properties": {
+          "address": {
+            "type": "string",
+            "nullable": true,
+            "example": "94.187.15.248",
+            "description": "The caller's address as the API resolved it: what the rate limiter, the admin network allowlist and the audit trail use. It must equal the caller's public address."
+          },
+          "peerTrusted": {
+            "type": "boolean",
+            "nullable": true,
+            "description": "Whether the machine that connected to Caddy is a trusted proxy (a CDN whose ranges are in `trusted_proxies`). `false` for a direct connection. `null` when Caddy was not in the path."
+          },
+          "forwardedChain": {
+            "type": "string",
+            "description": "The X-Forwarded-For the request arrived with, before Caddy replaced it. Empty for a direct browser request.",
+            "example": "94.187.15.248"
+          },
+          "proxyHeaders": {
+            "description": "Headers on this request that only a proxy adds. Any of these with `peerTrusted: false` means a proxy stands in front that Caddy does not trust.",
+            "example": [
+              "x-forwarded-for",
+              "cdn-loop",
+              "cf-connecting-ip"
+            ],
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "address",
+          "peerTrusted",
+          "forwardedChain",
+          "proxyHeaders"
         ]
       },
       "PlatformLinkDto": {

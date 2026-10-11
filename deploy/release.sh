@@ -73,6 +73,15 @@ point_caddy_at() { # <colour>
 reverse_proxy api_$1:{args[0]} {
 	lb_try_duration 10s
 	lb_try_interval 250ms
+	# ONE address for the API to believe: the client Caddy resolved (the Caddyfile's
+	# trusted_proxies), never the list a caller or a CDN sent. See TRUSTED_PROXY_HOPS.
+	header_up X-Forwarded-For {client_ip}
+	# How the request ARRIVED, for the API's watch on a proxy nobody declared
+	# (src/common/security/edge-trust.ts) and for GET /health/edge. Set here, so a
+	# caller cannot send their own.
+	header_up X-OxShare-Peer {remote_host}
+	header_up X-OxShare-Peer-Trusted {http.vars.trusted_proxy}
+	header_up X-OxShare-Forwarded-Chain {header.X-Forwarded-For}
 }
 EOF
   # Validate with Caddy's own parser, using the caddy service's mounts and environment,

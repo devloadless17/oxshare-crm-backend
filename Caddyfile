@@ -22,6 +22,29 @@
 	# h1 h2 }` here AND remove `443:443/udp` from docker-compose.prod.yml,
 	# together: browsers cache alt-svc for 30 days, and h3 advertised over a dead
 	# UDP path gives mobile users intermittent ERR_CONNECTION_RESET.
+
+	# ── Who is the caller? Trust by ADDRESS, never by counting hops ──────────
+	#
+	# The domain is behind Cloudflare (orange cloud) since 11 Oct 2026, so the
+	# machine connecting here is usually Cloudflare's, not the client's. Caddy
+	# believes the client address a connection REPORTS (X-Forwarded-For) only
+	# when the connection itself comes from one of Cloudflare's published ranges
+	# below. From anywhere else — a client still reaching this server directly,
+	# or somebody who found its address — the header is ignored and the socket
+	# address is the client, so nobody can choose their own address.
+	#
+	# The ranges are https://www.cloudflare.com/ips-v4 and /ips-v6 (read 11 Oct
+	# 2026; they change about once in several years). A range missing here fails
+	# SAFE: its requests are counted under Cloudflare's address, as before, and
+	# src/common/security/proxy-depth.ts never sees a forged one.
+	servers {
+		trusted_proxies static 173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22 2400:cb00::/32 2606:4700::/32 2803:f800::/32 2405:b500::/32 2405:8100::/32 2a06:98c0::/29 2c0f:f248::/32
+		# X-Forwarded-For, read from the RIGHT and stopping at the first machine
+		# that is not trusted (`strict`). Not CF-Connecting-IP: that header is only
+		# true when Cloudflare itself is the connecting machine, and would be a
+		# caller's to forge the day a load balancer stands between the two.
+		trusted_proxies_strict
+	}
 }
 
 {$API_DOMAIN} {
@@ -57,12 +80,14 @@
 		import /etc/caddy/active-api.caddy 3001
 	}
 
-	# Caddy appends the client address to X-Forwarded-For, one hop. That is what
-	# TRUSTED_PROXY_HOPS=1 in the rendered .env refers to: Express counts that many
-	# entries in from the RIGHT. Put anything else in front of this — a Cloudflare
-	# orange cloud, another load balancer — and the count has to rise with it, or
-	# every request resolves to the proxy's address and the rate limiter, the
-	# RBAC-08 allowlist and the audit trail all key on the wrong thing.
+	# The API is handed exactly ONE address in X-Forwarded-For: the client Caddy
+	# resolved above (active-api.caddy sets it from {client_ip}). That is what
+	# TRUSTED_PROXY_HOPS=1 in the rendered .env refers to, and it stays 1 whether
+	# a request came through Cloudflare or straight here. It was read as the
+	# CONNECTING address until 11 Oct 2026: when Cloudflare was switched on, every
+	# client behind it became one address, and the sign-up limit refused them all.
+	# Another proxy in front of this one (a load balancer, a second CDN) is added
+	# to `trusted_proxies` above — the count does not change.
 
 	encode zstd gzip
 

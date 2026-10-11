@@ -6,7 +6,17 @@
 # weeks before any browser would refuse the site. What stops renewal, and how to fix it, is in
 # INFRASTRUCTURE.md ("Certificates").
 #
-# Changing a domain? Update HOSTS below with it (INFRASTRUCTURE.md, "Changing things safely").
+# The names are behind Cloudflare (since 11 Oct 2026), so asking a NAME for its certificate
+# shows Cloudflare's, which Cloudflare renews. Ours is asked from the SERVER, by address: it is
+# the one Cloudflare itself checks ("Full (strict)"), and if it expires every page becomes
+# Cloudflare's error 526. Both are checked.
+#
+# It also asks the API who it thinks the caller is (GET /health/edge). On 11 Oct 2026 the proxy
+# was switched on with nobody telling the API, every client behind it became one address, and
+# sign-ups were refused: this check fails the morning after any such change, whatever is in front.
+#
+# Changing a domain, a server or the CDN? Update ORIGINS below (DEPLOYMENT.md, "Before you
+# change DNS, the CDN or a server").
 name: Certificate watch
 
 on:
@@ -14,35 +24,82 @@ on:
     - cron: '17 6 * * *'
   workflow_dispatch:
 
-permissions: {}
+# Read-only: the last step reads the Caddyfile.
+permissions:
+  contents: read
 
 jobs:
   watch:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
-      HOSTS: api-admin.oxshare.com admin-dashboard.oxshare.com portal.oxshare.com
-      HEALTH_URL: https://api-admin.oxshare.com/health
+      # name=the server's own address. The address is NOT what public DNS answers behind a CDN.
+      ORIGINS: >-
+        api-admin.oxshare.com=187.7.64.167
+        admin-dashboard.oxshare.com=31.97.52.63
+        portal.oxshare.com=31.97.52.63
+      API: https://api-admin.oxshare.com
       MIN_DAYS: '21'
     steps:
-      - name: Every certificate has at least MIN_DAYS left, and the API answers
+      - name: Certificates, the API's health, and who the API thinks the caller is
         run: |
           set -u
           fail=0
-          for host in $HOSTS; do
-            end=$(echo | timeout 15 openssl s_client -connect "$host:443" -servername "$host" -verify_return_error 2>/dev/null \
+          # <label> <host> <address to connect to>
+          check_cert() {
+            end=$(echo | timeout 15 openssl s_client -connect "$3:443" -servername "$2" -verify_hostname "$2" -verify_return_error 2>/dev/null \
               | openssl x509 -noout -enddate 2>/dev/null | cut -d= -f2)
             if [ -z "$end" ]; then
-              echo "::error::$host serves no valid certificate"; fail=1; continue
+              echo "::error::$2 ($1, $3) serves no valid certificate"; fail=1; return
             fi
             days=$(( ( $(date -d "$end" +%s) - $(date +%s) ) / 86400 ))
             if [ "$days" -lt "$MIN_DAYS" ]; then
-              echo "::error::$host: certificate expires in $days days ($end). Caddy renews ~30 days ahead, so renewal is failing: see INFRASTRUCTURE.md, Certificates."
+              echo "::error::$2 ($1): certificate expires in $days days ($end). Caddy renews ~30 days ahead, so renewal is failing: see INFRASTRUCTURE.md, Certificates."
               fail=1
             else
-              echo "$host: $days days left (until $end)"
+              echo "$2 ($1): $days days left (until $end)"
             fi
+          }
+          for pair in $ORIGINS; do
+            host=${pair%%=*}; origin=${pair#*=}
+            check_cert "as the public sees it" "$host" "$host"
+            check_cert "the server's own" "$host" "$origin"
           done
-          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$HEALTH_URL")
+
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "$API/health")
           if [ "$code" = 200 ]; then echo "API health: 200"; else echo "::error::API health answered $code"; fail=1; fi
+
+          # Who am I, and who does the API say I am? They must be the same address.
+          me=$(curl -4 -s --max-time 15 https://api.ipify.org)
+          edge=$(curl -4 -s --max-time 15 "$API/health/edge")
+          seen=$(echo "$edge" | jq -r '.address // empty' 2>/dev/null)
+          echo "This runner is $me; the API resolved $seen ($edge)"
+          if [ -z "$me" ]; then
+            echo "::warning::Could not learn this runner's own address; the caller-address check was skipped."
+          elif [ "$seen" != "$me" ]; then
+            echo "::error::The API resolves callers to the wrong address ($seen, not $me). A proxy is in front that Caddy does not trust: every client behind it shares one rate limit. Add its ranges to trusted_proxies in the Caddyfile (DEPLOYMENT.md, Behind Cloudflare)."
+            fail=1
+          fi
+          exit $fail
+
+      # Caddy believes a forwarded address only from the ranges listed in the Caddyfile. If
+      # Cloudflare starts using a range that is not there, its visitors are counted under
+      # Cloudflare's address again. Cloudflare publishes the list; this compares the two.
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: Caddyfile
+          sparse-checkout-cone-mode: false
+      - name: Every range Cloudflare publishes is trusted in the Caddyfile
+        run: |
+          set -u
+          ranges=$(curl -s --max-time 15 https://www.cloudflare.com/ips-v4; echo; curl -s --max-time 15 https://www.cloudflare.com/ips-v6)
+          if [ "$(echo "$ranges" | grep -c '/')" -lt 10 ]; then
+            echo "::warning::Could not read Cloudflare's published ranges; the comparison was skipped."
+            exit 0
+          fi
+          fail=0
+          for range in $ranges; do
+            grep -qF " $range" Caddyfile || { echo "::error::Cloudflare publishes $range, and it is not in trusted_proxies. Add it to the Caddyfile here AND in both frontends' deploy/Caddyfile, then release."; fail=1; }
+          done
+          [ "$fail" = 0 ] && echo "All $(echo "$ranges" | grep -c '/') published ranges are trusted."
           exit $fail

@@ -28,6 +28,7 @@ interface Sent {
 function hostFor(headers: Record<string, string>, url: string, sent: Sent): ArgumentsHost {
   const response = {
     getHeader: () => undefined,
+    setHeader: () => undefined,
     status(code: number) {
       sent.status = code;
       return this;

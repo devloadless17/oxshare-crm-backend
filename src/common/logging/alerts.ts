@@ -103,6 +103,11 @@ export const ALERT_KINDS = {
    */
   PROXY_DEPTH_MISMATCH: 'security.proxy_depth_mismatch',
   /**
+   * A proxy stands in front of the API that Caddy was never told to trust, so
+   * every client behind it is one address. See `common/security/edge-trust.ts`.
+   */
+  UNTRUSTED_PROXY_IN_FRONT: 'security.untrusted_proxy_in_front',
+  /**
    * Rival and the CRM disagree about a money movement — a deposit PAID there
    * against a terminal row here, a reversal of settled funds, a payout state
    * that contradicts ours. Money is sitting on the wrong side of a boundary
@@ -312,6 +317,10 @@ export const ALERT_THRESHOLDS: Record<AlertKind, { severity: AlertSeverity; rule
   [ALERT_KINDS.PROXY_DEPTH_MISMATCH]: {
     severity: 'page',
     rule: 'Raised when ~90% of a 200-request sample disagrees with the configured hop count, repeating hourly while it stands. `page` for the SHALLOWER form — the trusted address is then caller-supplied text, so an IP allowlist can be walked through and the rate limiter evaded, which is a live authentication bypass. The DEEPER form is raised at `notify`: every control is keying on our own proxy rather than the caller, which corrupts the audit trail and collapses the limiter but cannot be steered by an attacker. Its disappearance is the resolution.',
+  },
+  [ALERT_KINDS.UNTRUSTED_PROXY_IN_FRONT]: {
+    severity: 'page',
+    rule: 'Raised when a quarter of a 200-request sample of public traffic arrives forwarded by a machine Caddy does not trust, repeating hourly while it stands. It means a CDN or load balancer was put in front of the API (a DNS record switched to "proxied" is enough, with no deploy) and its address ranges are missing from `trusted_proxies` in the Caddyfile. PAGE: every client behind that proxy shares ONE rate-limit budget, so real sign-ups and sign-ins are being refused right now, and the share grows as DNS spreads. The payload names one such machine and the headers it sent. Its disappearance is the resolution.',
   },
   [ALERT_KINDS.LOGIN_LOCKOUT]: {
     severity: 'notify',

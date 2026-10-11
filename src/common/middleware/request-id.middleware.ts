@@ -4,6 +4,12 @@ import { randomUUID } from 'crypto';
 import { requestContext } from '../logging/request-context';
 import { clientIp, trustedProxyHops } from '../security/client-ip';
 import { ProxyDepthObserver, proxyDepthSummary } from '../security/proxy-depth';
+import {
+  UntrustedProxyObserver,
+  edgeFactsOf,
+  proxyMarkersOf,
+  untrustedProxySummary,
+} from '../security/edge-trust';
 import { ALERT_KINDS, raiseAlert } from '../logging/alerts';
 import { safeLogPath } from '../logging/redact';
 import { LOCALE_HEADER, parseLocale } from '../i18n/locale';
@@ -30,6 +36,7 @@ export class RequestIdMiddleware implements NestMiddleware {
    * is a per-process counter — which is what the sample needs to mean anything.
    */
   private readonly proxyDepth = new ProxyDepthObserver();
+  private readonly untrustedProxy = new UntrustedProxyObserver();
 
   use(req: Request & { id?: string }, res: Response, next: NextFunction): void {
     const inbound = req.header('x-request-id');
@@ -46,6 +53,7 @@ export class RequestIdMiddleware implements NestMiddleware {
      * repeatedly rather than once (R-6.3).
      */
     this.checkProxyDepth(req);
+    this.checkUntrustedProxy(req);
 
     requestContext.run(
       {
@@ -90,6 +98,27 @@ export class RequestIdMiddleware implements NestMiddleware {
       );
     } catch {
       // Deliberately swallowed — see the docblock.
+    }
+  }
+
+  /**
+   * Is there a proxy in front that Caddy does not know? `edge-trust.ts` has the
+   * reasoning. Wrapped for the same reason as the check above.
+   */
+  private checkUntrustedProxy(req: Request): void {
+    try {
+      const facts = edgeFactsOf(req, undefined);
+      const verdict = this.untrustedProxy.observe(facts, proxyMarkersOf(req, facts));
+      if (!verdict) return;
+      raiseAlert(
+        this.logger,
+        ALERT_KINDS.UNTRUSTED_PROXY_IN_FRONT,
+        'page',
+        untrustedProxySummary(verdict),
+        { ...verdict, exampleMarkers: verdict.exampleMarkers.join(', ') },
+      );
+    } catch {
+      // Deliberately swallowed — a watch must never fail a request.
     }
   }
 }

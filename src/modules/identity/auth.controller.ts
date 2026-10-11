@@ -69,7 +69,14 @@ export class AuthController {
       'absent token would make it impossible to log in and obtain a fresh one.',
   )
   @Post('register')
-  @Throttle({ default: { ttl: 3_600_000, limit: 10 } })
+  /*
+   * 20 per 10 minutes per address. It was 10 an hour, and production refused
+   * real clients with "try again in 27 minutes" (11 Oct 2026): the count is per
+   * IP and includes every refused submission, and one IP is often many people —
+   * a sales office registering walk-ins, or a mobile carrier's shared address.
+   * The short window also means nobody is ever locked out for long.
+   */
+  @Throttle({ default: { ttl: 600_000, limit: 20 } })
   @ApiOperation({ summary: 'Register a new portal user' })
   // Returns { message, userId }, not tokens: the account is unverified until the
   // emailed link is followed, so there is no session to hand back.

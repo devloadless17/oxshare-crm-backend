@@ -843,6 +843,8 @@ export const SERVER_MESSAGES_AR: Readonly<Record<string, string>> = {
     'الانتقال إلى الصفحة الأخيرة لا يقبل مؤشراً: يبدأ من النهاية.',
   'Page numbers reach the first 10,000 rows. Use Next or Last (the cursor) beyond them.':
     'أرقام الصفحات تغطي أول 10,000 صف. استخدم التالي أو الأخيرة بعدها.',
+  'This search matches more than 1,000 clients. Add a surname, or search by Portal ID, email or phone.':
+    'هذا البحث يطابق أكثر من 1,000 عميل. أضف اسم العائلة، أو ابحث برقم البوابة أو البريد الإلكتروني أو الهاتف.',
   'This search is too broad to answer quickly. Narrow it and try again.':
     'هذا البحث واسع جداً للإجابة بسرعة. ضيّقه وحاول مرة أخرى.',
   'Withdrawal amount must be positive.': 'يجب أن يكون مبلغ السحب موجباً.',

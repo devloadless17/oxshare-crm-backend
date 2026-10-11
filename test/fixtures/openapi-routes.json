@@ -27,6 +27,7 @@
   "DELETE /v1/identity/me/avatar",
   "DELETE /v1/identity/sessions/{id}",
   "GET /health",
+  "GET /health/edge",
   "GET /health/ready",
   "GET /v1/admin/admin-users/export",
   "GET /v1/admin/agencies",

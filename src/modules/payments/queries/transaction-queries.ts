@@ -16,6 +16,7 @@ import { money } from '../../wallet/money';
 import {
   buildCursorPage,
   pageSize,
+  TOTAL_CAP,
   walkOrder,
   type CursorPosition,
   type PageDirection,
@@ -64,6 +65,9 @@ type TransactionRow = typeof transactions.$inferSelect;
  * transfer has no method, no provider and no destination — but "the method is
  * null" is also true of a manual admin credit.
  */
+/** The most clients a money-list search may name — see `assertSearchNarrow`. */
+const MAX_SEARCHED_CLIENTS = 1_000;
+
 export type MovementKind = 'payment' | 'transfer' | 'commission_transfer';
 
 /**
@@ -1896,6 +1900,8 @@ export class TransactionQueries {
      * probe per movement for numbers it cannot change (the FK is NOT NULL).
      */
     const countSource = sql`${cte} SELECT combined.* FROM combined`;
+    // For counting only: no columns, so Postgres reads the index and not the rows.
+    const countOnes = sql`${cte} SELECT 1 FROM combined`;
 
     /*
      * One PAGE of the union, then its clients (29 Sep 2026). Joined first, every
@@ -1964,7 +1970,7 @@ export class TransactionQueries {
       return conditions;
     };
 
-    return { countSource, page, conditionsFor, whereOf };
+    return { countSource, countOnes, page, conditionsFor, whereOf };
   }
 
   /**
@@ -1975,6 +1981,28 @@ export class TransactionQueries {
    * response never carries a monetary NUMBER: `money()` normalises every
    * amount to the string the column holds (§6.1).
    */
+  /**
+   * A money-list search first resolves the CLIENTS it names, then reads their
+   * movements. That is fast for one client or a few hundred; a common first
+   * name matches a hundred thousand, and filtering millions of movements by a
+   * hundred thousand owners took seconds — one call 28 s (measured, 11 Oct
+   * 2026). So a search naming more than MAX_SEARCHED_CLIENTS is refused with
+   * the reason, rather than answered slowly or, worse, partly.
+   */
+  private async assertSearchNarrow(q: string | undefined): Promise<void> {
+    const term = q?.trim();
+    if (!term) return;
+    const { rows } = await this.db.execute(sql`
+      SELECT count(*)::int AS value FROM (
+        SELECT 1 FROM users WHERE ${clientIdentitySearch(term)} LIMIT ${MAX_SEARCHED_CLIENTS + 1}
+      ) matched`);
+    if ((rows[0] as { value: number }).value > MAX_SEARCHED_CLIENTS) {
+      throw new ValidationError(
+        'This search matches more than 1,000 clients. Add a surname, or search by Portal ID, email or phone.',
+      );
+    }
+  }
+
   async listAllForAdmin(
     filter: AdminMovementsFilter & {
       page?: number;
@@ -1994,7 +2022,8 @@ export class TransactionQueries {
     const direction = walkOrder(filter.order ?? 'desc', filter.paging);
     const sortSpec = ADMIN_TRANSACTION_SORT_COLUMNS[sortKey];
 
-    const { countSource, page: pageOf, conditionsFor, whereOf } = this.adminMovements(filter);
+    await this.assertSearchNarrow(filter.q);
+    const { countOnes, page: pageOf, conditionsFor, whereOf } = this.adminMovements(filter);
 
     /*
      * Keyset seek — R-2.4, the same tuple comparison `listForAdmin` documents.
@@ -2025,6 +2054,36 @@ export class TransactionQueries {
      * and clients, not movements, and are exact (see `movementTotalsQuery`).
      */
     const totals = movementTotalsSource(filter) !== undefined;
+    /*
+     * A facet the stored totals cannot answer (a search, the desk's own rows, a
+     * method…) is counted ONE VALUE AT A TIME, each through the same index the
+     * page reads and stopped at TOTAL_CAP + 1 rows (11 Oct 2026). The GROUP BY it
+     * replaces read every matching movement on every page view: the deposit
+     * desk took 0.6–0.9 s at three million rows, and grew with each deposit.
+     */
+    const cappedFacet = (
+      axis: 'state' | 'direction',
+      values: readonly string[],
+      omit: { state?: boolean; direction?: boolean },
+    ): SQL =>
+      sql.join(
+        values.map(
+          (value) => sql`
+            SELECT ${value}::text AS ${sql.raw(axis)}, (
+              SELECT count(*)::int FROM (
+                ${countOnes}${whereOf([
+                  ...conditionsFor(omit),
+                  // The VALUE is cast, never the column: `state::text` cannot use the
+                  // state index, and a bare text parameter is refused by the enum.
+                  axis === 'state'
+                    ? sql`combined.state = ${value}::transaction_state`
+                    : sql`combined.direction = ${value}`,
+                ])} LIMIT ${TOTAL_CAP + 1}
+              ) capped
+            ) AS value`,
+        ),
+        sql` UNION ALL `,
+      );
     const [rows, stateRows, directionRows] = await Promise.all([
       this.db.execute(
         pageOf(
@@ -2036,27 +2095,26 @@ export class TransactionQueries {
       ),
       totals
         ? this.db.execute(movementTotalsQuery(filter, 'state'))
-        : this.db.execute(sql`
-            WITH counted AS (${countSource}${whereOf(conditionsFor({ state: true }))})
-            SELECT state, count(*)::int AS value FROM counted GROUP BY state
-          `),
+        : this.db.execute(cappedFacet('state', transactionStateEnum.enumValues, { state: true })),
       totals
         ? this.db.execute(movementTotalsQuery(filter, 'direction'))
-        : this.db.execute(sql`
-            WITH counted AS (${countSource}${whereOf(conditionsFor({ direction: true }))})
-            SELECT direction, count(*)::int AS value FROM counted GROUP BY direction
-          `),
+        : this.db.execute(
+            cappedFacet('direction', transactionDirectionEnum.enumValues, { direction: true }),
+          ),
     ]);
 
     const counts: Record<string, number> = { all: 0 };
     for (const row of stateRows.rows as unknown as { state: string; value: number }[]) {
-      counts[row.state] = row.value;
-      counts['all'] += row.value;
+      if (row.value === 0) continue;
+      // Stored totals are exact; a capped facet stops at TOTAL_CAP + 1.
+      counts[row.state] = totals ? row.value : Math.min(row.value, TOTAL_CAP);
+      counts['all'] += counts[row.state];
     }
     const directionCounts: Record<string, number> = { all: 0 };
     for (const row of directionRows.rows as unknown as { direction: string; value: number }[]) {
-      directionCounts[row.direction] = row.value;
-      directionCounts['all'] += row.value;
+      if (row.value === 0) continue;
+      directionCounts[row.direction] = totals ? row.value : Math.min(row.value, TOTAL_CAP);
+      directionCounts['all'] += directionCounts[row.direction];
     }
 
     const total = filter.state ? (counts[filter.state] ?? 0) : counts['all'];
@@ -2146,6 +2204,7 @@ export class TransactionQueries {
       after?: { createdAt: string; id: string };
     },
   ): Promise<AdminTransactionExportRow[]> {
+    await this.assertSearchNarrow(filter.q);
     const { page, conditionsFor } = this.adminMovements(filter);
 
     const conditions = conditionsFor();
@@ -2195,6 +2254,7 @@ export class TransactionQueries {
     }[];
     directions: { direction: string; currency: string; count: number; total: string }[];
   }> {
+    await this.assertSearchNarrow(filter.q);
     const { countSource, conditionsFor, whereOf } = this.adminMovements(filter);
 
     /*

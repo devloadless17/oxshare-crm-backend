@@ -73,16 +73,16 @@ is explicitly reloaded after each deploy, every remote `compose exec` ends in
 end-to-end (containerized UDP listener on 443/udp, probed from the public
 internet, 17 Aug 2026).
 
-| Secret            | What                                                                                                                                                                                                           |
-| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `DOCKER_USERNAME` | Docker Hub username. The image is pushed to `<username>/oxshare-crm-backend`, which **must exist and be PRIVATE** first: the build refuses a public or missing repository (it was found public on 5 Oct 2026). |
-| `DOCKER_SECRET`   | Docker Hub access token (Account Settings → Security → New access token).                                                                                                                                      |
-| `VPS_HOST`        | `187.7.64.167` (Hostinger `srv2036531`, Düsseldorf, Ubuntu 26.04, Docker 29 + Compose, provisioned 5 Oct 2026).                                                                                                |
-| `VPS_USER`        | `deploy` — already exists on the box, key-only, in the `docker` group.                                                                                                                                         |
-| `VPS_SSH_KEY_B64` | `base64 -w0 ~/.ssh/oxshare_deploy \| clip.exe` (DEPLOY-PLAYBOOK §4): the CI key already authorised for `deploy` on both new servers. Single-line because a pasted multi-line key gets its newlines mangled.    |
-| `VPS_PORT`        | Optional. SSH port, default 22.                                                                                                                                                                                |
-| `API_DOMAIN`      | The API's domain (`api.<buyer-domain>`), with an **A record pointing at `187.7.64.167`** (DNS-only if on Cloudflare). Caddy issues the certificate itself over HTTP-01, so the record must be live first.      |
-| `ACME_EMAIL`      | Where Let's Encrypt sends certificate expiry notices.                                                                                                                                                          |
+| Secret            | What                                                                                                                                                                                                                                                         |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `DOCKER_USERNAME` | Docker Hub username. The image is pushed to `<username>/oxshare-crm-backend`, which **must exist and be PRIVATE** first: the build refuses a public or missing repository (it was found public on 5 Oct 2026).                                               |
+| `DOCKER_SECRET`   | Docker Hub access token (Account Settings → Security → New access token).                                                                                                                                                                                    |
+| `VPS_HOST`        | `187.7.64.167` (Hostinger `srv2036531`, Düsseldorf, Ubuntu 26.04, Docker 29 + Compose, provisioned 5 Oct 2026).                                                                                                                                              |
+| `VPS_USER`        | `deploy` — already exists on the box, key-only, in the `docker` group.                                                                                                                                                                                       |
+| `VPS_SSH_KEY_B64` | `base64 -w0 ~/.ssh/oxshare_deploy \| clip.exe` (DEPLOY-PLAYBOOK §4): the CI key already authorised for `deploy` on both new servers. Single-line because a pasted multi-line key gets its newlines mangled.                                                  |
+| `VPS_PORT`        | Optional. SSH port, default 22.                                                                                                                                                                                                                              |
+| `API_DOMAIN`      | The API's domain (`api.<buyer-domain>`), with an **A record pointing at `187.7.64.167`** (DNS-only for the FIRST certificate if on Cloudflare; see "Behind Cloudflare"). Caddy issues the certificate itself over HTTP-01, so the record must be live first. |
+| `ACME_EMAIL`      | Where Let's Encrypt sends certificate expiry notices.                                                                                                                                                                                                        |
 
 ### Application
 
@@ -366,11 +366,76 @@ stays green — the one failure the health gate cannot see).
 - **The compose service must stay named `postgres`** — `src/database/db.ts` disables
   TLS for that hostname; any other name makes the API demand a certificate the
   container doesn't have.
-- **`TRUSTED_PROXY_HOPS=1`** is rendered into `.env` and is correct for exactly one
-  Caddy directly on the internet. Orange-clouding the domain in Cloudflare requires
-  raising it to 2, or the rate limiter, RBAC-08 allowlist and audit trail all read
-  Cloudflare's address as the client.
+- **`TRUSTED_PROXY_HOPS=1` stays 1, with or without Cloudflare.** The domain is behind
+  Cloudflare (orange cloud) since 11 Oct 2026. Caddy resolves the real client: it believes
+  the forwarded address only on a connection from Cloudflare's published ranges (`trusted_proxies`
+  in the `Caddyfile`), and hands the API ONE address (`header_up X-Forwarded-For {client_ip}` in
+  `active-api.caddy`). Raising the count instead would let anyone reaching the server directly
+  choose their own address. When Cloudflare publishes a new range, add it to the `Caddyfile`.
+  See "Behind Cloudflare" below.
 - **The `caddy_data` volume holds the certificates and the ACME account.** Deleting it
   forces re-issuance, which Let's Encrypt rate-limits per week.
 - **`oxshare_uploads` holds any pre-R2 documents** (reads fall back to disk; there is
   no backfill). Don't drop it just because storage is R2.
+
+## Behind Cloudflare (since 11 Oct 2026)
+
+`api-admin`, `portal` and `admin-dashboard` are proxied by Cloudflare (orange cloud). What that
+needs, and what was checked:
+
+- **Client addresses**: resolved by Caddy from Cloudflare's ranges, as above. On 11 Oct the proxy
+  was switched on before this existed: every client behind Cloudflare became ONE address, and the
+  sign-up limit (then 10 an hour per address) refused all of them.
+- **The API says who it thinks you are**: `GET /health/edge` answers with the caller's address as
+  resolved, whether the connecting machine was a trusted proxy, and the proxy headers it carried.
+  `address` must be the caller's public address.
+- **A proxy nobody declared pages** (`UNTRUSTED_PROXY_IN_FRONT`,
+  `src/common/security/edge-trust.ts`): Caddy tells the API how each request arrived, and a quarter
+  of public traffic forwarded by an untrusted machine raises it, naming the machine. The daily
+  `certificate-watch.yml` run asks `/health/edge` from outside as well.
+- **Cloudflare dashboard, required**:
+  - SSL/TLS mode **Full (strict)**. "Flexible" makes Cloudflare call this server over plain HTTP,
+    which Caddy redirects to HTTPS: an endless redirect.
+  - **No challenge on the API host.** A browser `fetch` cannot solve one, so Bot Fight Mode, "Under
+    Attack" or a managed challenge on `api-admin.oxshare.com` breaks the portal and the console, and
+    refuses the payment providers' webhooks (`/v1/payments/…/webhook`). Skip the API host in those
+    rules.
+  - **Rocket Loader and Email Obfuscation off** on the two frontends: both rewrite the page's
+    scripts, which the apps' Content-Security-Policy refuses.
+  - WebSockets on (the default), for `/socket.io/`.
+- **Certificates**: Caddy still renews its own Let's Encrypt certificate (expires 3 Jan 2027, so
+  renewal is due in early December). TLS-ALPN cannot pass a proxy, so it renews over HTTP-01
+  through Cloudflare. Checked 11 Oct: a plain-HTTP request for the challenge path through
+  Cloudflare reaches Caddy on port 80 (it answers with Caddy's own 308). A real renewal through
+  Cloudflare has NOT happened yet. Two things keep it working: leave "Always Use HTTPS" OFF in
+  Cloudflare (Caddy already redirects), and keep port 80 open. `certificate-watch.yml` asks the
+  SERVER for its certificate every morning and fails three weeks before it would expire. If
+  renewal fails, switch the record to DNS-only for the minutes it takes.
+- **Caching**: Cloudflare caches by file extension. Identity documents and receipts are served
+  `no-store`, avatars `private`, payment logos `public` (intended), and every error `no-store`.
+- **This server's address is still reachable directly.** Nothing here depends on that being
+  closed, but Cloudflare's protection only covers traffic that goes through it. Limiting ports
+  80/443 to Cloudflare's ranges in UFW closes it, once no client resolves the old address.
+- **What Cloudflare does NOT change**: the calls this server makes OUT (3pay, Rival, R2, email)
+  still leave from `187.7.64.167`, and the bridge still arrives over WireGuard.
+
+## Before you change DNS, the CDN or a server
+
+The system is built so that these changes are safe, in either direction, if the steps are followed.
+What each change can break, and the check that proves it did not:
+
+| Change                                                       | Do first                                                                                                                                                                                                   | Prove after                                                                                         |
+| ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| Put a CDN or load balancer in front (or change which one)    | Add its published address ranges to `trusted_proxies` in ALL THREE Caddyfiles (backend, admin, portal) and release. Extra ranges are harmless before the switch.                                           | `curl https://<api>/health/edge`: `address` is your own public address and `peerTrusted` is `true`. |
+| Put a load balancer between the CDN and Caddy (an AWS move)  | Add the balancer's address range to `trusted_proxies` too. `TRUSTED_PROXY_HOPS` stays 1: Caddy walks the forwarded list from the right past every machine it trusts. Let the balancer accept only the CDN. | `/health/edge`: `address` is your own public address.                                               |
+| Take the CDN away (records back to DNS-only)                 | Nothing: a direct connection is already handled. Leave the ranges in place.                                                                                                                                | `/health/edge`: `address` is yours, `peerTrusted` is `false`, `proxyHeaders` is empty.              |
+| Move DNS to another host                                     | Copy EVERY record first, the mail ones included (MX, SPF, DKIM, DMARC). Keep TTLs at 300.                                                                                                                  | The three names answer, `/health` is 200, and a sign-up's code email arrives.                       |
+| Change a domain                                              | "Changing the domain" above.                                                                                                                                                                               | A full sign-in and one write from each app (the session cookies are bound to the host).             |
+| Replace a server (new address)                               | "Replacing a server" above. Tell 3pay the new address (they whitelist it) and re-point the bridge's WireGuard peer. Update `ORIGINS` in `certificate-watch.yml`.                                           | `/health/ready`, a 3pay "Test connection", and `"mt5Connected": true` on the bridge.                |
+| Turn on a CDN feature (cache rules, bot protection, minify…) | Never on the API host without reading "Behind Cloudflare".                                                                                                                                                 | Sign in, open a KYC document, and send one message in the assistant (it streams) from the portal.   |
+
+After any of them, run the "Certificate watch" workflow by hand (Actions → Run workflow): it checks
+the certificates from both sides, the API's health, and the caller address in one go.
+
+What tells you if a step was skipped: the `UNTRUSTED_PROXY_IN_FRONT` page (a proxy the Caddyfile
+does not trust), the `PROXY_DEPTH_MISMATCH` page (the hop count is wrong), and the daily watch.

@@ -9,6 +9,10 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: oxshare-postgres
+    # The same shared memory production has. Docker's 64 MB default made a
+    # parallel query fail with "could not resize shared memory segment" once
+    # the dev data grew (a 500 on the deposit desk, 11 Oct 2026).
+    shm_size: 1g
     environment:
       POSTGRES_USER: oxshare
       POSTGRES_PASSWORD: oxshare_dev

@@ -119,7 +119,7 @@ describe('OpenAPI route inventory', () => {
      * literally true.
      */
     const unversioned = routeInventory().filter((r) => !/ \/v1\//.test(r));
-    expect(unversioned.sort()).toEqual(['GET /health', 'GET /health/ready']);
+    expect(unversioned.sort()).toEqual(['GET /health', 'GET /health/edge', 'GET /health/ready']);
   });
 
   it('serves the health probes UNVERSIONED', () => {

@@ -701,10 +701,10 @@ jobs:
             # to be stated somewhere the deploy can assert against.
             put REALTIME_ENGINE uws
             put REALTIME_PORT 3003
-            # Exactly one reverse proxy — Caddy, directly internet-facing. Raise
-            # this to 2 if a CDN is ever put in front, or every request resolves
-            # to the CDN's address for the rate limiter, the RBAC-08 allowlist
-            # and the audit trail alike.
+            # Stays 1 behind Cloudflare too: Caddy resolves the client from
+            # Cloudflare's ranges and hands the API ONE address (Caddyfile,
+            # `trusted_proxies`; active-api.caddy, `header_up`). Raising this
+            # would let a caller reaching the server directly pick their address.
             put TRUSTED_PROXY_HOPS 1
             # Stated, never inferred: env.validation.ts refuses `disk` in
             # production outright, because a silent downgrade puts identity

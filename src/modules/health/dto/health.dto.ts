@@ -56,3 +56,37 @@ export class ReadinessDto {
   @ApiProperty({ type: [DependencyHealthDto] })
   dependencies: DependencyHealthDto[];
 }
+
+export class EdgeDto {
+  @ApiProperty({
+    nullable: true,
+    type: String,
+    example: '94.187.15.248',
+    description:
+      "The caller's address as the API resolved it: what the rate limiter, the admin network allowlist and the audit trail use. It must equal the caller's public address.",
+  })
+  address: string | null;
+
+  @ApiProperty({
+    nullable: true,
+    type: Boolean,
+    description:
+      'Whether the machine that connected to Caddy is a trusted proxy (a CDN whose ranges are in `trusted_proxies`). `false` for a direct connection. `null` when Caddy was not in the path.',
+  })
+  peerTrusted: boolean | null;
+
+  @ApiProperty({
+    description:
+      'The X-Forwarded-For the request arrived with, before Caddy replaced it. Empty for a direct browser request.',
+    example: '94.187.15.248',
+  })
+  forwardedChain: string;
+
+  @ApiProperty({
+    type: [String],
+    description:
+      'Headers on this request that only a proxy adds. Any of these with `peerTrusted: false` means a proxy stands in front that Caddy does not trust.',
+    example: ['x-forwarded-for', 'cdn-loop', 'cf-connecting-ip'],
+  })
+  proxyHeaders: string[];
+}
