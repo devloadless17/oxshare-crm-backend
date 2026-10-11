@@ -139,7 +139,10 @@ async function expectTotalsAreTheRows() {
       ['one client', { ...filter, scope: UNRESTRICTED, userId: clientA }],
     ];
     for (const [name, totals] of reads) {
-      expect(movementTotalsSource(totals), name).toBe('client');
+      // ONE tag reads the tag's own kept totals (0218); several, or one client, per client.
+      expect(movementTotalsSource(totals), name).toBe(
+        name === 'onlyA' || name === 'onlyB' ? 'tag' : 'client',
+      );
       expect(movementTotalsSource({ ...totals, ...EVERYTHING }), name).toBeUndefined();
       expect(await read(totals), `${name} ${label}`).toEqual(
         await read({ ...totals, ...EVERYTHING }),
@@ -279,5 +282,52 @@ describe('the stored totals (0165) are the live rows, counted', () => {
     expect(
       movementTotalsSource({ scope: UNRESTRICTED, ...dateRangeQuery('2026-03-02', '2026-03-02') }),
     ).toBe('daily');
+  });
+
+  it('follow a client who changes tags — before the fold and after it', async () => {
+    const [{ id: b }] = (await q(`SELECT id FROM users WHERE email = 'totals-b@example.com'`)) as {
+      id: number;
+    }[];
+    // B leaves tag B for tag A, and trades again before anything is folded.
+    await q(`DELETE FROM client_tag_assignments WHERE user_id = $1 AND tag_id = $2`, [b, tagB]);
+    await q(`INSERT INTO client_tag_assignments (user_id, tag_id) VALUES ($1, $2)`, [b, tagA]);
+    const [{ id: wallet }] = (await q(
+      `SELECT id FROM wallets WHERE user_id = $1 AND currency = 'USD' AND kind = 'main'`,
+      [b],
+    )) as { id: string }[];
+    await tx(b, wallet, 'deposit', 'pending', 'USD', '41.00000000', '2026-03-04T09:00:00Z');
+    const [{ n }] = await q(`SELECT count(*)::int AS n FROM movement_tag_member_events`);
+    expect(n, 'no membership event was written — the case is vacuous').toBeGreaterThan(0);
+    await expectTotalsAreTheRows();
+
+    await q(`SELECT fold_movement_totals()`);
+    const [left] = await q(
+      `SELECT (SELECT count(*) FROM movement_tag_member_events)::int AS events,
+              (SELECT count(*) FROM movement_tag_totals WHERE tag_id = $1)::int AS in_b`,
+      [tagB],
+    );
+    expect(left).toEqual({ events: 0, in_b: 0 }); // nobody carries B: nothing kept for it
+    await expectTotalsAreTheRows();
+
+    // And back again, with a state change in between, across two folds.
+    await q(`DELETE FROM client_tag_assignments WHERE user_id = $1 AND tag_id = $2`, [b, tagA]);
+    await q(`INSERT INTO client_tag_assignments (user_id, tag_id) VALUES ($1, $2)`, [b, tagB]);
+    await q(`UPDATE transactions SET state = 'success' WHERE state = 'pending'`);
+    await expectTotalsAreTheRows();
+    await q(`SELECT fold_movement_totals()`);
+    // Carrying both tags at once: each tag still counts them once.
+    await q(`INSERT INTO client_tag_assignments (user_id, tag_id) VALUES ($1, $2)`, [b, tagA]);
+    await expectTotalsAreTheRows();
+    await q(`SELECT fold_movement_totals()`);
+    await expectTotalsAreTheRows();
+    // The invariant itself: each tag's kept total is its members' client totals.
+    const drift = await q(`
+      SELECT * FROM (
+        SELECT g.tag_id, c.kind, c.direction, c.state, c.currency, sum(c.count) AS count, sum(c.total) AS total
+          FROM movement_tag_members g JOIN movement_client_totals c ON c.user_id = g.user_id
+         GROUP BY 1, 2, 3, 4, 5
+      ) want FULL JOIN movement_tag_totals got USING (tag_id, kind, direction, state, currency)
+       WHERE want.count IS DISTINCT FROM got.count OR want.total IS DISTINCT FROM got.total`);
+    expect(drift).toEqual([]);
   });
 });

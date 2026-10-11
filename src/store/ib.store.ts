@@ -13,6 +13,7 @@ import {
   sql,
   type SQLWrapper,
   not,
+  type SQL,
 } from 'drizzle-orm';
 import { Inject, Injectable } from '@nestjs/common';
 import { orderTerms, type SortOrder } from '../common/sorting';
@@ -141,6 +142,9 @@ export const DEFAULT_IB_ACCRUAL_SORT: IbAccrualSortKey = 'createdAt';
  * The one method worth reading before the others is `transition`. Everything
  * else here is ordinary.
  */
+/** Past this many partners in one territory, accruals are scoped row by row. */
+const MAX_TERRITORY_EARNERS = 2_000;
+
 @Injectable()
 export class IbStore {
   constructor(@Inject(DRIZZLE_DB) private readonly db: Db) {}
@@ -276,7 +280,9 @@ export class IbStore {
   }) {
     const scope = filter.scope ?? UNRESTRICTED;
     const visible = and(
-      clientScopePredicate(scope, users.id),
+      // The application's own client id: the same person `users` is joined on,
+      // so the tab counts can apply the territory without reading `users`.
+      clientScopePredicate(scope, ibApplications.userId),
       ...withinRange(ibApplications.submittedAt, filter.range),
     );
 
@@ -402,14 +408,6 @@ export class IbStore {
         sql`SELECT s.status::text AS status, (
               SELECT count(*)::int FROM (
                 SELECT 1 FROM ${ibApplications}
-                ${
-                  // Only a territory reads the client. Without one the join can
-                  // drop nothing (user_id is a NOT NULL foreign key) and costs
-                  // one lookup per application counted.
-                  scope.unrestricted
-                    ? sql``
-                    : sql`INNER JOIN ${users} ON ${users.id} = ${ibApplications.userId}`
-                }
                 WHERE ${ibApplications.status} = s.status
                 ${visible ? sql`AND ${visible}` : sql``}
                 LIMIT ${TOTAL_CAP + 1}
@@ -820,6 +818,53 @@ export class IbStore {
   }
 
   /**
+   * Which accruals a territory may see, as a condition the planner can use.
+   *
+   * The rule is unchanged: a row is judged by its BENEFICIARY — the partner, or
+   * the client on a legacy rebate paid to a client (`accrualBeneficiarySql`).
+   * Written as one EXISTS over that CASE, Postgres could only walk every accrual
+   * asking the question of each: 0.9 s at 1M accruals for a territory with no
+   * partner in it, growing with the table. Here the territory's EARNERS are
+   * resolved first, from the kept earnings (0217) — one row per partner, not
+   * per accrual — so the list is read through `(ib_user_id, created_at)`, and a
+   * territory with no earner reads nothing at all.
+   */
+  private async accrualVisibility(scope: ClientScope): Promise<SQL | undefined> {
+    if (scope.unrestricted) return undefined;
+    const byBeneficiary = clientScopePredicate(scope, accrualBeneficiarySql());
+    const earnerVisible = clientScopePredicate(scope, sql`e.ib_user_id`);
+    if (!earnerVisible) return byBeneficiary;
+    const earners = (
+      await this.db.execute(sql`
+        SELECT DISTINCT e.ib_user_id AS id
+          FROM (
+            SELECT ib_user_id FROM ib_partner_earning_totals
+            UNION ALL
+            SELECT ib_user_id FROM ib_partner_earning_deltas
+          ) e
+         WHERE ${earnerVisible}
+         LIMIT ${MAX_TERRITORY_EARNERS + 1}`)
+    ).rows as unknown as { id: number }[];
+    // A territory holding thousands of partners: the general rule, as before.
+    if (earners.length > MAX_TERRITORY_EARNERS) return byBeneficiary;
+
+    // Legacy rebates paid to a client (before 0209) are judged by the client.
+    const clientVisible = clientScopePredicate(scope, ibAccruals.clientUserId) ?? sql`false`;
+    const legacy = sql`(${ibAccruals.paidToClient} AND ${clientVisible})`;
+    const anyLegacy = await this.db.execute(
+      sql`SELECT 1 FROM ${ibAccruals} WHERE ${legacy} LIMIT 1`,
+    );
+    const earned =
+      earners.length === 0
+        ? undefined
+        : sql`(NOT ${ibAccruals.paidToClient} AND ${ibAccruals.ibUserId} IN (${sql.join(
+            earners.map((e) => sql`${e.id}::integer`),
+            sql`, `,
+          )}))`;
+    if (anyLegacy.rows.length === 0) return earned ?? sql`false`;
+    return earned ? sql`(${earned} OR ${legacy})` : legacy;
+  }
+  /**
    * The COMMISSION LEDGER — every accrual, who earned it and who generated it.
    *
    * ## ⚠️ Nothing read this table before
@@ -930,8 +975,7 @@ export class IbStore {
      * both kinds in one page, and each row has to be judged by its own
      * beneficiary rather than by whichever branch the request happened to take.
      */
-    const beneficiary = accrualBeneficiarySql();
-    const visible = clientScopePredicate(scope, beneficiary);
+    const visible = await this.accrualVisibility(scope);
 
     /*
      * Aliased, because both joins land on `users`. Without distinct aliases the

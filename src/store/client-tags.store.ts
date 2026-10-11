@@ -3,11 +3,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db, Executor } from '../database/db';
 import { clientTagAssignments, clientTags, users } from '../database/schema';
-import {
-  clientScopePredicate,
-  territoryCounts,
-  type ClientScope,
-} from '../common/security/client-scope';
+import { clientScopePredicate, type ClientScope } from '../common/security/client-scope';
 
 export interface ClientTag {
   id: string;
@@ -108,32 +104,60 @@ export class ClientTagsStore {
    * listed the tag.
    */
   async findAllWithCounts(scope: ClientScope): Promise<ClientTagWithCount[]> {
-    const counts = territoryCounts(scope, clientTagAssignments.userId);
-    const rows = await this.db
-      .select({
-        id: clientTags.id,
-        slug: clientTags.slug,
-        label: clientTags.label,
-        color: clientTags.color,
-        description: clientTags.description,
-        createdAt: clientTags.createdAt,
-        // LEFT JOIN + count of the joined key, so a tag nobody carries reports
-        // 0 rather than vanishing from the list. The scope splits the count
-        // (FILTER), never the join or a WHERE: either would turn a scoped
-        // COUNT into a scoped LIST, and the vocabulary is meant to stay whole.
-        clientCount: counts.inScope,
-        clientsOutsideScope: counts.outside,
-      })
-      .from(clientTags)
-      .leftJoin(clientTagAssignments, eq(clientTagAssignments.tagId, clientTags.id))
-      .groupBy(clientTags.id)
-      .orderBy(asc(clientTags.label));
+    /*
+     * Each tag's SIZE comes from the kept count (0219) plus the membership
+     * changes not yet folded into it: exact at this instant, at the cost of the
+     * number of tags. Counting the assignments themselves cost the number of
+     * tagged clients on the platform, on every page that offers a tag.
+     */
+    const rows = (
+      await this.db.execute(sql`
+        SELECT t.id, t.slug, t.label, t.color, t.description, t.created_at AS "createdAt",
+               (coalesce(c.members, 0) + coalesce((
+                  SELECT sum(e.sign) FROM movement_tag_member_events e WHERE e.tag_id = t.id
+                ), 0))::int AS members
+          FROM ${clientTags} t
+          LEFT JOIN client_tag_member_counts c ON c.tag_id = t.id
+         ORDER BY t.label ASC`)
+    ).rows as unknown as (TagColumns & { members: number })[];
 
-    return rows.map((r) => ({
-      ...toTag(r),
-      clientCount: r.clientCount,
-      clientsOutsideScope: r.clientsOutsideScope,
-    }));
+    /*
+     * How much of each tag the reader may see. Everyone: all of it. A tag of
+     * the reader's own territory: all of it, by definition. Any other tag: the
+     * clients it shares with the territory, read from whichever side is
+     * smaller — never a pass over every assignment.
+     */
+    const own = new Set(scope.unrestricted ? [] : scope.tagIds);
+    const shared = new Map<string, number>();
+    if (!scope.unrestricted && scope.tagIds.length > 0) {
+      const mine = sql.join(
+        scope.tagIds.map((id) => sql`${id}::uuid`),
+        sql`, `,
+      );
+      const overlap = await this.db.execute(sql`
+        SELECT a.tag_id AS "tagId", count(*)::int AS value
+          FROM ${clientTagAssignments} a
+         WHERE a.tag_id NOT IN (${mine})
+           AND EXISTS (
+             SELECT 1 FROM ${clientTagAssignments} s
+              WHERE s.user_id = a.user_id AND s.tag_id IN (${mine})
+           )
+         GROUP BY a.tag_id`);
+      for (const row of overlap.rows as unknown as { tagId: string; value: number }[]) {
+        shared.set(row.tagId, row.value);
+      }
+    }
+
+    return rows.map((r) => {
+      const members = Math.max(0, r.members);
+      const inScope = scope.unrestricted || own.has(r.id) ? members : (shared.get(r.id) ?? 0);
+      return {
+        ...toTag({ ...r, createdAt: new Date(r.createdAt) }),
+        clientCount: Math.min(inScope, members),
+        // Two reads a moment apart may disagree by a client: never below zero.
+        clientsOutsideScope: Math.max(0, members - inScope),
+      };
+    });
   }
 
   async findAll(): Promise<ClientTag[]> {

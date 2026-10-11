@@ -254,7 +254,9 @@ interface MovementArm {
  *    territory narrowed by dates. Each of those reads an index narrowed to its
  *    own rows instead (see `adminMovements`).
  */
-export function movementTotalsSource(filter: AdminMovementsFilter): 'daily' | 'client' | undefined {
+export function movementTotalsSource(
+  filter: AdminMovementsFilter,
+): 'daily' | 'client' | 'tag' | undefined {
   // One record (`id`) is a live read — no total is kept per row.
   // No total is kept per method either.
   if (filter.q?.trim() || filter.attention || filter.deskDecided || filter.id) return undefined;
@@ -267,8 +269,64 @@ export function movementTotalsSource(filter: AdminMovementsFilter): 'daily' | 'c
   if (filter.scope.unrestricted && filter.userId === undefined) {
     return isUtcDayAligned(filter) ? 'daily' : undefined;
   }
-  if (!filter.from && !filter.until) return 'client';
-  return undefined;
+  if (filter.from || filter.until) return undefined;
+  /*
+   * ONE tag, nobody pinned: the tag's own kept totals (0218), the same cost for
+   * a book of ten or of a million. Several tags cannot be added together — a
+   * client carrying two would count twice — so they read per client.
+   */
+  if (
+    filter.userId === undefined &&
+    !filter.scope.unrestricted &&
+    filter.scope.tagIds.length === 1
+  ) {
+    return 'tag';
+  }
+  return 'client';
+}
+
+/** The per-day or per-client totals plus their unfolded deltas, as `m`. */
+function keyedTotalsSource(totals: 'daily' | 'client', where: SQL): SQL {
+  const key = totals === 'daily' ? sql`day` : sql`user_id`;
+  const table = totals === 'daily' ? sql`movement_daily_totals` : sql`movement_client_totals`;
+  /*
+   * The filter goes INSIDE each half, and the outer select has none. Outside,
+   * a territory was a hash join against a scan of EVERY client's totals on
+   * every money list (173 ms at 1M clients for a book of 2,000); inside, each
+   * half is read through its key for the territory's clients only (8 ms).
+   */
+  return sql`
+    WITH m AS (
+      SELECT ${key}, kind, direction, state, currency, count, total FROM ${table} m${where}
+      UNION ALL
+      SELECT ${key}, kind, direction, state, currency, count, total
+        FROM movement_total_deltas m${where}
+    )`;
+}
+
+/**
+ * One tag's kept totals (0218), exact at this instant, as `m`:
+ * what is folded, plus the client totals of whoever joined or left the tag
+ * since the last fold, plus the unfolded movements of everyone carrying it now.
+ */
+function tagTotalsSource(tagId: string, where: SQL): SQL {
+  return sql`
+    WITH every AS (
+      SELECT kind, direction, state, currency, count, total
+        FROM movement_tag_totals WHERE tag_id = ${tagId}::uuid
+      UNION ALL
+      SELECT c.kind, c.direction, c.state, c.currency, e.sign * c.count, e.sign * c.total
+        FROM movement_tag_member_events e
+        JOIN movement_client_totals c ON c.user_id = e.user_id
+       WHERE e.tag_id = ${tagId}::uuid
+      UNION ALL
+      SELECT d.kind, d.direction, d.state, d.currency, d.count, d.total
+        FROM movement_total_deltas d
+       WHERE EXISTS (
+         SELECT 1 FROM client_tag_assignments a
+          WHERE a.user_id = d.user_id AND a.tag_id = ${tagId}::uuid
+       )
+    ), m AS (SELECT * FROM every${where})`;
 }
 
 /**
@@ -299,27 +357,16 @@ export function movementTotalsQuery(
   if (totals === 'daily') {
     if (filter.from) conditions.push(sql`day >= ${utcDate(filter.from)}::date`);
     if (filter.until) conditions.push(sql`day < ${utcDate(filter.until)}::date`);
-  } else {
+  } else if (totals === 'client') {
     const scoped = clientScopePredicate(filter.scope, sql`m.user_id`);
     if (scoped) conditions.push(scoped);
     if (filter.userId !== undefined) conditions.push(sql`m.user_id = ${filter.userId}::integer`);
   }
   const where = conditions.length ? sql` WHERE ${sql.join(conditions, sql` AND `)}` : sql``;
-  const key = totals === 'daily' ? sql`day` : sql`user_id`;
-  const table = totals === 'daily' ? sql`movement_daily_totals` : sql`movement_client_totals`;
-  /*
-   * The filter goes INSIDE each half, and the outer select has none. Outside,
-   * a territory was a hash join against a scan of EVERY client's totals on
-   * every money list (173 ms at 1M clients for a book of 2,000); inside, each
-   * half is read through its key for the territory's clients only (8 ms).
-   */
-  const source = sql`
-    WITH m AS (
-      SELECT ${key}, kind, direction, state, currency, count, total FROM ${table} m${where}
-      UNION ALL
-      SELECT ${key}, kind, direction, state, currency, count, total
-        FROM movement_total_deltas m${where}
-    )`;
+  const source =
+    totals === 'tag'
+      ? tagTotalsSource(filter.scope.tagIds[0], where)
+      : keyedTotalsSource(totals, where);
   if (shape === 'summary') {
     return sql`${source}
       SELECT direction, kind, state, currency,
