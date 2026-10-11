@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { StatsStore } from '../../store/stats.store';
 import { ValidationError } from '../../common/errors/domain-errors';
+import { SharedRead } from '../../common/shared-read';
 import { actorHasPermission, assertActorCan } from '../../common/security/actor';
 import type { AuthenticatedAdmin } from './guards/admin.guard';
 import type {
@@ -55,6 +56,9 @@ export class AdminStatsService {
     ib: ['ib.partners.view'],
   } as const;
 
+  /** How long one territory's counters are shared: a summary, a few seconds old at most. */
+  private readonly overviewReads = new SharedRead<unknown>(5_000);
+
   constructor(private readonly stats: StatsStore) {}
 
   /**
@@ -96,11 +100,23 @@ export class AdminStatsService {
 
     const scope = actor.clientScope;
 
+    /*
+     * Each section is read once per territory and shared for a few seconds
+     * (`SharedRead`): the counters scan whole tables, and are the same for every
+     * administrator holding that territory. Permissions are still decided per
+     * actor, above, on every request.
+     */
+    const territory = scope.unrestricted ? '*' : [...scope.tagIds].sort().join(',');
+    const shared = <T>(section: string, load: () => Promise<T>): Promise<T> =>
+      this.overviewReads.get(`${section}|${territory}`, load) as Promise<T>;
+
     const [clients, kyc, withdrawals, ib] = await Promise.all([
-      may('clients') ? this.stats.clientCounters(scope) : undefined,
-      may('kyc') ? this.stats.kycCounts(scope) : undefined,
-      may('withdrawals') ? this.stats.withdrawalTotals(scope) : undefined,
-      may('ib') ? this.stats.ibCounts(scope) : undefined,
+      may('clients') ? shared('clients', () => this.stats.clientCounters(scope)) : undefined,
+      may('kyc') ? shared('kyc', () => this.stats.kycCounts(scope)) : undefined,
+      may('withdrawals')
+        ? shared('withdrawals', () => this.stats.withdrawalTotals(scope))
+        : undefined,
+      may('ib') ? shared('ib', () => this.stats.ibCounts(scope)) : undefined,
     ]);
 
     return {

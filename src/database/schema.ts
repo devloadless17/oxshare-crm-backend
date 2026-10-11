@@ -3931,6 +3931,8 @@ export const transactions = pgTable(
       ),
     // The console filters and counts by route (0168).
     index('transactions_route_idx').on(t.providerCode, t.channelCode, t.createdAt),
+    // The desks' tab counts, index-only (0216).
+    index('transactions_state_route_idx').on(t.state, t.direction, t.providerCode, t.channelCode),
     // The console's "in use" flag and a delete's RESTRICT check look up by these (0161).
     index('transactions_method_key_idx').on(t.methodKey),
     index('transactions_withdrawal_method_key_idx').on(t.withdrawalMethodKey),

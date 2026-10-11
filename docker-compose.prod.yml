@@ -19,6 +19,29 @@ x-logging: &logging
       max-size: '10m'
       max-file: '5'
 
+# The ACCESS LOG is the record of who reached us and how: it is what an incident
+# is investigated from. It was 50 MB, which at launch traffic was about ONE HOUR,
+# so on 11 Oct 2026 the morning's evidence was gone by the afternoon. 10 GB of
+# lines, compressed once rotated (about a tenth of that on disk, and `docker
+# logs` still reads them): over a week at that day's traffic, on a 100 GB disk.
+x-logging-access: &logging-access
+  logging:
+    driver: json-file
+    options:
+      max-size: '100m'
+      max-file: '100'
+      compress: 'true'
+
+# The API's own log: its alerts and errors. Kept for days, not hours. A colour's
+# log still ends when that colour is next recreated (two releases later).
+x-logging-app: &logging-app
+  logging:
+    driver: json-file
+    options:
+      max-size: '50m'
+      max-file: '20'
+      compress: 'true'
+
 # The API, shared by its two colours below.
 x-api: &api
   restart: unless-stopped
@@ -29,7 +52,13 @@ x-api: &api
   # checked every 2 s (start_interval) instead of every 15 s, so a release switches
   # over seconds after the new version is ready rather than at the next 15 s tick.
   healthcheck:
-    test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:'+(process.env.PORT||3001)+'/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+    test:
+      [
+        'CMD',
+        'node',
+        '-e',
+        "fetch('http://127.0.0.1:'+(process.env.PORT||3001)+'/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))",
+      ]
     interval: 15s
     timeout: 5s
     retries: 5
@@ -44,7 +73,7 @@ x-api: &api
       condition: service_healthy
     redis:
       condition: service_healthy
-  <<: *logging
+  <<: *logging-app
 
 services:
   # THE SERVICE NAME `postgres` IS LOad-BEARING — do not rename it.
@@ -166,7 +195,7 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     # No depends_on: Caddy must never wait for, or restart with, an API colour.
-    <<: *logging
+    <<: *logging-access
 
 volumes:
   oxshare_pgdata:
