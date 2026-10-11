@@ -1,8 +1,10 @@
-import { Controller, Get, HttpStatus, Res } from '@nestjs/common';
+import { Controller, Get, HttpStatus, Req, Res } from '@nestjs/common';
 import { ApiOkResponse, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
-import { Response } from 'express';
+import { Request, Response } from 'express';
 import { HealthService } from './health.service';
-import { LivenessDto, ReadinessDto } from './dto/health.dto';
+import { EdgeDto, LivenessDto, ReadinessDto } from './dto/health.dto';
+import { clientIp } from '../../common/security/client-ip';
+import { edgeFactsOf, proxyMarkersOf } from '../../common/security/edge-trust';
 
 // PLATFORM-CONVENTIONS R-6.4. The `version: '1'` this controller used to declare
 // was inert — main.ts calls neither setGlobalPrefix() nor enableVersioning() —
@@ -43,5 +45,28 @@ export class HealthController {
     // detail — the only part of this response worth having during an incident.
     res.status(report.status === 'ready' ? HttpStatus.OK : HttpStatus.SERVICE_UNAVAILABLE);
     return report;
+  }
+
+  /*
+   * "Who does the API think I am?" — the one question to ask after ANY change to
+   * DNS, a CDN or a server. It answers the caller with their own address and
+   * nothing about anyone else, so it needs no session. If `address` is not the
+   * caller's public address, every per-address control is reading the wrong
+   * thing (11 Oct 2026: it would have said Cloudflare's).
+   */
+  @Get('edge')
+  @ApiOperation({
+    summary: 'The address the API resolved for the caller, and how the request arrived.',
+  })
+  @ApiOkResponse({ type: EdgeDto })
+  edge(@Req() req: Request, @Res({ passthrough: true }) res: Response): EdgeDto {
+    res.setHeader('Cache-Control', 'no-store');
+    const facts = edgeFactsOf(req, clientIp(req));
+    return {
+      address: facts.address,
+      peerTrusted: facts.peerTrusted,
+      forwardedChain: facts.forwardedChain,
+      proxyHeaders: proxyMarkersOf(req, facts),
+    };
   }
 }

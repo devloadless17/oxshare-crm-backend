@@ -421,6 +421,14 @@ export class AllExceptionsFilter implements ExceptionFilter {
     const locale = this.localeOf(request);
     const translated = arabicEnvelope(message, fields, status, locale);
 
+    /*
+     * A refusal is never cached. Cloudflare is in front since 11 Oct 2026, and it
+     * keeps a 404 for a few minutes on any address ending in a file extension
+     * (`/uploads/kyc/x.jpg`), answering the next reader from its copy — so one
+     * reader's "not found" would be served to the reviewer who may open the file.
+     */
+    response.setHeader('Cache-Control', 'no-store');
+
     response.status(status).json({
       statusCode: status,
       code,

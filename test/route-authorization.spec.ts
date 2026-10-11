@@ -178,6 +178,8 @@ const PUBLIC_ROUTES: Record<string, string> = {
   // Infrastructure.
   'GET /health': 'Liveness. A load balancer cannot authenticate, and it reveals nothing.',
   'GET /health/ready': 'Readiness. Dependency status only, never connection detail.',
+  'GET /health/edge':
+    "The caller's own address as the API resolved it. Nothing about anyone else; it is how a DNS or CDN change is checked from outside.",
 
   // Placeholders with no data and no side effects.
 

@@ -70,7 +70,7 @@ export class RedisThrottlerStorage implements ThrottlerStorage {
      *
      * Done HERE rather than on the ThrottlerModule's limit, and that distinction
      * is the whole reason this works: routes that matter carry their own
-     * `@Throttle({ default: { ttl, limit } })` — register is 10/hour, login
+     * `@Throttle({ default: { ttl, limit } })` — register is 20 per 10 minutes, login
      * 5/min — and a per-route override REPLACES the module's figure. Raising the
      * module default would have relaxed nothing a browser suite actually meets.
      * The storage is consulted on every route whatever its limit says.

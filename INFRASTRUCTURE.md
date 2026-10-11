@@ -62,7 +62,9 @@ playbook's "never locked out" rule, with fail2ban guarding it). Keys: `~/.ssh/id
 
 - The domain is **registered at GoDaddy** (renewal due 23 Jan 2031) and its **DNS is hosted at
   Hostinger** (`ns1/ns2.dns-parking.com`), so records are edited in the buyer's Hostinger account.
-  It is NOT Cloudflare and nothing is proxied, which is what `TRUSTED_PROXY_HOPS=1` assumes.
+  ⚠️ **Out of date since 11 Oct 2026**: the nameservers are Cloudflare's (`eva`/`scott.ns.cloudflare.com`)
+  and all three names are PROXIED (orange cloud), so public DNS answers with Cloudflare's addresses,
+  not the two above. The servers' own addresses are unchanged. See DEPLOYMENT.md, "Behind Cloudflare".
 - **All three names must stay on ONE registrable domain** (`oxshare.com`): the sessions are
   `__Host-` cookies with `SameSite=Lax` (backend DEPLOYMENT.md, "Where the frontends must live").
 - No AAAA (IPv6) records, no CAA, no DNSSEC.
@@ -188,7 +190,8 @@ the KYC form, countries, roles, the IP allowlist.
 | R2 or OpenAI keys        | provider dashboard → GitHub secret                                                                                   | redeploy the backend                                                                                             |
 | The bridge key or secret | GitHub secret AND the bridge's `appsettings.Production.json`, together                                               | redeploy the backend and restart the bridge                                                                      |
 | Docker Hub token         | Docker Hub → GitHub secret                                                                                           | next deploy uses it                                                                                              |
-| A domain                 | DNS + secrets (backend DEPLOYMENT.md, "Changing the domain")                                                         | redeploy the backend, then rebuild both frontends; update `HOSTS` in `certificate-watch.yml`                     |
+| A domain                 | DNS + secrets (backend DEPLOYMENT.md, "Changing the domain")                                                         | redeploy the backend, then rebuild both frontends; update `ORIGINS` in `certificate-watch.yml`                   |
+| DNS host, CDN or proxy   | backend DEPLOYMENT.md, "Before you change DNS, the CDN or a server"                                                  | `GET /health/edge` must show your own address; run the Certificate watch workflow                                |
 | Replace or add a server  | backend DEPLOYMENT.md, "Replacing a server"                                                                          | one script + secrets + DNS                                                                                       |
 | More capacity            | backend DEPLOYMENT.md, "How this scales"                                                                             | a bigger Hostinger plan first                                                                                    |
 | The broker upgrades MT5  | the bridge repo's `docs/DLL-UPGRADE.md`                                                                              | bridge only                                                                                                      |

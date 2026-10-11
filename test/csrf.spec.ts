@@ -547,6 +547,9 @@ describe('AllExceptionsFilter — Postgres codes survive the ORM wrapping', () =
 function captureResponse(filter: AllExceptionsFilter, error: unknown) {
   const captured = { status: 0, body: {} as Record<string, unknown> };
   const res = {
+    setHeader() {
+      return this;
+    },
     status(code: number) {
       captured.status = code;
       return this;

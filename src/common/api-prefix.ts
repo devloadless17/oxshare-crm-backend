@@ -76,7 +76,7 @@ export function createHttpAdapter(): ExpressAdapter {
  * that 404s during a version migration is an outage manufactured by the
  * monitoring rather than detected by it.
  */
-export const UNVERSIONED_ROUTES = ['health', 'health/ready'] as const;
+export const UNVERSIONED_ROUTES = ['health', 'health/ready', 'health/edge'] as const;
 
 /** Apply the prefix. Called by main.ts, the OpenAPI generator, and the spec. */
 export function applyApiPrefix(app: NestExpressApplication): void {

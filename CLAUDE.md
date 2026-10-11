@@ -727,6 +727,29 @@ shallower means we trust further left than our infrastructure reaches, into call
 an allowlist can be walked through (`page`). It reports and changes nothing — inferring the hop
 count from traffic is the same "trust the header" mistake `client-ip.ts` refuses.
 
+### The caller is resolved in CADDY, by address (11 Oct 2026)
+
+Cloudflare's proxy was switched on for the three names with no deploy. Every client behind it
+arrived from Cloudflare's address, shared one sign-up budget, and was refused; the watch above saw
+nothing, because Caddy hands this process ONE address whatever arrives.
+
+- **`Caddyfile` `trusted_proxies`** lists Cloudflare's published ranges (`trusted_proxies_strict`,
+  reading `X-Forwarded-For` from the right). `active-api.caddy` (written by
+  `release.sh`) sets `X-Forwarded-For {client_ip}`, so `TRUSTED_PROXY_HOPS` stays 1 for direct and
+  proxied traffic alike. **Never fix a wrong address by raising the count**: direct connections
+  would then choose their own.
+- **Caddy also says how the request arrived** (`X-OxShare-Peer`, `-Peer-Trusted`,
+  `-Forwarded-Chain`, overwritten so a caller cannot send them). `common/security/edge-trust.ts`
+  pages `UNTRUSTED_PROXY_IN_FRONT` when a quarter of public traffic is forwarded by a machine Caddy
+  does not trust. Our own machines (the bridge's tunnel address) are left out of the sample.
+- **`GET /health/edge`** answers the caller with the address resolved for them. The daily
+  `certificate-watch.yml` compares it with the runner's own address, and asks each SERVER (by
+  address) for its certificate, since the name now shows Cloudflare's.
+- **Every error is `Cache-Control: no-store`** (`AllExceptionsFilter`): a CDN caches a 404 on a
+  path ending in a file extension. A new route serving files must set its own `Cache-Control`.
+- A new CDN or balancer = its ranges in all three Caddyfiles. `DEPLOYMENT.md`, "Before you change
+  DNS, the CDN or a server".
+
 ## RBAC-08: the network allowlist, and administrators exempt from it (0192, 5 Oct 2026)
 
 `IpAllowlistGuard` (global) refuses the `/admin` surface from addresses outside
@@ -896,7 +919,7 @@ changed interval applies within 15 s. It records each run (duration, error) for 
   (`SafetySweepIntervalSeconds` while the feed works) and `/webhooks/mt5/settings` answers a fixed
   fallback of 120 s for older bridges. The Trading tab went too (its demo ceiling was dropped in
   0205; the commission cadence is the Scheduled jobs row, written via `setCommissionInterval`).
-- *(historical)* **`bridge.sweep` ran on the bridge**, which reads `GET /webhooks/mt5/settings` once a minute
+- _(historical)_ **`bridge.sweep` ran on the bridge**, which reads `GET /webhooks/mt5/settings` once a minute
   (`CrmSettingsPoller` → `SweepSchedule`, read by the deal sweep and the balance sync every round).
 - **A new job**: catalogue entry + `@ScheduledJob` + an admin label (`jobs.label.<key>`). Its row is
   created with the default on first boot.
