@@ -307,24 +307,31 @@ export function movementTotalsQuery(
   const where = conditions.length ? sql` WHERE ${sql.join(conditions, sql` AND `)}` : sql``;
   const key = totals === 'daily' ? sql`day` : sql`user_id`;
   const table = totals === 'daily' ? sql`movement_daily_totals` : sql`movement_client_totals`;
+  /*
+   * The filter goes INSIDE each half, and the outer select has none. Outside,
+   * a territory was a hash join against a scan of EVERY client's totals on
+   * every money list (173 ms at 1M clients for a book of 2,000); inside, each
+   * half is read through its key for the territory's clients only (8 ms).
+   */
   const source = sql`
     WITH m AS (
-      SELECT ${key}, kind, direction, state, currency, count, total FROM ${table}
+      SELECT ${key}, kind, direction, state, currency, count, total FROM ${table} m${where}
       UNION ALL
-      SELECT ${key}, kind, direction, state, currency, count, total FROM movement_total_deltas
+      SELECT ${key}, kind, direction, state, currency, count, total
+        FROM movement_total_deltas m${where}
     )`;
   if (shape === 'summary') {
     return sql`${source}
       SELECT direction, kind, state, currency,
              sum(count)::int AS value, sum(total)::text AS total
-        FROM m${where}
+        FROM m
        GROUP BY GROUPING SETS ((direction, kind, state, currency), (direction, currency))
       HAVING sum(count) <> 0
        ORDER BY direction, kind NULLS LAST, state, currency`;
   }
   const axis = shape === 'state' ? sql`state` : sql`direction`;
   return sql`${source}
-    SELECT ${axis}, sum(count)::int AS value FROM m${where}
+    SELECT ${axis}, sum(count)::int AS value FROM m
      GROUP BY ${axis} HAVING sum(count) <> 0`;
 }
 

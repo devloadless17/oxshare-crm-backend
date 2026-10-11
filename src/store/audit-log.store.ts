@@ -508,6 +508,9 @@ export class AuditLogStore {
         conditions.push(sql`${auditLog.actorKind} <> 'client'`);
       }
     }
+    /** The two halves of a territory's sight, for the count to read separately. */
+    let scopeBranches: [SQL, SQL] | undefined;
+    let unscoped: SQL[] = [];
     if (filter.scope && !filter.scope.unrestricted) {
       /*
        * Keep a row about a client inside the reader's territory (the intake
@@ -517,20 +520,21 @@ export class AuditLogStore {
        * resolved stays hidden: 0156 turned the wrong answer from a leak into a
        * hidden row. In the WHERE clause, never fetch-then-filter (D-45).
        */
-      conditions.push(
-        or(
-          and(
-            isNull(auditLog.clientId),
-            inArray(auditLog.subjectType, [...NON_CLIENT_SUBJECT_TYPES]),
-          ),
-          and(
-            isNotNull(auditLog.clientId),
-            // Defined for every restricted scope; `false` keeps a future shape
-            // that returns undefined from widening instead of narrowing.
-            clientScopePredicate(filter.scope, auditLog.clientId) ?? sql`false`,
-          ),
+      scopeBranches = [
+        and(
+          isNull(auditLog.clientId),
+          inArray(auditLog.subjectType, [...NON_CLIENT_SUBJECT_TYPES]),
         ) as SQL,
-      );
+        and(
+          isNotNull(auditLog.clientId),
+          // Defined for every restricted scope; `false` keeps a future shape
+          // that returns undefined from widening instead of narrowing.
+          clientScopePredicate(filter.scope, auditLog.clientId) ?? sql`false`,
+        ) as SQL,
+      ];
+      // What every scoped read shares, before the territory is applied.
+      unscoped = [...conditions];
+      conditions.push(or(...scopeBranches) as SQL);
     }
     // The total counts the FILTERED trail, never "what follows the cursor".
     const countWhere = conditions.length > 0 ? and(...conditions) : undefined;
@@ -605,16 +609,18 @@ export class AuditLogStore {
       filter.withTotal === false
         ? cappedTotal(0)
         : cappedTotal(
-            (
-              await db.select({ value: count() }).from(
-                db
-                  .select({ one: sql`1` })
-                  .from(auditLog)
-                  .where(countWhere)
-                  .limit(TOTAL_CAP + 1)
-                  .as('counted'),
-              )
-            )[0].value,
+            scopeBranches
+              ? await this.countTerritory(unscoped, scopeBranches)
+              : (
+                  await db.select({ value: count() }).from(
+                    db
+                      .select({ one: sql`1` })
+                      .from(auditLog)
+                      .where(countWhere)
+                      .limit(TOTAL_CAP + 1)
+                      .as('counted'),
+                  )
+                )[0].value,
           );
 
     // The sort key is stamped into the cursor so it cannot be replayed under a
@@ -634,6 +640,26 @@ export class AuditLogStore {
     return { ...page_, page, limit };
   }
 
+  /**
+   * A territory's capped total, counted as its two halves.
+   *
+   * As one `(no client) OR (client in my territory)` condition Postgres can use
+   * no index and reads the whole trail on every page (412 ms at 4M rows for a
+   * book of 2,000 clients). Each half alone has one: the subject type, and the
+   * client. Each stops at the cap, and so does their sum.
+   */
+  private async countTerritory(
+    shared: SQL[],
+    [noClient, inTerritory]: [SQL, SQL],
+  ): Promise<number> {
+    const half = (branch: SQL): SQL =>
+      sql`(SELECT 1 FROM ${auditLog} WHERE ${and(...shared, branch)} LIMIT ${TOTAL_CAP + 1})`;
+    const result = await this.db.execute<{ value: number }>(sql`
+      SELECT count(*)::int AS value FROM (
+        ${half(noClient)} UNION ALL ${half(inTerritory)} LIMIT ${TOTAL_CAP + 1}
+      ) counted`);
+    return result.rows[0].value;
+  }
   /**
    * Each row as THIS reader may see it (R1, D-81/D-82).
    *
