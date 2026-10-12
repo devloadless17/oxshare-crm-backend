@@ -1,5 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { eq, sql } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
 import { ledgerEntries, users, wallets } from '../../database/schema';
@@ -104,7 +104,66 @@ export class ReconciliationService {
 
   constructor(@Inject(DRIZZLE_DB) private readonly db: Db) {}
 
-  async run(): Promise<ReconciliationReport> {
+  /** The last check this instance completed: the scheduled job's, or one asked for. */
+  private last?: ReconciliationReport;
+  /** The check in flight, if any: a second caller waits for it instead of starting another. */
+  private running?: Promise<ReconciliationReport>;
+
+  /**
+   * The last completed check, for the screen.
+   *
+   * A check reads EVERY ledger entry, so it costs the size of the ledger: 2.5 s
+   * at 3M entries, and it grows without bound. Run on every page view, the
+   * screen got slower every day and would one day not answer at all. The job
+   * already runs the check every hour; the screen shows that result, with the
+   * time it was made, and runs a fresh one only when somebody asks (`run`).
+   *
+   * Kept in memory, so an instance that has not checked yet (just started) runs
+   * one. Who owns each wallet is read again on every call: a report is about
+   * money, and the names beside it must be today's.
+   */
+  async latest(): Promise<ReconciliationReport> {
+    if (!this.last) return this.run();
+    return {
+      ...this.last,
+      walletDiscrepancies: await this.withOwners(this.last.walletDiscrepancies),
+    };
+  }
+
+  /** Check now. Concurrent callers share one check. */
+  run(): Promise<ReconciliationReport> {
+    this.running ??= this.check().finally(() => {
+      this.running = undefined;
+    });
+    return this.running;
+  }
+
+  /** The owners as they are now — never the names a check happened to read an hour ago. */
+  private async withOwners(discrepancies: WalletDiscrepancy[]): Promise<WalletDiscrepancy[]> {
+    if (discrepancies.length === 0) return discrepancies;
+    const owners = await this.db
+      .select({
+        id: users.id,
+        firstName: users.firstName,
+        lastName: users.lastName,
+        email: users.email,
+      })
+      .from(users)
+      .where(inArray(users.id, [...new Set(discrepancies.map((d) => d.userId))]));
+    const byId = new Map(owners.map((owner) => [owner.id, owner]));
+    return discrepancies.map((d) => {
+      const owner = byId.get(d.userId);
+      return {
+        ...d,
+        userPortalId: owner?.id ?? null,
+        userFirstName: owner?.firstName ?? null,
+        userLastName: owner?.lastName ?? null,
+        userEmail: owner?.email ?? null,
+      };
+    });
+  }
+
+  private async check(): Promise<ReconciliationReport> {
     const [summary, walletDiscrepancies, walletsChecked] = await Promise.all([
       this.summariseDiscrepancies(),
       this.findWalletDiscrepancies(),
@@ -127,6 +186,7 @@ export class ReconciliationService {
       balanced: summary.count === 0,
     };
 
+    this.last = report;
     this.report(report);
     return report;
   }

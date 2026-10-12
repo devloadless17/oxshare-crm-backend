@@ -857,9 +857,12 @@ export class AdminMoneyController {
   @RequirePermissions('reconciliation.view')
   @ApiCookieAuth()
   @ApiOperation({
-    summary: 'Run reconciliation now and return the report (§12.2)',
+    summary: 'The last reconciliation report, or a fresh one with ?fresh=true (§12.2)',
     description:
-      'The same check the hourly job runs: every wallet balance against the sum of its own ' +
+      'Answers with the LAST completed check and the time it was made (`checkedAt`): the ' +
+      'hourly job runs it, and it reads every ledger entry, so running it per page view cost ' +
+      'the size of the ledger. `?fresh=true` runs it now. ' +
+      'The check: every wallet balance against the sum of its own ' +
       'ledger. Wallet balances ONLY — a confirmed commission accrual that was never credited ' +
       'is a separate alert (UNPAID_CONFIRMED_ACCRUAL), not part of this report. ' +
       'Read-only — a discrepancy is reported, never repaired, because an automatic correction ' +
@@ -871,7 +874,7 @@ export class AdminMoneyController {
   @NotClientScoped(
     'Whole-platform integrity control, not a per-client read. The report is unscoped by nature; access is refused to a scoped admin (assertUnrestricted below) rather than sliced, so it never reports "balanced" over a subset and never leaks out-of-territory client ids.',
   )
-  reconcile(@Req() req: Request & { admin: AuthenticatedAdmin }) {
+  reconcile(@Req() req: Request & { admin: AuthenticatedAdmin }, @Query('fresh') fresh?: string) {
     if (!req.admin.clientScope.unrestricted) {
       throw new ForbiddenException(
         'Reconciliation is a whole-platform integrity control. Your account is scoped to a ' +
@@ -879,7 +882,7 @@ export class AdminMoneyController {
           'the ledger balances. Ask an administrator without a territory to run it.',
       );
     }
-    return this.reconciliation.run();
+    return fresh === 'true' ? this.reconciliation.run() : this.reconciliation.latest();
   }
 
   /**
