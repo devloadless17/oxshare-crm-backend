@@ -750,6 +750,24 @@ nothing, because Caddy hands this process ONE address whatever arrives.
 - A new CDN or balancer = its ranges in all three Caddyfiles. `DEPLOYMENT.md`, "Before you change
   DNS, the CDN or a server".
 
+## An admin session lives for "last activity + the idle window" (12 Oct 2026)
+
+The owner's rule: an administrator who does nothing on the console for 15 minutes signs in again;
+one who is working never does. The rule and the console half are in `../CLAUDE.md` (Auth). Here:
+
+- `modules/admin/admin-session-lifetime.ts` is the pure arithmetic: `refresh = window − idle +
+60 s`, `access = min(15 min, refresh)`, `null` at or past the window. There are no
+  `ACCESS_TTL_MS` / `REFRESH_TTL_MS` constants on the admin surface any more; sign-in passes idle 0.
+- `POST /admin/auth/refresh` takes an optional `{ idleSeconds }` (`AdminRefreshDto`). Absent reads
+  as 0. At or past the window it answers 401 `SESSION_REVOKED` and revokes the family, AFTER the
+  network check, which must keep consuming nothing.
+- The idle age is the console's word, and that is the right trust: the threat is an unattended
+  console running our code. A stolen cookie is rotation's, reuse detection's and the allowlist's.
+- `ADMIN_IDLE_TIMEOUT_MINUTES` (5–1440, default 15). `GET /admin/auth/me` returns it as
+  `idleTimeoutSeconds` (`AdminSessionProfileDto`; the directory's `AdminProfileDto` does not).
+- The portal's session is untouched (15 min / 30 d, `modules/identity/auth.service.ts`).
+- Pinned by `test/admin-idle-timeout.spec.ts`.
+
 ## RBAC-08: the network allowlist, and administrators exempt from it (0192, 5 Oct 2026)
 
 `IpAllowlistGuard` (global) refuses the `/admin` surface from addresses outside
@@ -1504,74 +1522,159 @@ admin/transactions/:id/attention/finish-deposit` (`credit` | `close`, a reason, 
    identity; its client then records each call). A rate-limited provider throws the contract's
    `ProviderBusyError`: sweeps stop their pass, a payout is requeued.
 
-### 3pay, the USDT provider (0174, 30 Sep 2026)
+### 3pay, the USDT provider (0174, 30 Sep 2026; rebuilt against its LIVE API 12 Oct 2026)
 
-Guide: `docs/integration-guide.pdf` (read it with python `pypdf`). **3pay cannot be asked to change
-anything**, so every gap in its API is closed here. Code `threepay` (a code may not start with a
-digit), folder `providers/threepay/`, and the settings live on the generic `payment_providers` row:
-base URL, `apikey` (public), `x-api-secret` (sealed) and the two payout fees.
+**3pay cannot be asked to change anything**, so every gap in its API is closed here. Code
+`threepay` (a code may not start with a digit), folder `providers/threepay/`, settings on the
+generic `payment_providers` row: base URL, `apikey` (public), `x-api-secret` (sealed), an optional
+webhook secret (sealed) and the two payout fees.
+
+#### ⚠️ Which 3pay this is — read before trusting any 3pay document
+
+3pay has published THREE descriptions of its API, and its live server follows none completely:
+
+| source                                                       | what it is right about                                              |
+| ------------------------------------------------------------ | ------------------------------------------------------------------- |
+| `docs/integration-guide.pdf` (the first guide)               | the PATHS                                                           |
+| `docs/integration-guide-3pay-updated.pdf` (12 Oct 2026)      | the paths, the query-string create, "no date filter"                |
+| docs.3pa-y.com (its online "v2" reference, OpenAPI per page) | the BEHAVIOUR: reply shapes, rate limits, webhook signing, statuses |
+
+The adapter was first written from the first guide and tested only against a simulator written from
+the same guide. Every test passed and the first production deposit was refused (12 Oct 2026:
+`Validation failed` / `currencyType is required`). What follows was MEASURED on
+`https://pay.3pa-y.com/api/v1` that day, without credentials where the server allows it (the create
+call validates before it authenticates; every reply carries `RateLimit-*`; a missing route answers
+an HTML 404, an existing one a JSON 401):
+
+- **Address**: `pay.3pa-y.com`. Both PDFs print `api.3pa-y.com`, which has no DNS record.
+- **A sandbox exists**: `https://sandbox.pay.3pa-y.com/api/v1` (dashboard `sandbox.3pa-y.com`), on
+  the Nile and Sepolia testnets, behaving identically. The config refuses a sandbox row on a
+  production deployment. Nobody here has sandbox credentials yet; with them, every item marked
+  "documented, not seen" below can be seen.
+- **Paths** are the PDFs' (`/transaction/verify`, `/withdrawal-request`…). The online reference's
+  `/public/…` prefix is a 404. Its extra endpoints DO exist unprefixed: `/payout/get`,
+  `/withdrawal-requests/:id/approve|reject`, `/transaction/cancel`.
+- **`POST /transaction/create` reads `currencyType` and `amount` from the QUERY STRING.** In the body
+  they are ignored.
+- **Rate limits are a tenth of the PDFs'**, in fixed 15-minute windows, per calling IP, counted even
+  for a refused request: **100 reads (ONE budget for every read endpoint), 20 payment links, 30
+  payout requests.**
+- **Seen in production's exchange log**: `/transaction/list` answers `{data: {docs, page, limit}}`;
+  `/getMerchantDetails` carries `webhookSecret` in clear, `autoWithdraw`, `maxAutoWithdrawAmount`,
+  `depositFeePayer`, `withdrawalFeePayer`; three deliveries from 3pay's dashboard were refused for
+  carrying no `x-3pay-signature`.
+
+**Documented, not seen** (the adapter reads BOTH documented shapes for each, and the simulator has a
+`shape = 'guide'` switch that proves it): the create reply (`{url, transactionId, invoiceNo}` at the
+top, or the PDFs' `data.{invoiceNo, paymentUrl}`); verify by `transactionId` or `invoiceNo`; the
+withdrawal list (`{data: [...], totalPages}`, destination `clientWallet`, or the PDFs'
+`walletAddress` + `pagination`); the webhook body (`{success, message, data}` or flat) and signature
+(`X-Webhook-Signature: sha256=…` with the account's webhook secret, or `x-3pay-signature` with the
+API secret); whether `actualBalance` is on a verify reply; how `withdrawalFeePayer` changes what a
+payout delivers.
+
+#### How it works
 
 - **Channels**: `usdt_trc20` and `usdt_erc20`, each in both directions. A 3pay method is a **USD
-  method**: the wallet moves at par, 1 USDT = 1 USD (the owner). One method per network, on
-  purpose: each network has its own fee, minimum, switch and address rule.
-- **Deposits** credit what 3pay's API says ARRIVED (`actualBalance` on `/transaction/verify`), rounded
-  down to cents, never the link's figure. `clientReference` is our `OX-` reference, and a start whose
-  answer was lost is FOUND by it, never made twice. 3pay takes no return URL
-  (`hostedPageReturns: false`), so the portal keeps the client on a waiting card.
-- **Payouts**: `idempotency: 'none'`. `/withdrawal-request` takes no key, stores no reference of
-  ours, and broadcasts at once. Every answer maps to accepted / refused / unknown in
-  `threepay.client.ts`: a 500, a timeout or an unreadable 2xx is UNKNOWN. The quote grosses up by the
-  configured fee, so the client receives exactly what they withdrew. There is no single-withdrawal
-  GET, so `read`/`find` page through `/withdrawal-requests` from the claim time. **No
-  `Idempotency-Key` header is sent**: 3pay documents none, and a key it quietly cached would replay
-  an old refusal at a person's Resend.
-- **Paid somewhere else**: 3pay's "Static Wallet" force-routes big payouts to a cold wallet
-  "regardless of what your integration sends". So the CORE compares every report's destination
-  and asset with what was asked (`paidElsewhere`). A mismatch is never settled as paid and never
-  refunded: a person pays the client and marks it paid.
-- **Webhook**: `x-3pay-signature` is the hex HMAC-SHA256 of the raw body, keyed by the API
-  secret, and is checked in constant time. There is NO replay nonce: a delivery carries no
-  timestamp, and 3pay retries with the same bytes, so a nonce would refuse its own retries. The
-  doorbell rule makes a replay harmless. `refund` rings both a payout re-read and a deposit ALARM.
-  The answer is 200 for every verified event (as 3pay asks), except 503 when every notice hit
-  "not stored yet" or "not caught up".
+  method**: the wallet moves at par, 1 USDT = 1 USD (the owner). One method per network, on purpose:
+  each network has its own fee, minimum, switch and address rule.
+- **A deposit has two names at 3pay**: `transactionId` (a uuid; what verify and webhooks use) and
+  `invoiceNo`. `paymentIdOf` picks the transaction id, else the invoice number, for the create reply,
+  the lists and the webhook alike; a webhook notice carries the other as `otherIds`, and the core
+  finds the row by either.
+- **Deposits** credit what 3pay's API says ARRIVED, rounded down to cents, never the link's figure.
+  - `arrivedOf`: `actualBalance` when stated. Otherwise, on a CONFIRMED payment only, the link's
+    `amount`, and only if 3pay's own `netAmount + fee` equals it. Anything else is unknown, and the
+    core flags the deposit for a person.
+  - Each link carries `timer=30` (minutes), `webhookUrl` (ours) and `callbackUrl` (the API's return
+    bounce, where 3pay sends the payer's browser). 3pay's reply does not say when a link ends, so
+    the expiry stored is the timer we sent, less 30 s.
+  - `referenceId` is our `OX-` reference (`clientReference` is sent too: 3pay's replies use that
+    name). A start whose answer was lost is FOUND by it (`search=`), never made twice.
+  - The payment page must be https on 3pay's own site (`isProvidersPage`), or the link is withheld.
+  - A refusal never shows the client 3pay's words: they get "USDT deposits are unavailable right
+    now", and the detail goes to the log, the exchange log and a page.
+- **Payouts**: `idempotency: 'none'`. `/withdrawal-request` takes no key and stores no reference of
+  ours. Every answer maps to accepted / refused / unknown in `threepay.client.ts`: a 500, a timeout
+  or an unreadable 2xx is UNKNOWN. **No `Idempotency-Key` header is sent.**
+  - **Who carries the fee decides what is asked** (`quote`): 3pay's account says
+    (`withdrawalFeePayer`). `user`, or an account that does not say: the fee comes out of the amount,
+    so the payout is grossed up. `merchant`: the fee is charged on top, so the client's amount is
+    asked as it is (`balanceCost` tells the balance watch the fee still leaves the balance).
+  - The core flags a payout that delivers SHORT (`flagShortfall`) or OVER (`flagOverpaid`) what the
+    client withdrew, so a wrong reading costs one flagged payout.
+  - **Held for approval**: with auto-withdraw off in 3pay's dashboard, or above
+    `maxAutoWithdrawAmount`, 3pay answers `pending` and sends nothing until somebody approves it
+    THERE. That is an accepted payout in flight: paid here when 3pay reports it completed, refunded
+    when it is rejected there. The desk shows "Waiting for approval at the provider". The adapter
+    never calls 3pay's approve endpoint: the account's setting is the merchant's own control.
+  - `find` (a lost answer) walks the withdrawal list back to the claim and matches amount, network
+    and destination (`clientWallet`, else `walletAddress`). A record of that amount with NO
+    destination makes the search incomplete, so the claim is held, never judged "not sent".
+  - `read`: one or two payouts are asked for directly (`/payout/get`); more are read from the list
+    in one request.
+- **Paid somewhere else**: 3pay's "Static Wallet" force-routes big payouts to a cold wallet. The CORE
+  compares every report's destination and asset with what was asked (`paidElsewhere`). A mismatch is
+  never settled as paid and never refunded: a person pays the client and marks it paid.
+- **Webhook** (`threepay-webhook.receiver.ts`): BOTH documented signatures are accepted, each
+  against its own key, in constant time. The webhook secret is the operator's (if typed) or the one
+  in 3pay's account reply (kept in memory by `ThreePayClient.account`, never stored); after a failed
+  signature it is re-read at most once in ten minutes, so a forged flood spends no requests. The
+  dashboard's test delivery (`X-Webhook-Test: true`) is answered 200. There is NO replay nonce: 3pay
+  retries with the same bytes, and the doorbell rule makes a replay harmless. The answer is 200 for
+  every verified event, except 503 when every notice hit "not stored yet" or "not caught up".
+- **Request budgets** (`threepay-rate-limit.ts`): each class follows 3pay's own `RateLimit-*`
+  headers, and a call that would overdraw is refused before it is sent (`ProviderBusyError`). Reads
+  share one budget, so they have priorities: `high` (a payout's state, Test connection), `normal` (a
+  deposit; leaves 10), `low` (the balance watch, the records audit, the webhook secret; leaves 35).
+  The core was changed so the background does not spend it:
+  - expired links are re-asked at a widening interval (a quarter of their age, at least an hour),
+    five a sweep (`LATE_BATCH`), not all of them every hour for a month;
+  - the records audit runs once there is half an hour of records to judge (`MIN_WINDOW_MS`);
+  - the balance is read only while a payout is waiting to be sent;
+  - a payout rail declares `rate: {limit, windowMs}` (3pay: 25 per 15 minutes).
+- **Lists take no date filter.** `ThreePayClient.walk` reads a list newest-first and stops at the
+  first page older than it needs; the order is asked for (`sortBy=createdAt&sortOrder=desc`) and
+  CHECKED, and a list that comes back out of order is read to its last page instead.
 - **Numbers**: 3pay sends amounts as JSON NUMBERS. `threepay-json.ts` parses losslessly (the reviver's
   `context.source`, Node ≥ 21) and writes exact number literals.
-- **Rate limits** (60 reads, 30 links, 30 payouts a minute) are paced client-side
-  (`threepay-rate-limit.ts`, a little under 3pay's figures). A 429 pauses for `Retry-After`.
 - **Addresses**: TRC20 Base58Check and ERC20 EIP-55 (`@noble/hashes`, pinned 1.8.0: v2 is ESM-only)
   are checked at the withdrawal door. The zero address and the USDT contract itself are refused.
-- **The unmatched-records audit** (core, `provider-records-audit.service.ts`, 0174's table): every
-  3pay record, two hours behind now, must be held by a transaction. Otherwise it is filed, paged,
-  and listed on the provider page for a person to acknowledge as a company movement
-  (`payments.providers.edit`, audited `payment_provider.record_acknowledge`). The cursor starts at
-  the first run.
-- **The balance watch** (`provider-balance-watch.service.ts`): 3pay's `totalAmt` against the grossed-up
-  payouts waiting to be sent. It pages hourly while the balance falls short.
-- **The exchange log** (0175, guide §10): every call to 3pay and every delivery from it, bodies as
-  sent and received, in `payment_provider_exchanges`. It is kept 90 days (a trigger refuses UPDATE,
-  and refuses DELETE before 90 days, even from a superuser), pruned daily by `payments.pruneExchanges`,
-  and listed at `GET admin/payment-providers/:code/exchanges` (`reference=` narrows it).
-  - It never holds headers, so no credential and no webhook signature is kept.
-  - Only an adapter declaring `keepsExchangeLog` has one, because it is shown UNMASKED: 3pay is
-    sent amounts, our reference and payout addresses (`client.payoutDestination` is not
-    maskable), never a name, email or phone. Rival's bodies are undocumented, so it keeps none.
+- **The unmatched-records audit** (core, `provider-records-audit.service.ts`): every confirmed
+  deposit and every withdrawal 3pay records, two hours behind now, must be held by a transaction.
+  Otherwise it is filed, paged, and listed on the provider page for a person to acknowledge
+  (`payments.providers.edit`, audited `payment_provider.record_acknowledge`).
+- **The balance watch** (`provider-balance-watch.service.ts`): 3pay's `totalAmt` against what the
+  payouts waiting to be sent will take. It pages hourly while the balance falls short.
+- **The exchange log** (0175, guide §10): every call to 3pay and every delivery from it, in
+  `payment_provider_exchanges`, kept 90 days (a trigger refuses UPDATE, and DELETE before 90 days),
+  listed at `GET admin/payment-providers/:code/exchanges` (`reference=` narrows it). **It is the
+  first place to look when 3pay refuses something**: the request, the reply and 3pay's `errors`
+  detail are all there.
+  - It never holds headers, so no credential we send and no webhook signature is kept.
+  - ⚠️ 3pay's account reply carries its webhook secret and its owner's contact details. Since
+    12 Oct 2026 `loggableBody` cuts that reply down to its figures and blanks any field named like
+    a credential; migration **0222** removed what had already been stored (the one edit the log
+    will ever get: it switches the guard off for two statements, in the open).
   - `record()` never throws and is never awaited by a money path.
-- **Minimum**: 3pay moves at least 1 USDT (`PaymentChannel.minimumAmount`). A method's minimum
-  cannot go below it, the effective deposit minimum is raised to it, and the withdrawal door
-  refuses below it.
+- **Minimum**: 3pay moves at least 1 USDT (`PaymentChannel.minimumAmount`).
+- **Test connection** reads the account and one page of each list, so a reply this build cannot
+  read is found by a person pressing a button. Its message says how the ACCOUNT is set: whether
+  payouts wait for approval in 3pay's dashboard, who carries each fee, and whether a static wallet
+  is on.
 - **Proof**: `providers/threepay/threepay.spec.ts` (pure) and `test/threepay-flow.spec.ts` (the real
-  adapter through the real core against `test/support/threepay-sim.ts`, every documented answer and
-  failure).
+  adapter through the real core against `test/support/threepay-sim.ts`, which behaves as the LIVE
+  server was measured to, with a switch to the guides' shapes).
 - **Go-live, the owner's steps**:
   1. Whitelist the production server's public IP in 3pay's dashboard.
-  2. Enter the credentials and fees (2.00 TRC20 / 2.50 ERC20 in the guide).
-  3. Test the connection; it shows the balance.
-  4. Check `depositFeePayer`.
-  5. Create the USD methods, with a minimum of at least 1 (3pay's), higher on ERC20.
-  6. Test with small real money, including an UNDERPAYMENT (send 4 on a 5 link: it proves what
-     `actualBalance` reports) and a small payout.
-  7. Watch the first payout's reconcile, which proves `fromDate` behaves as documented.
+  2. Enter the live address (`https://pay.3pa-y.com/api/v1`), the credentials and the fees.
+  3. Test the connection, and read what it says about the account. Set auto-withdraw and its
+     threshold in 3pay's dashboard the way payouts should behave.
+  4. Create the USD methods, with a minimum of at least 1 (higher on ERC20), and switch 3pay on.
+  5. Test with small real money, reading the exchange log after each step: a deposit, an
+     UNDERPAYMENT (send 4 on a 5 link), a small payout. The first of each proves the shapes marked
+     "documented, not seen" above.
+  6. In 3pay's dashboard, press "send test webhook": the event log must show it accepted.
 
 ## An offline deposit carries the details that identify the payment (0163, 29 Sep 2026)
 
@@ -1615,14 +1718,35 @@ and every count grew with the book. Now each is 10–60 ms, and these rules keep
   `transaction_state` on every arm. The transfer arm's CASE is indexed as that exact expression (0165),
   and `admin-sort-indexes.spec.ts` asserts no Sort node. The status sort is the enum's LIFECYCLE
   order, the same as the withdrawal queue's, and is no longer alphabetical.
-- **Conditions go INSIDE the arms** (`MovementArm`): scope, one client, and the search (`searched`
-  resolves the clients once; the payments arm also matches deposit evidence by id). Matched on the
-  union's output, a Portal ID search read every movement to find eight.
+- **The admin list's conditions go OUTSIDE the union** (`movementsCte(..., outer = true)`, 11 Oct
+  2026): scope, one client, the desk's routes and the search (`searched` resolves the clients once;
+  payments also match deposit evidence by id) define `combined` over the bare `movements` union.
+  ⚠️ Until then they sat INSIDE each arm, and this file said they must. An arm with its own WHERE
+  is kept as a separate sub-select, planned without the outer ORDER BY and LIMIT, so it never walks
+  an index in order: the desk, any search and every filtered tab fetched and sorted every matching
+  movement to show 25 (2 s on Deposits under 25 administrators at 3M movements). A condition outside
+  is still pushed into every arm and uses each arm's own index. Keep enum columns un-cast in the
+  arms (`t.direction`, never `::text`): a cast hides the column from the planner's statistics. The
+  client's own history keeps its owner inside the arms (few rows, and its rebate arm is a join).
+  The stored-totals query is the opposite case: no ordering, so its filter goes INSIDE each half
+  and reads by key.
 - **Method names are looked up for the rows SHOWN** (`methodNamesOf`, after the page is cut), never
   inside the union: there they ran for every row a search or sort discarded.
-- **Scope is ONE `EXISTS` over `client_tag_assignments`** (the intake pool and its anti-join went in
-  0193; country tags and their view in 0213). `client-scope-twin.spec.ts` pins the SQL to its
-  in-memory twin.
+- **Scope is one rule with TWO forms** (`clientScopePredicate`, 12 Oct 2026): `EXISTS` over
+  `client_tag_assignments` row by row, or, for a territory marked `compact`, `col = ANY(ARRAY(the
+territory's clients))`. `AdminClientScopesStore.sized` marks a territory compact when it holds
+  fewer than about sqrt(26 x clients on the platform) clients (5,000 at a million), when the actor
+  is resolved. A small territory is then read STARTING FROM ITS CLIENTS through each list's
+  per-client index, instead of walking the list and asking of every row (wallets 48 -> 4 ms warm,
+  1,288 -> 28 ms on a cold first click). Both forms admit the same clients:
+  `client-scope-twin.spec.ts` pins them to each other and to the in-memory twin. A new client list
+  needs an index leading with its client column (0220 added the one `ib_applications` lacked).
+- **Territories and desks read KEPT totals too** (0218, 0219, 0221): `movement_tag_totals` for a
+  ONE-tag territory (several tags still add up per client: a client carrying two would count
+  twice), `client_tag_member_counts` for tag sizes, and a `route` ('provider:channel') on every
+  total so a desk's tabs are exact instead of counted live. Tag changes are append-only
+  `movement_tag_member_events`, applied by `fold_movement_totals`; tagging takes no lock.
+  `ib_partner_earning_totals` (0217) does the same for a partner's earnings.
 
 ## Validation
 

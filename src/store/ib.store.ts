@@ -13,6 +13,7 @@ import {
   sql,
   type SQLWrapper,
   not,
+  type SQL,
 } from 'drizzle-orm';
 import { Inject, Injectable } from '@nestjs/common';
 import { orderTerms, type SortOrder } from '../common/sorting';
@@ -141,6 +142,9 @@ export const DEFAULT_IB_ACCRUAL_SORT: IbAccrualSortKey = 'createdAt';
  * The one method worth reading before the others is `transition`. Everything
  * else here is ordinary.
  */
+/** Past this many partners in one territory, accruals are scoped row by row. */
+const MAX_TERRITORY_EARNERS = 2_000;
+
 @Injectable()
 export class IbStore {
   constructor(@Inject(DRIZZLE_DB) private readonly db: Db) {}
@@ -276,7 +280,9 @@ export class IbStore {
   }) {
     const scope = filter.scope ?? UNRESTRICTED;
     const visible = and(
-      clientScopePredicate(scope, users.id),
+      // The application's own client id: the same person `users` is joined on,
+      // so the tab counts can apply the territory without reading `users`.
+      clientScopePredicate(scope, ibApplications.userId),
       ...withinRange(ibApplications.submittedAt, filter.range),
     );
 
@@ -402,7 +408,6 @@ export class IbStore {
         sql`SELECT s.status::text AS status, (
               SELECT count(*)::int FROM (
                 SELECT 1 FROM ${ibApplications}
-                INNER JOIN ${users} ON ${users.id} = ${ibApplications.userId}
                 WHERE ${ibApplications.status} = s.status
                 ${visible ? sql`AND ${visible}` : sql``}
                 LIMIT ${TOTAL_CAP + 1}
@@ -813,6 +818,53 @@ export class IbStore {
   }
 
   /**
+   * Which accruals a territory may see, as a condition the planner can use.
+   *
+   * The rule is unchanged: a row is judged by its BENEFICIARY — the partner, or
+   * the client on a legacy rebate paid to a client (`accrualBeneficiarySql`).
+   * Written as one EXISTS over that CASE, Postgres could only walk every accrual
+   * asking the question of each: 0.9 s at 1M accruals for a territory with no
+   * partner in it, growing with the table. Here the territory's EARNERS are
+   * resolved first, from the kept earnings (0217) — one row per partner, not
+   * per accrual — so the list is read through `(ib_user_id, created_at)`, and a
+   * territory with no earner reads nothing at all.
+   */
+  private async accrualVisibility(scope: ClientScope): Promise<SQL | undefined> {
+    if (scope.unrestricted) return undefined;
+    const byBeneficiary = clientScopePredicate(scope, accrualBeneficiarySql());
+    const earnerVisible = clientScopePredicate(scope, sql`e.ib_user_id`);
+    if (!earnerVisible) return byBeneficiary;
+    const earners = (
+      await this.db.execute(sql`
+        SELECT DISTINCT e.ib_user_id AS id
+          FROM (
+            SELECT ib_user_id FROM ib_partner_earning_totals
+            UNION ALL
+            SELECT ib_user_id FROM ib_partner_earning_deltas
+          ) e
+         WHERE ${earnerVisible}
+         LIMIT ${MAX_TERRITORY_EARNERS + 1}`)
+    ).rows as unknown as { id: number }[];
+    // A territory holding thousands of partners: the general rule, as before.
+    if (earners.length > MAX_TERRITORY_EARNERS) return byBeneficiary;
+
+    // Legacy rebates paid to a client (before 0209) are judged by the client.
+    const clientVisible = clientScopePredicate(scope, ibAccruals.clientUserId) ?? sql`false`;
+    const legacy = sql`(${ibAccruals.paidToClient} AND ${clientVisible})`;
+    const anyLegacy = await this.db.execute(
+      sql`SELECT 1 FROM ${ibAccruals} WHERE ${legacy} LIMIT 1`,
+    );
+    const earned =
+      earners.length === 0
+        ? undefined
+        : sql`(NOT ${ibAccruals.paidToClient} AND ${ibAccruals.ibUserId} IN (${sql.join(
+            earners.map((e) => sql`${e.id}::integer`),
+            sql`, `,
+          )}))`;
+    if (anyLegacy.rows.length === 0) return earned ?? sql`false`;
+    return earned ? sql`(${earned} OR ${legacy})` : legacy;
+  }
+  /**
    * The COMMISSION LEDGER — every accrual, who earned it and who generated it.
    *
    * ## ⚠️ Nothing read this table before
@@ -923,8 +975,7 @@ export class IbStore {
      * both kinds in one page, and each row has to be judged by its own
      * beneficiary rather than by whichever branch the request happened to take.
      */
-    const beneficiary = accrualBeneficiarySql();
-    const visible = clientScopePredicate(scope, beneficiary);
+    const visible = await this.accrualVisibility(scope);
 
     /*
      * Aliased, because both joins land on `users`. Without distinct aliases the
@@ -1309,49 +1360,56 @@ export class IbStore {
     const byPartner = new Map<number, PartnerEarnings[]>();
     if (ibUserIds.length === 0) return byPartner;
 
-    const rows = await this.db
-      .select({
-        ibUserId: ibAccruals.ibUserId,
-        currency: ibAccruals.currency,
-        status: ibAccruals.status,
-        amount: sql<string>`coalesce(sum(${ibAccruals.amount}), 0)::text`,
-      })
-      .from(ibAccruals)
-      .where(
-        and(
-          inArray(ibAccruals.ibUserId, ibUserIds),
-          inArray(ibAccruals.status, ['confirmed', 'pending']),
-          /*
-           * ── COMMISSION ONLY. A REBATE IS NOT THIS PARTNER'S EARNING ───────
-           *
-           * ⚠️ This summed EVERY accrual carrying the partner's id, and a
-           * rebate row carries it too — `ibUserId` there is the partner whose
-           * rung PRICED the rebate, while the money is paid to
-           * `clientUserId`. `confirmPending` says so in as many words:
-           * "attribution, not entitlement".
-           *
-           * So a partner's lifetime earnings were inflated by money that went
-           * to their clients. Measured on this database: one partner earned
-           * 20.79 and the figure read 41.58, because their client's rebate
-           * happened to equal their commission. It is not a rounding
-           * discrepancy — it is a different person's money added in.
-           *
-           * The wallet was always right; only this display total was wrong,
-           * which is the worst shape for it: an operator reconciling the
-           * partner's commission wallet against the number on screen finds a
-           * gap and no explanation for it.
-           *
-           * Since 0209 (7 Oct 2026) a rebate is PARTNER money, paid into that
-           * same commission wallet — so the rule is "what was paid to the
-           * partner": every row not paid to a client. That counts commission
-           * and new rebates, and still leaves out the legacy client rebates
-           * the paragraph above is about.
-           */
-          eq(ibAccruals.paidToClient, false),
-        ),
-      )
-      .groupBy(ibAccruals.ibUserId, ibAccruals.currency, ibAccruals.status)
-      .orderBy(asc(ibAccruals.currency));
+    /*
+     * ── COMMISSION ONLY. A REBATE IS NOT THIS PARTNER'S EARNING ───────
+     *
+     * ⚠️ This summed EVERY accrual carrying the partner's id, and a
+     * rebate row carries it too — `ibUserId` there is the partner whose
+     * rung PRICED the rebate, while the money is paid to
+     * `clientUserId`. `confirmPending` says so in as many words:
+     * "attribution, not entitlement".
+     *
+     * So a partner's lifetime earnings were inflated by money that went
+     * to their clients. Measured on this database: one partner earned
+     * 20.79 and the figure read 41.58, because their client's rebate
+     * happened to equal their commission. It is not a rounding
+     * discrepancy — it is a different person's money added in.
+     *
+     * The wallet was always right; only this display total was wrong,
+     * which is the worst shape for it: an operator reconciling the
+     * partner's commission wallet against the number on screen finds a
+     * gap and no explanation for it.
+     *
+     * Since 0209 (7 Oct 2026) a rebate is PARTNER money, paid into that
+     * same commission wallet — so the rule is "what was paid to the
+     * partner": every row not paid to a client. That counts commission
+     * and new rebates, and still leaves out the legacy client rebates
+     * the paragraph above is about.
+     */
+    /*
+     * Read from the KEPT totals plus the changes not yet folded into them
+     * (0217), in one statement — exact at every instant, and the same cost for a
+     * partner with ten accruals or ten million. Summing the accruals themselves
+     * grew with each partner's success, on every page view.
+     */
+    const ids = sql.join(
+      ibUserIds.map((id) => sql`${id}::integer`),
+      sql`, `,
+    );
+    const rows = (
+      await this.db.execute(sql`
+        SELECT ib_user_id AS "ibUserId", currency, status::text AS status, sum(total)::text AS amount
+          FROM (
+            SELECT ib_user_id, currency, status, total FROM ib_partner_earning_totals
+             WHERE ib_user_id IN (${ids}) AND status IN ('confirmed', 'pending')
+            UNION ALL
+            SELECT ib_user_id, currency, status, total FROM ib_partner_earning_deltas
+             WHERE ib_user_id IN (${ids}) AND status IN ('confirmed', 'pending')
+          ) earned
+         GROUP BY ib_user_id, currency, status
+        HAVING sum(total) <> 0
+         ORDER BY currency`)
+    ).rows as unknown as { ibUserId: number; currency: string; status: string; amount: string }[];
 
     for (const row of rows) {
       const entries = byPartner.get(row.ibUserId) ?? [];

@@ -229,7 +229,7 @@ export interface ConnectionCheck {
 
 /**
  * The provider is at its REQUEST LIMIT — a 429, or the adapter's own pacing
- * (3pay allows 60 reads a minute) — and NOTHING WAS SENT (0174). A sweep stops
+ * (3pay allows a hundred reads in fifteen minutes) — and NOTHING WAS SENT (0174). A sweep stops
  * its pass and resumes on the next run instead of failing row after row; a
  * payout is requeued; a single call a person or client made reports it.
  */
@@ -304,6 +304,12 @@ export interface PayoutQuote {
   fee: string | null;
   /** What should arrive at the destination — the client's amount. */
   net: string;
+  /**
+   * What the company's balance at the provider will drop by, when that is not
+   * `gross` — a provider that charges its fee on top (3pay, when its account
+   * says the merchant carries it). The balance watch counts this.
+   */
+  balanceCost?: string;
 }
 
 export interface PayoutRequest {
@@ -380,8 +386,11 @@ export interface PayoutRail {
   readonly idempotency: PayoutIdempotency;
   /** Can a payout the provider already holds be recalled? */
   readonly cancellable: boolean;
-  /** Submissions per minute the provider accepts; the core queues to it. */
-  readonly ratePerMinute: number | null;
+  /**
+   * How many submissions the provider accepts in a window (3pay: 30 per 15
+   * minutes), or null when it states none; the core queues to it.
+   */
+  readonly rate: { readonly limit: number; readonly windowMs: number } | null;
   /**
    * When the provider cannot pay (switched off, not set up): does approving
    * mean the DESK pays by hand (`desk`, Rival's since 0052), or does the payout
@@ -508,6 +517,12 @@ export interface ProviderNotice {
   subject: 'payment' | 'payout';
   /** The provider's id — `provider_payment_id` / `provider_payout_id`. */
   providerId: string;
+  /**
+   * The SAME movement's other names at the provider, when it has more than
+   * one (3pay: a deposit's transaction id and its invoice number). A movement
+   * here that holds any of them is the one meant.
+   */
+  otherIds?: readonly string[];
   /** The provider's own event name, as delivered — for the event log. */
   providerType: string;
   /** The event log's vocabulary. */

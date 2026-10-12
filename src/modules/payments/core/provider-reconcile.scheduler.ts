@@ -36,7 +36,7 @@ import { ProviderRecordsAudit } from './provider-records-audit.service';
  * Every step is idempotent, so the lease is about COST: several replicas
  * polling one provider for the same rows multiply the traffic against APIs
  * that rate-limit. Each provider has its own lease AND runs alongside the
- * others, so one slow provider (3pay paces itself to 60 reads a minute) does
+ * others, so one slow provider (3pay allows a hundred reads in fifteen minutes) does
  * not hold the others.
  *
  * ## After the money: what the provider holds
@@ -104,7 +104,8 @@ export class ProviderReconcileScheduler {
     if (!(await adapter.isUsable())) return;
     if (adapter.balance) {
       try {
-        await this.balances.check(adapter, await adapter.balance());
+        const read = adapter.balance.bind(adapter);
+        await this.balances.check(adapter, read);
       } catch (error) {
         this.logger.warn(`${adapter.name} balance could not be checked: ${messageOf(error)}`);
       }

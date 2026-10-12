@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { ALL_PERMISSIONS } from './support/all-permissions';
 import { actingAs, startHttpTestApp, stopHttpTestApp, type HttpTestContext } from './http-setup';
 import { PasswordService } from '../src/common/security/password.service';
@@ -70,5 +70,26 @@ describe('a role that hides client emails, through GET /admin/clients', () => {
   it('refuses to sort by the hidden email', async () => {
     const admin = await actingAs(ctx, 'admin', MASKED);
     await admin.get('/v1/admin/clients?sort=email').expect(400);
+  });
+  it('finds the client by the whole hidden name, never a part of it — and records it', async () => {
+    await ctx.db.db
+      .update(roles)
+      .set({ maskedFields: ['client.email', 'client.firstName', 'client.lastName'] })
+      .where(eq(roles.name, 'Email hidden'));
+    const admin = await actingAs(ctx, 'admin', MASKED);
+    const part = await admin.get('/v1/admin/clients?q=Targe').expect(200);
+    expect(part.body.items).toHaveLength(0);
+    const whole = await admin.get('/v1/admin/clients?q=http%20target').expect(200);
+    expect(whole.body.items).toHaveLength(1);
+    expect(JSON.stringify(whole.body)).not.toContain('Target'); // still masked in the answer
+
+    let rows: unknown[] = [];
+    for (let i = 0; i < 20 && rows.length === 0; i++) {
+      await new Promise((r) => setTimeout(r, 50));
+      ({ rows } = await ctx.db.db.execute(sql`
+        SELECT 1 FROM audit_log a JOIN users u ON u.id::text = a.subject_id
+         WHERE a.action = 'client.lookup_hidden_name' AND u.email = ${EMAIL}`));
+    }
+    expect(rows).toHaveLength(1);
   });
 });

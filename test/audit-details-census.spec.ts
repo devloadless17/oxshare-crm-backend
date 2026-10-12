@@ -154,6 +154,8 @@ const WRITES_DETAILS: readonly string[] = [
   'client.email_change',
   // `{ route }` only — the search that found them, never the typed address (D-82).
   'client.lookup_hidden_email',
+  'client.lookup_hidden_name',
+  'client.lookup_hidden_phone',
   'client.profile_consolidated',
   'client.profile_update',
   'client.referrer_set',

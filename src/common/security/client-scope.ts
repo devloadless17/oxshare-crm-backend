@@ -37,6 +37,13 @@ export interface ClientScope {
    * owner's book ("O_F") or a desk — whoever is responsible for the client.
    */
   tagIds: readonly string[];
+  /**
+   * The territory is small enough to read STARTING FROM ITS CLIENTS — set by
+   * `AdminClientScopesStore.sized` when the actor is resolved, never by a
+   * caller. It changes how `clientScopePredicate` is written, never which
+   * clients it admits.
+   */
+  compact?: boolean;
 }
 
 /**
@@ -107,6 +114,28 @@ export function clientScopePredicate(
     scope.tagIds.map((id) => sql`${id}::uuid`),
     sql`, `,
   );
+  /*
+   * TWO WAYS TO ASK THE SAME QUESTION, chosen by the territory's size.
+   *
+   * Row by row (`EXISTS`): Postgres walks the list in order and asks of each
+   * row whether its client is in the territory. Right for a LARGE territory:
+   * most rows match, so a page is found within a few hundred rows.
+   *
+   * From the clients (`= ANY(ARRAY(...))`): the territory's clients are read
+   * once and each list is entered through its own per-client index. Right for
+   * a SMALL one, where the walk passes thousands of other people's rows to
+   * find 25: measured at 1M clients for a book of 2,000, wallets 48 -> 4 ms
+   * warm, and 1,288 -> 28 ms on the first click after being away (12 Oct 2026).
+   *
+   * Both admit exactly the same clients. `IS NOT NULL` keeps a row with no
+   * client FALSE rather than unknown, so `NOT (...)` reads the same either way.
+   */
+  if (scope.compact) {
+    return sql`(${clientIdColumn} IS NOT NULL AND ${clientIdColumn} = ANY(ARRAY(
+      SELECT scope_m.user_id FROM ${clientTagAssignments} scope_m
+      WHERE scope_m.tag_id IN (${tagList})
+    )))`;
+  }
   return sql`EXISTS (
     SELECT 1 FROM ${clientTagAssignments} scope_m
     WHERE scope_m.user_id = ${clientIdColumn}

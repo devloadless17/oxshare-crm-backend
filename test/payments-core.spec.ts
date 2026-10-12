@@ -48,7 +48,7 @@ const OTHER_ADDRESS = 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t';
 const rail = {
   idempotency: 'none' as const,
   cancellable: false,
-  ratePerMinute: null,
+  rate: null,
   whenUnavailable: 'wait' as const,
   adoptWindowMs: 15 * 60_000,
   // The provider takes its 2.00 fee OUT of the amount: gross up, so the client

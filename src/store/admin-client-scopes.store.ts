@@ -1,9 +1,10 @@
-import { eq, inArray } from 'drizzle-orm';
+import { eq, inArray, sql } from 'drizzle-orm';
 import { Inject, Injectable } from '@nestjs/common';
 import { DRIZZLE_DB } from '../database/database.module';
 import type { Db, Executor } from '../database/db';
 import { adminClientTagScopes, clientTags } from '../database/schema';
 import { scopeOf, type ClientScope } from '../common/security/client-scope';
+import { SharedRead } from '../common/shared-read';
 
 export interface AdminScopeTag {
   tagId: string;
@@ -48,11 +49,57 @@ export class AdminClientScopesStore {
    * those paths.
    */
   async scopeFor(admin: { id: string; seesAllClients?: boolean }): Promise<ClientScope> {
-    return scopeOf(
-      await this.tagIdsFor(admin.id),
-      // Absent reads as NOT granted: a row without the column is restricted.
-      admin.seesAllClients ?? false,
+    return this.sized(
+      scopeOf(
+        await this.tagIdsFor(admin.id),
+        // Absent reads as NOT granted: a row without the column is restricted.
+        admin.seesAllClients ?? false,
+      ),
     );
+  }
+
+  /** A territory's size class and the platform's size are asked rarely, not per request. */
+  private readonly compactTerritories = new SharedRead<boolean>(30_000);
+  private readonly platformSize = new SharedRead<number>(600_000);
+
+  /**
+   * Marks a territory `compact` when reading from its clients is the cheaper
+   * way to apply it (see `clientScopePredicate`). It never changes who is seen.
+   *
+   * Starting from the clients costs about the territory's size; walking a list
+   * costs about (rows wanted x platform / territory). They cross near
+   * sqrt(26 x clients on the platform): about 5,000 at a million clients. The
+   * limit follows the platform as it grows, between 2,000 and 20,000. A
+   * territory is counted only up to that limit, through the tag index.
+   */
+  async sized(scope: ClientScope): Promise<ClientScope> {
+    if (scope.unrestricted || scope.tagIds.length === 0) return scope;
+    const tags = [...scope.tagIds].sort();
+    try {
+      const compact = await this.compactTerritories.get(tags.join(','), async () => {
+        const clients = await this.platformSize.get('clients', async () => {
+          const { rows } = await this.db.execute<{ n: number }>(
+            sql`SELECT greatest(reltuples, 0)::bigint::int AS n FROM pg_class WHERE oid = 'users'::regclass`,
+          );
+          return rows[0]?.n ?? 0;
+        });
+        const limit = Math.min(20_000, Math.max(2_000, Math.round(Math.sqrt(26 * clients))));
+        const { rows } = await this.db.execute<{ n: number }>(sql`
+          SELECT count(*)::int AS n FROM (
+            SELECT 1 FROM client_tag_assignments
+             WHERE tag_id IN (${sql.join(
+               tags.map((id) => sql`${id}::uuid`),
+               sql`, `,
+             )})
+             LIMIT ${limit + 1}
+          ) counted`);
+        return (rows[0]?.n ?? 0) <= limit;
+      });
+      return compact ? { ...scope, compact: true } : scope;
+    } catch {
+      // Only how the territory is read is at stake: unmarked is always correct.
+      return scope;
+    }
   }
 
   /**

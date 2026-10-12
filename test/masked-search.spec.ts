@@ -55,18 +55,23 @@ describe('search obeys the mask', () => {
     expect(await found(mask, 'Mokoena')).toEqual([EMAIL]);
   });
 
-  it('name hidden: no fragment of it matches, and there is no exact-name lookup', async () => {
-    const mask = ['client.firstName'];
-    expect(await found(mask, 'Zanele')).toEqual([]);
-    expect(await found(mask, 'Mokoena')).toEqual([]);
-    expect(await found(mask, 'Zanele Mokoena')).toEqual([]);
+  it('name hidden: no fragment of it matches, the whole name does', async () => {
+    const mask = ['client.firstName', 'client.lastName'];
+    expect(await found(mask, 'Zan')).toEqual([]);
+    expect(await found(mask, 'Zanel')).toEqual([]);
+    expect(await found(mask, 'okoena')).toEqual([]);
+    expect(await found(mask, 'Zanele Mok')).toEqual([]);
+    expect(await found(mask, ' zanele ')).toEqual([EMAIL]);
+    expect(await found(mask, 'MOKOENA')).toEqual([EMAIL]);
+    expect(await found(mask, 'Zanele Mokoena')).toEqual([EMAIL]);
     expect(await found(mask, 'hidden.tar')).toEqual([EMAIL]);
   });
 
-  it('everything hidden: only the complete email (and the Portal ID) can find them', async () => {
+  it('everything hidden: only a complete value (or the Portal ID) can find them', async () => {
     const mask = ['client.email', 'client.firstName', 'client.lastName'];
     expect(await found(mask, 'hidden')).toEqual([]);
-    expect(await found(mask, 'Zanele')).toEqual([]);
+    expect(await found(mask, 'Zanel')).toEqual([]);
+    expect(await found(mask, 'Zanele')).toEqual([EMAIL]);
     expect(await found(mask, EMAIL)).toEqual([EMAIL]);
   });
 });

@@ -104,8 +104,25 @@ describe('seesClientWithTags agrees with clientScopePredicate on every tag set',
         if (bySql.has(id) !== seesClientWithTags(scope, tags)) disagreements.push(id);
       }
       expect(disagreements, `the twin disagrees with the SQL for scope "${name}"`).toEqual([]);
+      // The predicate has two forms, chosen by the territory's size
+      // (`AdminClientScopesStore.sized`). They must admit exactly the same clients.
+      const fromClients = await visibleBySql({ ...scope, compact: true });
+      expect([...fromClients].sort(), `the two forms disagree for scope "${name}"`).toEqual(
+        [...bySql].sort(),
+      );
     });
   }
+
+  it('reads a row with NO client the same way in both forms, negated too', async () => {
+    const scope = scopeNamed('tag 1');
+    for (const form of [scope, { ...scope, compact: true }]) {
+      const predicate = clientScopePredicate(form, sql`NULL::integer`);
+      const { rows } = await ctx.db.execute<{ seen: boolean | null; unseen: boolean | null }>(
+        sql`SELECT (${predicate}) AS seen, (NOT (${predicate})) AS unseen`,
+      );
+      expect(rows[0]).toEqual({ seen: false, unseen: true });
+    }
+  });
 
   it('is not vacuous — the matrix really separates the scopes', async () => {
     expect((await visibleBySql(scopeNamed('unrestricted'))).size).toBe(4);

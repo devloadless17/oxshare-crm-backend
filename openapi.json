@@ -7807,6 +7807,16 @@
       "post": {
         "operationId": "AdminAuthController_refresh",
         "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminRefreshDto"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "",
@@ -7862,7 +7872,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AdminProfileDto"
+                  "$ref": "#/components/schemas/AdminSessionProfileDto"
                 }
               }
             }
@@ -12971,9 +12981,18 @@
     },
     "/v1/admin/reconciliation": {
       "get": {
-        "description": "The same check the hourly job runs: every wallet balance against the sum of its own ledger. Wallet balances ONLY — a confirmed commission accrual that was never credited is a separate alert (UNPAID_CONFIRMED_ACCRUAL), not part of this report. Read-only — a discrepancy is reported, never repaired, because an automatic correction would write a compensating entry for a cause nobody has diagnosed. Whole-platform: an admin scoped to a client territory is refused, because a reconciliation over a fragment is meaningless and the full report names clients outside their territory.",
+        "description": "Answers with the LAST completed check and the time it was made (`checkedAt`): the hourly job runs it, and it reads every ledger entry, so running it per page view cost the size of the ledger. `?fresh=true` runs it now. The check: every wallet balance against the sum of its own ledger. Wallet balances ONLY — a confirmed commission accrual that was never credited is a separate alert (UNPAID_CONFIRMED_ACCRUAL), not part of this report. Read-only — a discrepancy is reported, never repaired, because an automatic correction would write a compensating entry for a cause nobody has diagnosed. Whole-platform: an admin scoped to a client territory is refused, because a reconciliation over a fragment is meaningless and the full report names clients outside their territory.",
         "operationId": "AdminMoneyController_reconcile",
-        "parameters": [],
+        "parameters": [
+          {
+            "name": "fresh",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "",
@@ -12991,7 +13010,7 @@
             "cookie": []
           }
         ],
-        "summary": "Run reconciliation now and return the report (§12.2)",
+        "summary": "The last reconciliation report, or a fresh one with ?fresh=true (§12.2)",
         "tags": [
           "admin"
         ]
@@ -23872,6 +23891,115 @@
           "admin"
         ]
       },
+      "AdminRefreshDto": {
+        "type": "object",
+        "properties": {
+          "idleSeconds": {
+            "type": "number",
+            "description": "Whole seconds since the last mouse, key or scroll on the console, in any tab.",
+            "example": 42
+          }
+        }
+      },
+      "AdminSessionProfileDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "email": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "master_admin",
+              "sub_admin"
+            ]
+          },
+          "permissions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "roleId": {
+            "type": "string"
+          },
+          "roleName": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "suspended"
+            ]
+          },
+          "maskedFields": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "maskedFieldsOverride": {
+            "nullable": true,
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "scopedTags": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminScopeTagDto"
+            }
+          },
+          "seesAllClients": {
+            "type": "boolean"
+          },
+          "avatarUrl": {
+            "type": "string",
+            "nullable": true,
+            "example": "/uploads/avatars/6f1c.png"
+          },
+          "passwordChangedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "totpEnabledAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "idleTimeoutSeconds": {
+            "type": "number",
+            "example": 900
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "name",
+          "role",
+          "permissions",
+          "status",
+          "maskedFields",
+          "scopedTags",
+          "seesAllClients",
+          "totpEnabledAt",
+          "createdAt",
+          "idleTimeoutSeconds"
+        ]
+      },
       "InviteDto": {
         "type": "object",
         "properties": {
@@ -27962,6 +28090,10 @@
           },
           "lastName": {
             "type": "string"
+          },
+          "phone": {
+            "type": "string",
+            "nullable": true
           }
         },
         "required": [
@@ -28221,6 +28353,12 @@
               "type": "number"
             }
           },
+          "countsCapped": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "maskedFields": {
             "type": "array",
             "items": {
@@ -28234,7 +28372,8 @@
           "total",
           "page",
           "limit",
-          "counts"
+          "counts",
+          "countsCapped"
         ]
       },
       "CreditWalletDto": {
@@ -29140,6 +29279,12 @@
               "type": "number"
             }
           },
+          "countsCapped": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "maskedFields": {
             "type": "array",
             "items": {
@@ -29154,7 +29299,8 @@
           "page",
           "limit",
           "counts",
-          "directionCounts"
+          "directionCounts",
+          "countsCapped"
         ]
       },
       "ClientRegistrationWindowDto": {

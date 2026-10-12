@@ -13,6 +13,8 @@ services:
     # parallel query fail with "could not resize shared memory segment" once
     # the dev data grew (a 500 on the deposit desk, 11 Oct 2026).
     shm_size: 1g
+    # As production: the JIT compiler costs more than the short queries it compiles.
+    command: ['postgres', '-c', 'jit=off']
     environment:
       POSTGRES_USER: oxshare
       POSTGRES_PASSWORD: oxshare_dev

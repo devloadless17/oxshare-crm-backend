@@ -104,3 +104,79 @@ export function bodyWithAmount(amount: string, rest: Record<string, string | und
     .map(([key, value]) => `${JSON.stringify(key)}:${JSON.stringify(value)}`);
   return `{"amount":${numberLiteral(amount)}${fields.map((field) => `,${field}`).join('')}}`;
 }
+
+/** The first of several fields that holds text — 3pay names one thing differently per endpoint. */
+export function firstText(
+  record: Record<string, unknown> | undefined,
+  ...names: readonly string[]
+): string | undefined {
+  for (const name of names) {
+    const text = textOf(record?.[name]);
+    if (text !== undefined) return text;
+  }
+  return undefined;
+}
+
+/** A flag 3pay writes as a boolean or as the words "true"/"false", or undefined. */
+export function flagOf(value: unknown): boolean | undefined {
+  if (typeof value === 'boolean') return value;
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  return undefined;
+}
+
+/** A timestamp 3pay wrote as ISO text, or undefined. */
+export function dateOf(value: unknown): Date | undefined {
+  const text = textOf(value);
+  if (!text) return undefined;
+  const at = Date.parse(text);
+  return Number.isNaN(at) ? undefined : new Date(at);
+}
+
+/**
+ * A body as the EXCHANGE LOG may keep it (0175).
+ *
+ * The log is read unmasked by whoever may view providers, so two things never
+ * reach it. A field whose name says it is a credential (3pay's account reply
+ * carries its `webhookSecret` in clear — found in production, 12 Oct 2026) is
+ * blanked wherever it appears. And the account reply itself, which also names
+ * the account's owner, their email and phone, is cut down to the figures this
+ * platform reads.
+ */
+const CREDENTIAL_FIELD =
+  /"([A-Za-z0-9_]*(?:secret|password|passwd|privatekey|private_key|mnemonic|seed|otp|token|apikey|api_key)[A-Za-z0-9_]*)"\s*:\s*"(?:[^"\\]|\\.)*"/gi;
+
+const ACCOUNT_FIELDS = [
+  'totalAmt',
+  'pendingAmt',
+  'autoWithdraw',
+  'maxAutoWithdrawAmount',
+  'depositFeePayer',
+  'withdrawalFeePayer',
+  'approved',
+] as const;
+
+export function loggableBody(path: string, body: string | null): string | null {
+  if (body === null) return null;
+  if (path.startsWith('/getMerchantDetails')) {
+    try {
+      const parsed = objectOf(parseLossless(body));
+      const data = objectOf(parsed?.['data']);
+      if (parsed && data) {
+        const kept = ACCOUNT_FIELDS.filter((name) => data[name] !== undefined).map(
+          (name) => `${JSON.stringify(name)}:${literalOf(data[name])}`,
+        );
+        return `{"success":${literalOf(parsed['success'])},"data":{${kept.join(',')}},"note":"cut down for the log"}`;
+      }
+    } catch {
+      // Not JSON: fall through to the field blanking below.
+    }
+  }
+  return body.replace(CREDENTIAL_FIELD, '"$1":"[removed]"');
+}
+
+/** A parsed value back as JSON text: a number kept as text is written as the number it was. */
+function literalOf(value: unknown): string {
+  if (typeof value === 'string' && DECIMAL_TEXT.test(value)) return value;
+  return JSON.stringify(value ?? null);
+}

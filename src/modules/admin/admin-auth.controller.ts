@@ -45,6 +45,7 @@ import {
   CompleteAdminResetDto,
   AcceptInviteDto,
   AdminLoginDto,
+  AdminRefreshDto,
   AdminTotpChallengeDto,
   AdminTotpVerifyDto,
   InviteDto,
@@ -56,7 +57,7 @@ import {
   AdminSignInChallengeDto,
   AdminTotpSetupDto,
   AcceptInviteResponseDto,
-  AdminProfileDto,
+  AdminSessionProfileDto,
   AdminProfileNameDto,
   AdminSessionDto,
   InviteResponseDto,
@@ -177,10 +178,14 @@ export class AdminAuthController {
   @ApiOkResponse({ type: AdminLoginResponseDto })
   @NotClientScoped('Token rotation only; reads no client rows.')
   @NotAudited(
-    'Token rotation, every fifteen minutes per signed-in admin. Recording it would bury every real action under machine noise, and reuse detection already alarms on the case that matters.',
+    'Token rotation, every few minutes per signed-in admin. Recording it would bury every real action under machine noise, and reuse detection already alarms on the case that matters.',
   )
-  refresh(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
-    return this.auth.refresh(req, res);
+  refresh(
+    @Body() dto: AdminRefreshDto,
+    @Req() req: Request,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    return this.auth.refresh(req, res, dto.idleSeconds);
   }
 
   @NoCsrf(
@@ -222,7 +227,7 @@ export class AdminAuthController {
   @UseGuards(AdminGuard)
   @ApiCookieAuth()
   @ApiOperation({ summary: 'Get current admin' })
-  @ApiOkResponse({ type: AdminProfileDto })
+  @ApiOkResponse({ type: AdminSessionProfileDto })
   @NotClientScoped(
     "Returns the CALLING ADMIN's own profile, which is an admins row, not a client one.",
   )

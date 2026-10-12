@@ -254,10 +254,13 @@ interface MovementArm {
  *    territory narrowed by dates. Each of those reads an index narrowed to its
  *    own rows instead (see `adminMovements`).
  */
-export function movementTotalsSource(filter: AdminMovementsFilter): 'daily' | 'client' | undefined {
+export function movementTotalsSource(
+  filter: AdminMovementsFilter,
+): 'daily' | 'client' | 'tag' | undefined {
   // One record (`id`) is a live read — no total is kept per row.
   // No total is kept per method either.
-  if (filter.q?.trim() || filter.attention || filter.deskDecided || filter.id) return undefined;
+  // The desk's own rows ARE kept since 0221: the totals carry each payment's route.
+  if (filter.q?.trim() || filter.attention || filter.id) return undefined;
   if (filter.methods?.length) return undefined;
   /*
    * The daily totals are UTC days: they answer a period only when it starts and
@@ -267,8 +270,71 @@ export function movementTotalsSource(filter: AdminMovementsFilter): 'daily' | 'c
   if (filter.scope.unrestricted && filter.userId === undefined) {
     return isUtcDayAligned(filter) ? 'daily' : undefined;
   }
-  if (!filter.from && !filter.until) return 'client';
-  return undefined;
+  if (filter.from || filter.until) return undefined;
+  /*
+   * ONE tag, nobody pinned: the tag's own kept totals (0218), the same cost for
+   * a book of ten or of a million. Several tags cannot be added together — a
+   * client carrying two would count twice — so they read per client.
+   */
+  if (
+    filter.userId === undefined &&
+    !filter.scope.unrestricted &&
+    filter.scope.tagIds.length === 1
+  ) {
+    return 'tag';
+  }
+  return 'client';
+}
+
+/** One route a desk decides: a direction on a provider's channel (0168). */
+interface DeskRoute {
+  direction: string;
+  providerCode: string;
+  channelCode: string;
+}
+
+/** The per-day or per-client totals plus their unfolded deltas, as `m`. */
+function keyedTotalsSource(totals: 'daily' | 'client', where: SQL): SQL {
+  const key = totals === 'daily' ? sql`day` : sql`user_id`;
+  const table = totals === 'daily' ? sql`movement_daily_totals` : sql`movement_client_totals`;
+  /*
+   * The filter goes INSIDE each half, and the outer select has none. Outside,
+   * a territory was a hash join against a scan of EVERY client's totals on
+   * every money list (173 ms at 1M clients for a book of 2,000); inside, each
+   * half is read through its key for the territory's clients only (8 ms).
+   */
+  return sql`
+    WITH m AS (
+      SELECT ${key}, kind, direction, state, currency, count, total FROM ${table} m${where}
+      UNION ALL
+      SELECT ${key}, kind, direction, state, currency, count, total
+        FROM movement_total_deltas m${where}
+    )`;
+}
+
+/**
+ * One tag's kept totals (0218), exact at this instant, as `m`:
+ * what is folded, plus the client totals of whoever joined or left the tag
+ * since the last fold, plus the unfolded movements of everyone carrying it now.
+ */
+function tagTotalsSource(tagId: string, where: SQL): SQL {
+  return sql`
+    WITH every AS (
+      SELECT kind, direction, state, currency, route, count, total
+        FROM movement_tag_totals WHERE tag_id = ${tagId}::uuid
+      UNION ALL
+      SELECT c.kind, c.direction, c.state, c.currency, c.route, e.sign * c.count, e.sign * c.total
+        FROM movement_tag_member_events e
+        JOIN movement_client_totals c ON c.user_id = e.user_id
+       WHERE e.tag_id = ${tagId}::uuid
+      UNION ALL
+      SELECT d.kind, d.direction, d.state, d.currency, d.route, d.count, d.total
+        FROM movement_total_deltas d
+       WHERE EXISTS (
+         SELECT 1 FROM client_tag_assignments a
+          WHERE a.user_id = d.user_id AND a.tag_id = ${tagId}::uuid
+       )
+    ), m AS (SELECT * FROM every${where})`;
 }
 
 /**
@@ -286,10 +352,23 @@ export function movementTotalsSource(filter: AdminMovementsFilter): 'daily' | 'c
 export function movementTotalsQuery(
   filter: AdminMovementsFilter,
   shape: 'state' | 'direction' | 'summary',
+  /** The routes a person decides (`deskDecidedRoutes`): read only for `deskDecided`. */
+  deskRoutes: readonly DeskRoute[] = [],
 ): SQL {
   const totals = movementTotalsSource(filter);
   if (!totals) throw new Error('movementTotalsQuery: no stored totals answer this filter');
   const conditions: SQL[] = [];
+  if (filter.deskDecided) {
+    // The same routes the live rows are matched on, as the totals key them (0221).
+    conditions.push(
+      deskRoutes.length === 0
+        ? sql`FALSE`
+        : sql`kind = 'payment' AND (direction, route) IN (${sql.join(
+            deskRoutes.map((r) => sql`(${r.direction}, ${`${r.providerCode}:${r.channelCode}`})`),
+            sql`, `,
+          )})`,
+    );
+  }
   if (filter.kind) conditions.push(sql`kind = ${filter.kind}`);
   if (filter.currency) conditions.push(sql`currency = ${filter.currency}`);
   if (shape !== 'direction' && filter.direction) {
@@ -299,32 +378,28 @@ export function movementTotalsQuery(
   if (totals === 'daily') {
     if (filter.from) conditions.push(sql`day >= ${utcDate(filter.from)}::date`);
     if (filter.until) conditions.push(sql`day < ${utcDate(filter.until)}::date`);
-  } else {
+  } else if (totals === 'client') {
     const scoped = clientScopePredicate(filter.scope, sql`m.user_id`);
     if (scoped) conditions.push(scoped);
     if (filter.userId !== undefined) conditions.push(sql`m.user_id = ${filter.userId}::integer`);
   }
   const where = conditions.length ? sql` WHERE ${sql.join(conditions, sql` AND `)}` : sql``;
-  const key = totals === 'daily' ? sql`day` : sql`user_id`;
-  const table = totals === 'daily' ? sql`movement_daily_totals` : sql`movement_client_totals`;
-  const source = sql`
-    WITH m AS (
-      SELECT ${key}, kind, direction, state, currency, count, total FROM ${table}
-      UNION ALL
-      SELECT ${key}, kind, direction, state, currency, count, total FROM movement_total_deltas
-    )`;
+  const source =
+    totals === 'tag'
+      ? tagTotalsSource(filter.scope.tagIds[0], where)
+      : keyedTotalsSource(totals, where);
   if (shape === 'summary') {
     return sql`${source}
       SELECT direction, kind, state, currency,
              sum(count)::int AS value, sum(total)::text AS total
-        FROM m${where}
+        FROM m
        GROUP BY GROUPING SETS ((direction, kind, state, currency), (direction, currency))
       HAVING sum(count) <> 0
        ORDER BY direction, kind NULLS LAST, state, currency`;
   }
   const axis = shape === 'state' ? sql`state` : sql`direction`;
   return sql`${source}
-    SELECT ${axis}, sum(count)::int AS value FROM m${where}
+    SELECT ${axis}, sum(count)::int AS value FROM m
      GROUP BY ${axis} HAVING sum(count) <> 0`;
 }
 
@@ -675,6 +750,10 @@ export class TransactionQueries {
     private readonly providers: PaymentProviderRegistry,
   ) {}
 
+  /** The routes a person decides, when the filter asks for the desk's own rows. */
+  private deskRoutesOf(filter: AdminMovementsFilter): readonly DeskRoute[] {
+    return filter.deskDecided ? this.providers.deskDecidedRoutes() : [];
+  }
   /**
    * The client a transaction belongs to, or undefined.
    *
@@ -870,6 +949,7 @@ export class TransactionQueries {
         userEmail: users.email,
         userFirstName: users.firstName,
         userLastName: users.lastName,
+        userPhone: users.phone,
         withdrawalMethodKey: transactions.withdrawalMethodKey,
         /*
          * The rail's name AS THE DESK KNOWS IT — its internal label (0161),
@@ -1037,6 +1117,8 @@ export class TransactionQueries {
         email: r.userEmail,
         firstName: r.userFirstName,
         lastName: r.userLastName,
+        // The client's OWN phone, beside the destination the money goes to.
+        phone: r.userPhone,
       },
     }));
 
@@ -1048,6 +1130,8 @@ export class TransactionQueries {
       page,
       limit,
       counts,
+      // Every count on this desk is exact; the field is the lists' shared shape.
+      countsCapped: [] as string[],
     };
   }
 
@@ -2152,27 +2236,38 @@ export class TransactionQueries {
         ),
       ),
       totals
-        ? this.db.execute(movementTotalsQuery(filter, 'state'))
+        ? this.db.execute(movementTotalsQuery(filter, 'state', this.deskRoutesOf(filter)))
         : this.db.execute(cappedFacet('state', transactionStateEnum.enumValues, { state: true })),
       totals
-        ? this.db.execute(movementTotalsQuery(filter, 'direction'))
+        ? this.db.execute(movementTotalsQuery(filter, 'direction', this.deskRoutesOf(filter)))
         : this.db.execute(
             cappedFacet('direction', transactionDirectionEnum.enumValues, { direction: true }),
           ),
     ]);
 
+    /** The tabs whose count stopped at the cap: the console shows them as "10,000+". */
+    const countsCapped: string[] = [];
     const counts: Record<string, number> = { all: 0 };
     for (const row of stateRows.rows as unknown as { state: string; value: number }[]) {
       if (row.value === 0) continue;
       // Stored totals are exact; a capped facet stops at TOTAL_CAP + 1.
       counts[row.state] = totals ? row.value : Math.min(row.value, TOTAL_CAP);
       counts['all'] += counts[row.state];
+      if (!totals && row.value > TOTAL_CAP) countsCapped.push(row.state);
     }
     const directionCounts: Record<string, number> = { all: 0 };
     for (const row of directionRows.rows as unknown as { direction: string; value: number }[]) {
       if (row.value === 0) continue;
       directionCounts[row.direction] = totals ? row.value : Math.min(row.value, TOTAL_CAP);
       directionCounts['all'] += directionCounts[row.direction];
+      if (!totals && row.value > TOTAL_CAP) countsCapped.push(row.direction);
+    }
+    // A sum holding a capped part is itself "at least", on both rows of tabs:
+    // they describe the same set of movements.
+    if (countsCapped.length > 0) {
+      countsCapped.push('all');
+      counts['all'] = Math.min(counts['all'], TOTAL_CAP);
+      directionCounts['all'] = Math.min(directionCounts['all'], TOTAL_CAP);
     }
 
     const total = filter.state ? (counts[filter.state] ?? 0) : counts['all'];
@@ -2225,6 +2320,7 @@ export class TransactionQueries {
       limit,
       counts,
       directionCounts,
+      countsCapped,
     };
   }
 
@@ -2324,7 +2420,7 @@ export class TransactionQueries {
      */
     // The stored totals (0165) answer every filter they can — see `movementTotalsSource`.
     const grouped = movementTotalsSource(filter)
-      ? await this.db.execute(movementTotalsQuery(filter, 'summary'))
+      ? await this.db.execute(movementTotalsQuery(filter, 'summary', this.deskRoutesOf(filter)))
       : await this.db.execute(sql`
       WITH counted AS (${countSource}${whereOf(conditionsFor())})
       SELECT

@@ -3,11 +3,14 @@ import {
   IsArray,
   IsBoolean,
   IsEmail,
+  IsInt,
   IsNotEmpty,
   IsOptional,
   IsString,
   Matches,
+  Max,
   MaxLength,
+  Min,
   MinLength,
 } from 'class-validator';
 
@@ -52,6 +55,28 @@ export class AdminLoginDto {
   @IsString()
   @MaxLength(PASSWORD_MAX)
   password: string;
+}
+
+/**
+ * `POST /admin/auth/refresh` — how long nobody has touched the console.
+ *
+ * The idle rule (admin-session-lifetime.ts): the session this refresh buys ends
+ * at "last activity + the idle window", and only the console can see activity.
+ * Optional, and absent reads as 0, so a console from before the rule keeps
+ * renewing until the new one is deployed.
+ */
+export class AdminRefreshDto {
+  @ApiPropertyOptional({
+    description: 'Whole seconds since the last mouse, key or scroll on the console, in any tab.',
+    example: 42,
+  })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  // A month. Past the idle window the answer is the same; the bound only stops
+  // a nonsense number reaching the arithmetic.
+  @Max(2_592_000)
+  idleSeconds?: number;
 }
 
 /** `POST /admin/auth/totp/setup` — the challenge a correct password bought. */

@@ -56,9 +56,18 @@ const REFRESH_AFTER_MS = 30 * 60_000;
 const START_ABANDONED_MS = 60 * 60_000;
 /** A hosted deposit still unfinished after this long is a person's to look at. */
 const STALE_AFTER_MS = 7 * 24 * 60 * 60_000;
-/** A `received` provider may confirm an expired link late; watched this long, hourly. */
+/**
+ * A `received` provider may confirm an expired link late; watched this long.
+ * Re-asked an hour after it expired, then at a widening interval (a quarter of
+ * its age: a day-old link every six hours, a three-week-old one every five
+ * days), and never more than a few a sweep. Asking every expired link every
+ * hour for a month spent a provider's whole request allowance on links nobody
+ * will ever pay (3pay allows a hundred reads in fifteen minutes, shared with
+ * the deposits and payouts that ARE moving).
+ */
 const LATE_WATCH_MS = 30 * 24 * 60 * 60_000;
 const LATE_RECHECK_MS = 60 * 60_000;
+const LATE_BATCH = 5;
 const BATCH = 50;
 
 /**
@@ -155,7 +164,7 @@ export class HostedDepositsService {
       .where(
         and(
           eq(transactions.providerCode, providerCode),
-          eq(transactions.providerPaymentId, notice.providerId),
+          inArray(transactions.providerPaymentId, [notice.providerId, ...(notice.otherIds ?? [])]),
         ),
       )
       .limit(1);
@@ -681,7 +690,7 @@ export class HostedDepositsService {
    *     start that never answered is RECOVERED; the rest are asked (and, past
    *     30 minutes, re-checked upstream where the provider can).
    *  2. A `received` provider's links failed as EXPIRED in the last 30 days,
-   *     re-asked hourly — its late confirmations are credited.
+   *     re-asked at a widening interval — its late confirmations are credited.
    *
    * A per-row failure logs and moves on: one unreachable payment must not
    * shield the others.
@@ -771,7 +780,7 @@ export class HostedDepositsService {
     }
   }
 
-  /** Expired links of a `received` provider, failed in the last 30 days, not asked this hour. */
+  /** Expired links of a `received` provider, failed in the last 30 days, due to be asked again. */
   private async lateCandidates(providerCode: string): Promise<TransactionRow[]> {
     const received = (this.registry.find(providerCode)?.channels ?? [])
       .filter((c) => c.direction === 'deposit' && c.creditPolicy === 'received')
@@ -789,13 +798,13 @@ export class HostedDepositsService {
           eq(transactions.needsAttention, false),
           isNotNull(transactions.providerPaymentId),
           sql`${transactions.settledAt} > now() - make_interval(secs => ${LATE_WATCH_MS / 1000})`,
-          sql`coalesce(${transactions.providerCheckedAt}, 'epoch') < now() - make_interval(secs => ${
-            LATE_RECHECK_MS / 1000
-          })`,
+          sql`coalesce(${transactions.providerCheckedAt}, 'epoch') < now() - greatest(
+            make_interval(secs => ${LATE_RECHECK_MS / 1000}),
+            (now() - ${transactions.settledAt}) / 4)`,
         ),
       )
       .orderBy(sql`${transactions.providerCheckedAt} ASC NULLS FIRST`)
-      .limit(BATCH);
+      .limit(LATE_BATCH);
   }
 
   /**

@@ -1527,6 +1527,48 @@
       "when": 1789144510750,
       "tag": "0216_desk_count_index",
       "breakpoints": true
+    },
+    {
+      "idx": 219,
+      "version": "7",
+      "when": 1789144610750,
+      "tag": "0217_partner_earning_totals",
+      "breakpoints": true
+    },
+    {
+      "idx": 220,
+      "version": "7",
+      "when": 1789144710750,
+      "tag": "0218_movement_tag_totals",
+      "breakpoints": true
+    },
+    {
+      "idx": 221,
+      "version": "7",
+      "when": 1789144810750,
+      "tag": "0219_client_tag_member_counts",
+      "breakpoints": true
+    },
+    {
+      "idx": 222,
+      "version": "7",
+      "when": 1789144910750,
+      "tag": "0220_ib_applications_by_client",
+      "breakpoints": true
+    },
+    {
+      "idx": 223,
+      "version": "7",
+      "when": 1789145010750,
+      "tag": "0221_movement_totals_route",
+      "breakpoints": true
+    },
+    {
+      "idx": 224,
+      "version": "7",
+      "when": 1789145110750,
+      "tag": "0222_threepay_exchange_log_scrub",
+      "breakpoints": true
     }
   ]
 }

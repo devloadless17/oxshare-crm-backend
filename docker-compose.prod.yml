@@ -113,6 +113,13 @@ services:
       - effective_io_concurrency=200
       - -c
       - max_wal_size=2GB
+      # Off: this is short-query work. The JIT compiler starts whenever the
+      # planner OVERESTIMATES a query, and then spends longer compiling than the
+      # query takes: 290 ms on the sign-up links read, which runs in 2 ms
+      # (measured 11 Oct 2026). The next release recreates this container to
+      # apply it (release.sh runs `up -d postgres`): a few seconds, once.
+      - -c
+      - jit=off
     environment:
       POSTGRES_USER: oxshare
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
