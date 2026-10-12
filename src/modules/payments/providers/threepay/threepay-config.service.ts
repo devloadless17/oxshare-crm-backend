@@ -15,6 +15,7 @@ export const THREEPAY_SETTINGS = {
   baseUrl: 'baseUrl',
   apiKey: 'apiKey',
   apiSecret: 'apiSecret',
+  webhookSecret: 'webhookSecret',
   trc20PayoutFee: 'trc20PayoutFee',
   erc20PayoutFee: 'erc20PayoutFee',
 } as const;
@@ -23,8 +24,13 @@ export interface ThreePayConfig {
   baseUrl: string;
   /** 3pay's `apikey` — a public identifier (its guide: "safe to log"). */
   apiKey: string;
-  /** 3pay's `x-api-secret`. Also the key 3pay signs its webhooks with. */
+  /** 3pay's `x-api-secret`. Its PDF guide says webhooks are signed with it too. */
   apiSecret: string;
+  /**
+   * The account's separate WEBHOOK secret, when an operator typed one. Normally
+   * absent: the adapter reads it from 3pay's account (`ThreePayClient.account`).
+   */
+  webhookSecret: string | null;
   /** 3pay's withdrawal fee per network, in USDT — what a payout is grossed up by. */
   payoutFees: Readonly<Record<ThreePayAsset, string>>;
   enabled: boolean;
@@ -53,9 +59,9 @@ export function payoutFeeIssue(value: string): string | undefined {
  * The one class that OPENS 3pay's secret, on its way to an outbound call or to
  * verifying an inbound signature. Resolves to null — "not configured" — when
  * any required setting is missing, the secret will not decrypt, a fee is not a
- * decimal, or the row is marked sandbox on a production deployment (3pay has no
- * sandbox; a row saying so is a mistake, and a mistake must not move real
- * money). Ten seconds of cache, dropped on every save (`invalidate`).
+ * decimal, or the row is marked sandbox on a production deployment (3pay's
+ * sandbox moves testnet tokens, and test money must never become real money).
+ * Ten seconds of cache, dropped on every save (`invalidate`).
  */
 @Injectable()
 export class ThreePayConfigService {
@@ -88,8 +94,8 @@ export class ThreePayConfigService {
     if (!row) return null;
     if (row.environment === 'sandbox' && this.config.get<string>('NODE_ENV') === 'production') {
       this.logger.error(
-        '3pay is marked SANDBOX on a production deployment; refusing it. 3pay has no sandbox: ' +
-          'set it to live in Payment providers.',
+        '3pay is marked SANDBOX on a production deployment; refusing it. Set it to live, with ' +
+          'the live API address and credentials, in Payment providers.',
       );
       return null;
     }
@@ -119,10 +125,25 @@ export class ThreePayConfigService {
       return null;
     }
 
+    // Optional, and never a reason to refuse the whole connection.
+    let webhookSecret: string | null = null;
+    const sealedWebhook = row.secrets[THREEPAY_SETTINGS.webhookSecret];
+    if (sealedWebhook) {
+      try {
+        webhookSecret = openSecret(sealedWebhook, this.config.get<string>('APP_ENCRYPTION_KEY'));
+      } catch {
+        this.logger.error(
+          'The stored 3pay webhook secret could not be decrypted; it is ignored. Save it again ' +
+            'in Payment providers, or clear it.',
+        );
+      }
+    }
+
     return {
       baseUrl: baseUrl.replace(/\/+$/, ''),
       apiKey,
       apiSecret,
+      webhookSecret,
       payoutFees: {
         'USDT-TRC20': new Decimal(trc20).toFixed(2),
         'USDT-ERC20': new Decimal(erc20).toFixed(2),

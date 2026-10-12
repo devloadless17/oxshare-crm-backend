@@ -476,19 +476,21 @@ export class PayoutEngine {
     }
   }
 
-  /** Is this provider already at its declared submission rate this minute? */
+  /** Is this provider already at its declared submission rate for the window? */
   private async overRate(providerCode: string, rail: PayoutRail): Promise<boolean> {
-    if (rail.ratePerMinute === null) return false;
+    if (rail.rate === null) return false;
     const [row] = await this.db
       .select({ n: sql<number>`count(*)::int` })
       .from(transactions)
       .where(
         and(
           eq(transactions.providerCode, providerCode),
-          sql`${transactions.providerSubmittedAt} > now() - interval '60 seconds'`,
+          sql`${transactions.providerSubmittedAt} > now() - make_interval(secs => ${
+            rail.rate.windowMs / 1000
+          })`,
         ),
       );
-    return (row?.n ?? 0) >= rail.ratePerMinute;
+    return (row?.n ?? 0) >= rail.rate.limit;
   }
 
   /**
@@ -547,7 +549,7 @@ export class PayoutEngine {
       .where(
         and(
           eq(transactions.providerCode, providerCode),
-          eq(transactions.providerPayoutId, notice.providerId),
+          inArray(transactions.providerPayoutId, [notice.providerId, ...(notice.otherIds ?? [])]),
         ),
       )
       .limit(1);
@@ -569,8 +571,9 @@ export class PayoutEngine {
     }
     const found = this.registry.payoutRail(tx);
     if (!found) return 'ignored';
-    const reports = await found.rail.read(found.channel, [notice.providerId], sinceOf(tx));
-    const report = reports.get(notice.providerId);
+    const payoutId = tx.providerPayoutId ?? notice.providerId;
+    const reports = await found.rail.read(found.channel, [payoutId], sinceOf(tx));
+    const report = reports.get(payoutId);
     if (!report) return 'pending';
     return this.applyReport(tx, found.adapter, report, 'webhook');
   }
@@ -654,6 +657,7 @@ export class PayoutEngine {
       report.status !== 'failed'
     ) {
       await this.flagShortfall(tx, adapter, report.net);
+      await this.flagOverpaid(tx, adapter, report.net);
     }
 
     if (report.status === 'pending') return 'ignored';
@@ -1404,6 +1408,48 @@ export class PayoutEngine {
         debited: tx.amount,
         delivered: net,
         shortfall,
+        currency: tx.currency,
+      },
+    );
+  }
+
+  /**
+   * Flag and page a payout that delivers MORE than the client withdrew — once.
+   * The fee was added to the amount when the provider charges it separately,
+   * so the client received the fee as well: the company's money, and the sign
+   * that the fee handling here does not match the provider's.
+   */
+  private async flagOverpaid(
+    tx: TransactionRow,
+    adapter: PaymentProviderAdapter,
+    net: string,
+  ): Promise<void> {
+    const over = new Decimal(net).minus(new Decimal(tx.amount));
+    if (!over.greaterThan(0)) return;
+    const reason =
+      `${adapter.name} delivered ${new Decimal(net).toFixed()} ${tx.currency} on this ` +
+      `${new Decimal(tx.amount).toFixed()} ${tx.currency} withdrawal: the client received ` +
+      `${over.toFixed()} ${tx.currency} MORE than they withdrew. ${adapter.name} did not take ` +
+      'its fee out of the amount sent, so adding the fee overpaid them. Recover the difference ' +
+      `if you can, and check how ${adapter.name} charges its payout fee before the next payout.`;
+    const [current] = await this.db
+      .select({ reason: transactions.attentionReason })
+      .from(transactions)
+      .where(eq(transactions.id, tx.id))
+      .limit(1);
+    if (current?.reason === reason) return;
+    await this.flag(tx.id, reason);
+    raiseAlert(
+      this.logger,
+      ALERT_KINDS.PAYMENT_STATE_MISMATCH,
+      'page',
+      'A payout delivered MORE than the client was debited. Check how the provider charges its fee.',
+      {
+        transactionId: tx.id,
+        provider: adapter.code,
+        debited: tx.amount,
+        delivered: net,
+        over: over.toFixed(),
         currency: tx.currency,
       },
     );

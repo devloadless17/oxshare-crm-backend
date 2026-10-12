@@ -151,6 +151,21 @@ export class AdminProfileDto {
 }
 
 /**
+ * `GET /admin/auth/me` — the caller's own profile, plus what only their SESSION
+ * needs. Its own shape so the admin directory, which lists the same profile for
+ * everybody else, does not carry a session setting on every row.
+ */
+export class AdminSessionProfileDto extends AdminProfileDto {
+  /**
+   * How long this administrator may do nothing on the console before signing in
+   * again. The console's idle clock runs on this number, never on its own copy.
+   */
+  @NotClientField('a platform setting about the session, not an attribute of anybody')
+  @ApiProperty({ example: 900 })
+  idleTimeoutSeconds: number;
+}
+
+/**
  * `POST /admin/auth/totp/verify` and `/admin/auth/refresh` — a session exists.
  *
  * No tokens in the body, deliberately. The session is set as httpOnly cookies on
@@ -1963,6 +1978,10 @@ export class WithdrawalUserDto {
   @ClientField('client.lastName')
   @ApiPropertyOptional()
   lastName?: string;
+  /** The client's own phone, shown beside the payout destination on the withdrawal desk. */
+  @ClientField('client.phone')
+  @ApiPropertyOptional({ type: String, nullable: true })
+  phone?: string | null;
 }
 
 /** Who will pay an open withdrawal, and what it costs (0173). */

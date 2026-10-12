@@ -43,7 +43,7 @@ const MAX_SCAN_PAGES = 50;
 export class RivalPayouts implements PayoutRail {
   readonly idempotency = 'reference' as const;
   readonly cancellable = true;
-  readonly ratePerMinute = null;
+  readonly rate = null;
   readonly whenUnavailable = 'desk' as const;
   readonly adoptWindowMs = 15 * 60_000;
 

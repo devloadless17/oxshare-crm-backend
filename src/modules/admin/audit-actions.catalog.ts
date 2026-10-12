@@ -94,6 +94,12 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
     label: 'Client found by a hidden email address',
     group: 'Clients',
   },
+  {
+    action: 'client.lookup_hidden_phone',
+    label: 'Client found by a hidden phone number',
+    group: 'Clients',
+  },
+  { action: 'client.lookup_hidden_name', label: 'Client found by a hidden name', group: 'Clients' },
   { action: 'client.suspend', label: 'Client suspended', group: 'Clients' },
   {
     action: 'client.referrer_set',

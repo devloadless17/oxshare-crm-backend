@@ -3,7 +3,8 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ALERT_KINDS, raiseAlert } from '../../../../common/logging/alerts';
 import type { ProviderEventType } from '../../../../store/payment-provider-events.store';
 import { THREEPAY_CODE, ThreePayConfigService } from './threepay-config.service';
-import { objectOf, textOf } from './threepay-json';
+import { firstText, objectOf, textOf } from './threepay-json';
+import { ThreePayClient } from './threepay.client';
 import type {
   NoticeOutcome,
   ProviderNotice,
@@ -13,14 +14,17 @@ import type {
 } from '../payment-provider';
 
 const MAX_BODY_BYTES = 64 * 1024;
+/** The account's webhook secret is re-read at most this often when a signature fails. */
+const SECRET_REFRESH_MS = 10 * 60_000;
 
 /** Statuses that promise nothing final — the doorbell is not rung for them. */
-const NOT_FINAL = new Set(['pending', 'initiated', 'executing']);
+const NOT_FINAL = new Set(['pending', 'initiated', 'executing', 'amount confirmed', 'processing']);
 
 const PAYMENT_EVENT: Readonly<Record<string, ProviderEventType>> = {
   confirmed: 'payment.succeeded',
   failed: 'payment.failed',
   expired: 'payment.failed',
+  cancelled: 'payment.failed',
 };
 const PAYOUT_EVENT: Readonly<Record<string, ProviderEventType>> = {
   completed: 'payout.completed',
@@ -33,44 +37,85 @@ function answer(status: number, outcome: string): WebhookAnswer {
   return { status, body: { received: status < 400, outcome } };
 }
 
-/**
- * The problem with a delivery's signature, or null when it is 3pay's:
- * `x-3pay-signature` is the lower-case hex HMAC-SHA256 of the RAW body, keyed
- * by the API secret (guide §08), compared in constant time.
- */
-export function signatureProblem(
-  rawBody: Buffer,
-  signature: string | undefined,
-  secret: string,
-): string | null {
-  if (!signature) return 'no x-3pay-signature header';
-  if (!/^[0-9a-fA-F]{64}$/.test(signature.trim())) return 'a malformed signature';
-  const expected = createHmac('sha256', secret).update(rawBody).digest();
-  const given = Buffer.from(signature.trim(), 'hex');
-  return given.length === expected.length && timingSafeEqual(given, expected)
-    ? null
-    : 'a signature that does not match';
+/** The two ways 3pay has documented signing a delivery. */
+export interface DeliverySignatures {
+  /** `X-Webhook-Signature: sha256=<hex>` — keyed by the account's WEBHOOK secret (its online docs). */
+  webhook?: string;
+  /** `x-3pay-signature: <hex>` — keyed by the API secret (its PDF guide). */
+  legacy?: string;
+}
+
+/** The keys a delivery may be signed with, each for the header it belongs to. */
+export interface DeliveryKeys {
+  webhookSecrets: readonly string[];
+  apiSecret: string;
+}
+
+function hexDigest(value: string | undefined): Buffer | null {
+  const text = value?.trim().replace(/^sha256=/i, '') ?? '';
+  return /^[0-9a-fA-F]{64}$/.test(text) ? Buffer.from(text, 'hex') : null;
+}
+
+function matches(rawBody: Buffer, given: Buffer, key: string): boolean {
+  const expected = createHmac('sha256', key).update(rawBody).digest();
+  return given.length === expected.length && timingSafeEqual(given, expected);
 }
 
 /**
- * One 3pay delivery, from raw bytes to NOTICES (0174) — the core
- * (`ProviderWebhookIngress`) answers each by asking 3pay's API.
+ * The problem with a delivery's signature, or null when it is 3pay's: the
+ * hex HMAC-SHA256 of the RAW body, compared in constant time. Each header is
+ * checked only against the key it is documented with — the webhook secret for
+ * `X-Webhook-Signature`, the API secret for `x-3pay-signature` — and one valid
+ * signature is enough.
+ */
+export function signatureProblem(
+  rawBody: Buffer,
+  signatures: DeliverySignatures,
+  keys: DeliveryKeys,
+): string | null {
+  if (!signatures.webhook && !signatures.legacy) return 'no signature header';
+  const webhook = hexDigest(signatures.webhook);
+  const legacy = hexDigest(signatures.legacy);
+  if (!webhook && !legacy) return 'a malformed signature';
+  if (webhook && keys.webhookSecrets.some((key) => matches(rawBody, webhook, key))) return null;
+  if (legacy && matches(rawBody, legacy, keys.apiSecret)) return null;
+  if (webhook && !legacy && keys.webhookSecrets.length === 0) {
+    return 'a signature made with the account’s webhook secret, which is not known here';
+  }
+  return 'a signature that does not match';
+}
+
+/**
+ * One 3pay delivery, from raw bytes to NOTICES (0174; rebuilt 12 Oct 2026) —
+ * the core (`ProviderWebhookIngress`) answers each by asking 3pay's API.
+ *
+ * ## Two signatures, because 3pay documents two
+ *
+ * Its PDF guide: `x-3pay-signature`, keyed by the API secret. Its online docs,
+ * which its live server otherwise follows: `X-Webhook-Signature: sha256=…`,
+ * keyed by a separate per-account WEBHOOK secret. Three test deliveries from
+ * its dashboard were refused in production for carrying only the second. Both
+ * are accepted, each against its own key.
+ *
+ * The webhook secret is whatever an operator typed, else the one 3pay's own
+ * account reply carries (kept in memory by `ThreePayClient`, never stored). A
+ * signature that fails is checked once more against a freshly read secret —
+ * the account may have rotated it — but at most every ten minutes: a flood of
+ * forged deliveries must not spend the requests real payments need.
  *
  * ## Why a verified payload is still only a doorbell
  *
- * 3pay's webhook vocabulary does not match its API's (a deposit's `status` is
- * listed as `confirmed | failed | executing | pending`, and a `refund` type is
- * never explained), and a delivery carries no timestamp, so a captured one can
- * be replayed for ever. None of that matters under the doorbell rule: a notice
- * only makes the core re-read the invoice or the payout from 3pay, and what
- * 3pay's API says is what moves state. A replay re-reads and changes nothing.
- * That is also why there is no replay-nonce here, unlike Rival's receiver: 3pay
- * RETRIES a delivery with the same bytes, and a nonce would refuse its own
- * retries.
+ * 3pay's webhook vocabulary does not match its API's, and a delivery carries
+ * no timestamp, so a captured one can be replayed for ever. None of that
+ * matters under the doorbell rule: a notice only makes the core re-read the
+ * payment or the payout from 3pay, and what 3pay's API says is what moves
+ * state. A replay re-reads and changes nothing. That is also why there is no
+ * replay-nonce here, unlike Rival's receiver: 3pay RETRIES a delivery with the
+ * same bytes, and a nonce would refuse its own retries.
  *
  * ## Answers follow 3pay's retry policy
  *
- * 3pay retries anything but a 2xx, up to five times over about an hour, and
+ * 3pay retries anything but a 2xx, five times over about fifteen hours, and
  * asks that every VERIFIED event gets a 200. So: 413 oversize, 401 forged, 503
  * while 3pay is not set up here (an operator mid-setup — worth a retry), and
  * 200 for everything verified — except when every notice hit a movement not
@@ -82,8 +127,12 @@ export class ThreePayWebhookReceiver implements ProviderWebhookReceiver {
   readonly providerCode = THREEPAY_CODE;
 
   private readonly logger = new Logger(ThreePayWebhookReceiver.name);
+  private secretRefreshedAt = 0;
 
-  constructor(private readonly config: ThreePayConfigService) {}
+  constructor(
+    private readonly config: ThreePayConfigService,
+    private readonly client: ThreePayClient,
+  ) {}
 
   async read(
     rawBody: Buffer | undefined,
@@ -96,11 +145,21 @@ export class ThreePayWebhookReceiver implements ProviderWebhookReceiver {
     const config = await this.config.resolve();
     if (!config) return { verified: false, answer: answer(503, 'not-configured') };
 
-    const problem = signatureProblem(
-      rawBody ?? Buffer.alloc(0),
-      header('x-3pay-signature'),
-      config.apiSecret,
-    );
+    const body = rawBody ?? Buffer.alloc(0);
+    const signatures: DeliverySignatures = {
+      webhook: header('x-webhook-signature'),
+      legacy: header('x-3pay-signature'),
+    };
+    let problem = signatureProblem(body, signatures, {
+      webhookSecrets: await this.webhookSecrets(config.webhookSecret, false),
+      apiSecret: config.apiSecret,
+    });
+    if (problem && signatures.webhook && this.mayRefreshSecret()) {
+      problem = signatureProblem(body, signatures, {
+        webhookSecrets: await this.webhookSecrets(config.webhookSecret, true),
+        apiSecret: config.apiSecret,
+      });
+    }
     if (problem) {
       this.logger.warn(`Refused a 3pay delivery: ${problem}.`);
       raiseAlert(
@@ -113,9 +172,14 @@ export class ThreePayWebhookReceiver implements ProviderWebhookReceiver {
       return { verified: false, answer: answer(401, 'unverified') };
     }
 
+    // The "send a test webhook" button in 3pay's dashboard: verified, and about nothing.
+    if (header('x-webhook-test')?.trim().toLowerCase() === 'true') {
+      return { verified: true, notices: [], answer: () => answer(200, 'test') };
+    }
+
     let event: Record<string, unknown> | undefined;
     try {
-      event = objectOf(JSON.parse((rawBody ?? Buffer.alloc(0)).toString('utf8')));
+      event = objectOf(JSON.parse(body.toString('utf8')));
     } catch {
       event = undefined;
     }
@@ -128,35 +192,74 @@ export class ThreePayWebhookReceiver implements ProviderWebhookReceiver {
     }
     return { verified: true, notices, answer: answerFor };
   }
+
+  /** At most one fresh read of the account per `SECRET_REFRESH_MS`, whoever is knocking. */
+  private mayRefreshSecret(): boolean {
+    const now = Date.now();
+    if (now - this.secretRefreshedAt < SECRET_REFRESH_MS) return false;
+    this.secretRefreshedAt = now;
+    return true;
+  }
+
+  /**
+   * The webhook secrets in force: the operator's, and the account's own. A
+   * failure to read the account is not a reason to refuse a delivery the other
+   * key may verify, so it is logged and the list is simply shorter.
+   */
+  private async webhookSecrets(configured: string | null, fresh: boolean): Promise<string[]> {
+    const secrets = configured ? [configured] : [];
+    try {
+      const account = await this.client.account(fresh ? 0 : undefined, 'low');
+      if (account.webhookSecret && !secrets.includes(account.webhookSecret)) {
+        secrets.push(account.webhookSecret);
+      }
+    } catch (error) {
+      this.logger.warn(
+        `Could not read 3pay’s account for its webhook secret: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+    return secrets;
+  }
 }
 
 /**
- * The delivery as notices. A `refund` names neither side for certain, so it
- * rings both doorbells: the payout it may be (3pay reverses a payout that
- * failed on the chain and restores its balance) is re-read, and the deposit it
- * may be raises an ALARM — a settled deposit reversed at 3pay moves no money
- * here, and 3pay's stored state may not show it, so a person looks.
+ * The delivery as notices. Its fields sit under `data` (3pay's online docs) or
+ * at the top (its PDF guide); both are read.
+ *
+ * A deposit is named by its transaction id AND its invoice number, so both
+ * travel: whichever one our row holds finds it. A `refund` names neither side
+ * for certain, so it rings both doorbells: the payout it may be (3pay reverses
+ * a payout that failed on the chain and restores its balance) is re-read, and
+ * the deposit it may be raises an ALARM — a settled deposit reversed at 3pay
+ * moves no money here, and 3pay's stored state may not show it, so a person
+ * looks.
  */
-export function noticesOf(event: Record<string, unknown>): ProviderNotice[] {
-  const type = textOf(event['type']);
-  const status = textOf(event['status']) ?? 'unknown';
-  const transactionId = textOf(event['transactionId']);
+export function noticesOf(delivery: Record<string, unknown>): ProviderNotice[] {
+  const event = { ...delivery, ...(objectOf(delivery['data']) ?? {}) };
+  const type = textOf(event['type'])?.toLowerCase();
+  const status = (textOf(event['status']) ?? 'unknown').toLowerCase();
+  const transactionId = firstText(event, 'transactionId', 'id', '_id');
   const invoiceNo = textOf(event['invoiceNo']);
   const providerType = `${type ?? 'unknown'}.${status}`;
 
   if (type === 'deposit') {
-    if (NOT_FINAL.has(status) || !invoiceNo) return [];
+    const paymentId = transactionId ?? invoiceNo;
+    if (NOT_FINAL.has(status) || !paymentId) return [];
     return [
       {
         subject: 'payment',
-        providerId: invoiceNo,
+        providerId: paymentId,
+        ...(invoiceNo && invoiceNo !== paymentId ? { otherIds: [invoiceNo] } : {}),
         providerType,
         eventType: PAYMENT_EVENT[status] ?? 'payment.pending',
         kind: 'status',
       },
     ];
   }
-  if (type === 'payout') {
+  // A withdrawal sent through the API is a `withdrawal` in the online docs and a `payout` in the guide.
+  if (type === 'payout' || type === 'withdrawal') {
     if (NOT_FINAL.has(status) || !transactionId) return [];
     return [
       {
@@ -179,10 +282,12 @@ export function noticesOf(event: Record<string, unknown>): ProviderNotice[] {
         kind: 'status',
       });
     }
-    if (invoiceNo) {
+    const paymentId = transactionId ?? invoiceNo;
+    if (paymentId) {
       notices.push({
         subject: 'payment',
-        providerId: invoiceNo,
+        providerId: paymentId,
+        ...(invoiceNo && invoiceNo !== paymentId ? { otherIds: [invoiceNo] } : {}),
         providerType,
         eventType: 'payment.reversed',
         kind: 'alarm',

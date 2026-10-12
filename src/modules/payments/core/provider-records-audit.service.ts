@@ -17,6 +17,12 @@ type UnmatchedRow = typeof paymentProviderUnmatchedRecords.$inferSelect;
 
 /** Records are judged this long after they happened: every one of ours is recorded by then. */
 const LAG_MS = 2 * 60 * 60_000;
+/**
+ * A window is judged once it is this wide. The records are two hours old by
+ * then anyway, so judging every few minutes bought nothing and cost the
+ * provider's request allowance on every reconcile.
+ */
+const MIN_WINDOW_MS = 30 * 60_000;
 /** One run reads at most a day of records, so a long outage catches up in steps. */
 const MAX_WINDOW_MS = 24 * 60 * 60_000;
 /** Pages per finding up to this many in one run; past it, one page says how many. */
@@ -83,7 +89,7 @@ export class ProviderRecordsAudit {
 
     await this.rematch(adapter.code);
     const from = row.cursor;
-    if (until.getTime() <= from.getTime()) return;
+    if (until.getTime() - from.getTime() < MIN_WINDOW_MS) return;
     const to = new Date(Math.min(until.getTime(), from.getTime() + MAX_WINDOW_MS));
 
     const page = await adapter.listRecords(from, to);

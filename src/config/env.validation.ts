@@ -183,6 +183,17 @@ const envSchema = z
     ADMIN_JWT_REFRESH_SECRET: z
       .string()
       .min(32, 'ADMIN_JWT_REFRESH_SECRET must be at least 32 characters'),
+    /*
+     * How long an administrator may do NOTHING on the console before signing in
+     * again (the owner's rule, 12 Oct 2026). The console measures the idle age;
+     * the tokens it is given die at "last activity + this" on the server — see
+     * modules/admin/admin-session-lifetime.ts. The portal is not affected.
+     *
+     * Five minutes at the least, so nobody is signed out mid-sentence by a typo
+     * in an env file; a day at the most. The end-to-end suites raise it, because
+     * one saved cookie jar has to outlive a whole run.
+     */
+    ADMIN_IDLE_TIMEOUT_MINUTES: z.coerce.number().int().min(5).max(1440).default(15),
     JWT_ACCESS_SECRET: z.string().min(32, 'JWT_ACCESS_SECRET must be at least 32 characters'),
     JWT_REFRESH_SECRET: z.string().min(32, 'JWT_REFRESH_SECRET must be at least 32 characters'),
 

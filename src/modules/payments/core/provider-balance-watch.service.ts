@@ -34,10 +34,13 @@ export class ProviderBalanceWatch {
     private readonly registry: PaymentProviderRegistry,
   ) {}
 
-  /** Against a balance the caller just read (one read serves the books too). */
+  /**
+   * `readBalance` is called only when a payout is actually waiting: a balance
+   * nobody is about to spend is not worth one of the provider's requests.
+   */
   async check(
     adapter: PaymentProviderAdapter,
-    balance: ProviderBalance,
+    readBalance: () => Promise<ProviderBalance>,
     now: number = Date.now(),
   ): Promise<void> {
     const rail = adapter.payouts;
@@ -64,11 +67,13 @@ export class ProviderBalanceWatch {
       return;
     }
 
+    const balance = await readBalance();
     let needed = new Decimal(0);
     for (const tx of waiting) {
       const channel = this.registry.findChannel(tx, 'payout');
       if (!channel) continue;
-      needed = needed.plus((await rail.quote(channel, tx.amount, tx.currency)).gross);
+      const quote = await rail.quote(channel, tx.amount, tx.currency);
+      needed = needed.plus(quote.balanceCost ?? quote.gross);
     }
     if (new Decimal(balance.available).gte(needed)) {
       this.warnedAt.delete(adapter.code);

@@ -39,6 +39,7 @@ import { deviceOf } from '../../common/security/device-fingerprint';
 import type { DeviceFingerprint } from '../../common/security/refresh-tokens.service';
 import { randomUUID } from 'crypto';
 import { refuseReset, RESET_TOKEN_TTL_MS } from './admin-reset';
+import { adminSessionLifetimes, type AdminSessionLifetimes } from './admin-session-lifetime';
 import QRCode from 'qrcode';
 import { openSecret, sealSecret } from '../../common/security/secret-box';
 import { generateTotpSecret, totpUri, verifyTotp } from '../../common/security/totp';
@@ -78,8 +79,12 @@ import {
  * rotation now detects replay (R-3.3). The cost is one extra round trip per 15
  * minutes; the benefit is that revocation means something.
  */
-const ACCESS_TTL_MS = 15 * 60 * 1000;
-const REFRESH_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+/*
+ * The two numbers are no longer constants (12 Oct 2026): an admin session lives
+ * for "last activity + the idle window", so each sign-in and each refresh is
+ * issued lifetimes by `adminSessionLifetimes` — see admin-session-lifetime.ts.
+ * The fifteen-minute ceiling on the access token is the one above, unchanged.
+ */
 
 /**
  * How long the gap between "password right" and "code typed" may be. Enrolment
@@ -574,7 +579,17 @@ export class AdminAuthService {
   }
   // ─── Admin Me ──────────────────────────────────────────────────────────────
   async me(admin: Admin) {
-    return await this.rbac.sanitize(admin);
+    return {
+      ...(await this.rbac.sanitize(admin)),
+      // The console's idle clock runs on the server's number, so the two cannot
+      // disagree about when a session ends.
+      idleTimeoutSeconds: this.idleWindowMs() / 1000,
+    };
+  }
+
+  /** How long an administrator may do nothing before signing in again. */
+  private idleWindowMs(): number {
+    return this.config.get<number>('ADMIN_IDLE_TIMEOUT_MINUTES', 15) * 60 * 1000;
   }
   // ─── Create Invite ─────────────────────────────────────────────────────────
   async createInvite(
@@ -1164,7 +1179,7 @@ export class AdminAuthService {
   }
 
   // ─── Helpers ──────────────────────────────────────────────────────────────
-  private generateAdminTokens(admin: Admin, familyId: string) {
+  private generateAdminTokens(admin: Admin, familyId: string, lifetimes: AdminSessionLifetimes) {
     // Two keys, matching the portal. Signing both kinds with one key meant a
     // refresh token verified anywhere an access token did — see
     // common/security/token-audience.ts. `typ` below closes that on its own;
@@ -1199,7 +1214,7 @@ export class AdminAuthService {
     };
     const accessToken = this.jwt.sign(accessPayload, {
       secret: accessSecret,
-      expiresIn: '15m',
+      expiresIn: Math.ceil(lifetimes.accessMs / 1000),
       ...claims,
     });
     // The refresh token carries a `jti` naming its row in refresh_tokens, which
@@ -1209,7 +1224,8 @@ export class AdminAuthService {
     const jti = randomUUID();
     const refreshToken = this.jwt.sign(
       { sub: admin.id, jti, typ: TOKEN_KIND.refresh },
-      { secret: refreshSecret, expiresIn: '30d', ...claims },
+      // The row in refresh_tokens is the authority; the claim simply agrees.
+      { secret: refreshSecret, expiresIn: Math.ceil(lifetimes.refreshMs / 1000), ...claims },
     );
     return { accessToken, refreshToken, jti };
   }
@@ -1245,27 +1261,39 @@ export class AdminAuthService {
     device?: DeviceFingerprint,
   ): Promise<void> {
     const minted = await this.mintSession(admin, device);
-    this.setAdminCookies(res, minted.accessToken, minted.refreshToken, admin.id);
+    this.setAdminCookies(res, minted.accessToken, minted.refreshToken, admin.id, minted.lifetimes);
   }
 
   /** The session's tokens and family row, without the cookies. */
   private async mintSession(
     admin: Admin,
     device?: DeviceFingerprint,
-  ): Promise<{ accessToken: string; refreshToken: string }> {
+  ): Promise<{ accessToken: string; refreshToken: string; lifetimes: AdminSessionLifetimes }> {
     const familyId = randomUUID();
-    const { accessToken, refreshToken, jti } = this.generateAdminTokens(admin, familyId);
+    // Signing in IS activity: a fresh session gets the whole window.
+    const lifetimes = this.lifetimesFor(0);
+    const { accessToken, refreshToken, jti } = this.generateAdminTokens(admin, familyId, lifetimes);
     await this.refreshTokens.record({
       surface: 'admin',
       subjectId: admin.id,
       jti,
       token: refreshToken,
-      expiresAt: new Date(Date.now() + REFRESH_TTL_MS),
+      expiresAt: new Date(Date.now() + lifetimes.refreshMs),
       familyId,
       // Recorded so `GET /admin/auth/sessions` can show WHERE this login is.
       device,
     });
-    return { accessToken, refreshToken };
+    return { accessToken, refreshToken, lifetimes };
+  }
+
+  /**
+   * What the reported idle age buys. `null` cannot happen at sign-in (idle 0),
+   * so that caller is spared the check.
+   */
+  private lifetimesFor(idleSeconds: 0): AdminSessionLifetimes;
+  private lifetimesFor(idleSeconds?: number): AdminSessionLifetimes | null;
+  private lifetimesFor(idleSeconds?: number): AdminSessionLifetimes | null {
+    return adminSessionLifetimes(this.idleWindowMs(), idleSeconds);
   }
 
   /**
@@ -1285,6 +1313,7 @@ export class AdminAuthService {
     accessToken: string,
     refreshToken: string,
     adminId: string,
+    lifetimes: AdminSessionLifetimes,
     /*
      * The anti-forgery token the caller already holds, on a refresh.
      *
@@ -1313,11 +1342,15 @@ export class AdminAuthService {
     // hold real JWTs, so a browser from the old build carries a JS-readable
     // session for up to 30 more days unless we actively remove it here.
     clearLegacySessionCookies(res);
-    res.cookie(sessionCookieNames.adminAccess(), accessToken, sessionCookieOptions(ACCESS_TTL_MS));
+    res.cookie(
+      sessionCookieNames.adminAccess(),
+      accessToken,
+      sessionCookieOptions(lifetimes.accessMs),
+    );
     res.cookie(
       sessionCookieNames.adminRefresh(),
       refreshToken,
-      sessionCookieOptions(REFRESH_TTL_MS),
+      sessionCookieOptions(lifetimes.refreshMs),
     );
     // Cookie AND readable header: the admin app is on a different HOST from this
     // API in production, so it cannot read the cookie to echo it back. See
@@ -1329,7 +1362,7 @@ export class AdminAuthService {
     issueCsrfToken(res, sessionCookieNames.adminCsrf(), csrfToken, CsrfService.TTL_MS);
   }
   // ─── Admin Refresh ─────────────────────────────────────────────────────────
-  async refresh(req: Request, res: Response) {
+  async refresh(req: Request, res: Response, idleSeconds?: number) {
     const providedToken =
       // Cookie ONLY. The body and Authorization fallbacks are gone: two
       // credential channels for one session means two threat models, and the
@@ -1438,6 +1471,21 @@ export class AdminAuthService {
     await this.assertNetworkAdmits(clientIp(req), admin.id);
 
     /*
+     * The idle rule. The console reports how long nobody has touched it; past
+     * the window this session is over, and the family is revoked so the access
+     * token it still holds stops with it rather than running out its minutes.
+     *
+     * After the network check on purpose: that refusal "consumes nothing and
+     * revokes nothing", and an administrator who stepped outside the office must
+     * not lose a session they would have kept.
+     */
+    const lifetimes = this.lifetimesFor(idleSeconds);
+    if (!lifetimes) {
+      await this.refreshTokens.revokeFamily(verdict.familyId);
+      throw new SessionRevokedError('You were signed out after a period of inactivity.');
+    }
+
+    /*
      * Which row this rotation consumes — see the portal's twin of this comment.
      * On a `retried` verdict the presented token was consumed by a rotation the
      * client never received, so we consume its successor instead.
@@ -1451,7 +1499,7 @@ export class AdminAuthService {
       accessToken,
       refreshToken,
       jti: nextJti,
-    } = this.generateAdminTokens(admin, verdict.familyId);
+    } = this.generateAdminTokens(admin, verdict.familyId, lifetimes);
     const rotated = await this.refreshTokens.rotate({
       surface: 'admin',
       jti: jtiToRotate,
@@ -1459,7 +1507,7 @@ export class AdminAuthService {
       subjectId: admin.id,
       jtiNext: nextJti,
       nextToken: refreshToken,
-      expiresAt: new Date(Date.now() + REFRESH_TTL_MS),
+      expiresAt: new Date(Date.now() + lifetimes.refreshMs),
       // The session list shows the LAST device a login was used from.
       device: deviceOf(req),
     });
@@ -1484,6 +1532,7 @@ export class AdminAuthService {
       accessToken,
       refreshToken,
       admin.id,
+      lifetimes,
       readSessionCookie(
         req.cookies as Record<string, string | undefined> | undefined,
         COOKIE_BASES.adminCsrf,

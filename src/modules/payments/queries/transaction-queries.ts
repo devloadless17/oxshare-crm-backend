@@ -949,6 +949,7 @@ export class TransactionQueries {
         userEmail: users.email,
         userFirstName: users.firstName,
         userLastName: users.lastName,
+        userPhone: users.phone,
         withdrawalMethodKey: transactions.withdrawalMethodKey,
         /*
          * The rail's name AS THE DESK KNOWS IT — its internal label (0161),
@@ -1116,6 +1117,8 @@ export class TransactionQueries {
         email: r.userEmail,
         firstName: r.userFirstName,
         lastName: r.userLastName,
+        // The client's OWN phone, beside the destination the money goes to.
+        phone: r.userPhone,
       },
     }));
 

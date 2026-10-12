@@ -2,12 +2,34 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { assertPublicOutboundHost } from '../../../../common/security/outbound-host';
 import { PaymentProviderExchangesStore } from '../../../../store/payment-provider-exchanges.store';
-import { countOf, objectOf, parseLossless, textOf } from './threepay-json';
-import { SlidingWindowLimit, busy } from './threepay-rate-limit';
+import {
+  amountOf,
+  countOf,
+  dateOf,
+  firstText,
+  flagOf,
+  loggableBody,
+  objectOf,
+  parseLossless,
+  textOf,
+} from './threepay-json';
+import { RequestBudget, budgetReadingOf, busy, type ThreePayPriority } from './threepay-rate-limit';
 import { ThreePayConfigService, type ThreePayConfig } from './threepay-config.service';
 
 /**
- * THE ONE CLASS THAT TALKS TO 3PAY (0174) — HTTP only: no money, no database.
+ * THE ONE CLASS THAT TALKS TO 3PAY (0174; rebuilt 12 Oct 2026) — HTTP only: no
+ * money, no database.
+ *
+ * ## Which 3pay this is
+ *
+ * 3pay has published two descriptions of its API that disagree — a PDF guide
+ * and docs.3pa-y.com — and its live server (pay.3pa-y.com) follows neither
+ * completely: the PATHS are the PDF's, the BEHAVIOUR is the online docs' (the
+ * first production deposit was refused for sending `currencyType` in the body,
+ * as the PDF says to). Everything here was checked against the live server
+ * where it answers without credentials, and reads BOTH documented shapes
+ * wherever a reply could not be seen. The backend CLAUDE.md lists what was
+ * measured and what is still only documented.
  *
  * ## Every answer becomes one of a few meanings
  *
@@ -23,8 +45,8 @@ import { ThreePayConfigService, type ThreePayConfig } from './threepay-config.se
  *                payout that answers 500 may still have been broadcast).
  *   unreachable  no answer: a network error or our timeout. It may have acted.
  *   unreadable   a 2xx we cannot read. It DID act, most likely.
- *   busy         429, or our own pacing (`threepay-rate-limit.ts`) —
- *                thrown as the contract's `ProviderBusyError`. Nothing sent.
+ *   busy         429, or our own budget (`threepay-rate-limit.ts`) — thrown as
+ *                the contract's `ProviderBusyError`. Nothing sent.
  *
  * The last three "may have acted" kinds are why a payout is never retried by
  * this class: that decision is the core's, from 3pay's own records.
@@ -36,9 +58,9 @@ import { ThreePayConfigService, type ThreePayConfig } from './threepay-config.se
  *
  * ## Timeouts
  *
- * Reads and link creation: 15 s. A withdrawal: 60 s — 3pay holds the request
- * open while it polls the chain for up to 40 s (guide §05), and cutting it
- * short would turn a payout that completed into an "unknown".
+ * Reads 15 s; a payment link 20 s (3pay makes a wallet for it); a withdrawal
+ * 60 s — 3pay holds the request open while it polls the chain for up to 40 s,
+ * and cutting it short would turn a payout that completed into an "unknown".
  *
  * ## The host is checked at CALL time too
  *
@@ -76,44 +98,63 @@ export interface ThreePayResponse {
   body: Record<string, unknown>;
 }
 
-/** One page of a 3pay list, and how many pages there are. */
+/** One page of a 3pay list, and whether it was the last. */
 export interface ThreePayPage {
   items: Record<string, unknown>[];
-  totalPages: number;
+  last: boolean;
+}
+
+/** The two lists 3pay serves: every payment link, and every withdrawal. */
+export type ThreePayList = '/transaction/list' | '/withdrawal-requests';
+
+/**
+ * 3pay's account as this platform reads it (`/getMerchantDetails`). The reply
+ * also carries the account's WEBHOOK SECRET, which is kept in memory for
+ * verifying deliveries and never written anywhere.
+ */
+export interface ThreePayAccount {
+  /** `totalAmt`: what can be paid out now. */
+  available: string;
+  /** `pendingAmt`: locked in withdrawals under way. */
+  inFlight?: string;
+  /** Withdrawals are sent without a person approving them in 3pay's dashboard… */
+  autoWithdraw?: boolean;
+  /** …up to this amount. */
+  maxAutoWithdraw?: string;
+  /** `merchant` | `user` — who carries each fee. */
+  depositFeePayer?: string;
+  withdrawalFeePayer?: string;
+  /** `approved` once 3pay has cleared the account. */
+  approval?: string;
+  /** Payouts above a threshold are forced to a cold wallet. */
+  staticWallet?: boolean;
+  webhookSecret?: string;
 }
 
 const TIMEOUT_MS: Readonly<Record<ThreePayCall, number>> = {
   read: 15_000,
-  create: 15_000,
+  create: 20_000,
   payout: 60_000,
 };
 
-/** A little under 3pay's own limits (60 reads, 30 links, 30 payouts a minute). */
-const PER_MINUTE: Readonly<Record<ThreePayCall, number>> = { read: 55, create: 28, payout: 28 };
-
-/**
- * How long a caller may wait for a slot. A payout never waits: the core counts
- * payouts itself, and one refused here is simply requeued.
- */
-const PATIENCE_MS: Readonly<Record<ThreePayCall, number>> = {
-  read: 10_000,
-  create: 5_000,
-  payout: 0,
-};
+/** 3pay's windows are fifteen minutes (its `RateLimit-Policy: n;w=900`). */
+const WINDOW_MS = 15 * 60_000;
 
 const HOST_CHECK_TTL_MS = 60_000;
-/** 3pay's list pages hold at most 100 (guide §6.2). */
+/** 3pay's list pages hold at most 100. */
 export const THREEPAY_PAGE_SIZE = 100;
+/** One list page is reused this long: two channels reconciled in one pass share a read. */
+const PAGE_MEMO_MS = 10_000;
+/** The account is re-read at most this often for the fee payer and the webhook secret. */
+const ACCOUNT_TTL_MS = 15 * 60_000;
 
 @Injectable()
 export class ThreePayClient {
   private readonly logger = new Logger(ThreePayClient.name);
-  private readonly limits: Record<ThreePayCall, SlidingWindowLimit> = {
-    read: new SlidingWindowLimit(PER_MINUTE.read),
-    create: new SlidingWindowLimit(PER_MINUTE.create),
-    payout: new SlidingWindowLimit(PER_MINUTE.payout),
-  };
+  private budgets = freshBudgets();
   private hostChecked: { url: string; at: number } | null = null;
+  private readonly pages = new Map<string, { at: number; page: ThreePayPage }>();
+  private accountRead: { at: number; baseUrl: string; account: ThreePayAccount } | null = null;
 
   constructor(
     private readonly settings: ThreePayConfigService,
@@ -134,65 +175,186 @@ export class ThreePayClient {
     return config;
   }
 
+  /**
+   * The settings changed: nothing read under the old ones is kept. The budgets
+   * start again too — another account or address has windows of its own, and
+   * the first reply's headers say where they stand.
+   */
+  forget(): void {
+    this.budgets = freshBudgets();
+    this.pages.clear();
+    this.accountRead = null;
+    this.hostChecked = null;
+  }
+
   /** `reference`: ours, when the caller knows it — kept with the exchange for finding it later. */
   get(
     path: string,
     query: Record<string, string | undefined> = {},
-    reference?: string,
+    options: { reference?: string; priority?: ThreePayPriority } = {},
   ): Promise<ThreePayResponse> {
-    return this.request('read', 'GET', path, { query, reference });
+    return this.request('read', 'GET', path, { query, ...options });
   }
 
-  /** A POST whose body is already exact JSON text (amounts as number literals). */
+  /** A POST: its fields in the query string, its body already exact JSON text. */
   post(
     call: 'create' | 'payout',
     path: string,
-    body: string,
-    reference?: string,
+    options: { query?: Record<string, string | undefined>; body?: string; reference?: string },
   ): Promise<ThreePayResponse> {
-    return this.request(call, 'POST', path, { body, reference });
+    return this.request(call, 'POST', path, options);
   }
 
-  /** One page of `/transaction/list` or `/withdrawal-requests`. */
+  /**
+   * One page of a list, newest first.
+   *
+   * 3pay's two lists answer in different shapes, and its two guides describe a
+   * third: the rows are `data` itself or `data.docs`, and the page count is
+   * `pagination.totalPages`, `totalPages` or absent. Without a count, a page
+   * that is not full is the last.
+   */
   async page(
-    path: '/transaction/list' | '/withdrawal-requests',
+    path: ThreePayList,
     page: number,
     filters: Record<string, string | undefined>,
+    priority: ThreePayPriority = 'normal',
   ): Promise<ThreePayPage> {
-    const { body } = await this.get(path, {
+    const query = {
       ...filters,
+      // 3pay's own default, stated: a walk stops at the first page older than it needs.
+      sortBy: 'createdAt',
+      sortOrder: 'desc',
       page: String(page),
       limit: String(THREEPAY_PAGE_SIZE),
-    });
+    };
+    const memoKey = `${path}?${new URLSearchParams(definedOnly(query)).toString()}`;
+    const memo = this.pages.get(memoKey);
+    if (memo && Date.now() - memo.at < PAGE_MEMO_MS) return memo.page;
+
+    const { body } = await this.get(path, query, { priority });
     const data = body['data'];
-    if (!Array.isArray(data)) {
+    const rows = Array.isArray(data) ? data : objectOf(data)?.['docs'];
+    if (!Array.isArray(rows)) {
       throw new ThreePayRequestError('unreadable', `3pay ${path} returned no list.`);
     }
-    const items = data.map(objectOf).filter((item) => item !== undefined);
-    const pagination = objectOf(body['pagination']);
-    const totalPages = countOf(pagination?.['totalPages']);
-    // No page count: this page is all there is only if it is not full.
-    return {
+    const items = rows.map(objectOf).filter((item) => item !== undefined);
+    const totalPages =
+      countOf(objectOf(body['pagination'])?.['totalPages']) ??
+      countOf(body['totalPages']) ??
+      countOf(objectOf(data)?.['totalPages']);
+    const result: ThreePayPage = {
       items,
-      totalPages: totalPages ?? (items.length < THREEPAY_PAGE_SIZE ? page : page + 1),
+      last: totalPages !== undefined ? page >= totalPages : items.length < THREEPAY_PAGE_SIZE,
     };
+    if (this.pages.size > 50) this.pages.clear();
+    this.pages.set(memoKey, { at: Date.now(), page: result });
+    return result;
+  }
+
+  /**
+   * Walk a list from its newest record back to `since`, handing each record to
+   * `visit` (which returns true to stop early). Resolves true when everything
+   * since then was seen, false when the page cap came first.
+   *
+   * 3pay's lists take NO date filter (its newer guide says so; `fromDate` is
+   * ignored), so the window is ours: the walk ends at the first page whose
+   * oldest record is older than `since`. That relies on newest-first order,
+   * which is asked for and CHECKED — a list that comes back out of order is
+   * read to its last page instead of trusted.
+   */
+  async walk(
+    path: ThreePayList,
+    filters: Record<string, string | undefined>,
+    options: { since: Date; maxPages: number; priority?: ThreePayPriority },
+    visit: (record: Record<string, unknown>) => boolean,
+  ): Promise<boolean> {
+    let ordered = true;
+    let newestSeen = Number.POSITIVE_INFINITY;
+    for (let page = 1; page <= options.maxPages; page += 1) {
+      const result = await this.page(path, page, filters, options.priority);
+      let oldestOnPage = Number.POSITIVE_INFINITY;
+      for (const record of result.items) {
+        const created = dateOf(record['createdAt'])?.getTime();
+        if (created === undefined || created > newestSeen) ordered = false;
+        else newestSeen = created;
+        if (created !== undefined) oldestOnPage = Math.min(oldestOnPage, created);
+        if (visit(record)) return true;
+      }
+      if (result.last) return true;
+      if (ordered && oldestOnPage < options.since.getTime()) return true;
+    }
+    return false;
+  }
+
+  /**
+   * 3pay's account. `maxAgeMs` is how old a remembered reading may be: 0 asks
+   * now, the default serves what a payout quote or a webhook needs without
+   * spending a read each time.
+   */
+  async account(
+    maxAgeMs: number = ACCOUNT_TTL_MS,
+    priority: ThreePayPriority = 'normal',
+  ): Promise<ThreePayAccount> {
+    const config = await this.configured();
+    const held = this.accountRead;
+    // `0` always asks: two reads in one millisecond must not count as a remembered one.
+    if (
+      held &&
+      maxAgeMs > 0 &&
+      held.baseUrl === config.baseUrl &&
+      Date.now() - held.at <= maxAgeMs
+    ) {
+      return held.account;
+    }
+    const { body } = await this.get('/getMerchantDetails', {}, { priority });
+    const data = objectOf(body['data']);
+    const available = amountOf(data?.['totalAmt']);
+    if (!data || available === undefined) {
+      throw new ThreePayRequestError('unreadable', '3pay did not report a balance.');
+    }
+    const inFlight = amountOf(data['pendingAmt']);
+    const maxAutoWithdraw = amountOf(data['maxAutoWithdrawAmount']);
+    const account: ThreePayAccount = {
+      available,
+      ...(inFlight !== undefined ? { inFlight } : {}),
+      autoWithdraw: flagOf(data['autoWithdraw']),
+      ...(maxAutoWithdraw !== undefined ? { maxAutoWithdraw } : {}),
+      depositFeePayer: textOf(data['depositFeePayer'])?.toLowerCase(),
+      withdrawalFeePayer: textOf(data['withdrawalFeePayer'])?.toLowerCase(),
+      approval: textOf(data['approved'])?.toLowerCase(),
+      staticWallet: flagOf(objectOf(data['staticWallets'])?.['isEnabled']),
+      webhookSecret: firstText(data, 'webhookSecret'),
+    };
+    this.accountRead = { at: Date.now(), baseUrl: config.baseUrl, account };
+    return account;
+  }
+
+  /** How old the remembered account reading is, or null when there is none. */
+  accountAgeMs(): number | null {
+    return this.accountRead ? Date.now() - this.accountRead.at : null;
   }
 
   private async request(
     call: ThreePayCall,
     method: 'GET' | 'POST',
     path: string,
-    options: { query?: Record<string, string | undefined>; body?: string; reference?: string },
+    options: {
+      query?: Record<string, string | undefined>;
+      body?: string;
+      reference?: string;
+      priority?: ThreePayPriority;
+    },
   ): Promise<ThreePayResponse> {
     const config = await this.configured();
     await this.assertHost(config.baseUrl);
-    // Pace BEFORE sending: a refusal here is a definite "nothing was sent".
-    await this.limits[call].take(PATIENCE_MS[call]);
+    // Budgeted BEFORE sending: a refusal here is a definite "nothing was sent".
+    this.budgets[call].take(options.priority ?? 'high');
 
     const url = new URL(`${config.baseUrl}${path}`);
     for (const [key, value] of Object.entries(options.query ?? {})) {
       if (value !== undefined) url.searchParams.set(key, value);
     }
+    const logPath = `${path}${url.search}`;
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), TIMEOUT_MS[call]);
@@ -200,7 +362,8 @@ export class ThreePayClient {
     /*
      * What was asked and what came back, whatever came back — the path with its
      * query (no credentials travel there) and the bodies; never the headers,
-     * which carry the key and the secret.
+     * which carry the key and the secret, and never a credential 3pay put in a
+     * reply (`loggableBody`).
      */
     const log = (status: number | null, responseBody: string | null, error?: string) =>
       this.exchanges.record({
@@ -208,10 +371,10 @@ export class ThreePayClient {
         direction: 'outbound',
         method,
         // The API path as the guide names it (the base URL is configuration), with its query.
-        path: `${path}${url.search}`,
+        path: logPath,
         requestBody: options.body ?? null,
         status,
-        responseBody,
+        responseBody: loggableBody(path, responseBody),
         error: error ?? null,
         durationMs: Date.now() - started,
         reference: options.reference ?? null,
@@ -242,10 +405,13 @@ export class ThreePayClient {
       clearTimeout(timer);
     }
     log(response.status, text);
+    this.budgets[call].observe(budgetReadingOf((name) => response.headers.get(name)));
 
     if (response.status === 429) {
-      const wait = retryAfterMs(response.headers.get('retry-after'));
-      this.limits[call].pause(wait);
+      const wait = retryAfterMs(
+        response.headers.get('retry-after') ?? response.headers.get('ratelimit-reset'),
+      );
+      this.budgets[call].pause(wait);
       this.logger.warn(`3pay ${method} ${path} answered 429; pausing ${Math.ceil(wait / 1000)}s.`);
       throw busy(wait);
     }
@@ -259,7 +425,7 @@ export class ThreePayClient {
     const ok = response.status >= 200 && response.status < 300;
     if (ok && body && body['success'] !== false) return { status: response.status, body };
 
-    const message = textOf(body?.['message']) ?? `HTTP ${response.status}`;
+    const message = refusalText(body, response.status);
     const providerCode = textOf(body?.['error']) ?? null;
     const kind: ThreePayFailure = ok
       ? 'unreadable'
@@ -298,7 +464,33 @@ export class ThreePayClient {
   }
 }
 
-/** `Retry-After` in seconds or as a date; a minute when absent; bounded to 1 s – 10 min. */
+/** Measured on 3pay's live server, 12 Oct 2026; corrected by every response's headers. */
+function freshBudgets(): Record<ThreePayCall, RequestBudget> {
+  return {
+    read: new RequestBudget(100, WINDOW_MS, { high: 0, normal: 10, low: 35 }),
+    create: new RequestBudget(20, WINDOW_MS),
+    payout: new RequestBudget(30, WINDOW_MS),
+  };
+}
+
+/**
+ * What 3pay said when it refused, whole: `message`, and the detail it puts
+ * beside it (`errors`: "currencyType is required"). The detail is what tells an
+ * engineer which field was wrong; "Validation failed" alone told nobody.
+ */
+function refusalText(body: Record<string, unknown> | undefined, status: number): string {
+  const message = textOf(body?.['message']) ?? `HTTP ${status}`;
+  const errors = body?.['errors'];
+  const detail = Array.isArray(errors)
+    ? errors
+        .map((entry) => textOf(entry) ?? textOf(objectOf(entry)?.['message']))
+        .filter((entry) => entry !== undefined)
+        .join('; ')
+    : textOf(errors);
+  return detail && detail !== message ? `${message}: ${detail}` : message;
+}
+
+/** `Retry-After` in seconds or as a date; a minute when absent; bounded to 1 s – 15 min. */
 export function retryAfterMs(header: string | null, now = Date.now()): number {
   let ms = 60_000;
   const text = header?.trim() ?? '';
@@ -307,7 +499,13 @@ export function retryAfterMs(header: string | null, now = Date.now()): number {
     const at = Date.parse(text);
     if (!Number.isNaN(at)) ms = at - now;
   }
-  return Math.min(Math.max(ms, 1000), 10 * 60_000);
+  return Math.min(Math.max(ms, 1000), WINDOW_MS);
+}
+
+function definedOnly(query: Record<string, string | undefined>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(query).filter((entry): entry is [string, string] => entry[1] !== undefined),
+  );
 }
 
 function messageOf(error: unknown): string {

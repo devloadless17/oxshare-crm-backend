@@ -360,6 +360,30 @@ function phoneMatch(digits: string, person: typeof users, mask: FieldMask): SQL 
   return /^\+[1-9]\d{7,14}$/.test(e164) ? eq(person.phone, e164) : undefined;
 }
 
+/**
+ * A HIDDEN name is found by the WHOLE name (the owner's rule, 12 Oct 2026: a
+ * mask hides a value, it never stops an admin who already holds it from finding
+ * the client). The first name, the last name, or both in order — each an
+ * equality on 0215's `lower(...)` indexes. Never a fragment: "a", "ab", "abd"…
+ * would read the name out one letter at a time.
+ */
+function hiddenNameMatch(q: string, person: typeof users): SQL | undefined {
+  const words = q.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (words.length === 0 || words.length > 6) return undefined;
+  const whole = words.join(' ');
+  const matches: SQL[] = [
+    sql`lower(${person.firstName}) = ${whole}`,
+    sql`lower(${person.lastName}) = ${whole}`,
+  ];
+  // "first last", wherever the break falls ("Mary Ann Smith").
+  for (let i = 1; i < words.length; i += 1) {
+    matches.push(
+      sql`(lower(${person.firstName}) = ${words.slice(0, i).join(' ')} AND lower(${person.lastName}) = ${words.slice(i).join(' ')})`,
+    );
+  }
+  return sql`(${sql.join(matches, sql` OR `)})`;
+}
+
 /** One address, whole: something@host.tld, nothing around it. */
 const COMPLETE_EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
@@ -440,6 +464,10 @@ export function clientIdentitySearch(
     if (!mask.includes('client.lastName')) {
       ranges.push(sql`lower(${person.lastName}) LIKE ${prefix}`);
     }
+    if (mask.includes('client.firstName') || mask.includes('client.lastName')) {
+      const whole = hiddenNameMatch(q, person);
+      if (whole) ranges.push(whole);
+    }
     return ranges.length === 0 ? sql`false` : sql`(${sql.join(ranges, sql` OR `)})`;
   }
 
@@ -467,8 +495,8 @@ export function clientIdentitySearch(
    * COMPLETE address alone (the owner's rule: support must be able to find the
    * client whose address they already hold; the lookup is audited by
    * `HiddenEmailLookupInterceptor`). Emails are stored lower-cased, so the
-   * equality reads `users_email_unique`. A hidden NAME gets no exact lookup: a
-   * common name labels many clients.
+   * equality reads `users_email_unique`. A hidden NAME is found the same way,
+   * by the whole name (`hiddenNameMatch`).
    */
   const matches: SQL[] = [];
   if (emailHidden && q.includes('@')) {
@@ -480,6 +508,10 @@ export function clientIdentitySearch(
     matches.push(
       sql`(coalesce(${person.firstName}, '') || ' ' || coalesce(${person.lastName}, '')) ILIKE ${fragment}`,
     );
+  }
+  if (nameHidden) {
+    const whole = hiddenNameMatch(q, person);
+    if (whole) matches.push(whole);
   }
   return matches.length === 0 ? sql`false` : sql`(${sql.join(matches, sql` OR `)})`;
 }
@@ -738,6 +770,22 @@ export class UsersStore {
       .where(scoped ? and(eq(users.id, id), scoped) : eq(users.id, id))
       .limit(1);
     return row ? toUser(row) : undefined;
+  }
+
+  /**
+   * The clients in `scope` carrying this WHOLE name — who a reader with hidden
+   * names found by typing it (`hiddenNameMatch`), for the lookup's audit rows.
+   */
+  async findIdsByWholeName(q: string, scope: ClientScope, limit = 20): Promise<number[]> {
+    const whole = hiddenNameMatch(q, users);
+    if (!whole) return [];
+    const scoped = clientScopePredicate(scope, users.id);
+    const rows = await this.db
+      .select({ id: users.id })
+      .from(users)
+      .where(scoped ? and(whole, scoped) : whole)
+      .limit(limit);
+    return rows.map((row) => row.id);
   }
 
   /**
