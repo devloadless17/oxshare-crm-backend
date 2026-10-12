@@ -1629,9 +1629,21 @@ and every count grew with the book. Now each is 10–60 ms, and these rules keep
   and reads by key.
 - **Method names are looked up for the rows SHOWN** (`methodNamesOf`, after the page is cut), never
   inside the union: there they ran for every row a search or sort discarded.
-- **Scope is ONE `EXISTS` over `client_tag_assignments`** (the intake pool and its anti-join went in
-  0193; country tags and their view in 0213). `client-scope-twin.spec.ts` pins the SQL to its
-  in-memory twin.
+- **Scope is one rule with TWO forms** (`clientScopePredicate`, 12 Oct 2026): `EXISTS` over
+  `client_tag_assignments` row by row, or, for a territory marked `compact`, `col = ANY(ARRAY(the
+territory's clients))`. `AdminClientScopesStore.sized` marks a territory compact when it holds
+  fewer than about sqrt(26 x clients on the platform) clients (5,000 at a million), when the actor
+  is resolved. A small territory is then read STARTING FROM ITS CLIENTS through each list's
+  per-client index, instead of walking the list and asking of every row (wallets 48 -> 4 ms warm,
+  1,288 -> 28 ms on a cold first click). Both forms admit the same clients:
+  `client-scope-twin.spec.ts` pins them to each other and to the in-memory twin. A new client list
+  needs an index leading with its client column (0220 added the one `ib_applications` lacked).
+- **Territories and desks read KEPT totals too** (0218, 0219, 0221): `movement_tag_totals` for a
+  ONE-tag territory (several tags still add up per client: a client carrying two would count
+  twice), `client_tag_member_counts` for tag sizes, and a `route` ('provider:channel') on every
+  total so a desk's tabs are exact instead of counted live. Tag changes are append-only
+  `movement_tag_member_events`, applied by `fold_movement_totals`; tagging takes no lock.
+  `ib_partner_earning_totals` (0217) does the same for a partner's earnings.
 
 ## Validation
 

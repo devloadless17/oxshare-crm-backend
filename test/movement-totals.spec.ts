@@ -107,6 +107,9 @@ const FILTERS: Omit<AdminMovementsFilter, 'scope'>[] = [
   { direction: 'withdrawal' },
   { state: 'pending' },
   { kind: 'transfer' },
+  // The desk's own rows, kept by route since 0221.
+  { deskDecided: true },
+  { deskDecided: true, state: 'pending' },
   dateRangeQuery('2026-03-02', '2026-03-02'),
   { ...dateRangeQuery('2026-03-01', '2026-03-01'), direction: 'deposit', state: 'success' },
 ];
@@ -234,6 +237,10 @@ describe('the stored totals (0165) are the live rows, counted', () => {
   it('agree on every tab, total, filter and territory — deltas not yet folded', async () => {
     const [{ n }] = await q(`SELECT count(*)::int AS n FROM movement_total_deltas`);
     expect(n, 'the triggers wrote no deltas — the case is vacuous').toBeGreaterThan(0);
+    const desk = await read({ scope: UNRESTRICTED, deskDecided: true });
+    expect(desk.total, 'no movement is on a desk route — the desk case is vacuous').toBeGreaterThan(
+      0,
+    );
     await expectTotalsAreTheRows();
   });
 
