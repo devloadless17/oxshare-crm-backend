@@ -1129,4 +1129,14 @@ export const SERVER_MESSAGES_AR: Readonly<Record<string, string>> = {
   'Choose a date within the next five years.': 'اختر تاريخًا خلال السنوات الخمس القادمة.',
   'Cannot filter by follow-up "{1}". Allowed: {2}.':
     'لا يمكن التصفية حسب المتابعة "{1}". القيم المسموح بها: {2}.',
+  '3pay is at its request limit; nothing was sent. Retry in about {1}.':
+    'وصل 3pay إلى حد الطلبات؛ لم يُرسَل شيء. أعد المحاولة بعد نحو {1}.',
+  '3pay answered about payment {1} when asked about {2}.':
+    'أجاب 3pay عن الدفعة {1} عند السؤال عن {2}.',
+  '3pay answered about a {1} when asked about deposit {2}.':
+    'أجاب 3pay عن {1} عند السؤال عن الإيداع {2}.',
+  'USDT payments are busy right now. Please try again in about {1} minute.':
+    'مدفوعات USDT مشغولة الآن. يُرجى المحاولة مرة أخرى بعد نحو {1} دقيقة.',
+  'USDT payments are busy right now. Please try again in about {1} minutes.':
+    'مدفوعات USDT مشغولة الآن. يُرجى المحاولة مرة أخرى بعد نحو {1} دقائق.',
 };
