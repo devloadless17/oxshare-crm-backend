@@ -233,10 +233,10 @@ export class PaymentMethodsService {
       // line per view would bury the first one, which is the one somebody reads.
       this.warnedUnconfigured.add(key);
       this.logger.warn(
-        `Payment method "${key}" is ENABLED but hidden from clients: this deployment has no ` +
-          'credentials for its provider, so it cannot take a payment. Clients see "no deposit ' +
-          'methods available" while the admin console shows it switched on. Set up and switch ' +
-          'on its payment provider, or disable the method.',
+        `Payment method "${key}" is ENABLED but hidden from clients: its payment provider is ` +
+          'switched off or not fully set up, so it cannot take a payment. Clients do not see it ' +
+          'while the admin console shows it switched on. Switch on (or finish setting up) its ' +
+          'payment provider, or disable the method.',
       );
     }
 
