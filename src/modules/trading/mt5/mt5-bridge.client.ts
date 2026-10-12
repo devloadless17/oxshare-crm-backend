@@ -633,7 +633,17 @@ export class Mt5BridgeClient {
       }
 
       if (!response.ok) {
-        this.logger.error(
+        /*
+         * A 404 on a READ is an answer — "MT5 has no such account" — not a
+         * failure. The account directory asks it on purpose about every
+         * account MT5 has dropped, a couple of hundred an hour, and removes
+         * each one it confirms. Logged as errors, that correct clean-up read
+         * as 189 failures in one minute (12 Oct 2026) and buried the real
+         * ones. The caller still receives it, with its status, and decides; a
+         * caller for whom a missing account IS a failure reports it there.
+         */
+        const answer = safe && response.status === 404;
+        this.logger[answer ? 'debug' : 'error'](
           `MT5 bridge ${method} ${path} -> ${response.status}: ${text.slice(0, 300)}`,
         );
         /*

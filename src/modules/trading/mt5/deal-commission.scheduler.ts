@@ -469,9 +469,10 @@ export class DealCommissionScheduler implements OnApplicationBootstrap, OnModule
         if (run.unrecorded > 0 && (changed || stale)) {
           this.lastOrphanWarn = { count: run.unrecorded, at: Date.now() };
           this.logger.warn(
-            `${run.unrecorded} ingested deal(s) belong to MT5 logins the CRM has no account for, ` +
-              'so nobody can be paid for them yet. The account directory records a login when ' +
-              'it trades; they accrue automatically once it does. Repeated hourly while held.',
+            `${run.unrecorded} deal(s) that arrived in the last day belong to MT5 logins the CRM ` +
+              'still has no account for, so nobody can be paid for them yet. The account ' +
+              'directory records a login when it trades; they accrue automatically once it does. ' +
+              'Repeated hourly while held.',
           );
         } else if (stale) {
           this.lastOrphanWarn = { count: run.unrecorded, at: Date.now() };
@@ -567,9 +568,10 @@ export class DealCommissionScheduler implements OnApplicationBootstrap, OnModule
         ? `${run.deferred} ingested deal(s) were REFUSED by the commission engine and are ` +
             'retrying on a backoff. Every future run fails the same way until the commission ' +
             'configuration is corrected; the deals stay queued and pay in full once it is.'
-        : `${run.unrecorded} ingested deal(s) belong to MT5 logins the CRM has no account for, ` +
-            'so the commission on them cannot be attributed to anybody. The account directory ' +
-            'records a login when it trades; if this persists, that recording is failing.',
+        : `${run.unrecorded} deal(s) that arrived in the last day belong to MT5 logins the CRM ` +
+            'still has no account for, hours after they traded, so the commission on them cannot ' +
+            'be attributed to anybody. The account directory records a login when it trades; ' +
+            'that recording is failing.',
       { refused: run.deferred, unlinked: run.unrecorded },
     );
   }

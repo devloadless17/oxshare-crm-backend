@@ -884,6 +884,34 @@ describe('the backlog is countable', () => {
     expect(await deals.backlog()).toBe(1);
     expect(await deals.orphanBacklog()).toBe(1);
   });
+
+  it('calls a deal on an unrecorded login STUCK only from two hours to a day after it arrived', async () => {
+    await ingest({
+      ticket: '90260',
+      login: ORPHAN_LOGIN,
+      commission: '-1.00000000',
+      swap: '0.00000000',
+    });
+    const age = (interval: string) =>
+      ctx.db.execute(sql`
+        UPDATE mt5_deals SET ingested_at = now() - ${interval}::interval WHERE mt5_deal_id = '90260'`);
+
+    // Just arrived: the directory has not had its chance yet.
+    expect((await deals.accruePending()).unrecorded).toBe(0);
+
+    // Three hours and still no account: recording is failing — the alarm's case.
+    await age('3 hours');
+    expect((await deals.accruePending()).unrecorded).toBe(1);
+
+    // Three days: an account the broker deleted after it traded (12 Oct 2026:
+    // 9,835 such deals kept the alarm firing hourly). History, not a stall —
+    // and still queued, still counted as waiting: nothing is dropped.
+    await age('3 days');
+    const run = await deals.accruePending();
+    expect(run.unrecorded).toBe(0);
+    expect(run.orphaned).toBe(1);
+    expect(await deals.orphanBacklog()).toBe(1);
+  });
 });
 
 describe('only one feed pays for a trade', () => {

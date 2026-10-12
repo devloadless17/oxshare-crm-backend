@@ -168,7 +168,8 @@ export interface DealAccrualRun {
    */
   orphaned: number;
   /**
-   * Of those, deals on a login with NO `trading_accounts` row at all (8 Oct 2026).
+   * Of those, deals on a login with NO `trading_accounts` row at all (8 Oct 2026)
+   * that arrived between two hours and a day ago (12 Oct 2026).
    *
    * `orphaned` counts deals whose account has no CLIENT, and since the directory
    * records every MT5 account (0166) that is mostly other desks' accounts: an
@@ -176,6 +177,16 @@ export interface DealAccrualRun {
    * fault the stall alarm was built for: a deal the CRM cannot place on any
    * account. Alarming on `orphaned` fired every hour for ever, which is how an
    * alarm gets muted, and the real case with it.
+   *
+   * The WINDOW is the second half of that lesson. A login is recorded within
+   * minutes of trading (the balance push) or at the next directory run, so a
+   * deal younger than two hours may simply not have been reached yet. And an
+   * account the broker DELETES after trading is never recorded at all: on
+   * 12 Oct 2026 131 such accounts left 9,835 deals that kept this alarm firing
+   * hourly, saying "recording is failing" when it was not. A recording that
+   * really fails keeps producing NEW deals on live accounts, so a day's window
+   * still sees it — and a deleted account's deals age out of it on their own.
+   * Nothing is dropped either way: they stay queued, and in `orphaned`.
    */
   unrecorded: number;
   /**
@@ -945,7 +956,10 @@ export class DealCommissionService {
     const [row] = await this.db
       .select({
         orphaned: sql<number>`count(*) FILTER (WHERE ${tradingAccounts.userId} IS NULL)::int`,
-        unrecorded: sql<number>`count(*) FILTER (WHERE ${tradingAccounts.id} IS NULL)::int`,
+        unrecorded: sql<number>`count(*) FILTER (
+          WHERE ${tradingAccounts.id} IS NULL
+            AND ${mt5Deals.ingestedAt} > now() - interval '24 hours'
+            AND ${mt5Deals.ingestedAt} <= now() - interval '2 hours')::int`,
         deferred: sql<number>`count(*) FILTER (WHERE ${mt5Deals.commissionAttempts} > 0)::int`,
       })
       .from(mt5Deals)
