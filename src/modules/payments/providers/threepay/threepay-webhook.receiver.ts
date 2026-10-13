@@ -39,20 +39,6 @@ function answer(status: number, outcome: string): WebhookAnswer {
   return { status, body: { received: status < 400, outcome } };
 }
 
-/** The two ways 3pay has documented signing a delivery. */
-export interface DeliverySignatures {
-  /** `X-Webhook-Signature: sha256=<hex>` — keyed by the account's WEBHOOK secret (its online docs). */
-  webhook?: string;
-  /** `x-3pay-signature: <hex>` — keyed by the API secret (its PDF guide). */
-  legacy?: string;
-}
-
-/** The keys a delivery may be signed with, each for the header it belongs to. */
-export interface DeliveryKeys {
-  webhookSecrets: readonly string[];
-  apiSecret: string;
-}
-
 function hexDigest(value: string | undefined): Buffer | null {
   const text = value?.trim().replace(/^sha256=/i, '') ?? '';
   return /^[0-9a-fA-F]{64}$/.test(text) ? Buffer.from(text, 'hex') : null;
@@ -64,26 +50,26 @@ function matches(rawBody: Buffer, given: Buffer, key: string): boolean {
 }
 
 /**
- * The problem with a delivery's signature, or null when it is 3pay's: the
- * hex HMAC-SHA256 of the RAW body, compared in constant time. Each header is
- * checked only against the key it is documented with — the webhook secret for
- * `X-Webhook-Signature`, the API secret for `x-3pay-signature` — and one valid
- * signature is enough.
+ * The problem with a delivery's signature, or null when it is 3pay's.
+ *
+ * 3pay confirmed the scheme on 13 Oct 2026: `X-Webhook-Signature: sha256=<hex>`,
+ * HMAC-SHA256 of the RAW body keyed by the account's WEBHOOK secret, never the
+ * API secret. The `x-3pay-signature` its guide described is not sent and is not
+ * accepted. The comparison is in constant time; any of the secrets in force
+ * (the operator's, the account's) may match.
  */
 export function signatureProblem(
   rawBody: Buffer,
-  signatures: DeliverySignatures,
-  keys: DeliveryKeys,
+  signature: string | undefined,
+  webhookSecrets: readonly string[],
 ): string | null {
-  if (!signatures.webhook && !signatures.legacy) return 'no signature header';
-  const webhook = hexDigest(signatures.webhook);
-  const legacy = hexDigest(signatures.legacy);
-  if (!webhook && !legacy) return 'a malformed signature';
-  if (webhook && keys.webhookSecrets.some((key) => matches(rawBody, webhook, key))) return null;
-  if (legacy && matches(rawBody, legacy, keys.apiSecret)) return null;
-  if (webhook && !legacy && keys.webhookSecrets.length === 0) {
+  if (!signature) return 'no X-Webhook-Signature header';
+  const given = hexDigest(signature);
+  if (!given) return 'a malformed signature';
+  if (webhookSecrets.length === 0) {
     return 'a signature made with the account’s webhook secret, which is not known here';
   }
+  if (webhookSecrets.some((key) => matches(rawBody, given, key))) return null;
   return 'a signature that does not match';
 }
 
@@ -91,13 +77,13 @@ export function signatureProblem(
  * One 3pay delivery, from raw bytes to NOTICES (0174; rebuilt 12 Oct 2026) —
  * the core (`ProviderWebhookIngress`) answers each by asking 3pay's API.
  *
- * ## Two signatures, because 3pay documents two
+ * ## One signature, the one 3pay confirmed
  *
- * Its PDF guide: `x-3pay-signature`, keyed by the API secret. Its online docs,
- * which its live server otherwise follows: `X-Webhook-Signature: sha256=…`,
- * keyed by a separate per-account WEBHOOK secret. Three test deliveries from
- * its dashboard were refused in production for carrying only the second. Both
- * are accepted, each against its own key.
+ * `X-Webhook-Signature: sha256=…`, keyed by the account's WEBHOOK secret
+ * (3pay, 13 Oct 2026; its guide's `x-3pay-signature` with the API secret is
+ * not sent, and is refused here). 3pay omits the header when the account has
+ * no webhook secret, so such an account's deliveries are all refused and its
+ * deposits are settled by the sweep alone: Test connection says so.
  *
  * The webhook secret is whatever an operator typed, else the one 3pay's own
  * account reply carries (kept in memory by `ThreePayClient`, never stored). A
@@ -153,19 +139,18 @@ export class ThreePayWebhookReceiver implements ProviderWebhookReceiver {
     if (!config) return { verified: false, answer: answer(503, 'not-configured') };
 
     const body = rawBody ?? Buffer.alloc(0);
-    const signatures: DeliverySignatures = {
-      webhook: header('x-webhook-signature'),
-      legacy: header('x-3pay-signature'),
-    };
-    let problem = signatureProblem(body, signatures, {
-      webhookSecrets: await this.webhookSecrets(config.webhookSecret, false),
-      apiSecret: config.apiSecret,
-    });
-    if (problem && signatures.webhook && this.mayRefreshSecret()) {
-      problem = signatureProblem(body, signatures, {
-        webhookSecrets: await this.webhookSecrets(config.webhookSecret, true),
-        apiSecret: config.apiSecret,
-      });
+    const signature = header('x-webhook-signature');
+    let problem = signatureProblem(
+      body,
+      signature,
+      await this.webhookSecrets(config.webhookSecret, false),
+    );
+    if (problem && signature && this.mayRefreshSecret()) {
+      problem = signatureProblem(
+        body,
+        signature,
+        await this.webhookSecrets(config.webhookSecret, true),
+      );
     }
     if (problem) {
       this.logger.warn(`Refused a 3pay delivery: ${problem}.`);
@@ -264,6 +249,25 @@ export function noticesOf(delivery: Record<string, unknown>): ProviderNotice[] {
   const transactionId = firstText(event, 'transactionId', 'id', '_id');
   const invoiceNo = textOf(event['invoiceNo']);
   const providerType = `${type ?? 'unknown'}.${status}`;
+  /*
+   * A withdrawal is known by its RECORD id: what the request's answer named,
+   * what our row holds and what 3pay reads it by. Its other names travel too.
+   */
+  const recordId = firstText(event, 'withdrawalId', '_id', 'id') ?? transactionId;
+  const otherNames = [transactionId, invoiceNo].filter(
+    (name): name is string => name !== undefined && name !== recordId,
+  );
+  const payoutNotice = (eventType: ProviderEventType): ProviderNotice | null =>
+    recordId
+      ? {
+          subject: 'payout',
+          providerId: recordId,
+          ...(otherNames.length > 0 ? { otherIds: [...new Set(otherNames)] } : {}),
+          providerType,
+          eventType,
+          kind: 'status',
+        }
+      : null;
 
   if (type === 'deposit') {
     const paymentId = transactionId ?? invoiceNo;
@@ -281,28 +285,14 @@ export function noticesOf(delivery: Record<string, unknown>): ProviderNotice[] {
   }
   // A withdrawal sent through the API is a `withdrawal` in the online docs and a `payout` in the guide.
   if (type === 'payout' || type === 'withdrawal') {
-    if (NOT_FINAL.has(status) || !transactionId) return [];
-    return [
-      {
-        subject: 'payout',
-        providerId: transactionId,
-        providerType,
-        eventType: PAYOUT_EVENT[status] ?? 'payout.submitted',
-        kind: 'status',
-      },
-    ];
+    if (NOT_FINAL.has(status)) return [];
+    const notice = payoutNotice(PAYOUT_EVENT[status] ?? 'payout.submitted');
+    return notice ? [notice] : [];
   }
   if (type === 'refund') {
     const notices: ProviderNotice[] = [];
-    if (transactionId) {
-      notices.push({
-        subject: 'payout',
-        providerId: transactionId,
-        providerType,
-        eventType: 'payout.rejected',
-        kind: 'status',
-      });
-    }
+    const payout = payoutNotice('payout.rejected');
+    if (payout) notices.push(payout);
     const paymentId = transactionId ?? invoiceNo;
     if (paymentId) {
       notices.push({

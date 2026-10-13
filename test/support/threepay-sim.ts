@@ -16,18 +16,22 @@ import Decimal from 'decimal.js';
  *
  *   - `POST /transaction/create` validates `currencyType` from the QUERY, before
  *     it checks the key; replies `{ url, transactionId, invoiceNo }` at the top.
- *   - `/transaction/verify` takes `transactionId`; `/transaction/list` answers
- *     `{ data: { docs, page, limit } }` and takes no date filter.
+ *   - `/transaction/verify` takes `transactionId` only — never an invoice
+ *     number — and `type=withdrawal` reads a withdrawal by its record id (3pay,
+ *     13 Oct 2026); `/transaction/list` answers `{ data: { docs, page, limit } }`
+ *     and takes no date filter.
  *   - `/withdrawal-requests` answers `{ data: [...], totalPages }`, names the
- *     destination `clientWallet`; `/payout/get?id=` returns one.
+ *     destination `clientWallet`.
  *   - A withdrawal waits `pending` for approval unless auto-withdraw covers it.
+ *     Its fee comes OUT of the amount whatever `withdrawalFeePayer` says, as
+ *     3pay's current build does (`honoursFeePayer` turns on its announced fix).
  *   - Webhooks: `{ success, message, data }`, `X-Webhook-Signature: sha256=…`
- *     keyed by the account's webhook secret.
- *   - Every reply carries `RateLimit-*` headers.
+ *     keyed by the account's webhook secret — the only scheme 3pay uses.
+ *   - Every reply carries `RateLimit-*` headers (`statedLimits`, `windowSeconds`).
  *
- * `shape = 'guide'` answers as the PDF guide describes instead, so the adapter
- * is proven to read both. Amounts are JSON NUMBERS either way, so the lossless
- * parse is exercised for real.
+ * `shape = 'guide'` answers in the guide's ENVELOPES instead (replies under
+ * `data`, a flat webhook), so the adapter is proven to read both. Amounts are
+ * JSON NUMBERS either way, so the lossless parse is exercised for real.
  */
 
 export interface SimInvoice {
@@ -100,8 +104,21 @@ export class ThreePaySim {
   shape: 'live' | 'guide' = 'live';
   /** 3pay's real withdrawal fee per network (a test may change it). */
   fees: Record<string, string> = { 'USDT-TRC20': '2.00', 'USDT-ERC20': '2.50' };
-  /** Who carries the withdrawal fee: `user` takes it out of the amount, `merchant` charges it on top. */
+  /** What the account says about the withdrawal fee (`withdrawalFeePayer`). */
   withdrawalFeePayer: 'user' | 'merchant' | null = 'user';
+  /**
+   * 3pay's current build takes the fee out of the amount whatever the account
+   * says (confirmed 13 Oct 2026). True: its announced fix, under which
+   * `merchant` delivers the whole amount and charges the fee on top.
+   */
+  honoursFeePayer = false;
+  /** The next payment link's answer names no `transactionId`. */
+  createOmitsTransactionId = false;
+  /** `/transaction/verify?type=withdrawal` reads withdrawals (false: it answers 404). */
+  verifyReadsWithdrawals = true;
+  /** The limits every reply states, per 15 minutes unless `windowSeconds` says otherwise. */
+  statedLimits = { read: 100, create: 20, payout: 30 };
+  windowSeconds = 900;
   /** Withdrawals up to `maxAutoWithdraw` are sent without approval in the dashboard. */
   autoWithdraw = true;
   maxAutoWithdraw = '100000';
@@ -160,6 +177,11 @@ export class ThreePaySim {
     this.shape = 'live';
     this.fees = { 'USDT-TRC20': '2.00', 'USDT-ERC20': '2.50' };
     this.withdrawalFeePayer = 'user';
+    this.honoursFeePayer = false;
+    this.createOmitsTransactionId = false;
+    this.verifyReadsWithdrawals = true;
+    this.statedLimits = { read: 100, create: 20, payout: 30 };
+    this.windowSeconds = 900;
     this.autoWithdraw = true;
     this.maxAutoWithdraw = '100000';
     this.forceRouteTo = null;
@@ -220,13 +242,14 @@ export class ThreePaySim {
 
   /**
    * A webhook exactly as 3pay would POST it: the raw body and its headers.
-   * Live: `{ success, message, data }`, `X-Webhook-Signature: sha256=<hex>`
-   * keyed by the webhook secret. Guide: the event at the top,
-   * `x-3pay-signature: <hex>` keyed by the API secret.
+   * Live: `{ success, message, data }`; guide: the event at the top. Either way
+   * `X-Webhook-Signature: sha256=<hex>` keyed by the webhook secret, with the
+   * headers 3pay says it always adds. `legacy` signs the way 3pay's guide once
+   * described (`x-3pay-signature`, the API secret), which 3pay does not do.
    */
   webhook(
     event: Record<string, unknown>,
-    options: { secret?: string; shape?: 'live' | 'guide' } = {},
+    options: { secret?: string; shape?: 'live' | 'guide'; legacy?: boolean } = {},
   ): { body: Buffer; headers: Record<string, string>; signature: string } {
     const shape = options.shape ?? this.shape;
     const payload =
@@ -234,18 +257,22 @@ export class ThreePaySim {
         ? { success: true, message: 'Transaction status update', data: event }
         : event;
     const body = Buffer.from(numbersOut(payload));
-    const key = options.secret ?? (shape === 'live' ? this.webhookSecret : this.apiSecret);
+    const key = options.secret ?? (options.legacy ? this.apiSecret : this.webhookSecret);
     const signature = createHmac('sha256', key).update(body).digest('hex');
+    const named: Record<string, string> =
+      typeof event['transactionId'] === 'string'
+        ? { 'x-transaction-id': event['transactionId'] }
+        : {};
     return {
       body,
       signature,
-      headers:
-        shape === 'live'
-          ? {
-              'x-webhook-signature': `sha256=${signature}`,
-              'x-webhook-source': '3Pay-Payment-Processor',
-            }
-          : { 'x-3pay-signature': signature },
+      headers: options.legacy
+        ? { 'x-3pay-signature': signature }
+        : {
+            'x-webhook-signature': `sha256=${signature}`,
+            'x-webhook-source': '3Pay-Payment-Processor',
+            ...named,
+          },
     };
   }
 
@@ -264,9 +291,9 @@ export class ThreePaySim {
     return withdrawal;
   }
 
-  /** The id our rows hold for a payment: the transaction id live, the invoice number per the guide. */
+  /** The id our rows hold for a payment: its transaction id, the only one verify takes. */
   paymentIdOf(invoice: SimInvoice): string {
-    return this.shape === 'live' ? invoice.transactionId : invoice.invoiceNo;
+    return invoice.transactionId;
   }
 
   /* ── the HTTP side ─────────────────────────────────────────────────────── */
@@ -284,13 +311,14 @@ export class ThreePaySim {
       : req.method === 'POST' && path === '/withdrawal-request'
         ? 'payout'
         : 'read';
-    const limit = { read: 100, create: 20, payout: 30 }[budget];
-    if (Date.now() - this.windowStartedAt >= 900_000) {
+    const limit = this.statedLimits[budget];
+    const windowMs = this.windowSeconds * 1000;
+    if (Date.now() - this.windowStartedAt >= windowMs) {
       this.used = { read: 0, create: 0, payout: 0 };
       this.windowStartedAt = Date.now();
     }
-    const resetIn = Math.ceil((this.windowStartedAt + 900_000 - Date.now()) / 1000);
-    res.setHeader('RateLimit-Policy', `${limit};w=900`);
+    const resetIn = Math.ceil((this.windowStartedAt + windowMs - Date.now()) / 1000);
+    res.setHeader('RateLimit-Policy', `${limit};w=${this.windowSeconds}`);
     res.setHeader('RateLimit-Limit', String(limit));
     res.setHeader('RateLimit-Reset', String(resetIn));
     if (this.used[budget] >= limit) {
@@ -365,18 +393,6 @@ export class ThreePaySim {
     if (req.method === 'POST' && path === '/withdrawal-request') return this.withdraw(res, body);
     if (req.method === 'GET' && path === '/withdrawal-requests')
       return this.listWithdrawals(res, url);
-    if (req.method === 'GET' && path === '/payout/get' && this.shape === 'live') {
-      const id = url.searchParams.get('id');
-      if (!id) return send(res, 400, { success: false, message: 'Withdrawal ID is required' });
-      const withdrawal = this.withdrawals.find((w) => w._id === id);
-      if (!withdrawal) return send(res, 404, { success: false, message: 'Withdrawal not found' });
-      const { _id, ...rest } = this.withdrawalRecord(withdrawal);
-      return send(res, 200, {
-        success: true,
-        message: 'Payout retrieved successfully',
-        data: { id: _id, ...rest },
-      });
-    }
     // An unknown route answers with Express's HTML page, not JSON.
     res.statusCode = 404;
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
@@ -419,18 +435,21 @@ export class ThreePaySim {
       res.socket?.destroy();
       return;
     }
+    const omitId = this.createOmitsTransactionId;
+    this.createOmitsTransactionId = false;
     if (this.shape === 'live') {
       return send(res, 200, {
         success: true,
         message: 'Payment link generated successfully',
         url: `https://pay.3pa-y.example/s/${invoice._id}`,
-        transactionId: invoice.transactionId,
+        ...(omitId ? {} : { transactionId: invoice.transactionId }),
         invoiceNo: invoice.invoiceNo,
       });
     }
     return send(res, 200, {
       success: true,
       data: {
+        ...(omitId ? {} : { transactionId: invoice.transactionId }),
         invoiceNo: invoice.invoiceNo,
         paymentUrl: `https://pay.3pa-y.example/checkout/${invoice._id}`,
         walletAddress: invoice.walletAddress,
@@ -442,25 +461,35 @@ export class ThreePaySim {
   }
 
   private verify(res: ServerResponse, url: URL): void {
-    let invoice: SimInvoice | undefined;
-    if (this.shape === 'live') {
-      const id = url.searchParams.get('transactionId');
-      if (!id) {
-        return send(res, 400, {
-          success: false,
-          message: 'Invalid request parameters, transactionId is required',
-        });
-      }
-      invoice = this.invoices.find((i) => i.transactionId === id);
-    } else {
-      invoice = this.invoices.find((i) => i.invoiceNo === url.searchParams.get('invoiceNo'));
+    // Only a transaction id, in either shape: it takes no invoice number (3pay, 13 Oct 2026).
+    const id = url.searchParams.get('transactionId');
+    if (!id) {
+      return send(res, 400, {
+        success: false,
+        message: 'Invalid request parameters, transactionId is required',
+      });
     }
+    const type = url.searchParams.get('type') ?? 'deposit';
+    if (type === 'withdrawal' || type === 'payout') {
+      const withdrawal = this.verifyReadsWithdrawals
+        ? this.withdrawals.find((w) => w._id === id)
+        : undefined;
+      if (!withdrawal) return send(res, 404, { success: false, message: 'Transaction not found' });
+      const { _id, ...rest } = this.withdrawalRecord(withdrawal);
+      return send(res, 200, {
+        success: true,
+        message: 'Transaction retrieved successfully',
+        data: { id: _id, ...rest },
+      });
+    }
+    const invoice = this.invoices.find((i) => i.transactionId === id);
     if (!invoice) return send(res, 404, { success: false, message: 'Transaction not found' });
     return send(res, 200, {
       success: true,
       message: 'Transaction retrieved successfully',
       data: {
-        ...(this.shape === 'live' ? { transactionId: invoice.transactionId, type: 'deposit' } : {}),
+        transactionId: invoice.transactionId,
+        ...(this.shape === 'live' ? { type: 'deposit' } : {}),
         invoiceNo: invoice.invoiceNo,
         status: invoice.status,
         amount: num(invoice.amount),
@@ -493,8 +522,9 @@ export class ThreePaySim {
     const docs = rows.map((i) =>
       numbered({
         _id: i._id,
+        transactionId: i.transactionId,
         ...(this.shape === 'live'
-          ? { transactionId: i.transactionId, type: 'deposit', referenceId: i.referenceId }
+          ? { type: 'deposit', referenceId: i.referenceId }
           : { transactionType: 'deposit', clientReference: i.referenceId }),
         invoiceNo: i.invoiceNo,
         amount: i.amount,
@@ -629,9 +659,14 @@ export class ThreePaySim {
     });
   }
 
-  /** What a withdrawal takes from the balance: its amount, plus the fee when the merchant carries it. */
+  /** Does this account's fee come on top (3pay's announced fix, for `merchant`)? */
+  private feeOnTop(): boolean {
+    return this.honoursFeePayer && this.withdrawalFeePayer === 'merchant';
+  }
+
+  /** What a withdrawal takes from the balance: its amount, plus the fee when it comes on top. */
   private costOf(withdrawal: SimWithdrawal): string {
-    return this.withdrawalFeePayer === 'merchant'
+    return this.feeOnTop()
       ? new Decimal(withdrawal.amount).plus(withdrawal.fee).toFixed(2)
       : withdrawal.amount;
   }
@@ -649,11 +684,10 @@ export class ThreePaySim {
       invoiceNo: `WD-${createdAt.getTime()}-${this.seq}`,
       amount,
       fee,
-      // `merchant`: the client receives the amount whole and the fee is charged on top.
-      netAmount:
-        this.withdrawalFeePayer === 'merchant'
-          ? new Decimal(amount).toFixed(2)
-          : new Decimal(amount).minus(fee).toFixed(2),
+      // Today the fee always comes out of the amount; on top only under 3pay's announced fix.
+      netAmount: this.feeOnTop()
+        ? new Decimal(amount).toFixed(2)
+        : new Decimal(amount).minus(fee).toFixed(2),
       currencyType,
       clientWallet: wallet,
       status: 'pending',
