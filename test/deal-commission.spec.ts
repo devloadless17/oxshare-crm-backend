@@ -1,6 +1,5 @@
 import { IbStore } from '../src/store/ib.store';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { emailStubAs } from './email-stub';
 import { randomUUID } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { CommissionService } from '../src/modules/ib/commission.service';
@@ -269,9 +268,6 @@ beforeAll(async () => {
     // The payout ceiling (0106) — the real store against the real row, so
     // this reads the shipped default of 100 rather than a stub's opinion.
     new AppSettingsStore(ctx.db),
-    /* The per-run payout summary email (0114). Stubbed: this suite is
-       about the money, and the send is fire-and-forget by contract. */
-    emailStubAs(),
     /* The territory gate on `reverseAccrual`. Unrestricted here: these cases are
        about the money, not about who may see whom — the scoping itself is
        covered by `ib-accrual-reversal.spec.ts`. */

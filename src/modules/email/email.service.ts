@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import * as nodemailer from 'nodemailer';
 import { SmtpConfigService, type EffectiveSmtpConfig } from './smtp-config.service';
 import type { Locale } from '../../common/i18n/locale';
+import type { EmailKind } from './email-catalogue';
 import { RejectionReasonsStore, type RejectionContext } from '../../store/rejection-reasons.store';
 import {
   emailChangedNotice,
@@ -18,9 +19,11 @@ import {
   tradingAccountPasswordReset,
   withdrawalDecision,
   passwordReset,
+  passwordChanged,
   clientWelcome,
   setEmailLogoOrigin,
   smtpTest,
+  toPlainText,
   verifyEmail,
   type RenderedEmail,
 } from './templates';
@@ -125,11 +128,16 @@ export class EmailService {
    * caller of this service treats "the mail did not go" as a reason to fail the
    * operation that triggered it. `sendTestEmail` is the deliberate exception.
    */
-  private async deliver(message: { to: string; subject: string; html: string }): Promise<void> {
+  private async deliver(message: {
+    to: string;
+    kind: EmailKind;
+    subject: string;
+    html: string;
+  }): Promise<void> {
     if (this.configService.get('NODE_ENV') === 'test') return;
 
     const config = await this.smtpConfig.resolve();
-    await this.transporterFor(config).sendMail({ from: config.from, ...message });
+    await this.transporterFor(config).sendMail(mailOf(config.from, message));
   }
 
   /**
@@ -139,12 +147,20 @@ export class EmailService {
    * verbatim, and the repetition is where a missing try/catch hides: one method
    * that forgets it turns a mail outage into a failed registration.
    *
-   * `what` names the message in the failure line. The RECIPIENT and the REASON
-   * are logged and nothing else — never the URL, never the token (R-6.3).
+   * `kind` is the message's entry in `email-catalogue.ts` — the one list of
+   * what may be emailed at all — and names it in the log line, with `detail`
+   * when one kind has several outcomes. The RECIPIENT and the REASON are logged
+   * and nothing else — never the URL, never the token (R-6.3).
    */
-  private async send(to: string, what: string, message: RenderedEmail): Promise<void> {
+  private async send(
+    to: string,
+    kind: EmailKind,
+    message: RenderedEmail,
+    detail?: string,
+  ): Promise<void> {
+    const what = detail ? `${kind} email (${detail})` : `${kind} email`;
     try {
-      await this.deliver({ to, subject: message.subject, html: message.html });
+      await this.deliver({ to, kind, subject: message.subject, html: message.html });
       this.logger.log(`${what} sent to ${to}`);
     } catch (error) {
       this.logger.error(`Failed to send ${what} to ${to}: ${failureReason(error)}`);
@@ -260,13 +276,28 @@ export class EmailService {
   ): Promise<void> {
     const url = `${this.portalUrl()}/auth/verify-email?token=${token}&lang=${locale}`;
     this.logLink('verification link', email, url);
-    await this.send(email, 'verification email', verifyEmail(url, code, locale));
+    await this.send(email, 'verification', verifyEmail(url, code, locale));
   }
 
   async sendPasswordResetEmail(email: string, token: string, locale: Locale = 'en'): Promise<void> {
     const url = `${this.portalUrl()}/auth/reset-password?token=${token}&lang=${locale}`;
     this.logLink('password reset link', email, url);
-    await this.send(email, 'password reset email', passwordReset(url, locale));
+    await this.send(email, 'password-reset', passwordReset(url, locale));
+  }
+
+  /**
+   * "Your password was changed" — after a change on the profile or a completed
+   * reset, so the owner hears of it while they can still act. Its one button is
+   * the forgot-password page: whoever did NOT make the change is locked out by
+   * whoever did, and a reset to this mailbox is the way back.
+   */
+  async sendPasswordChangedEmail(
+    email: string,
+    firstName: string,
+    locale: Locale = 'en',
+  ): Promise<void> {
+    const url = `${this.portalUrl()}/auth/forgot-password?lang=${locale}`;
+    await this.send(email, 'password-changed', passwordChanged(firstName, url, locale));
   }
 
   /**
@@ -284,7 +315,7 @@ export class EmailService {
   ): Promise<void> {
     const url = `${this.portalUrl()}/auth/reset-password?token=${token}&welcome=1&lang=${locale}`;
     this.logLink('welcome (set password) link', email, url);
-    await this.send(email, 'welcome email', clientWelcome(url, firstName, portalId, locale));
+    await this.send(email, 'welcome', clientWelcome(url, firstName, portalId, locale));
   }
 
   // FR-ADM-03 / ARCH §8.5: approve and reject both notify the client inline.
@@ -323,11 +354,7 @@ export class EmailService {
      */
     try {
       const { from } = await this.smtpConfig.resolve();
-      await this.send(
-        previousEmail,
-        'email-changed notice',
-        emailChangedNotice(newEmail, from, locale),
-      );
+      await this.send(previousEmail, 'email-changed', emailChangedNotice(newEmail, from, locale));
     } catch (error) {
       this.logger.error(
         `Failed to send email-changed notice to ${previousEmail}: ${failureReason(error)}`,
@@ -348,8 +375,9 @@ export class EmailService {
     const shown = await this.reasonIn('kyc', reason, locale, reasonAr);
     await this.send(
       email,
-      `KYC ${decision} email`,
+      'kyc-decision',
       kycDecision(firstName, decision, this.portalUrl(), shown, rejectedFields, locale),
+      decision,
     );
   }
 
@@ -366,7 +394,7 @@ export class EmailService {
   ): Promise<void> {
     await this.send(
       email,
-      'KYC details corrected email',
+      'kyc-details-corrected',
       kycDetailsCorrected(firstName, details, this.portalUrl(), locale),
     );
   }
@@ -384,7 +412,7 @@ export class EmailService {
     const shown = (await this.reasonIn('kyc', reason, locale, reasonAr)) ?? reason;
     await this.send(
       email,
-      'KYC re-verification email',
+      'kyc-reverification',
       kycReverification(firstName, shown, items, this.portalUrl(), locale),
     );
   }
@@ -406,7 +434,7 @@ export class EmailService {
     const reason = await this.reasonIn('partner', options.reason, locale, options.reasonAr);
     await this.send(
       email,
-      `partner ${decision} email`,
+      'partner-decision',
       partnerDecision(
         firstName,
         decision,
@@ -414,6 +442,7 @@ export class EmailService {
         { referralCode: options.referralCode, reason },
         locale,
       ),
+      decision,
     );
   }
 
@@ -438,8 +467,9 @@ export class EmailService {
     const shown = await this.reasonIn('withdrawal', reason, locale, reasonAr);
     await this.send(
       email,
-      `withdrawal ${decision} email`,
+      'withdrawal-decision',
       withdrawalDecision(firstName, decision, amount, currency, this.portalUrl(), shown, locale),
+      decision,
     );
   }
 
@@ -465,8 +495,9 @@ export class EmailService {
     const shown = await this.reasonIn('deposit', reason, locale, reasonAr);
     await this.send(
       email,
-      `deposit ${outcome} email`,
+      'deposit-outcome',
       depositOutcome(firstName, outcome, amount, currency, this.portalUrl(), shown, locale),
+      outcome,
     );
   }
 
@@ -497,7 +528,7 @@ export class EmailService {
       locale === 'ar' && typeof reasonAr === 'string' && reasonAr.trim() !== '' ? reasonAr : reason;
     await this.send(
       email,
-      'wallet credit email',
+      'wallet-credit',
       walletCredit(firstName, amount, currency, shown, this.portalUrl(), locale),
     );
   }
@@ -546,7 +577,7 @@ export class EmailService {
     });
     await this.send(
       email,
-      `trading account ${login} credentials`,
+      'trading-account-opened',
       tradingAccountOpened(
         firstName,
         login,
@@ -560,6 +591,7 @@ export class EmailService {
         balance,
         locale,
       ),
+      `login ${login}`,
     );
   }
 
@@ -596,7 +628,7 @@ export class EmailService {
     });
     await this.send(
       email,
-      `trading account ${login} password reset`,
+      'trading-account-password-reset',
       tradingAccountPasswordReset(
         firstName,
         login,
@@ -607,6 +639,7 @@ export class EmailService {
         undefined,
         locale,
       ),
+      `login ${login}`,
     );
   }
 
@@ -619,7 +652,7 @@ export class EmailService {
 
   async sendAdminInviteEmail(email: string, name: string, inviteUrl: string): Promise<void> {
     this.logLink('admin invite link', email, inviteUrl);
-    await this.send(email, 'admin invite email', adminInvite(name, inviteUrl));
+    await this.send(email, 'admin-invite', adminInvite(name, inviteUrl));
   }
 
   async sendAdminPasswordResetEmail(
@@ -632,7 +665,7 @@ export class EmailService {
     this.logLink('admin password reset link', email, resetUrl);
     await this.send(
       email,
-      'admin password reset email',
+      'admin-password-reset',
       adminPasswordReset(name, resetUrl, initiatedBy, expiresInMinutes),
     );
   }
@@ -669,16 +702,37 @@ export class EmailService {
      * failure this endpoint exists to detect. The controller is covered by an
      * HTTP spec with a mocked EmailService instead.
      */
-    await this.transporterFor(config).sendMail({
-      from: config.from,
-      to,
-      subject: message.subject,
-      html: message.html,
-    });
+    await this.transporterFor(config).sendMail(
+      mailOf(config.from, { to, kind: 'smtp-test', subject: message.subject, html: message.html }),
+    );
 
     this.logger.log(`SMTP test email sent to ${to} via ${config.source} configuration`);
     return { source: config.source };
   }
+}
+
+/**
+ * The message as it goes on the wire, for every send — the test send included.
+ *
+ * Two things ride on every email:
+ *  - a plain-text part beside the HTML (`multipart/alternative`). HTML-only mail
+ *    is a spam signal, and a text-only reader gets nothing from it;
+ *  - `X-Mailin-Tag`, the kind from `email-catalogue.ts`. Brevo files the message
+ *    under it in its logs and statistics, so "which email bounced" is one filter
+ *    there. Relays that do not know the header ignore it.
+ */
+function mailOf(
+  from: string,
+  message: { to: string; kind: EmailKind; subject: string; html: string },
+): nodemailer.SendMailOptions {
+  return {
+    from,
+    to: message.to,
+    subject: message.subject,
+    html: message.html,
+    text: toPlainText(message.html),
+    headers: { 'X-Mailin-Tag': message.kind },
+  };
 }
 
 /** A mail server on this machine (Mailpit in development) — the one plain-SMTP case. */

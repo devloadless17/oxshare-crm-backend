@@ -3,7 +3,7 @@ import { createHash } from 'crypto';
 import { eq } from 'drizzle-orm';
 import { MoneyTestContext, startMoneyTestDb, stopMoneyTestDb } from './money-setup';
 import { closeDb, getDb, resetDb } from '../src/database/db';
-import { users } from '../src/database/schema';
+import { admins, users } from '../src/database/schema';
 import { UsersStore } from '../src/store/users.store';
 import { AuthService } from '../src/modules/identity/auth.service';
 import { PasswordService } from '../src/common/security/password.service';
@@ -33,11 +33,18 @@ let ctx: MoneyTestContext;
 let auth: AuthService;
 let store: UsersStore;
 const sentTokens: string[] = [];
+/** Who was told "your password was changed". */
+const changedNotices: string[] = [];
 const revoked: { surface: string; id: string }[] = [];
 
 const sha256 = (v: string) => createHash('sha256').update(v).digest('hex');
 
-async function makeUser(email: string, status: 'active' | 'suspended' = 'active') {
+async function makeUser(
+  email: string,
+  status: 'active' | 'suspended' = 'active',
+  /** A client staff created (0211): the administrator, and no password chosen yet. */
+  createdByAdminId?: string,
+) {
   const [row] = await ctx.db
     .insert(users)
     .values({
@@ -46,6 +53,7 @@ async function makeUser(email: string, status: 'active' | 'suspended' = 'active'
       firstName: 'Test',
       lastName: 'User',
       status,
+      createdByAdminId,
     })
     .returning();
   return row;
@@ -65,6 +73,10 @@ beforeAll(async () => {
   const email = {
     sendPasswordResetEmail: (_to: string, token: string) => {
       sentTokens.push(token);
+      return Promise.resolve();
+    },
+    sendPasswordChangedEmail: (to: string) => {
+      changedNotices.push(to);
       return Promise.resolve();
     },
   };
@@ -288,5 +300,50 @@ describe('completing a reset', () => {
     // R-6.3: the link is a bearer credential. This is the same leak that was
     // already found and fixed in EmailService — it must not reappear here.
     expect(lines.join('\n')).not.toContain(token);
+  });
+});
+
+describe('one address is never flooded with reset emails', () => {
+  it('mails at most one reset a minute, and the link already sent keeps working', async () => {
+    /*
+     * The route counts per IP, so this is what stops somebody filling a client's
+     * inbox from many addresses — after which the client taps Unsubscribe and
+     * loses every email we send them.
+     */
+    const user = await makeUser('flood@test.local');
+    const before = sentTokens.length;
+
+    const first = await auth.requestPasswordReset(user.email);
+    const second = await auth.requestPasswordReset(user.email);
+
+    // One email, and the same answer both times: the cap is no oracle either.
+    expect(sentTokens.length).toBe(before + 1);
+    expect(second).toEqual(first);
+    // The refused request replaced nothing, so the link that WAS sent still works.
+    await auth.resetPassword(sentTokens.at(-1)!, 'BrandNewPass123!');
+    expect((await reload(user.id)).passwordResetTokenHash).toBeNull();
+  });
+});
+
+describe('the owner is told their password changed', () => {
+  it('after a reset of a password they had', async () => {
+    const user = await makeUser('notice@test.local');
+    await auth.requestPasswordReset(user.email);
+    await auth.resetPassword(sentTokens.at(-1)!, 'BrandNewPass123!');
+
+    expect(changedNotices).toContain(user.email);
+  });
+
+  it('but not for the FIRST password a client created by staff chooses', async () => {
+    // Their welcome link is this same reset; nothing was "changed".
+    const [admin] = await ctx.db
+      .insert(admins)
+      .values({ email: 'creator@test.local', passwordHash: 'x', name: 'Creator' })
+      .returning();
+    const user = await makeUser('first-password@test.local', 'active', admin.id);
+    await auth.requestPasswordReset(user.email);
+    await auth.resetPassword(sentTokens.at(-1)!, 'BrandNewPass123!');
+
+    expect(changedNotices).not.toContain(user.email);
   });
 });

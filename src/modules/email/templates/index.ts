@@ -43,13 +43,15 @@ export {
 
 export { verifyEmail } from './verify-email';
 export { passwordReset } from './password-reset';
+export { passwordChanged } from './password-changed';
+export { toPlainText } from './plain-text';
 export { clientWelcome, WELCOME_LINK_DAYS } from './client-welcome';
 export { emailChangedNotice } from './email-changed-notice';
 export { kycDecision } from './kyc-decision';
 export { kycDetailsCorrected } from './kyc-details-corrected';
 export { kycReverification } from './kyc-reverification';
 export { partnerDecision } from './partner-decision';
-export { walletCredit, commissionSummaryReason } from './wallet-credit';
+export { walletCredit } from './wallet-credit';
 export { tradingAccountOpened } from './trading-account-opened';
 export { tradingAccountPasswordReset } from './trading-account-password-reset';
 export { depositOutcome } from './deposit-outcome';

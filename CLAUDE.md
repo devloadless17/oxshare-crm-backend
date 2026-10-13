@@ -1167,6 +1167,41 @@ under History although nobody had approved it). Read these before touching
   before the merge has watermark `1789139298747` and would silently SKIP this migration. Repair:
   delete that `drizzle.__drizzle_migrations` row, then `db:migrate` (his 0141 is re-runnable).
 
+## Emails are a closed list (13 Oct 2026)
+
+The buyer: "we are attacking the clients' inboxes". Every active partner was mailed "Funds added to
+your wallet" for commission AND for rebate after every commission run: up to 96 a day on
+production's 30-minute cadence. Brevo puts its own Unsubscribe button on every email it relays,
+transactional ones included, and a tap blocks EVERY later email to that address, deposit receipts
+and password resets with it ("Blocked — unsubscribed user" in Brevo's log). Mail people ignore or
+mark as junk also teaches Gmail and iCloud to file ours as spam, for everyone.
+
+- **`modules/email/email-catalogue.ts` is the ONE list** of what may be emailed. `EmailService.send`
+  takes a kind from it, so a new email needs an entry saying why. The rule: the person asked for
+  it, must act on it, must keep it as the record of their money moving or of a change to their
+  access or verification, or cannot get in without it. Everything else is the bell. Before adding
+  an email, name what the recipient must DO or KEEP.
+- **Never emailed**:
+  - Commission and rebate: `CommissionService` has no email dependency at all.
+  - An expired, unpaid deposit link: `HostedDepositsService.fail` mails only a failure the
+    provider reports.
+  - Anything the bell already says.
+- **Every message carries**:
+  - a plain-text part (`templates/plain-text.ts`, `toPlainText`), because HTML-only mail is a spam
+    signal;
+  - `X-Mailin-Tag: <kind>`, so Brevo's logs and statistics filter per email.
+- **Per-RECIPIENT budgets** (`common/security/send-budget.ts`, in memory). The routes' throttles
+  count per IP; these count per address.
+  - Verification: 6 an hour, plus the 30 s cooldown in the issuing UPDATE.
+  - Password reset: 1 a minute and 5 an hour, checked BEFORE the token is replaced, so a refused
+    request leaves the last link working.
+- **"Your password was changed"** (`password-changed`) goes after a profile change and after a
+  completed reset. It does not go for the first password a client created by staff chooses
+  (`password_set_at` NULL).
+- **A blocked address is Brevo's state, not ours.** Find it in Brevo → Settings → Transactional
+  emails → Blocked or unsubscribed contacts. Unblock only with the person's consent: Brevo calls
+  unblocking an opt-out without consent illegal, and it risks the account.
+
 ## Object storage — R2, and the two rules that keep it honest
 
 Uploads (KYC documents, avatars, payment logos) live in a **private Cloudflare R2

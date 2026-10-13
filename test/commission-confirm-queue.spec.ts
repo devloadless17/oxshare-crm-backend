@@ -4,7 +4,6 @@ import { CommissionService } from '../src/modules/ib/commission.service';
 import { WalletService } from '../src/modules/wallet/wallet.service';
 import { AppSettingsStore } from '../src/store/app-settings.store';
 import { IbStore } from '../src/store/ib.store';
-import { emailStubAs } from './email-stub';
 import { startMoneyTestDb, stopMoneyTestDb, type MoneyTestContext } from './money-setup';
 
 /**
@@ -31,7 +30,6 @@ function service(): CommissionService {
     wallets,
     { notify: () => Promise.resolve(), notifyAdmins: () => Promise.resolve() },
     new AppSettingsStore(ctx.db),
-    emailStubAs(),
     { assertVisible: () => Promise.resolve() } as never,
     new IbStore(ctx.db),
   );

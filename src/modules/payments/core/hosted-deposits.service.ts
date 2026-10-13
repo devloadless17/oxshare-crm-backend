@@ -707,7 +707,16 @@ export class HostedDepositsService implements OnModuleDestroy {
         params: { transactionId: tx.id, amount: tx.amount, currency: tx.currency },
         dedupeKey: `deposit.failed:${tx.id}`,
       });
-      void this.transactions.sendDepositOutcomeEmail(tx.userId, 'failed', tx.amount, tx.currency);
+      /*
+       * An EXPIRED link is an abandoned checkout, not a failed payment: no money
+       * arrived, and a late one still credits. The bell and the transaction say
+       * the link expired; an email "your deposit failed" would only alarm a
+       * client who sent nothing (the buyer's rule, 13 Oct 2026 — see
+       * `email-catalogue.ts`). A failure the provider reports still mails.
+       */
+      if (!result.expired) {
+        void this.transactions.sendDepositOutcomeEmail(tx.userId, 'failed', tx.amount, tx.currency);
+      }
     }
     return { state: updated[0]?.state ?? tx.state };
   }

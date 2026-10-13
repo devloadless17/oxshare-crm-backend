@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  commissionSummaryReason,
   depositOutcome,
   emailChangedNotice,
   kycDecision,
@@ -227,22 +226,5 @@ describe('the Arabic copy keeps the rules the English copy is pinned to', () => 
   it('lists fields to correct with the Arabic comma', () => {
     const html = kycDecision('J', 'rejected', P, 'r', ['Passport', 'Last Name'], 'ar').html;
     expect(html).toContain('Passport، Last Name');
-  });
-});
-
-describe('the commission summary reason', () => {
-  it('is byte-identical in English', () => {
-    expect(commissionSummaryReason('rebate', 3)).toBe('Trading rebate on 3 closed trade(s)');
-    expect(commissionSummaryReason('commission', 1, 'en')).toBe(
-      'Partner commission on 1 closed trade(s)',
-    );
-  });
-
-  it('uses the Arabic plural forms', () => {
-    expect(commissionSummaryReason('commission', 1, 'ar')).toBe('عمولة الشريك عن صفقة مغلقة واحدة');
-    expect(commissionSummaryReason('commission', 2, 'ar')).toBe('عمولة الشريك عن صفقتين مغلقتين');
-    expect(commissionSummaryReason('rebate', 5, 'ar')).toBe('عمولة مستردة عن 5 صفقات مغلقة');
-    expect(commissionSummaryReason('rebate', 11, 'ar')).toBe('عمولة مستردة عن 11 صفقة مغلقة');
-    expect(commissionSummaryReason('rebate', 100, 'ar')).toBe('عمولة مستردة عن 100 صفقة مغلقة');
   });
 });
