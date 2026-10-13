@@ -33,8 +33,9 @@ function buildResolver(options: {
   client?: { id: string } | null;
   exp?: number;
 }) {
+  // The socket's own door (d048646): cookies only, no request to judge.
   const adminAuthenticator = {
-    authenticate: vi.fn(() =>
+    authenticateSocket: vi.fn(() =>
       options.admin ? Promise.resolve(options.admin) : Promise.reject(new Error('refused')),
     ),
   } as unknown as AdminAuthenticator;

@@ -202,11 +202,8 @@ const WRITES_DETAILS: readonly string[] = [
   'ib_level.create',
   'ib_level.delete',
   'ib_level.update',
-  'ip_allowlist.add',
-  // 0192: an ADMINISTRATOR's email and the granter's reason — nothing a client owns.
-  'ip_allowlist.exempt_add',
-  'ip_allowlist.exempt_remove',
-  'ip_allowlist.remove',
+  // The four ip_allowlist.* actions left with the platform-wide allowlist
+  // (d048646, 13 Oct 2026): no code writes them any more.
   'kyc.approve',
   // 0210, staff completing a client's KYC: question NAMES, a slot and document type, the
   // approve flag, the staff member's reason — never an answer (those audit as profile updates).

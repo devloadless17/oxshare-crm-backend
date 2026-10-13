@@ -896,6 +896,15 @@ export const SERVER_MESSAGES_AR: Readonly<Record<string, string>> = {
   'MT5 does not report a group called "{1}". Choose one from the list — if the group is new, the broker may not have granted this manager account access to it.':
     'لا يُبلغ MT5 عن مجموعة باسم "{1}". اختر مجموعة من القائمة.',
   '"{1}" is already attached to \'{2}\'.': '"{1}" مرتبطة بالفعل بـ \'{2}\'.',
+  // Per-administrator networks (d048646): the console's button keeps its English label.
+  '"{1}" is not a valid IPv4 address or CIDR range. Use 203.0.113.7 for a single machine or 203.0.113.0/24 for a network.':
+    '"{1}" ليس عنوان IPv4 ولا نطاق CIDR صالحاً. استخدم 203.0.113.7 لجهاز واحد أو 203.0.113.0/24 لشبكة.',
+  '{1} matches every address. Choose "Access from anywhere" instead.':
+    '{1} يطابق كل العناوين. اختر "Access from anywhere" بدلاً من ذلك.',
+  'Add at least one IP address, or choose "Access from anywhere" — otherwise this administrator could not sign in at all.':
+    'أضف عنوان IP واحداً على الأقل، أو اختر "Access from anywhere"، وإلا فلن يتمكن هذا المسؤول من تسجيل الدخول إطلاقاً.',
+  'An administrator can have at most {1} IP addresses.':
+    'يمكن أن يكون للمسؤول {1} من عناوين IP كحدّ أقصى.',
   '\'{1}\' already has a {2} {3} group, "{4}". A product holds one group per currency, because a client opening an account picks a product and a currency and must land in exactly one group. Remove "{5}" from \'{6}\' first, or attach "{7}" to another product.':
     'لدى \'{1}\' مجموعة {2} {3} بالفعل، وهي "{4}". يحتوي المنتج على مجموعة واحدة لكل عملة. أزل "{5}" من \'{6}\' أولاً، أو اربط "{7}" بمنتج آخر.',
   'That group is not attached to this product.': 'هذه المجموعة غير مرتبطة بهذا المنتج.',

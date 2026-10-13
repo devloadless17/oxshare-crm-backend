@@ -135,7 +135,11 @@ describe('the session a login actually produces', () => {
       .set('Origin', SURFACES.admin.origin)
       .send({ email: ADMIN.email, password: 'not-the-password' })
       .expect(401);
-    expect(JSON.stringify(res.body)).not.toMatch(/password is|no such|unknown user/i);
+    const message = String((res.body as { message?: unknown }).message);
+    expect(message).not.toMatch(/no such|unknown user|not registered/i);
+    // The password may be named only TOGETHER with the email ("the email or
+    // password is wrong", d048646) — never alone, which would say the email is real.
+    expect(message.replace(/email or password/gi, '')).not.toMatch(/password/i);
   });
 
   it('answers an unknown email the same way as a wrong password', async () => {
