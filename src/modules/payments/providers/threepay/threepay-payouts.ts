@@ -19,6 +19,8 @@ import type { ThreePayAsset } from './threepay-config.service';
 const MAX_PAGES = 20;
 /** Up to this many payouts are asked about one by one; more are read from the list. */
 const SINGLE_READS = 2;
+/** Payout requests kept back from 3pay's stated limit: a refused request is counted there too. */
+const RATE_MARGIN = 5;
 
 /** 3pay's words for a withdrawal, in the core's (guide §05, "Withdrawal statuses"). */
 const STATUS: Readonly<Record<string, PayoutReport['status']>> = {
@@ -51,23 +53,29 @@ const STATUS: Readonly<Record<string, PayoutReport['status']>> = {
  *   cancellable false — a payout is on the chain seconds after it is accepted.
  *   whenUnavailable `wait` — a USDT payout sent by hand is too easy to get
  *                wrong; with 3pay off, approved payouts wait for it.
- *   rate 25 per 15 minutes — 3pay's server allows 30 (measured), counted even
- *                for a request it refuses; the core queues to this.
+ *   rate        what 3pay STATES for payout requests (30 per 15 minutes when
+ *                measured; 3pay has announced more), less a margin of five, since
+ *                3pay counts a request it refuses too. The core queues to it.
  *
- * ## Who carries 3pay's fee decides what is asked
+ * ## The fee is always added to what is asked
  *
- * The owner's rule: the client receives exactly what they withdrew. 3pay's
- * ACCOUNT says how its fee is charged (`withdrawalFeePayer`):
+ * The owner's rule: the client receives exactly what they withdrew. 3pay takes
+ * its flat fee (2.00 on TRC20, 2.50 on ERC20) OUT of the amount it is asked to
+ * send, so a payout asks for the client's amount plus the fee ("to send
+ * exactly 500, request 502").
  *
- *   `user`      the fee comes out of the amount sent ("to send exactly 500 …
- *               request 502.00", its guide) — so the payout is grossed up.
- *   `merchant`  the fee is charged to the company's balance on top — so the
- *               payout is asked for the client's amount as it is.
+ * Whatever the account's `withdrawalFeePayer` says. 3pay confirmed on
+ * 13 Oct 2026 that its current build ignores that setting: asked for 100 on an
+ * account set to `merchant`, the recipient receives 98. Until then this rail
+ * read the setting and asked for 100, which would have paid every client 2
+ * short. 3pay will start honouring `merchant` in a later release (the
+ * recipient then receives the whole amount and the fee is charged on top), so
+ * the account should be set to `user`, which means what this rail does, now
+ * and after that release. Test connection says so while it is not.
  *
- * An account that does not say is treated as its guide describes (`user`).
  * Either way the core checks what 3pay reports DELIVERED against the client's
- * amount and flags a payout that lands short or over, so a wrong reading costs
- * one flagged payout, never a silent difference.
+ * amount and flags a payout that lands short or over, so a wrong assumption
+ * costs one flagged payout, never a silent difference.
  *
  * ## A payout 3pay holds for approval
  *
@@ -78,18 +86,27 @@ const STATUS: Readonly<Record<string, PayoutReport['status']>> = {
  *
  * ## Reads
  *
- * One payout is asked about directly (`/payout/get`); several are read from
- * the withdrawal list in one request, because every read shares one budget of
- * a hundred per fifteen minutes.
+ * One or two payouts are asked about directly, with the call 3pay named for it
+ * (`/transaction/verify?transactionId=<withdrawal id>&type=withdrawal`); more,
+ * and any the direct read could not place, are read from the withdrawal list
+ * in one walk, because every read shares one budget.
  */
 export class ThreePayPayouts implements PayoutRail {
   readonly idempotency = 'none' as const;
   readonly cancellable = false;
-  readonly rate = { limit: 25, windowMs: 15 * 60_000 } as const;
   readonly whenUnavailable = 'wait' as const;
   readonly adoptWindowMs = 15 * 60_000;
 
   constructor(private readonly client: ThreePayClient) {}
+
+  /** What 3pay last stated for payout requests, less the margin (read on every use). */
+  get rate(): { readonly limit: number; readonly windowMs: number } {
+    const stated = this.client.limits().payout;
+    return {
+      limit: Math.max(1, stated.limit - RATE_MARGIN),
+      windowMs: stated.windowSeconds * 1000,
+    };
+  }
 
   async quote(channel: PaymentChannel, amount: string): Promise<PayoutQuote> {
     const asset = payoutAsset(channel);
@@ -101,14 +118,8 @@ export class ThreePayPayouts implements PayoutRail {
       );
     }
     const fee = (await this.client.configured()).payoutFees[asset];
-    const onTop = (await this.client.account()).withdrawalFeePayer === 'merchant';
-    const withFee = net.plus(fee).toFixed(2);
-    return {
-      gross: onTop ? net.toFixed(2) : withFee,
-      fee,
-      net: net.toFixed(2),
-      balanceCost: withFee,
-    };
+    // 3pay takes the fee out of what it is asked to send: ask for the client's amount plus it.
+    return { gross: net.plus(fee).toFixed(2), fee, net: net.toFixed(2) };
   }
 
   async submit(channel: PaymentChannel, request: PayoutRequest): Promise<PayoutSubmission> {
@@ -218,54 +229,52 @@ export class ThreePayPayouts implements PayoutRail {
     const reports = new Map<string, PayoutReport>();
     if (wanted.size === 0) return reports;
     if (wanted.size <= SINGLE_READS) {
-      let listInstead = false;
       for (const id of wanted) {
         const report = await this.readOne(id);
-        if (report === 'no-such-endpoint') {
-          listInstead = true;
-          break;
-        }
         if (report) reports.set(id, report);
       }
-      if (!listInstead) return reports;
+      if (reports.size === wanted.size) return reports;
     }
+    // Several at once, or one the direct read could not place: the list, in one walk.
+    const rest = [...wanted].filter((id) => !reports.has(id));
     await this.client.walk(
       '/withdrawal-requests',
       {},
       { since, maxPages: MAX_PAGES, priority: 'high' },
       (record) => {
         const id = payoutIdOf(record);
-        if (id && wanted.has(id)) reports.set(id, reportOf(id, record));
+        if (id && rest.includes(id)) reports.set(id, reportOf(id, record));
         // Stop paging once every asked-for payout has been seen.
-        return reports.size === wanted.size;
+        return rest.every((wantedId) => reports.has(wantedId));
       },
     );
     return reports;
   }
 
   /**
-   * `/payout/get?id=` — one withdrawal's full record. Null when 3pay holds
-   * none by that id. An older 3pay without the endpoint answers with a page
-   * that is not JSON; the caller then reads the list instead.
+   * One withdrawal's full record, by the id 3pay gave it, the way 3pay said to
+   * read one (13 Oct 2026): `/transaction/verify?transactionId=<id>&type=withdrawal`.
+   * Null when 3pay holds none by that id, or answers in a shape this build
+   * cannot place — the caller then reads the list. A reply about another
+   * record is never applied to this one.
    */
-  private async readOne(id: string): Promise<PayoutReport | null | 'no-such-endpoint'> {
+  private async readOne(id: string): Promise<PayoutReport | null> {
     try {
       const { body } = await this.client.get(
-        '/payout/get',
-        { id },
+        '/transaction/verify',
+        { transactionId: id, type: 'withdrawal' },
         { reference: id, priority: 'high' },
       );
       const data = objectOf(body['data']);
-      if (!data) return null;
+      if (!data || textOf(data['status']) === undefined) return null;
       const named = payoutIdOf(data);
-      // A reply about another payout is never applied to this one.
       if (named !== undefined && named !== id) return null;
+      const kind = (textOf(data['transactionType']) ?? textOf(data['type']))?.toLowerCase();
+      if (kind === 'deposit') return null;
       return reportOf(id, data);
     } catch (error) {
-      if (error instanceof ThreePayRequestError && error.status === 404) {
-        return error.providerCode === null && error.message === 'HTTP 404'
-          ? 'no-such-endpoint'
-          : null;
+      if (error instanceof ThreePayRequestError && (error.status === 404 || error.status === 400)) {
+        return null;
       }
       throw error;
     }
@@ -281,7 +290,7 @@ export function payoutAsset(channel: PaymentChannel): ThreePayAsset {
   return code;
 }
 
-/** A withdrawal's id, under whichever name this reply uses. */
+/** A withdrawal's record id (the one 3pay reads it by), under whichever name this reply uses. */
 export function payoutIdOf(record: Record<string, unknown>): string | undefined {
   return firstText(record, 'withdrawalId', '_id', 'id');
 }

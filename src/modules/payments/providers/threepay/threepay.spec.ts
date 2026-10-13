@@ -78,49 +78,40 @@ describe('3pay amounts are never floats', () => {
 describe('a 3pay webhook is 3pay’s only if its signature says so', () => {
   const apiSecret = 'sk_live_test_secret';
   const webhookSecret = 'whsec_account_secret';
-  const keys = { webhookSecrets: [webhookSecret], apiSecret };
   const raw = Buffer.from('{"type":"deposit","status":"confirmed","invoiceNo":"INV-1"}');
   const sign = (body: Buffer, key: string) => createHmac('sha256', key).update(body).digest('hex');
 
-  it('verifies the HMAC of the RAW bytes under either documented scheme', () => {
-    // Its online docs: `X-Webhook-Signature: sha256=<hex>`, the account's webhook secret.
+  it('verifies `X-Webhook-Signature: sha256=<hex>` of the RAW bytes with the webhook secret', () => {
+    expect(signatureProblem(raw, `sha256=${sign(raw, webhookSecret)}`, [webhookSecret])).toBeNull();
     expect(
-      signatureProblem(raw, { webhook: `sha256=${sign(raw, webhookSecret)}` }, keys),
+      signatureProblem(raw, sign(raw, webhookSecret).toUpperCase(), [webhookSecret]),
     ).toBeNull();
+    // Any secret in force may match: the operator's, or the account's after a rotation.
     expect(
-      signatureProblem(raw, { webhook: sign(raw, webhookSecret).toUpperCase() }, keys),
+      signatureProblem(raw, `sha256=${sign(raw, webhookSecret)}`, ['older', webhookSecret]),
     ).toBeNull();
-    // Its PDF guide: `x-3pay-signature: <hex>`, the API secret.
-    expect(signatureProblem(raw, { legacy: sign(raw, apiSecret) }, keys)).toBeNull();
   });
 
-  it('holds each header to its OWN key', () => {
-    expect(signatureProblem(raw, { webhook: sign(raw, apiSecret) }, keys)).toMatch(
-      /does not match/,
-    );
-    expect(signatureProblem(raw, { legacy: sign(raw, webhookSecret) }, keys)).toMatch(
+  it('never accepts the API secret: 3pay confirmed it does not sign with it (13 Oct 2026)', () => {
+    expect(signatureProblem(raw, `sha256=${sign(raw, apiSecret)}`, [webhookSecret])).toMatch(
       /does not match/,
     );
   });
 
   it('refuses a missing, malformed, forged or tampered delivery', () => {
-    expect(signatureProblem(raw, {}, keys)).toMatch(/no signature header/);
-    expect(signatureProblem(raw, { webhook: 'sha256=abc' }, keys)).toMatch(/malformed/);
-    expect(signatureProblem(raw, { legacy: sign(raw, 'another-secret') }, keys)).toMatch(
+    expect(signatureProblem(raw, undefined, [webhookSecret])).toMatch(/no X-Webhook-Signature/);
+    expect(signatureProblem(raw, 'sha256=abc', [webhookSecret])).toMatch(/malformed/);
+    expect(signatureProblem(raw, sign(raw, 'another-secret'), [webhookSecret])).toMatch(
       /does not match/,
     );
     const tampered = Buffer.from(raw.toString().replace('INV-1', 'INV-2'));
-    expect(signatureProblem(tampered, { legacy: sign(raw, apiSecret) }, keys)).toMatch(
+    expect(signatureProblem(tampered, sign(raw, webhookSecret), [webhookSecret])).toMatch(
       /does not match/,
     );
     // No webhook secret known here: said so, because that is what an operator must fix.
-    expect(
-      signatureProblem(
-        raw,
-        { webhook: sign(raw, webhookSecret) },
-        { webhookSecrets: [], apiSecret },
-      ),
-    ).toMatch(/webhook secret, which is not known here/);
+    expect(signatureProblem(raw, sign(raw, webhookSecret), [])).toMatch(
+      /webhook secret, which is not known here/,
+    );
   });
 });
 
@@ -156,6 +147,18 @@ describe('what a delivery asks the core to re-read (the doorbell)', () => {
     expect(
       noticesOf({ type: 'payout', status: 'completed', transactionId: 'W1', invoiceNo: 'WD-1' }),
     ).toEqual([expect.objectContaining({ subject: 'payout', providerId: 'W1', kind: 'status' })]);
+    // Named by its RECORD id (what our row holds and 3pay reads it by); its other names travel too.
+    expect(
+      noticesOf({
+        data: { type: 'withdrawal', status: 'completed', _id: 'R1', transactionId: 'U1' },
+      }),
+    ).toEqual([expect.objectContaining({ subject: 'payout', providerId: 'R1', otherIds: ['U1'] })]);
+    // A retry with an empty `_id` (seen on 3pay's deposit retries) falls back to the other names.
+    expect(
+      noticesOf({
+        data: { type: 'withdrawal', status: 'completed', _id: '', transactionId: 'U1' },
+      }),
+    ).toEqual([expect.objectContaining({ subject: 'payout', providerId: 'U1' })]);
     expect(
       noticesOf({ data: { type: 'withdrawal', status: 'rejected', transactionId: 'W1' } }),
     ).toEqual([expect.objectContaining({ subject: 'payout', providerId: 'W1' })]);

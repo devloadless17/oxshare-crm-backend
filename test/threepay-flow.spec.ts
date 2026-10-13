@@ -200,7 +200,7 @@ const row = (txId: string) => transactions.getById(txId);
 /** Deliver a webhook to the ingress exactly as 3pay would. */
 function deliver(
   event: Record<string, unknown>,
-  options: { secret?: string; shape?: 'live' | 'guide'; test?: boolean } = {},
+  options: { secret?: string; shape?: 'live' | 'guide'; legacy?: boolean; test?: boolean } = {},
 ) {
   const { body, headers } = sim.webhook(event, options);
   const all: Record<string, string> = {
@@ -319,28 +319,15 @@ describe('3pay deposits', () => {
     }
   });
 
-  it('refuses a forged delivery before reading it — under either signature scheme', async () => {
+  it('refuses a forged delivery before reading it, and the signature 3pay does not use', async () => {
     const { tx } = await deposit('100');
     sim.confirm(tx.providerPaymentId ?? '', '100');
     expect((await deliver(confirmed(tx), { secret: 'not-the-secret' })).status).toBe(401);
-    expect(
-      (await deliver(confirmed(tx), { shape: 'guide', secret: 'not-the-secret' })).status,
-    ).toBe(401);
-    // The webhook secret is no key for the API-secret header, nor the other way round.
-    expect(
-      (await deliver(confirmed(tx), { shape: 'guide', secret: sim.webhookSecret })).status,
-    ).toBe(401);
-    expect((await deliver(confirmed(tx), { shape: 'live', secret: sim.apiSecret })).status).toBe(
-      401,
-    );
+    // The API secret is no key for a webhook (3pay, 13 Oct 2026)…
+    expect((await deliver(confirmed(tx), { secret: sim.apiSecret })).status).toBe(401);
+    // …and `x-3pay-signature`, which its guide once described, is never accepted.
+    expect((await deliver(confirmed(tx), { legacy: true })).status).toBe(401);
     expect((await row(tx.id)).state).toBe('pending');
-  });
-
-  it('a delivery signed the PDF guide’s way (the API secret) is 3pay’s too', async () => {
-    const { userId, tx } = await deposit('100');
-    sim.confirm(tx.providerPaymentId ?? '', '100');
-    expect((await deliver(confirmed(tx), { shape: 'guide' })).status).toBe(200);
-    expect(await balance(userId)).toBe('100.00000000');
   });
 
   it('a rotated webhook secret is read from the account again', async () => {
@@ -366,21 +353,72 @@ describe('3pay deposits', () => {
     expect(answer.body).toMatchObject({ outcome: 'test' });
   });
 
-  it('the PDF guide’s shapes work end to end: an invoice number for an id, replies under `data`', async () => {
+  it('the guide’s envelopes work end to end: replies under `data`, a flat webhook', async () => {
     sim.shape = 'guide';
     const { userId, tx } = await deposit('100');
-    expect(tx.providerPaymentId).toBe(sim.invoices[0].invoiceNo);
+    // Known by its transaction id, the only id 3pay's verify takes.
+    expect(tx.providerPaymentId).toBe(sim.invoices[0].transactionId);
     expect(tx.providerPaymentUrl).toMatch(/\/checkout\//);
     sim.confirm(tx.providerPaymentId ?? '', '100');
-    // The guide's webhook names the deposit by BOTH ids; ours holds the invoice number.
     const answer = await deliver({
       type: 'deposit',
       status: 'confirmed',
-      transactionId: 'some-other-id',
-      invoiceNo: tx.providerPaymentId,
+      transactionId: tx.providerPaymentId,
+      invoiceNo: sim.invoices[0].invoiceNo,
     });
     expect(answer.status).toBe(200);
     expect(await balance(userId)).toBe('100.00000000');
+    // Never asked by invoice number: 3pay's verify does not take one.
+    expect(sim.calls.filter((call) => call.includes('invoiceNo='))).toEqual([]);
+  });
+
+  it('a link answer that names no transaction id is not used: it is found again by our reference', async () => {
+    const userId = await client();
+    sim.createOmitsTransactionId = true;
+    await expect(
+      transactions.requestDeposit({
+        userId,
+        amount: '25',
+        currency: 'USD',
+        method: 'usdt_trc20_in',
+      }),
+    ).rejects.toBeInstanceOf(PaymentIndeterminateError);
+    const [unnamed] = (
+      await ctx.db.execute<{ id: string }>(
+        sql`SELECT id FROM transactions WHERE user_id = ${userId} AND direction = 'deposit'`,
+      )
+    ).rows;
+    expect((await row(unnamed.id)).providerPaymentId).toBeNull();
+    await ctx.db.execute(
+      sql`UPDATE transactions SET created_at = now() - interval '5 minutes' WHERE id = ${unnamed.id}`,
+    );
+    await deposits.sweep('threepay');
+    expect(sim.invoices).toHaveLength(1);
+    expect((await row(unnamed.id)).providerPaymentId).toBe(sim.invoices[0].transactionId);
+  });
+
+  it('the payer’s own check asks 3pay at most once in 15 seconds, and never fails at its limit', async () => {
+    const { tx } = await deposit('100');
+    const check = () => deposits.settle(undefined, tx.providerRef ?? '', { ownerId: tx.userId });
+    const verifies = () => sim.calls.filter((call) => call.includes('/transaction/verify')).length;
+    sim.calls.length = 0;
+    // A client pressing "Check now" again and again (16 times in 5 s on 12 Oct 2026).
+    for (let press = 0; press < 5; press += 1) await check();
+    expect(verifies()).toBe(1);
+
+    await ctx.db.execute(
+      sql`UPDATE transactions SET provider_checked_at = now() - interval '20 seconds' WHERE id = ${tx.id}`,
+    );
+    await check();
+    expect(verifies()).toBe(2);
+
+    // At 3pay's limit the stored state is the answer, never an error.
+    await ctx.db.execute(
+      sql`UPDATE transactions SET provider_checked_at = now() - interval '20 seconds' WHERE id = ${tx.id}`,
+    );
+    sim.used.read = 100;
+    threepay.forget();
+    expect((await check()).state).toBe('pending');
   });
 
   it('an expired link fails; a LATE confirmation is credited exactly once', async () => {
@@ -575,38 +613,49 @@ describe('3pay payouts', () => {
     expect(paid.needsAttention).toBe(false);
   });
 
-  it('fee charged on top (`merchant`): 3pay is asked 100, and the client still receives their 100', async () => {
+  it('an account set to `merchant` is asked 102 all the same: 3pay does not apply that setting yet', async () => {
+    // 3pay, 13 Oct 2026: asked for 100 on such an account, the recipient receives 98.
     sim.withdrawalFeePayer = 'merchant';
     const txId = await approvedWithdrawal('100');
     await payouts.submitApproved(txId);
-    expect(sim.payoutRequests[0]).toMatch(/^\{"amount":100,/);
+    expect(sim.payoutRequests[0]).toMatch(/^\{"amount":102,/);
     const paid = await row(txId);
     expect(paid.state).toBe('success');
     expect(paid.providerNetAmount).toBe('100.00000000');
     expect(paid.needsAttention).toBe(false);
   });
 
-  it('an account that does not say who carries the fee is treated as its guide describes', async () => {
+  it('an account that does not say who carries the fee is asked 102 too', async () => {
     sim.withdrawalFeePayer = null;
     const txId = await approvedWithdrawal('100');
     await payouts.submitApproved(txId);
     expect(sim.payoutRequests[0]).toMatch(/^\{"amount":102,/);
   });
 
-  it('the fee was added but 3pay charged it on top: settled, and FLAGGED — the client got 2 too much', async () => {
-    const first = await approvedWithdrawal('10');
-    await payouts.submitApproved(first); // the account's `user` is now remembered
-    sim.withdrawalFeePayer = 'merchant'; // …and 3pay changes underneath it
+  it('the day 3pay applies `merchant`, the client receives the fee on top: settled, and FLAGGED', async () => {
+    sim.withdrawalFeePayer = 'merchant';
+    sim.honoursFeePayer = true; // 3pay's announced fix
     const txId = await approvedWithdrawal(
       '100',
       '0x52908400098527886E0F7030069857D2E4169EE7',
       'usdt_erc20_out',
     );
     await payouts.submitApproved(txId);
+    expect(sim.payoutRequests[0]).toMatch(/^\{"amount":102\.5,/);
     const paid = await row(txId);
     expect(paid.state).toBe('success');
     expect(paid.needsAttention).toBe(true);
     expect(paid.attentionReason).toMatch(/2\.5 USD MORE than they withdrew/);
+  });
+
+  it('the payout pace follows the limit 3pay states: its announced 100 a minute is used at once', async () => {
+    const payoutRail = adapter.payouts;
+    expect(payoutRail.rate).toEqual({ limit: 25, windowMs: 900_000 }); // 30 per 15 minutes, less 5
+    sim.statedLimits.payout = 100;
+    sim.windowSeconds = 60;
+    const txId = await approvedWithdrawal('10');
+    await payouts.submitApproved(txId);
+    expect(payoutRail.rate).toEqual({ limit: 95, windowMs: 60_000 });
   });
 
   it('202 executing: settled only when 3pay’s own record says completed (the webhook re-reads)', async () => {
@@ -641,9 +690,27 @@ describe('3pay payouts', () => {
     await ctx.db.execute(
       sql`UPDATE transactions SET provider_submitted_at = now() - interval '5 minutes' WHERE id = ${txId}`,
     );
+    sim.calls.length = 0;
     await payouts.reconcile('threepay');
     expect((await row(txId)).state).toBe('success');
     expect(sim.payoutRequests).toHaveLength(1);
+    // Read the way 3pay said to read one withdrawal: verify, by its record id.
+    expect(sim.calls).toContain(
+      `GET /transaction/verify?transactionId=${sim.withdrawals[0]._id}&type=withdrawal`,
+    );
+  });
+
+  it('a payout the direct read cannot place is read from the withdrawal list instead', async () => {
+    sim.autoWithdraw = false;
+    sim.verifyReadsWithdrawals = false;
+    const txId = await approvedWithdrawal('260');
+    await payouts.submitApproved(txId);
+    sim.approve(sim.withdrawals[0]._id);
+    await ctx.db.execute(
+      sql`UPDATE transactions SET provider_submitted_at = now() - interval '5 minutes' WHERE id = ${txId}`,
+    );
+    await payouts.reconcile('threepay');
+    expect((await row(txId)).state).toBe('success');
   });
 
   it('rejected in 3pay’s dashboard: the client is refunded in full', async () => {
@@ -772,7 +839,7 @@ describe('3pay payouts', () => {
     sim.calls.length = 0;
     await payouts.reconcile('threepay');
     expect(sim.calls.filter((call) => call.startsWith('GET /withdrawal-requests'))).toHaveLength(1);
-    expect(sim.calls.filter((call) => call.startsWith('GET /payout/get'))).toHaveLength(0);
+    expect(sim.calls.filter((call) => call.includes('type=withdrawal'))).toHaveLength(0);
     for (const id of ids) expect((await row(id)).state).toBe('success');
   });
 
@@ -867,7 +934,8 @@ describe('the connection test', () => {
     expect(check.ok).toBe(true);
     expect(check.message).toMatch(/Available: 10000 USDT/);
     expect(check.message).toMatch(/every one waits for approval in 3pay’s dashboard/);
-    expect(check.message).toMatch(/charged to the 3pay balance/);
+    expect(check.message).toMatch(/added to each payout, so the client receives exactly/);
+    expect(check.message).toMatch(/withdrawal fee payer to "user"/);
     // The limits are 3pay's own words on these very calls; a kind not called yet is said so.
     expect(check.message).toMatch(/100 status checks per 15 minutes \(97 left now\)/);
     expect(check.message).toMatch(/payment links not stated yet/);

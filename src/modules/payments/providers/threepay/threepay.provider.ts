@@ -94,20 +94,20 @@ const PAYOUT = {
  *   Deposits  a payment link per deposit (`POST /transaction/create`, its
  *             fields in the QUERY STRING) carrying our reference; credited with
  *             what 3pay reports ARRIVED, rounded down — less, more, or late.
- *   Payouts   `ThreePayPayouts`: no idempotency key; the fee handled the way
- *             3pay's account says it is charged.
+ *   Payouts   `ThreePayPayouts`: no idempotency key; the fee always added to
+ *             what is asked, since 3pay takes it out of the amount sent.
  *   Events    `ThreePayWebhookReceiver`: HMAC over the raw bytes, then notices
  *             the core answers by asking 3pay's API (the doorbell rule).
  *   Audit     `listRecords` feeds the core's unmatched-records audit; `balance`
  *             its warning before payouts run out of funds.
  *
- * ## A deposit has TWO names at 3pay
+ * ## A deposit has TWO names at 3pay, and is checked by one
  *
- * `transactionId` (a uuid — what `/transaction/verify` and the webhook use) and
- * `invoiceNo` (`INV-…`, what its PDF guide uses). The id kept on our row is the
- * transaction id when 3pay gives one, else the invoice number, chosen by ONE
- * function (`paymentIdOf`) for the create reply, the lists and the webhook, so
- * every path names a deposit the same way.
+ * `transactionId` (a uuid) and `invoiceNo` (`INV-…`). `/transaction/verify`
+ * takes only the transaction id (3pay, 13 Oct 2026), so that is the id kept on
+ * our row, chosen by ONE function (`paymentIdOf`) for the create reply, the
+ * lists and the webhook. A webhook carries the invoice number too, as another
+ * name the core may match.
  *
  * Only translation lives here; the money is the core's.
  */
@@ -120,12 +120,13 @@ export class ThreePayPaymentProvider implements PaymentProviderAdapter {
   // Its exchanges carry no client identity: amounts, our reference, payout addresses (0175).
   readonly keepsExchangeLog = true;
   /*
-   * 3pay's guide and its online reference both ask for a 200 to every verified
-   * delivery, and it rings before its own API agrees (seen on every paid
-   * deposit in production, 12 Oct 2026: `initiated` at the delivery,
-   * `confirmed` within the minute). So the deposit is asked about again here.
+   * 3pay says its "confirmed" webhook can reach us before its own API agrees,
+   * and recommends asking again with a 500 ms backoff for up to 5 s (13 Oct
+   * 2026). On 12 Oct the delay measured here was 38 to 55 seconds, so after
+   * those five seconds the deposit is asked about again at 20 s, 50 s and
+   * 110 s. The answer to every verified delivery is a 200 either way.
    */
-  readonly noticeRecheckMs: readonly number[] = [15_000, 60_000];
+  readonly noticeRecheckMs: readonly number[] = [500, 1000, 1500, 2000, 15_000, 30_000, 60_000];
   readonly builtIn = false;
 
   readonly configFields: readonly ProviderConfigField[] = [
@@ -253,8 +254,9 @@ export class ThreePayPaymentProvider implements PaymentProviderAdapter {
           limitsNote(this.client.limits()),
           secret
             ? null
-            : 'The webhook secret could not be read from the account: deliveries signed with ' +
-              'it are refused until it is entered here.',
+            : 'No webhook secret was found on this 3pay account. 3pay signs its webhooks only ' +
+              'when one is set, so they are refused here and deposits are credited by the ' +
+              'regular check, a few minutes later. Set one in 3pay’s dashboard, or enter it here.',
         ]
           .filter((line) => line !== null)
           .join(' '),
@@ -280,12 +282,14 @@ export class ThreePayPaymentProvider implements PaymentProviderAdapter {
    * ignored, and the request is refused as "currencyType is required"), and
    * the customer context from the body.
    *
-   *   webhookUrl   where 3pay reports this payment — ours, per request, so it
-   *                does not depend on what somebody typed in 3pay's dashboard.
-   *   callbackUrl  where 3pay sends the payer's browser afterwards: the API's
-   *                return bounce. (Its PDF guide calls this one the webhook
-   *                address; a webhook posted there finds no route, and the one
-   *                at `webhookUrl` and the sweep still settle the deposit.)
+   *   webhookUrl   where 3pay posts its webhooks: ours. 3pay STORES it on the
+   *                merchant account, for every later webhook, until it is
+   *                changed (3pay, 13 Oct 2026). So one 3pay account serves one
+   *                deployment: a staging or local system given the production
+   *                account would take its webhooks over.
+   *   callbackUrl  where 3pay's payment page sends the payer's browser after
+   *                paying: the API's return bounce. Never server to server
+   *                (3pay, 13 Oct 2026).
    *   referenceId  our reference. `clientReference` is the name 3pay's replies
    *                and its older guide use, so both are sent.
    */
@@ -321,12 +325,12 @@ export class ThreePayPaymentProvider implements PaymentProviderAdapter {
       throw this.startFailure(error);
     }
 
-    // The reply's fields sit at the top (the live API) or under `data` (the PDF guide).
+    // The reply's fields sit at the top (the live API) or under `data`.
     const data = { ...(objectOf(body['data']) ?? {}), ...body };
     const paymentId = paymentIdOf(data);
     const paymentUrl = firstText(data, 'url', 'paymentUrl');
     if (!paymentId) {
-      // Created, most likely, but unnamed: the sweep finds it by our reference.
+      // Created, most likely, but with no transaction id to check it by: the sweep finds it by our reference.
       throw new PaymentIndeterminateError(UNCONFIRMED_PAGE);
     }
     /*
@@ -382,9 +386,7 @@ export class ThreePayPaymentProvider implements PaymentProviderAdapter {
       throw readFailure(error);
     }
     const data = objectOf(body['data']) ?? {};
-    const echoed = isInvoiceNo(externalId)
-      ? textOf(data['invoiceNo'])
-      : textOf(data['transactionId']);
+    const echoed = textOf(data['transactionId']);
     if (echoed !== undefined && echoed !== externalId) {
       throw new ExternalServiceError(
         `3pay answered about payment ${echoed} when asked about ${externalId}.`,
@@ -563,21 +565,18 @@ function depositAsset(channel: PaymentChannel): ThreePayAsset {
 }
 
 /**
- * THE id a deposit is known by on our rows: 3pay's transaction id, or its
- * invoice number where no transaction id is given. One rule for the create
- * reply, a list row and a webhook, so they always agree.
+ * THE id a deposit is known by on our rows: 3pay's transaction id (a uuid),
+ * the only id `/transaction/verify` takes — it does not take an invoice number
+ * (3pay, 13 Oct 2026). One rule for the create reply, a list row and a webhook,
+ * so they always agree.
  */
 export function paymentIdOf(record: Record<string, unknown>): string | undefined {
-  return firstText(record, 'transactionId', 'invoiceNo');
+  return textOf(record['transactionId']);
 }
 
-function isInvoiceNo(id: string): boolean {
-  return /^INV-/i.test(id);
-}
-
-/** How `/transaction/verify` is asked about an id of either kind. */
+/** How `/transaction/verify` is asked about a deposit. */
 function verifyQuery(id: string): Record<string, string> {
-  return isInvoiceNo(id) ? { invoiceNo: id } : { transactionId: id, type: 'deposit' };
+  return { transactionId: id, type: 'deposit' };
 }
 
 /**
@@ -650,11 +649,11 @@ function accountNotes(account: ThreePayAccount): (string | null)[] {
         ? `Payouts: sent automatically up to ${account.maxAutoWithdraw ?? '?'} USDT; a larger ` +
           'one waits for approval in 3pay’s dashboard.'
         : null,
+    'Payout fee: added to each payout, so the client receives exactly what they withdrew.',
     account.withdrawalFeePayer === 'merchant'
-      ? 'Payout fee: charged to the 3pay balance, on top of what the client receives.'
-      : account.withdrawalFeePayer === 'user'
-        ? 'Payout fee: taken out of the amount sent, so each payout is grossed up by it.'
-        : null,
+      ? 'Ask 3pay to set this account’s withdrawal fee payer to "user". It is set to "merchant", ' +
+        'which 3pay does not apply yet; once it does, every client would receive the fee on top.'
+      : null,
     account.depositFeePayer ? `Deposit fee: carried by the ${account.depositFeePayer}.` : null,
     account.staticWallet === true
       ? 'A static wallet is ON at 3pay: payouts above its threshold go to that wallet, not to ' +

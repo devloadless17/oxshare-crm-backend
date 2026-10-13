@@ -58,6 +58,15 @@ const START_ABANDONED_MS = 60 * 60_000;
 /** A hosted deposit still unfinished after this long is a person's to look at. */
 const STALE_AFTER_MS = 7 * 24 * 60 * 60_000;
 /**
+ * How often the payer's own check (the portal's "Check now", the return
+ * bounce) may ask the provider about one deposit; inside it, the stored state
+ * is the answer. On 12 Oct 2026 one client pressed "Check now" sixteen times in
+ * five seconds, and every press spent one of 3pay's hundred reads in fifteen
+ * minutes, shared by every client. The webhook's re-checks and the sweep keep
+ * the stored state fresh.
+ */
+const PAYER_CHECK_EVERY_MS = 15_000;
+/**
  * How long past its own expiry a `received` provider's link is still read as
  * open: a payment sent in its last minute needs time to confirm.
  */
@@ -154,7 +163,17 @@ export class HostedDepositsService implements OnModuleDestroy {
     if (opts.ownerId !== undefined && tx.userId !== opts.ownerId) {
       throw new NotFoundError('No deposit matches that reference.');
     }
-    await this.settleRow(tx, opts.source ?? 'poll');
+    const askedLately =
+      tx.providerCheckedAt !== null &&
+      Date.now() - tx.providerCheckedAt.getTime() < PAYER_CHECK_EVERY_MS;
+    if (!askedLately) {
+      try {
+        await this.settleRow(tx, opts.source ?? 'poll');
+      } catch (error) {
+        // At the provider's request limit: the stored state is the answer, and the sweep carries on.
+        if (!(error instanceof ProviderBusyError)) throw error;
+      }
+    }
     // Re-read: settling may have changed the amount to what arrived.
     return depositStateOf(await this.transactions.getById(tx.id));
   }
@@ -267,7 +286,17 @@ export class HostedDepositsService implements OnModuleDestroy {
    */
   private recheckSoon(txId: string, providerCode: string, attempt = 0): void {
     const delay = this.registry.find(providerCode)?.noticeRecheckMs?.[attempt];
-    if (delay === undefined || this.rechecks.has(txId)) return;
+    if (delay === undefined) {
+      // Worth telling the provider about (3pay asked for such cases): the sweep carries on.
+      if (attempt > 0) {
+        this.logger.warn(
+          `${providerCode} reported deposit ${txId} finished, and its API still disagreed after ` +
+            `${attempt} re-checks; the sweep carries on.`,
+        );
+      }
+      return;
+    }
+    if (this.rechecks.has(txId)) return;
     const timer = setTimeout(() => {
       this.rechecks.delete(txId);
       void this.recheck(txId, providerCode, attempt);
