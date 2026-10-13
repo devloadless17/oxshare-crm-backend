@@ -16,6 +16,8 @@ import type {
 const MAX_BODY_BYTES = 64 * 1024;
 /** The account's webhook secret is re-read at most this often when a signature fails. */
 const SECRET_REFRESH_MS = 10 * 60_000;
+/** After a read of the account made ahead of the others FAILS, the next such read waits this long. */
+const URGENT_RETRY_MS = 60_000;
 
 /** Statuses that promise nothing final — the doorbell is not rung for them. */
 const NOT_FINAL = new Set(['pending', 'initiated', 'executing', 'amount confirmed', 'processing']);
@@ -128,6 +130,7 @@ export class ThreePayWebhookReceiver implements ProviderWebhookReceiver {
 
   private readonly logger = new Logger(ThreePayWebhookReceiver.name);
   private secretRefreshedAt = 0;
+  private urgentFailedAt = 0;
 
   constructor(
     private readonly config: ThreePayConfigService,
@@ -208,12 +211,27 @@ export class ThreePayWebhookReceiver implements ProviderWebhookReceiver {
    */
   private async webhookSecrets(configured: string | null, fresh: boolean): Promise<string[]> {
     const secrets = configured ? [configured] : [];
+    const add = (secret: string | undefined) => {
+      if (secret && !secrets.includes(secret)) secrets.push(secret);
+    };
+    const remembered = await this.client.rememberedWebhookSecret().catch(() => undefined);
+    /*
+     * A routine re-read is background work. With NO secret in hand (a fresh
+     * start), or after a failed signature (once in ten minutes at most), the
+     * read is what a delivery's verification hangs on, so it goes first. One
+     * that fails is not repeated for a minute: while the account cannot be
+     * read, a flood of forged deliveries must not spend the reads a payout or
+     * a paying client needs.
+     */
+    const urgent =
+      fresh || (!remembered && !configured && Date.now() - this.urgentFailedAt >= URGENT_RETRY_MS);
     try {
-      const account = await this.client.account(fresh ? 0 : undefined, 'low');
-      if (account.webhookSecret && !secrets.includes(account.webhookSecret)) {
-        secrets.push(account.webhookSecret);
-      }
+      const account = await this.client.account(fresh ? 0 : undefined, urgent ? 'high' : 'low');
+      add(account.webhookSecret);
     } catch (error) {
+      if (urgent) this.urgentFailedAt = Date.now();
+      // The last secret read still verifies while 3pay's read allowance is spent.
+      add(remembered);
       this.logger.warn(
         `Could not read 3pay’s account for its webhook secret: ${
           error instanceof Error ? error.message : String(error)

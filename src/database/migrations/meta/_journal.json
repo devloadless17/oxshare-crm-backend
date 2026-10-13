@@ -1569,6 +1569,13 @@
       "when": 1789145110750,
       "tag": "0222_threepay_exchange_log_scrub",
       "breakpoints": true
+    },
+    {
+      "idx": 225,
+      "version": "7",
+      "when": 1789145210750,
+      "tag": "0223_exchange_log_rate_limit",
+      "breakpoints": true
     }
   ]
 }

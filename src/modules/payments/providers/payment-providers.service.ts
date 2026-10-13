@@ -160,6 +160,10 @@ export class PaymentProvidersService {
       error: row.error,
       durationMs: row.durationMs,
       reference: row.reference,
+      rateLimit: row.rateLimit,
+      rateRemaining: row.rateRemaining,
+      rateResetSeconds: row.rateResetSeconds,
+      rateWindowSeconds: row.rateWindowSeconds,
       occurredAt: row.occurredAt.toISOString(),
     }));
   }

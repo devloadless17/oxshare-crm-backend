@@ -2650,6 +2650,16 @@ export const paymentProviderExchanges = pgTable(
     error: varchar('error', { length: 500 }),
     durationMs: integer('duration_ms'),
     reference: varchar('reference', { length: 128 }),
+    /**
+     * What the provider said about its request allowance on this answer
+     * (`RateLimit-*`, 0223): the limit, what was left, the seconds until its
+     * window ends, and how long that window is. NULL when it said nothing,
+     * and on every inbound row.
+     */
+    rateLimit: integer('rate_limit'),
+    rateRemaining: integer('rate_remaining'),
+    rateResetSeconds: integer('rate_reset_seconds'),
+    rateWindowSeconds: integer('rate_window_seconds'),
     occurredAt: timestamp('occurred_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [

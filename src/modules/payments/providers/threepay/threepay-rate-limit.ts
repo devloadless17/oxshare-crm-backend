@@ -4,8 +4,12 @@ import { ProviderBusyError } from '../payment-provider';
  * 3PAY'S REQUEST LIMITS, kept on OUR side (0174; rebuilt 12 Oct 2026).
  *
  * What 3pay's server enforces was measured on its live API (12 Oct 2026), and
- * it is NOT what its PDF guide says (60 reads a minute). Every response carries
- * `RateLimit-Limit`, `RateLimit-Remaining` and `RateLimit-Reset`:
+ * it is NOT what its PDF guides say (60 reads, 30 links and 30 payouts a
+ * MINUTE). It is what its online page says (Authentication & Security → Rate
+ * Limits: "per IP"), and it is enforced: on 13 Oct 2026 the 21st link request
+ * in a window was answered 429, "Too many wallet generation requests. Try
+ * again in 15 minutes." Every response carries `RateLimit-Limit`,
+ * `RateLimit-Remaining` and `RateLimit-Reset`:
  *
  *   reads           100 per 15 minutes — ONE budget shared by every read
  *                   (verify, both lists, the payout lookup, the account)
@@ -27,9 +31,11 @@ import { ProviderBusyError } from '../payment-provider';
  * work must never use the read a payout or a paying client needs, so a caller
  * states what the read is for and the lower two leave a reserve:
  *
- *   high    what a payout's state hangs on, and a person's Test connection
- *   normal  a deposit being checked or recovered
- *   low     the balance watch and the records audit
+ *   high    what a payout's state hangs on, a deposit 3pay itself just
+ *           reported (its webhook), and a person's Test connection
+ *   normal  a deposit asked about again by the sweep or a waiting screen,
+ *           or recovered; leaves 40
+ *   low     the balance watch and the records audit; leaves 60
  *
  * Per process. Two API instances each follow the same headers, so they
  * converge on 3pay's own count; its 429 is the backstop, handled the same way.
@@ -56,6 +62,8 @@ export interface BudgetReading {
   remaining?: number;
   /** Seconds until the window ends. */
   resetSeconds?: number;
+  /** How long its window is, in seconds (`RateLimit-Policy: 20;w=900`). */
+  windowSeconds?: number;
 }
 
 /** A non-negative integer header, or undefined. */
@@ -64,25 +72,43 @@ function countHeader(value: string | null): number | undefined {
   return /^\d{1,9}$/.test(text) ? Number.parseInt(text, 10) : undefined;
 }
 
+/** The window of a `RateLimit-Policy` header (`<limit>;w=<seconds>`), or undefined. */
+function policyWindow(value: string | null): number | undefined {
+  const match = /;\s*w=(\d{1,9})(?!\d)/.exec(value ?? '');
+  return match ? Number.parseInt(match[1], 10) : undefined;
+}
+
 /** The `RateLimit-*` headers of a response (`get` reads one header by name). */
 export function budgetReadingOf(get: (name: string) => string | null): BudgetReading {
   return {
     limit: countHeader(get('ratelimit-limit')),
     remaining: countHeader(get('ratelimit-remaining')),
     resetSeconds: countHeader(get('ratelimit-reset')),
+    windowSeconds: policyWindow(get('ratelimit-policy')),
   };
+}
+
+/** A budget as it stands, for a person to read. */
+export interface BudgetState {
+  limit: number;
+  /** The length of the window the limit is counted in. */
+  windowSeconds: number;
+  left: number;
+  /** Whether 3pay has stated this limit on an answer, or it is still the one we assume. */
+  stated: boolean;
 }
 
 export class RequestBudget {
   private limit: number;
   private remaining: number;
+  private stated = false;
   /** When the current window ends; 0 while no request has opened one. */
   private resetAt = 0;
   private pausedUntil = 0;
 
   constructor(
     limit: number,
-    private readonly windowMs: number,
+    private windowMs: number,
     /** How many requests each lower priority leaves for the ones above it. */
     private readonly reserve: Readonly<Record<ThreePayPriority, number>> = {
       high: 0,
@@ -119,7 +145,13 @@ export class RequestBudget {
    * as 3pay states it.
    */
   observe(reading: BudgetReading): void {
-    if (reading.limit !== undefined && reading.limit > 0) this.limit = reading.limit;
+    if (reading.limit !== undefined && reading.limit > 0) {
+      this.limit = reading.limit;
+      this.stated = true;
+    }
+    if (reading.windowSeconds !== undefined && reading.windowSeconds > 0) {
+      this.windowMs = reading.windowSeconds * 1000;
+    }
     if (reading.remaining === undefined || reading.resetSeconds === undefined) return;
     const resetAt = this.now() + reading.resetSeconds * 1000;
     const sameWindow = this.resetAt !== 0 && Math.abs(resetAt - this.resetAt) < 5000;
@@ -133,6 +165,15 @@ export class RequestBudget {
    */
   pause(ms: number): void {
     this.pausedUntil = Math.max(this.pausedUntil, this.now() + ms);
+  }
+
+  state(): BudgetState {
+    return {
+      limit: this.limit,
+      windowSeconds: Math.round(this.windowMs / 1000),
+      left: this.left(),
+      stated: this.stated,
+    };
   }
 
   /** What is left right now, for a log line. */

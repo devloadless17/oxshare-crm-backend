@@ -189,6 +189,14 @@ export interface StartedPayment {
   expiresAt?: Date;
 }
 
+/**
+ * Why a hosted payment is being asked about. `event`: the provider itself just
+ * reported it (a verified delivery) or a person at the desk is deciding — the
+ * answer is probably news. `background`: a sweep or a waiting screen asking
+ * again. A provider with a request allowance keeps part of it for `event`.
+ */
+export type PaymentCheckUrgency = 'event' | 'background';
+
 /** What the provider says a payment is now. */
 export interface PaymentStatus {
   /** Final at the provider: paid, or it never will be. */
@@ -477,8 +485,15 @@ export interface PaymentProviderAdapter {
   /** `redirect` deposit channels: open the hosted payment. */
   startPayment?(channel: PaymentChannel, input: StartPaymentInput): Promise<StartedPayment>;
 
-  /** `redirect` deposit channels: what the provider says the payment is now. */
-  checkPayment?(channel: PaymentChannel, externalId: string): Promise<PaymentStatus>;
+  /**
+   * `redirect` deposit channels: what the provider says the payment is now.
+   * `urgency` says why it is asked, for a provider that rations its reads.
+   */
+  checkPayment?(
+    channel: PaymentChannel,
+    externalId: string,
+    urgency?: PaymentCheckUrgency,
+  ): Promise<PaymentStatus>;
 
   /**
    * A start whose ANSWER was lost: find or re-create the payment for this

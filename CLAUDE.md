@@ -1556,9 +1556,19 @@ an HTML 404, an existing one a JSON 401):
   `/withdrawal-requests/:id/approve|reject`, `/transaction/cancel`.
 - **`POST /transaction/create` reads `currencyType` and `amount` from the QUERY STRING.** In the body
   they are ignored.
-- **Rate limits are a tenth of the PDFs'**, in fixed 15-minute windows, per calling IP, counted even
-  for a refused request: **100 reads (ONE budget for every read endpoint), 20 payment links, 30
-  payout requests.**
+- **Rate limits are NOT the PDFs'** (both print 60 reads, 30 links and 30 payouts a MINUTE). They
+  are per calling IP, in 15-minute windows, counted even for a refused request: **100 reads (ONE
+  budget for every read endpoint), 20 payment links, 30 payout requests.** Three things agree
+  (checked again 13 Oct 2026, when the owner doubted the 20):
+  - 3pay's ONLINE page _Authentication & Security → Rate Limits_ prints exactly this table, "per
+    IP". A payment link is its "Wallet Generation" tier (each link is given its own wallet).
+  - Every reply states it (`RateLimit-Limit`, `-Remaining`, `-Reset`). Asked from production's
+    own address, 3pay said 95 of 100 reads were left: production's 4 authenticated reads in that
+    window plus the probe. So authenticated calls are counted in that same per-address bucket.
+  - It is enforced: the 21st link request in a window was answered 429, "Too many wallet generation
+    requests. Try again in 15 minutes."
+  - Only 3pay can raise them. The adapter assumes none of this: it follows the headers of each real
+    answer, so a raised limit is used the moment 3pay states it.
 - **Seen in production's exchange log**: `/transaction/list` answers `{data: {docs, page, limit}}`;
   `/getMerchantDetails` carries `webhookSecret` in clear, `autoWithdraw`, `maxAutoWithdrawAmount`,
   `depositFeePayer`, `withdrawalFeePayer`; three deliveries from 3pay's dashboard were refused for
@@ -1625,8 +1635,13 @@ payout delivers.
   every verified event, except 503 when every notice hit "not stored yet" or "not caught up".
 - **Request budgets** (`threepay-rate-limit.ts`): each class follows 3pay's own `RateLimit-*`
   headers, and a call that would overdraw is refused before it is sent (`ProviderBusyError`). Reads
-  share one budget, so they have priorities: `high` (a payout's state, Test connection), `normal` (a
-  deposit; leaves 10), `low` (the balance watch, the records audit, the webhook secret; leaves 35).
+  share one budget, so they have priorities: `high` (a payout's state, a deposit 3pay itself just
+  reported by webhook, Test connection), `normal` (a deposit re-asked by the sweep or a waiting
+  screen; leaves 40), `low` (the balance watch, the records audit, the routine webhook-secret
+  re-read; leaves 60). The core says why it asks (`PaymentCheckUrgency`: `event` | `background`).
+  A delivery is still verified while the budget is spent: the last webhook secret read is kept.
+  A `received` link 30 minutes past its own expiry that 3pay still calls open is closed as
+  expired (13 Oct 2026: 3pay left two `initiated` for 14 hours); a late payment still credits.
   The core was changed so the background does not spend it:
   - expired links are re-asked at a widening interval (a quarter of their age, at least an hour),
     five a sweep (`LATE_BATCH`), not all of them every hour for a month;
@@ -1652,6 +1667,9 @@ payout delivers.
   first place to look when 3pay refuses something**: the request, the reply and 3pay's `errors`
   detail are all there.
   - It never holds headers, so no credential we send and no webhook signature is kept.
+  - The one exception is four NUMBERS (0223): what 3pay said about its request allowance on that
+    answer (`rate_limit`, `rate_remaining`, `rate_reset_seconds`, `rate_window_seconds`). Its PDFs
+    print other limits, so this is where production's real figures are read, per kind of call.
   - ⚠️ 3pay's account reply carries its webhook secret and its owner's contact details. Since
     12 Oct 2026 `loggableBody` cuts that reply down to its figures and blanks any field named like
     a credential; migration **0222** removed what had already been stored (the one edit the log
@@ -1661,7 +1679,8 @@ payout delivers.
 - **Test connection** reads the account and one page of each list, so a reply this build cannot
   read is found by a person pressing a button. Its message says how the ACCOUNT is set: whether
   payouts wait for approval in 3pay's dashboard, who carries each fee, and whether a static wallet
-  is on.
+  is on. It ends with the request limits 3pay STATED to this server on real calls (a kind of call
+  not made since the last restart is said to be not stated yet).
 - **Proof**: `providers/threepay/threepay.spec.ts` (pure) and `test/threepay-flow.spec.ts` (the real
   adapter through the real core against `test/support/threepay-sim.ts`, which behaves as the LIVE
   server was measured to, with a switch to the guides' shapes).

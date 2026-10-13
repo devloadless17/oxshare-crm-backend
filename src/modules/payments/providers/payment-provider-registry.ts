@@ -7,6 +7,7 @@ import {
   type PaymentChannel,
   type PaymentProviderAdapter,
   type PaymentRoute,
+  type PaymentCheckUrgency,
   type PaymentStatus,
   type PayoutRail,
   type StartedPayment,
@@ -231,12 +232,16 @@ export class PaymentProviderRegistry {
   }
 
   /** What the provider says a hosted payment is now. */
-  checkPayment(route: PaymentRoute, externalId: string): Promise<PaymentStatus> {
+  checkPayment(
+    route: PaymentRoute,
+    externalId: string,
+    urgency: PaymentCheckUrgency = 'background',
+  ): Promise<PaymentStatus> {
     const { adapter, channel } = this.redirect(route);
     if (!adapter.checkPayment) {
       throw new ValidationError(`${adapter.name} cannot report on a hosted payment.`);
     }
-    return adapter.checkPayment(channel, externalId);
+    return adapter.checkPayment(channel, externalId, urgency);
   }
 
   /**

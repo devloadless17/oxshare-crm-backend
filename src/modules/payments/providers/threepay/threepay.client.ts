@@ -13,7 +13,14 @@ import {
   parseLossless,
   textOf,
 } from './threepay-json';
-import { RequestBudget, budgetReadingOf, busy, type ThreePayPriority } from './threepay-rate-limit';
+import {
+  RequestBudget,
+  budgetReadingOf,
+  busy,
+  type BudgetReading,
+  type BudgetState,
+  type ThreePayPriority,
+} from './threepay-rate-limit';
 import { ThreePayConfigService, type ThreePayConfig } from './threepay-config.service';
 
 /**
@@ -329,6 +336,30 @@ export class ThreePayClient {
     return account;
   }
 
+  /**
+   * The webhook secret from the last account reading, however old. A delivery
+   * must still be verifiable while the read budget is spent: refusing 3pay's
+   * own report for want of a read would hold up the credit it announces.
+   */
+  async rememberedWebhookSecret(): Promise<string | undefined> {
+    const config = await this.configured();
+    const held = this.accountRead;
+    return held && held.baseUrl === config.baseUrl ? held.account.webhookSecret : undefined;
+  }
+
+  /**
+   * Each request allowance as it stands: the limit, what is left, and whether
+   * 3pay has STATED it to this process (until a call of that kind is answered,
+   * the limit is the one measured on 12 Oct 2026).
+   */
+  limits(): Record<'read' | 'create' | 'payout', BudgetState> {
+    return {
+      read: this.budgets.read.state(),
+      create: this.budgets.create.state(),
+      payout: this.budgets.payout.state(),
+    };
+  }
+
   /** How old the remembered account reading is, or null when there is none. */
   accountAgeMs(): number | null {
     return this.accountRead ? Date.now() - this.accountRead.at : null;
@@ -365,7 +396,12 @@ export class ThreePayClient {
      * which carry the key and the secret, and never a credential 3pay put in a
      * reply (`loggableBody`).
      */
-    const log = (status: number | null, responseBody: string | null, error?: string) =>
+    const log = (
+      status: number | null,
+      responseBody: string | null,
+      error?: string,
+      rate?: BudgetReading,
+    ) =>
       this.exchanges.record({
         providerCode: 'threepay',
         direction: 'outbound',
@@ -378,6 +414,7 @@ export class ThreePayClient {
         error: error ?? null,
         durationMs: Date.now() - started,
         reference: options.reference ?? null,
+        rate: rate ?? null,
       });
     let response: Response;
     let text: string;
@@ -404,8 +441,10 @@ export class ThreePayClient {
     } finally {
       clearTimeout(timer);
     }
-    log(response.status, text);
-    this.budgets[call].observe(budgetReadingOf((name) => response.headers.get(name)));
+    // What 3pay states about its allowance is kept with the exchange: its PDF guides print other limits.
+    const allowance = budgetReadingOf((name) => response.headers.get(name));
+    log(response.status, text, undefined, allowance);
+    this.budgets[call].observe(allowance);
 
     if (response.status === 429) {
       const wait = retryAfterMs(
@@ -467,7 +506,12 @@ export class ThreePayClient {
 /** Measured on 3pay's live server, 12 Oct 2026; corrected by every response's headers. */
 function freshBudgets(): Record<ThreePayCall, RequestBudget> {
   return {
-    read: new RequestBudget(100, WINDOW_MS, { high: 0, normal: 10, low: 35 }),
+    /*
+     * `normal` (a sweep or a waiting screen re-asking about a deposit) leaves 40
+     * for what 3pay itself reports: at most 20 links open per window, and each
+     * paid one is asked about twice (3pay rings before its API agrees).
+     */
+    read: new RequestBudget(100, WINDOW_MS, { high: 0, normal: 40, low: 60 }),
     create: new RequestBudget(20, WINDOW_MS),
     payout: new RequestBudget(30, WINDOW_MS),
   };

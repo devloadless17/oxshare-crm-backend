@@ -57,6 +57,11 @@ const START_ABANDONED_MS = 60 * 60_000;
 /** A hosted deposit still unfinished after this long is a person's to look at. */
 const STALE_AFTER_MS = 7 * 24 * 60 * 60_000;
 /**
+ * How long past its own expiry a `received` provider's link is still read as
+ * open: a payment sent in its last minute needs time to confirm.
+ */
+const LINK_GRACE_MS = 30 * 60_000;
+/**
  * A `received` provider may confirm an expired link late; watched this long.
  * Re-asked an hour after it expired, then at a widening interval (a quarter of
  * its age: a day-old link every six hours, a three-week-old one every five
@@ -243,7 +248,7 @@ export class HostedDepositsService {
     log: (outcome: ProviderEventOutcome, reason: string) => Promise<void>,
   ): Promise<NoticeOutcome> {
     if (!tx.providerPaymentId) return 'stale';
-    const result = await this.registry.checkPayment(tx, tx.providerPaymentId);
+    const result = await this.registry.checkPayment(tx, tx.providerPaymentId, 'event');
     if (!result.paid) {
       await log('ignored', `Already ${tx.state}; a terminal deposit never moves back.`);
       return 'stale';
@@ -294,7 +299,12 @@ export class HostedDepositsService {
     // The start never confirmed: the sweep recovers it first.
     if (!tx.providerPaymentId) return { state: tx.state };
 
-    const result = await this.registry.checkPayment(route, tx.providerPaymentId);
+    // The provider's own report, or the desk: served ahead of the sweep's re-asking.
+    const result = await this.registry.checkPayment(
+      route,
+      tx.providerPaymentId,
+      source === 'poll' ? 'background' : 'event',
+    );
     const now = new Date();
     await this.db
       .update(transactions)
@@ -311,7 +321,23 @@ export class HostedDepositsService {
      * failed" — the link stays live until it is paid or expires — so an early
      * failure report must not fail the deposit.
      */
-    if (!result.settled) return { state: tx.state };
+    if (!result.settled) {
+      /*
+       * THE LINK'S OWN TIME IS UP and the provider never said so (3pay left two
+       * links `initiated` for 14 hours, 12 Oct 2026: the client read "pending"
+       * and every sweep spent a request on each). Closed as expired — which for
+       * a `received` provider closes nothing for good: `fail` hands money that
+       * arrived to a person, and a late confirmation is still credited.
+       */
+      const ends = tx.providerPaymentExpiresAt;
+      const outlived =
+        policy === 'received' &&
+        tx.state === 'pending' &&
+        ends !== null &&
+        Date.now() > ends.getTime() + LINK_GRACE_MS;
+      if (outlived) return this.fail(tx, channel, policy, { ...result, expired: true }, source);
+      return { state: tx.state };
+    }
 
     if (!result.paid) {
       if (tx.state !== 'pending') return { state: tx.state };
