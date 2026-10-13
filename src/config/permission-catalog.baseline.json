@@ -127,8 +127,6 @@
     "roles.edit",
     "roles.view",
     "settings.edit",
-    "settings.security.edit",
-    "settings.security.view",
     "settings.smtp.edit",
     "settings.smtp.view",
     "settings.view",

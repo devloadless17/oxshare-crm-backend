@@ -272,6 +272,7 @@ export class AdminAuthController {
       dto.maskedFields,
       dto.scopedTagIds,
       dto.seesAllClients,
+      { accessAnywhere: dto.accessAnywhere, allowedIps: dto.allowedIps },
     );
   }
 

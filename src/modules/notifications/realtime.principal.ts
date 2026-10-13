@@ -148,7 +148,7 @@ export class RealtimePrincipalResolver {
        * offered here: a standing machine credential should not be able to hold
        * a socket open.
        */
-      return await this.adminAuthenticator.authenticate({ cookies } as never);
+      return await this.adminAuthenticator.authenticateSocket(cookies);
     } catch {
       return null;
     }

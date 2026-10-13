@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { adminNetworkAdmits, ipAllowlistEnforced } from '../src/common/security/admin-network';
+import {
+  adminNetworkAdmits,
+  ipAllowlistEnforced,
+  resolveNetworkAccess,
+} from '../src/common/security/admin-network';
 import { isAdminSurface } from '../src/common/api-prefix';
-import { ALERT_KINDS } from '../src/common/logging/alerts';
+import { ValidationError } from '../src/common/errors/domain-errors';
 
 /**
  * RBAC-08 — the properties that stop this feature hurting anybody.
@@ -27,33 +31,72 @@ afterEach(() => {
   else process.env['ADMIN_IP_ALLOWLIST_ENABLED'] = ORIGINAL;
 });
 
-describe('an empty list cannot lock anybody out', () => {
-  it('admits every caller while no rule exists (D-10)', () => {
-    // The deploy that CREATES the table must not lock out every administrator
-    // before anyone can add a rule. Enforcement begins with the first row.
-    expect(adminNetworkAdmits([], '203.0.113.5')).toBe(true);
-    expect(adminNetworkAdmits([], '::1')).toBe(true);
+const ANYWHERE = { accessAnywhere: true, allowedIps: [] };
+const OFFICE = { accessAnywhere: false, allowedIps: ['203.0.113.0/24'] };
+
+describe('an administrator who may connect from anywhere', () => {
+  it('is admitted from every address, including one that cannot be determined', () => {
+    expect(adminNetworkAdmits(ANYWHERE, '203.0.113.5')).toBe(true);
+    expect(adminNetworkAdmits(ANYWHERE, '::1')).toBe(true);
+    expect(adminNetworkAdmits(ANYWHERE, undefined)).toBe(true);
   });
 
-  it('admits a caller whose address could not be determined, while empty', () => {
-    // Unknown address + no rules is still "not configured", not a denial.
-    expect(adminNetworkAdmits([], undefined)).toBe(true);
+  it('is the reading of a row that predates the column (and of an API key)', () => {
+    // An identity with no setting at all — an API key, a row from before 0224 —
+    // must not be locked out by a field nobody set.
+    expect(adminNetworkAdmits({}, '198.51.100.9')).toBe(true);
   });
 });
 
-describe('a configured list denies what it does not name', () => {
-  it('admits an address inside a configured range', () => {
-    expect(adminNetworkAdmits(['203.0.113.0/24'], '203.0.113.5')).toBe(true);
+describe('a restricted administrator', () => {
+  it('is admitted from inside one of their own ranges', () => {
+    expect(adminNetworkAdmits(OFFICE, '203.0.113.5')).toBe(true);
   });
 
-  it('denies an address outside every range', () => {
-    expect(adminNetworkAdmits(['203.0.113.0/24'], '198.51.100.9')).toBe(false);
+  it('is refused outside every one of their ranges', () => {
+    expect(adminNetworkAdmits(OFFICE, '198.51.100.9')).toBe(false);
   });
 
-  it('DENIES an unknown address rather than failing open', () => {
-    // Once somebody has said "only these addresses", admitting a caller we
-    // cannot identify defeats the entire control.
-    expect(adminNetworkAdmits(['203.0.113.0/24'], undefined)).toBe(false);
+  it('is REFUSED from an unknown address rather than failing open', () => {
+    expect(adminNetworkAdmits(OFFICE, undefined)).toBe(false);
+  });
+
+  it('with no address at all is refused everywhere', () => {
+    expect(adminNetworkAdmits({ accessAnywhere: false, allowedIps: [] }, '203.0.113.5')).toBe(
+      false,
+    );
+  });
+});
+
+describe('what the invite and edit screens may store', () => {
+  it('canonicalises, trims and de-duplicates', () => {
+    expect(
+      resolveNetworkAccess({
+        accessAnywhere: false,
+        allowedIps: [' 198.51.100.7 ', '10.0.0.5/8', '198.51.100.7', ''],
+      }),
+    ).toEqual({ accessAnywhere: false, allowedIps: ['198.51.100.7/32', '10.0.0.0/8'] });
+  });
+
+  it('clears the list when access is from anywhere', () => {
+    expect(resolveNetworkAccess({ accessAnywhere: true, allowedIps: ['10.0.0.1'] })).toEqual({
+      accessAnywhere: true,
+      allowedIps: [],
+    });
+  });
+
+  it('refuses a restricted administrator with no address', () => {
+    expect(() => resolveNetworkAccess({ accessAnywhere: false, allowedIps: [' '] })).toThrow(
+      ValidationError,
+    );
+  });
+
+  it('refuses something that is not an address, and a /0 posing as one', () => {
+    for (const bad of ['office', '300.1.1.1', '0.0.0.0/0', '10.0.0.1/0']) {
+      expect(() => resolveNetworkAccess({ accessAnywhere: false, allowedIps: [bad] })).toThrow(
+        ValidationError,
+      );
+    }
   });
 });
 
@@ -61,20 +104,13 @@ describe('the way back in', () => {
   it('is ON by default — absent configuration enforces', () => {
     delete process.env['ADMIN_IP_ALLOWLIST_ENABLED'];
     expect(ipAllowlistEnforced()).toBe(true);
-    expect(adminNetworkAdmits(['203.0.113.0/24'], '198.51.100.9')).toBe(false);
+    expect(adminNetworkAdmits(OFFICE, '198.51.100.9')).toBe(false);
   });
 
-  it('admits everyone when enforcement is switched off, rules and all', () => {
-    /*
-     * The recovery path this feature was missing. The lockout protections in the
-     * service refuse the two rules that would lock you out AT THE MOMENT YOU
-     * WRITE THEM; they cannot help with a dynamic address changing overnight or
-     * a laptop moving office. Without this the only way back is a DELETE on the
-     * table by somebody with database access, during an incident.
-     */
+  it('admits everyone when enforcement is switched off, addresses and all', () => {
     process.env['ADMIN_IP_ALLOWLIST_ENABLED'] = 'false';
-    expect(adminNetworkAdmits(['203.0.113.0/24'], '198.51.100.9')).toBe(true);
-    expect(adminNetworkAdmits(['203.0.113.0/24'], undefined)).toBe(true);
+    expect(adminNetworkAdmits(OFFICE, '198.51.100.9')).toBe(true);
+    expect(adminNetworkAdmits(OFFICE, undefined)).toBe(true);
   });
 
   it('treats any value other than the exact string "false" as enabled', () => {
@@ -127,110 +163,5 @@ describe('nothing outside the admin surface is affected', () => {
      * be renamed rather than this loosened.
      */
     expect(isAdminSurface('/v1/administrators')).toBe(true);
-  });
-});
-
-describe('an unreadable list cannot take the console down', () => {
-  /*
-   * The failure this feature was deleted over, reproduced and pinned.
-   *
-   * `IpAllowlistGuard` runs on EVERY admin request, including the login that
-   * would let somebody fix it. When the table is missing — migrations pending,
-   * a restored backup, `npm run dev` before `npm run db:migrate` — the query
-   * throws. Without a catch every admin request answers 500, `POST
-   * /admin/auth/login` included, and the console that manages the allowlist is
-   * unreachable.
-   *
-   * A browser found this within a minute while all 1792 backend tests were
-   * green: every one of them runs against a MIGRATED database, so none of them
-   * models one that is behind.
-   */
-  it('admits the request when the store throws, rather than 500ing', async () => {
-    const { IpAllowlistGuard } = await import('../src/modules/admin/guards/ip-allowlist.guard');
-    const store = {
-      listCidrs: () => Promise.reject(new Error('relation "admin_ip_allowlist" does not exist')),
-    };
-    const guard = new IpAllowlistGuard(store as never, {} as never);
-
-    const context = {
-      getType: () => 'http',
-      switchToHttp: () => ({ getRequest: () => ({ path: '/v1/admin/auth/login', ip: '::1' }) }),
-    };
-
-    await expect(guard.canActivate(context as never)).resolves.toBe(true);
-  });
-
-  it('PAGES when it fails open, instead of failing open quietly', async () => {
-    /*
-     * The half the catch was missing, and the one its own comment already
-     * demanded: "the log line is ERROR, not WARN, because a security control
-     * that is not running is worth waking somebody for."
-     *
-     * An ERROR line wakes nobody. `RedisThrottlerStorage` makes the identical
-     * fail-open argument and raises `SECURITY_CONTROL_DISABLED` at `page`; this
-     * guard made the argument and stopped there — so RBAC-08 could be off across
-     * the whole estate, admitting every admin request regardless of network,
-     * with nothing but a log line among thousands to say so.
-     *
-     * Asserted on the ALERT PAYLOAD rather than on the prose, because the
-     * payload is the machine-detectable half — `alert: true` and a kind from a
-     * closed set are what a log pipeline can route on.
-     */
-    const { IpAllowlistGuard } = await import('../src/modules/admin/guards/ip-allowlist.guard');
-    const store = {
-      listCidrs: () => Promise.reject(new Error('relation "admin_ip_allowlist" does not exist')),
-    };
-    const guard = new IpAllowlistGuard(store as never, {} as never);
-
-    const logged: unknown[] = [];
-    const logger = (guard as unknown as { logger: { error: (v: unknown) => void } }).logger;
-    const original = logger.error.bind(logger);
-    logger.error = (value: unknown) => {
-      logged.push(value);
-    };
-
-    const context = {
-      getType: () => 'http',
-      switchToHttp: () => ({ getRequest: () => ({ path: '/v1/admin/auth/login', ip: '::1' }) }),
-    };
-
-    try {
-      await expect(guard.canActivate(context as never)).resolves.toBe(true);
-    } finally {
-      logger.error = original;
-    }
-
-    const alert = logged.find(
-      (entry): entry is { alert: true; kind: string; severity: string } =>
-        typeof entry === 'object' && entry !== null && 'alert' in entry,
-    );
-
-    expect(alert, 'failing open raised no alert — only a log line').toBeDefined();
-    // The CONSTANT, not a string copy of it — a literal here would keep passing
-    // if the kind were renamed, which is the drift the closed set exists to stop.
-    expect(alert!.kind).toBe(ALERT_KINDS.SECURITY_CONTROL_DISABLED);
-    // `page`, not `notify`: the control is off for every admin request in the
-    // estate, and nothing else in the system will notice.
-    expect(alert!.severity).toBe('page');
-  });
-
-  it('still enforces normally when the store answers', async () => {
-    // The catch must not have become an unconditional pass.
-    const { IpAllowlistGuard } = await import('../src/modules/admin/guards/ip-allowlist.guard');
-    const guard = new IpAllowlistGuard(
-      {
-        listCidrs: () => Promise.resolve(['203.0.113.0/24']),
-      } as never,
-      {} as never,
-    );
-
-    const context = {
-      getType: () => 'http',
-      switchToHttp: () => ({
-        getRequest: () => ({ path: '/v1/admin/clients', ip: '198.51.100.9' }),
-      }),
-    };
-
-    await expect(guard.canActivate(context as never)).rejects.toThrow(/not permitted/i);
   });
 });

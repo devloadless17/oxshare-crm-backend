@@ -85,6 +85,10 @@ export interface Admin {
   maskedFields?: string[];
   /** Sees every client — the explicit grant (0154). See `scopeOf`. */
   seesAllClients?: boolean;
+  /** RBAC-08 (0224): may reach the console from any network. See `adminNetworkAdmits`. */
+  accessAnywhere?: boolean;
+  /** RBAC-08 (0224): the canonical CIDRs this administrator may connect from. */
+  allowedIps?: string[];
   /**
    * The cutoff that invalidates access tokens issued before it.
    *
@@ -132,6 +136,9 @@ export interface AdminInvite {
   scopedTagIds?: string[];
   /** All-clients grant chosen at invite time, applied on acceptance (0154). */
   seesAllClients?: boolean;
+  /** Network access chosen at invite time, applied on acceptance (0224). */
+  accessAnywhere?: boolean;
+  allowedIps?: string[];
   invitedBy: string;
   expiresAt: Date;
   accepted: boolean;

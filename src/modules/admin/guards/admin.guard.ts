@@ -32,6 +32,8 @@ import { RefreshTokensService } from '../../../common/security/refresh-tokens.se
 import { ClientFieldsService } from '../client-fields.service';
 import { scopeOf, type ClientScope } from '../../../common/security/client-scope';
 import type { FieldMask } from '../../../common/security/field-mask';
+import { clientIp } from '../../../common/security/client-ip';
+import { adminNetworkAdmits, NETWORK_REFUSED } from '../../../common/security/admin-network';
 
 /*
  * `isMaster()` is gone. Nothing is exempt from scoping and masking by identity
@@ -120,6 +122,18 @@ export class AdminAuthenticator {
     return this.withFieldMask(await this.authenticateCookie(req));
   }
 
+  /**
+   * The session door for the realtime socket, which has cookies and no request:
+   * there is no address to judge, so RBAC-08 is not applied — as before 0224,
+   * when the network check lived in an HTTP-only guard. The socket only carries
+   * notifications; every action still goes through HTTP and is judged there.
+   */
+  async authenticateSocket(cookies: Record<string, string>): Promise<AuthenticatedAdmin> {
+    return this.withFieldMask(
+      await this.authenticateCookie({ cookies } as unknown as AdminRequest, false),
+    );
+  }
+
   private withFieldMask(admin: AuthenticatedAdmin): AuthenticatedAdmin {
     /*
      * The mask travels with the request (`currentFieldMask`), so the one
@@ -156,7 +170,11 @@ export class AdminAuthenticator {
     return this.authenticateCookie(req);
   }
 
-  private async authenticateCookie(req: AdminRequest): Promise<AuthenticatedAdmin> {
+  private async authenticateCookie(
+    req: AdminRequest,
+    /** RBAC-08 — false only for the socket, which has no address to judge. */
+    judgeNetwork = true,
+  ): Promise<AuthenticatedAdmin> {
     const token = readSessionCookie(
       req.cookies as Record<string, string | undefined> | undefined,
       COOKIE_BASES.adminAccess,
@@ -297,6 +315,18 @@ export class AdminAuthenticator {
         code: 'SESSION_REVOKED',
       });
     }
+    /*
+     * RBAC-08, per person (0224): THIS administrator's networks. Judged here,
+     * where their row is already loaded, so it costs nothing and covers every
+     * route a session reaches — the /admin surface and the /uploads file routes
+     * alike. After the session checks above on purpose: an expired token still
+     * answers 401, the console refreshes, and the refresh door judges the
+     * network again. A key is never judged: it has no person behind it.
+     */
+    if (judgeNetwork && !adminNetworkAdmits(admin, clientIp(req))) {
+      throw new ForbiddenException(NETWORK_REFUSED);
+    }
+
     // Role-derived permissions resolve live: editing a role takes effect on the
     // next request from every admin holding it — no re-login, no stale grants.
     const permissions = await this.roles.resolvePermissions(admin.roleId, admin.permissions);

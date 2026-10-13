@@ -774,22 +774,5 @@
       }
     ],
     "notes": "Machine credentials for the admin API. Grant create NARROWLY: a key is standing access with no login and no session lifetime, carrying whatever permissions its creator holds, so the power to issue one is close to the power to grant one."
-  },
-  "network": {
-    "group": "security",
-    "moduleName": "Network access",
-    "description": "Which networks may reach this console.",
-    "permissions": [
-      {
-        "key": "settings.security.view",
-        "label": "See network access",
-        "opens": ["/network-access"]
-      },
-      {
-        "key": "settings.security.edit",
-        "label": "Change allowed networks and exemptions",
-        "requires": ["settings.security.view"]
-      }
-    ]
   }
 }

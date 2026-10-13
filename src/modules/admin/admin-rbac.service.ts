@@ -1,4 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
+import { resolveNetworkAccess } from '../../common/security/admin-network';
 import { sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db, Executor } from '../../database/db';
@@ -754,6 +755,10 @@ export class AdminRbacService {
       scopedTagIds?: string[];
       /** Sees every client — the explicit grant (0154). */
       seesAllClients?: boolean;
+      /** RBAC-08 (0224): may reach the console from any network. */
+      accessAnywhere?: boolean;
+      /** RBAC-08 (0224): the networks they may use when not from anywhere. */
+      allowedIps?: string[];
     },
     actor: AuthenticatedAdmin,
   ) {
@@ -784,12 +789,19 @@ export class AdminRbacService {
      * anyone could widen their OWN by editing themselves, which is a one-request
      * privilege escalation with no permission change to notice in the audit log.
      */
+    /*
+     * Network access (0224) is ACCESS too: widening your own to "anywhere" is a
+     * one-request escape from the control, and narrowing it is how you lock
+     * yourself out. Someone else changes it — the same rule as permissions.
+     */
+    const touchesNetwork = patch.accessAnywhere !== undefined || patch.allowedIps !== undefined;
     const touchesAccess = Boolean(
       patch.roleId ||
       patch.permissions ||
       patch.maskedFields !== undefined ||
       patch.scopedTagIds !== undefined ||
-      patch.seesAllClients !== undefined,
+      patch.seesAllClients !== undefined ||
+      touchesNetwork,
     );
 
     /*
@@ -800,7 +812,9 @@ export class AdminRbacService {
     // Nobody rewrites their own access — not even a harmless-looking subset;
     // it keeps every permission change attributable to someone else's decision.
     if (AdminRbacService.isSelf(actor, id) && touchesAccess) {
-      throw new AuthorizationError('You cannot change your own role, permissions or visibility.');
+      throw new AuthorizationError(
+        'You cannot change your own role, permissions, visibility or network access.',
+      );
     }
 
     /*
@@ -874,6 +888,16 @@ export class AdminRbacService {
     }
     const narrowsFullSight = update.seesAllClients === false;
 
+    if (touchesNetwork) {
+      update = {
+        ...update,
+        ...resolveNetworkAccess({
+          accessAnywhere: patch.accessAnywhere ?? admin.accessAnywhere !== false,
+          allowedIps: patch.allowedIps ?? admin.allowedIps ?? [],
+        }),
+      };
+    }
+
     const updated = await this.withManagerLock(async (tx) => {
       /*
        * Demoting the last manager is the same outage as suspending them — see
@@ -922,6 +946,17 @@ export class AdminRbacService {
       // question a compliance review asks after an incident.
       ...(patch.scopedTagIds === undefined ? {} : { scopedTagIds: patch.scopedTagIds }),
       ...(update.seesAllClients === undefined ? {} : { seesAllClients: update.seesAllClients }),
+      ...(touchesNetwork
+        ? {
+            network: {
+              before: {
+                accessAnywhere: admin.accessAnywhere ?? true,
+                allowedIps: admin.allowedIps ?? [],
+              },
+              after: { accessAnywhere: update.accessAnywhere, allowedIps: update.allowedIps },
+            },
+          }
+        : {}),
       ...(keysClamped > 0 ? { apiKeysClamped: keysClamped } : {}),
     });
     return await this.sanitize(updated);
@@ -1157,6 +1192,9 @@ export class AdminRbacService {
       // 0154 — the EFFECTIVE all-clients grant: tags restrict whatever the flag
       // says, so a screen reading this cannot mistake a stale flag for sight.
       seesAllClients: (admin.seesAllClients ?? false) && scopedTags.length === 0,
+      // 0224 — RBAC-08, per person.
+      accessAnywhere: admin.accessAnywhere ?? true,
+      allowedIps: admin.allowedIps ?? [],
     };
   }
 }

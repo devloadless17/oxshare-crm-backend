@@ -2,7 +2,6 @@ import { Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { AdminAuthenticator, AdminGuard, PermissionsGuard } from './guards/admin.guard';
-import { IpAllowlistGuard } from './guards/ip-allowlist.guard';
 import { ClientFieldsService } from './client-fields.service';
 import { AdminAuditService } from './admin-audit.service';
 
@@ -30,8 +29,6 @@ const PROVIDERS = [
    * cycle.
    */
   AdminAuditService,
-  // Shared with the `/uploads` file routes, which apply RBAC-08 by hand.
-  IpAllowlistGuard,
 ];
 
 /**

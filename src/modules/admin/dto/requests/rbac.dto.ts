@@ -1,5 +1,13 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsArray, IsBoolean, IsIn, IsOptional, IsString } from 'class-validator';
+import {
+  ArrayMaxSize,
+  IsArray,
+  IsBoolean,
+  IsIn,
+  IsOptional,
+  IsString,
+  MaxLength,
+} from 'class-validator';
 
 // Request DTOs for role and admin-user management.
 // See the note in ./auth.dto.ts for why these moved out of the controller.
@@ -134,6 +142,30 @@ export class UpdateAdminDto {
   @IsBoolean()
   @IsOptional()
   seesAllClients?: boolean;
+
+  /*
+   * RBAC-08, per person (0224): from where this administrator may reach the
+   * console. Validated and canonicalised by `resolveNetworkAccess`.
+   */
+  @ApiPropertyOptional({
+    description:
+      'May reach the console from any network. When false, only from `allowedIps` (at least one).',
+  })
+  @IsBoolean()
+  @IsOptional()
+  accessAnywhere?: boolean;
+
+  @ApiPropertyOptional({
+    type: [String],
+    description:
+      'IPv4 addresses or CIDR ranges this administrator may connect from (203.0.113.7 or 203.0.113.0/24). Ignored when `accessAnywhere` is true.',
+  })
+  @IsArray()
+  @ArrayMaxSize(20)
+  @IsString({ each: true })
+  @MaxLength(43, { each: true })
+  @IsOptional()
+  allowedIps?: string[];
 }
 
 /**

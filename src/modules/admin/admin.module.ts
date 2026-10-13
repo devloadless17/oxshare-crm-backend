@@ -15,12 +15,9 @@ import { AdminComplianceController } from './admin-compliance.controller';
 import { AdminKycAssistController } from './admin-kyc-assist.controller';
 import { AdminClientCreateController } from './admin-client-create.controller';
 import { AdminRbacController } from './admin-rbac.controller';
-import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
+import { APP_INTERCEPTOR } from '@nestjs/core';
 import { HiddenEmailLookupInterceptor } from './hidden-email-lookup.interceptor';
 import { DenialAuditInterceptor } from './denial-audit.interceptor';
-import { AdminIpAllowlistController } from './admin-ip-allowlist.controller';
-import { AdminIpAllowlistService } from './admin-ip-allowlist.service';
-import { IpAllowlistGuard } from './guards/ip-allowlist.guard';
 import { AdminAuthService } from './admin-auth.service';
 import { AdminProfileService } from './admin-profile.service';
 import { AdminTagsService } from './admin-tags.service';
@@ -60,7 +57,6 @@ import { AdminExportModule } from './admin-export.module';
  */
 
 const ADMIN_SERVICES = [
-  AdminIpAllowlistService,
   AdminClientIdentityService,
   AdminClientFollowupService,
   AdminAuthService,
@@ -134,7 +130,6 @@ const ADMIN_SERVICES = [
     AdminRbacController,
     AdminAuditController,
     AdminApiKeysController,
-    AdminIpAllowlistController,
     AdminMoneyController,
     AdminFinancialController,
     AdminStatsController,
@@ -142,25 +137,13 @@ const ADMIN_SERVICES = [
     AdminBridgeController,
   ],
   /*
-   * RBAC-08, restored. Global rather than per-route for the same reason
-   * `CsrfGuard` is: a route that forgets to opt IN is indistinguishable from one
-   * that never needed it, and the surface this protects grows every week.
-   *
-   * It is a NO-OP until the allowlist has a row, which is what makes it safe to
-   * deploy — an empty table cannot lock anybody out, and that property is
-   * asserted rather than assumed (test/ip-allowlist.spec.ts).
-   *
-   * The deletion that removed this argued the restriction belongs at the edge,
-   * in a load balancer or WAF rule, "where it survives an application bug". That
-   * is correct and this does not replace it: an application guard is defence in
-   * depth behind an edge rule, not a substitute for one. What it does buy is a
-   * control an operator can change from the console, on a deployment that has no
-   * WAF in front of it yet — which is this one.
+   * RBAC-08 is no longer a global guard here: since 0224 each administrator has
+   * their own networks, judged by `AdminAuthenticator` on every session it
+   * admits (see admin-network.ts).
    */
   providers: [
     AdminCountriesService,
     ...ADMIN_SERVICES,
-    { provide: APP_GUARD, useClass: IpAllowlistGuard },
     /*
      * Records the permission refusals decided INSIDE services, which the guard
      * never sees — see `denial-audit.interceptor.ts`. Global because
