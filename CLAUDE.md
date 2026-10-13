@@ -768,44 +768,31 @@ one who is working never does. The rule and the console half are in `../CLAUDE.m
 - The portal's session is untouched (15 min / 30 d, `modules/identity/auth.service.ts`).
 - Pinned by `test/admin-idle-timeout.spec.ts`.
 
-## RBAC-08: the network allowlist, and administrators exempt from it (0192, 5 Oct 2026)
+## RBAC-08: each administrator's own networks (0224, 13 Oct 2026)
 
-`IpAllowlistGuard` (global) refuses the `/admin` surface from addresses outside
-`admin_ip_allowlist` once it has a row. It covers `/admin` paths and admin reads of `/uploads`.
-Every integration enters elsewhere (`/payments/providers/:code/webhook`, `/webhooks/mt5/*`), so
-providers and the bridge never need listing. Admin API keys DO.
+The global allowlist, its exemptions and the Network access page are gone. Each administrator has
+`admins.access_anywhere` and `admins.allowed_ips` (canonical IPv4 CIDRs), chosen on the invite
+(carried on `admin_invites` to the account) and on the edit form (`PATCH /admin/users/:id`).
+`resolveNetworkAccess` (common/security/admin-network.ts) validates both doors: a restricted admin
+needs at least one address, a `/0` is refused, and choosing anywhere clears the list. A silent API
+invite inherits the INVITER's setting. Nobody changes their own (it is "access" like permissions).
+The `settings.security.*` keys went with the page. 0224 copied the old list into every row (exempt
+admins and an empty list → anywhere) and set admin@oxshare.com to anywhere; the old tables remain,
+unread.
 
-**An exempt administrator** (`admin_ip_allowlist_exemptions`, a reason required, managed on the
-Network access page with `settings.security.edit`, audited `ip_allowlist.exempt_add|remove`)
-reaches the console from any network. The exemption skips the network check for their SESSIONS
-and nothing else. Three doors, one decision (`IpAllowlistGuard.admitsAddress` / `isExempt`):
+One decision, `adminNetworkAdmits(admin, ip)`, at every door that knows WHO is asking:
 
-- **The guard**, outside the list: `OUTSIDE_SIGN_IN_PATHS` (login, the two authenticator steps,
-  refresh, logout, password-reset completion) pass for the service to judge. Invite routes are
-  refused whatever cookies come with them: they act on a token, so an exempt cookie must not vouch
-  for them. An API key is refused, even beside an exempt cookie, because `AdminGuard` prefers the
-  key. No session gets 403. A session is authenticated: exempt passes, anyone else gets 403, and
-  an expired one gets its 401 so the console refreshes.
-- **Sign-in** (`AdminAuthService.loginFromOutside`): from outside, the ONLY distinguishable answer
-  to the password step is the authenticator challenge (exempt + right password). Everything else
-  is one `NETWORK_NOT_PERMITTED` 403 with the same text. The argon2 work is always spent. A
-  failure is recorded only against an exempt account, so the internet cannot lock out office
-  administrators. The authenticator steps (`beginTotpSetup`, `verifyTotp`) re-judge the network
-  BEFORE the code is checked, so a challenge minted inside cannot be finished outside, and a
-  refused attempt spends no code. Refresh is judged before rotation, so a refusal consumes
-  nothing. A reset link is spent from outside only for an exempt administrator, decided inside
-  the transaction that spends it, so a refusal rolls the spend back.
-- **`/uploads`** passes the session's admin id to `assertAdmitted`.
+- **`AdminAuthenticator.authenticateCookie`** judges every session, after the session checks (so
+  an expired token still 401s and the console refreshes). That covers `/admin` and the
+  `/uploads` file routes. API keys are not judged. The realtime socket (`authenticateSocket`) has
+  no address and is not judged, as before.
+- **Sign-in**: after the password checks, a refused network gets the SAME `AuthenticationError`
+  text as a wrong password (`OUTSIDE_SIGN_IN_REFUSED`), and is not counted as a failure. The
+  authenticator steps re-judge before the code is checked; refresh is judged before rotation; a
+  reset link is judged inside the spending transaction, so a refusal rolls back.
 
-The exemption read FAILS CLOSED while the rules read fails open. Both are right: an unreadable
-grant is no grant, and an unreadable list is no restriction. An exempt caller cannot lock
-themselves out, so the self-lockout refusals on rules are skipped for them. Removing your OWN
-exemption from outside the list is refused. Proved over HTTP by
-`test/ip-allowlist-exemptions-http.spec.ts`.
-
-⚠️ The admin realtime socket (:3003) checks only the Origin, never the allowlist. The risk is low:
-it needs a cookie obtained from inside, and it dies within 15 minutes when refresh is refused.
-Closing it means resolving the socket's forwarded address with `trustedProxyHops()`.
+`ADMIN_IP_ALLOWLIST_ENABLED=false` still switches enforcement off without touching rows. Proved
+over HTTP by `test/admin-network-access-http.spec.ts`.
 
 ## The snapshot carries MORE than a balance (0099)
 

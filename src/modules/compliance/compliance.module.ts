@@ -10,7 +10,7 @@ import { IdentityModule } from '../identity/identity.module';
 
 @Module({
   // UploadsController authenticates through the SAME objects the guards use —
-  // `AdminAuthenticator` + `IpAllowlistGuard` (AdminAuthModule) and
+  // `AdminAuthenticator` (AdminAuthModule, RBAC-08 included) and
   // `JwtStrategy` (IdentityModule) — and asks each bucket's owning module who
   // may read it (`KycDocumentAccess` here, `DepositReceiptAccess` in payments).
   imports: [IdentityModule, AdminAuthModule, PaymentsModule],

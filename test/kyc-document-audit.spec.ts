@@ -10,7 +10,6 @@ import {
 } from '@nestjs/common';
 import { UploadsController } from '../src/modules/compliance/uploads.controller';
 import { AdminAuthenticator } from '../src/modules/admin/guards/admin.guard';
-import { IpAllowlistGuard } from '../src/modules/admin/guards/ip-allowlist.guard';
 import { JwtStrategy } from '../src/modules/identity/strategies/jwt.strategy';
 import { KycDocumentAccess } from '../src/modules/compliance/kyc-document-access.service';
 import { DepositReceiptAccess } from '../src/modules/payments/deposit-receipt-access.service';
@@ -45,15 +44,11 @@ interface Harness {
 }
 
 function makeController(options: {
-  /** RBAC-08. Empty (the default) means the allowlist is not enforcing. */
-  ipAllowlist?: string[];
+  /** RBAC-08 (0224): the admin's own networks. Absent = may connect from anywhere. */
+  adminAllowedIps?: string[];
   adminPermissions?: string[];
   clientOwnsFile?: boolean;
   auditFails?: boolean;
-  /**
-   * RBAC-08 rules in force. Default `[]` — the allowlist is off, which is the
-   * state every other case in this file assumes.
-   */
   /** RBAC-03 territory. Default unrestricted — see `scopes` below. */
   clientScope?: ClientScope;
   /** Who the document belongs to. `null` models a filename nobody owns. */
@@ -102,6 +97,8 @@ function makeController(options: {
               roleId: undefined,
               permissions: [],
               status: options.adminSuspended ? 'suspended' : 'active',
+              accessAnywhere: options.adminAllowedIps === undefined,
+              allowedIps: options.adminAllowedIps ?? [],
             }
           : undefined,
       ),
@@ -166,7 +163,6 @@ function makeController(options: {
    * Per-controller rather than shared, so a case that deletes or fails to find the
    * object cannot leak that state into the next one.
    */
-  const ipAllowlist = { listCidrs: () => Promise.resolve(options.ipAllowlist ?? []) };
   const refreshTokens = { familyIsRevoked: () => Promise.resolve(options.familyRevoked ?? false) };
   const { files, driver } = storageStub();
   void driver.put(`kyc/${FILE}`, DOCUMENT, {
@@ -177,7 +173,7 @@ function makeController(options: {
   /*
    * The REAL authenticators and policy, over the stubs above: the controller
    * no longer authenticates by hand, so this exercises the same
-   * `AdminAuthenticator` / `JwtStrategy` / `IpAllowlistGuard` the guards use.
+   * `AdminAuthenticator` / `JwtStrategy` the guards use (RBAC-08 included).
    */
   const adminAuth = new AdminAuthenticator(
     jwt as never,
@@ -192,10 +188,6 @@ function makeController(options: {
       touchLastUsed: () => Promise.resolve(),
     } as never,
   );
-  // RBAC-08: /uploads/kyc/:file sits outside /admin, so the global guard never
-  // reaches it and the route calls the guard's own `assertAdmitted`. Empty by
-  // default = the allowlist is OFF.
-  const network = new IpAllowlistGuard(ipAllowlist as never, {} as never);
   const portalAuth = new JwtStrategy(
     config as never,
     users as never,
@@ -215,7 +207,6 @@ function makeController(options: {
 
   const controller = new UploadsController(
     adminAuth,
-    network,
     portalAuth,
     kycDocuments,
     depositReceipts,
@@ -479,20 +470,55 @@ describe('R-6.6 — reading a KYC document writes an audit row', () => {
   });
 
   /*
-   * The RBAC-08 describe block was HERE — five tests covering the network
-   * restriction on admin document reads.
-   *
-   * They went with the IP allowlist itself. What they asserted is worth
-   * recording, because it is exactly what no longer holds: an admin outside the
-   * configured CIDRs was refused and nothing was audited; a caller whose
-   * address could not be determined was refused too, failing closed; and a
-   * CLIENT reading their own document was never restricted, which is why the
-   * check lived in the handler rather than in a guard.
-   *
-   * An admin reading a client's passport is still gated on a valid session and
-   * on `kyc.documents.view`, and the read is still audited. It is no longer
-   * restricted by network.
+   * RBAC-08 per person (0224): `/uploads` sits outside `/admin`, and the
+   * authenticator judges the admin's own networks on every session it admits.
    */
+  describe("RBAC-08 — the admin's own networks", () => {
+    it('refuses a restricted admin outside their networks, and records nothing', async () => {
+      const { controller, recorded } = makeController({
+        adminPermissions: ['kyc.review'],
+        adminAllowedIps: ['10.0.0.0/8'],
+      });
+      const res = fakeResponse();
+      await expect(
+        controller.serveKycFile(
+          FILE,
+          requestWith({ oxshare_crm_admin_at: ADMIN_TOKEN }, '203.0.113.9'),
+          res as never,
+        ),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+      expect(recorded).toHaveLength(0);
+      expect(res.streamed).toBe(false);
+    });
+
+    it('refuses a restricted admin whose address cannot be determined', async () => {
+      const { controller } = makeController({
+        adminPermissions: ['kyc.review'],
+        adminAllowedIps: ['10.0.0.0/8'],
+      });
+      await expect(
+        controller.serveKycFile(
+          FILE,
+          requestWith({ oxshare_crm_admin_at: ADMIN_TOKEN }),
+          fakeResponse() as never,
+        ),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+    });
+
+    it('serves a restricted admin inside their networks', async () => {
+      const { controller } = makeController({
+        adminPermissions: ['kyc.review'],
+        adminAllowedIps: ['10.0.0.0/8'],
+      });
+      const res = fakeResponse();
+      await controller.serveKycFile(
+        FILE,
+        requestWith({ oxshare_crm_admin_at: ADMIN_TOKEN }, '10.1.2.3'),
+        res as never,
+      );
+      expect(res.streamed).toBe(true);
+    });
+  });
 
   /**
    * RBAC-03 reaches the route whose only parameter is a FILENAME.

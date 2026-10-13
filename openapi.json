@@ -11882,177 +11882,6 @@
         ]
       }
     },
-    "/v1/admin/ip-allowlist": {
-      "get": {
-        "operationId": "AdminIpAllowlistController_list",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/IpAllowlistStatusDto"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "cookie": []
-          }
-        ],
-        "summary": "The IP allowlist, whether it is being enforced, and your own address",
-        "tags": [
-          "admin"
-        ]
-      },
-      "post": {
-        "operationId": "AdminIpAllowlistController_add",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AddIpAllowlistRuleDto"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/IpAllowlistStatusDto"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "cookie": []
-          }
-        ],
-        "summary": "Add an address or range to the allowlist",
-        "tags": [
-          "admin"
-        ]
-      }
-    },
-    "/v1/admin/ip-allowlist/{id}": {
-      "delete": {
-        "operationId": "AdminIpAllowlistController_remove",
-        "parameters": [
-          {
-            "name": "id",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/MessageResponseDto"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "cookie": []
-          }
-        ],
-        "summary": "Remove a rule from the allowlist",
-        "tags": [
-          "admin"
-        ]
-      }
-    },
-    "/v1/admin/ip-allowlist/exemptions": {
-      "post": {
-        "operationId": "AdminIpAllowlistController_addExemption",
-        "parameters": [],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AddIpAllowlistExemptionDto"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/IpAllowlistStatusDto"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "cookie": []
-          }
-        ],
-        "summary": "Let an administrator reach the console from any network",
-        "tags": [
-          "admin"
-        ]
-      }
-    },
-    "/v1/admin/ip-allowlist/exemptions/{adminId}": {
-      "delete": {
-        "operationId": "AdminIpAllowlistController_removeExemption",
-        "parameters": [
-          {
-            "name": "adminId",
-            "required": true,
-            "in": "path",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/MessageResponseDto"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "cookie": []
-          }
-        ],
-        "summary": "Withdraw an administrator's any-network access",
-        "tags": [
-          "admin"
-        ]
-      }
-    },
     "/v1/admin/withdrawals/export": {
       "get": {
         "description": "The same `state` filter as GET /admin/withdrawals, over every matching row rather than one page. Amounts are the exact decimal strings the ledger holds — never rounded, never locale-formatted (§6.1).",
@@ -23870,6 +23699,15 @@
           "seesAllClients": {
             "type": "boolean"
           },
+          "accessAnywhere": {
+            "type": "boolean"
+          },
+          "allowedIps": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "avatarUrl": {
             "type": "string",
             "nullable": true,
@@ -23900,6 +23738,8 @@
           "maskedFields",
           "scopedTags",
           "seesAllClients",
+          "accessAnywhere",
+          "allowedIps",
           "totpEnabledAt",
           "createdAt"
         ]
@@ -23985,6 +23825,15 @@
           "seesAllClients": {
             "type": "boolean"
           },
+          "accessAnywhere": {
+            "type": "boolean"
+          },
+          "allowedIps": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
           "avatarUrl": {
             "type": "string",
             "nullable": true,
@@ -24019,6 +23868,8 @@
           "maskedFields",
           "scopedTags",
           "seesAllClients",
+          "accessAnywhere",
+          "allowedIps",
           "totpEnabledAt",
           "createdAt",
           "idleTimeoutSeconds"
@@ -24065,6 +23916,17 @@
           "seesAllClients": {
             "type": "boolean",
             "description": "Sees EVERY client — the explicit grant (0154). Only an administrator who sees every client may give it, and never together with territory tags. An empty territory no longer means every client."
+          },
+          "accessAnywhere": {
+            "type": "boolean",
+            "description": "May reach the console from any network. When false, only from `allowedIps` (at least one)."
+          },
+          "allowedIps": {
+            "description": "IPv4 addresses or CIDR ranges this administrator may connect from (203.0.113.7 or 203.0.113.0/24). Ignored when `accessAnywhere` is true.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         },
         "required": [
@@ -27596,6 +27458,17 @@
           "seesAllClients": {
             "type": "boolean",
             "description": "Sees EVERY client — the explicit grant (0154). Only an administrator who sees every client may give it, and never together with territory tags. An empty territory no longer means every client."
+          },
+          "accessAnywhere": {
+            "type": "boolean",
+            "description": "May reach the console from any network. When false, only from `allowedIps` (at least one)."
+          },
+          "allowedIps": {
+            "description": "IPv4 addresses or CIDR ranges this administrator may connect from (203.0.113.7 or 203.0.113.0/24). Ignored when `accessAnywhere` is true.",
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         }
       },
@@ -27868,152 +27741,6 @@
         "required": [
           "key",
           "plaintext"
-        ]
-      },
-      "IpAllowlistRuleDto": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "cidr": {
-            "type": "string",
-            "example": "203.0.113.0/24"
-          },
-          "label": {
-            "type": "string",
-            "example": "Beirut office"
-          },
-          "createdBy": {
-            "type": "string"
-          },
-          "createdAt": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "cidr",
-          "label",
-          "createdBy",
-          "createdAt"
-        ]
-      },
-      "IpAllowlistExemptionDto": {
-        "type": "object",
-        "properties": {
-          "adminId": {
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          },
-          "email": {
-            "type": "string"
-          },
-          "reason": {
-            "type": "string",
-            "example": "Owner, travels"
-          },
-          "createdBy": {
-            "type": "string"
-          },
-          "createdByName": {
-            "type": "string",
-            "nullable": true,
-            "description": "Null once the granter is deleted."
-          },
-          "createdAt": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "adminId",
-          "name",
-          "email",
-          "reason",
-          "createdBy",
-          "createdByName",
-          "createdAt"
-        ]
-      },
-      "IpAllowlistStatusDto": {
-        "type": "object",
-        "properties": {
-          "enforced": {
-            "type": "boolean",
-            "description": "False while the list is empty. An empty list deliberately means the feature is OFF, so the deploy that adds the table cannot lock every administrator out (RBAC-08)."
-          },
-          "yourIp": {
-            "type": "string",
-            "description": "The requesting admin's own address, so the UI can warn before a lockout.",
-            "nullable": true
-          },
-          "disabledByConfig": {
-            "type": "boolean"
-          },
-          "rules": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/IpAllowlistRuleDto"
-            }
-          },
-          "exemptAdmins": {
-            "description": "Administrators who may reach the console from any network (0192).",
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/IpAllowlistExemptionDto"
-            }
-          },
-          "youAreExempt": {
-            "type": "boolean",
-            "description": "Whether the requesting administrator is exempt — they cannot lock themselves out."
-          }
-        },
-        "required": [
-          "enforced",
-          "yourIp",
-          "disabledByConfig",
-          "rules",
-          "exemptAdmins",
-          "youAreExempt"
-        ]
-      },
-      "AddIpAllowlistRuleDto": {
-        "type": "object",
-        "properties": {
-          "cidr": {
-            "type": "string",
-            "description": "IPv4 address or CIDR range. A bare address is stored as /32.",
-            "example": "203.0.113.0/24"
-          },
-          "label": {
-            "type": "string",
-            "description": "Why this rule exists — an unlabelled list becomes unmaintainable.",
-            "example": "Beirut office"
-          }
-        },
-        "required": [
-          "cidr",
-          "label"
-        ]
-      },
-      "AddIpAllowlistExemptionDto": {
-        "type": "object",
-        "properties": {
-          "adminId": {
-            "type": "string",
-            "description": "The administrator who may reach the console from any network."
-          },
-          "reason": {
-            "type": "string",
-            "description": "Why — an exemption nobody remembers granting is one nobody removes.",
-            "example": "Owner, travels"
-          }
-        },
-        "required": [
-          "adminId",
-          "reason"
         ]
       },
       "PayoutPlanDto": {

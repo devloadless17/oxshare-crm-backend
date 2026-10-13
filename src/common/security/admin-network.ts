@@ -1,75 +1,115 @@
-import { ipMatchesAny } from './ip-range';
+import { canonicaliseRule, ipMatchesAny, isValidRule, matchesEverything } from './ip-range';
+import { ValidationError } from '../errors/domain-errors';
 
 /** RBAC-08's refusal, wherever it is decided (guard, refresh, file routes). */
 export const NETWORK_REFUSED = 'Your network is not permitted to reach the administration API.';
 
 /**
- * The ONE answer a sign-in from outside the listed networks gets for every
- * failure (0192) — so it names both causes and confirms neither.
+ * The ONE answer sign-in gives for every failure — so it names both causes
+ * (network, credentials) and confirms neither. Per-person rules (0224) mean the
+ * network can only be judged once we know whose account it is, and answering a
+ * wrong password differently from a refused network would tell a stranger that
+ * an address belongs to an administrator, or that a password was right.
  */
 export const OUTSIDE_SIGN_IN_REFUSED =
-  'Sign-in refused: this network is not permitted, or the email or password is wrong.';
+  'Sign-in refused: the email or password is wrong, or this network is not permitted for this account.';
+
+/** The most addresses one administrator may be given. */
+export const MAX_ALLOWED_IPS = 20;
+
+/** What RBAC-08 needs from an administrator: their own network setting (0224). */
+export interface AdminNetworkAccess {
+  accessAnywhere?: boolean;
+  allowedIps?: readonly string[];
+}
 
 /**
- * RBAC-08's decision, in one place: may a caller at `ip` exercise ADMIN
- * authority, given the configured allowlist?
+ * RBAC-08's decision, in one place: may THIS administrator, calling from `ip`,
+ * use the console?
  *
- * Extracted from `IpAllowlistGuard` because the guard is not the only place
- * that has to ask. The guard covers the `/admin` surface by path, which is the
- * right default and misses one route that matters: `GET /uploads/kyc/:file`
- * lives under `/uploads` and serves a client's passport, national ID and proof
- * of address to any admin holding `kyc.documents.view`. Every client's identity
- * documents were readable from any network on earth with a valid admin session,
- * while the allowlist reported itself as enforcing.
+ * Per person since 0224. Each administrator either may connect from anywhere,
+ * or only from the addresses on their own row — set when they are invited or
+ * edited. There is no global list any more.
  *
- * That route cannot simply be added to the guard's path test: it serves BOTH
- * surfaces — a client fetching their own document, and an admin fetching
- * anyone's — and putting a network restriction on the client's path would lock
- * customers out of their own files. Which principal is acting is only known
- * after authorization, so the check has to happen there, with this function as
- * the shared definition of the rule (PLATFORM-CONVENTIONS R-4.3: the guard is a
- * fast reject at the edge, not the only check).
+ * Two properties are load-bearing:
  *
- * BOTH properties below are load-bearing and must survive any refactor:
+ *   1. A restricted administrator with an unknown address is DENIED. Once
+ *      someone has said "only these addresses", failing open on a caller we
+ *      cannot identify defeats the point — `ipMatchesAny(undefined, …)` is false.
+ *   2. A restricted administrator with NO addresses is denied everywhere. The
+ *      invite and edit paths refuse to write that state (`resolveNetworkAccess`),
+ *      so it only exists if somebody edits the table by hand.
  *
- *   1. An EMPTY list means the feature is OFF. The deploy that created the
- *      table must not lock every administrator out before anyone can add a rule
- *      (DECISIONS D-10). Enforcement begins with the first row.
- *   2. A NON-EMPTY list DENIES an unknown address. Once someone has said "only
- *      these addresses", failing open on a caller we cannot identify defeats
- *      the entire point — so `undefined` is a denial, not a pass.
+ * Shared by the global guard, the sign-in steps, refresh, the reset link and the
+ * `/uploads` file routes, so none of them can disagree.
  */
-export function adminNetworkAdmits(rules: readonly string[], ip: string | undefined): boolean {
-  if (!ipAllowlistEnforced()) return true; // (0) switched off by configuration
-  if (rules.length === 0) return true; // (1) not configured
-  return ipMatchesAny(ip, rules); // (2) `ipMatchesAny(undefined, …)` is false
+export function adminNetworkAdmits(admin: AdminNetworkAccess, ip: string | undefined): boolean {
+  if (!ipAllowlistEnforced()) return true; // switched off by configuration
+  if (admin.accessAnywhere !== false) return true;
+  return ipMatchesAny(ip, admin.allowedIps ?? []);
+}
+
+/**
+ * Validate and canonicalise one administrator's network setting, as typed on the
+ * invite or edit screen. Returns what is stored: `allowedIps` is emptied when
+ * access is from anywhere, so a stale list cannot quietly come back into force
+ * the day somebody unticks the box.
+ *
+ * Refuses a restricted administrator with no address (they could never sign in),
+ * anything that is not an IPv4 address or CIDR range, and a `/0` — that is
+ * "anywhere" spelled as an address, and the switch says it plainly.
+ */
+export function resolveNetworkAccess(input: {
+  accessAnywhere: boolean;
+  allowedIps: readonly string[];
+}): { accessAnywhere: boolean; allowedIps: string[] } {
+  if (input.accessAnywhere) return { accessAnywhere: true, allowedIps: [] };
+
+  const canonical: string[] = [];
+  for (const raw of input.allowedIps) {
+    const rule = raw.trim();
+    if (rule === '') continue;
+    if (!isValidRule(rule)) {
+      throw new ValidationError(
+        `"${rule}" is not a valid IPv4 address or CIDR range. Use 203.0.113.7 for a ` +
+          'single machine or 203.0.113.0/24 for a network.',
+      );
+    }
+    const c = canonicaliseRule(rule)!;
+    if (matchesEverything(c)) {
+      throw new ValidationError(
+        `${c} matches every address. Choose "Access from anywhere" instead.`,
+      );
+    }
+    if (!canonical.includes(c)) canonical.push(c);
+  }
+  if (canonical.length === 0) {
+    throw new ValidationError(
+      'Add at least one IP address, or choose "Access from anywhere" — otherwise this ' +
+        'administrator could not sign in at all.',
+    );
+  }
+  if (canonical.length > MAX_ALLOWED_IPS) {
+    throw new ValidationError(`An administrator can have at most ${MAX_ALLOWED_IPS} IP addresses.`);
+  }
+  return { accessAnywhere: false, allowedIps: canonical };
 }
 
 /**
  * THE WAY BACK IN. `ADMIN_IP_ALLOWLIST_ENABLED=false` stops enforcement without
  * touching a single row.
  *
- * This feature was deleted once because it caused problems in practice, and the
- * shape of that problem is inherent rather than a bug: the guard can only see
- * the address of whoever opened the socket. In local development that is the
- * Next.js rewrite, so the API correctly reports `::1` while the operator is
- * looking at their own public address in a browser — and a rule for the address
- * they can see is a rule the server can never match. In production it is
+ * The guard can only see the address of whoever opened the socket. In local
+ * development that is the Next.js rewrite, so the API reports `::1` while the
+ * operator sees their own public address in a browser. In production it is
  * whatever `TRUSTED_PROXY_HOPS` resolves to, which is right when configured and
- * silently wrong when it is not.
+ * silently wrong when it is not. And an address that changes overnight (a
+ * dynamic line, a dropped VPN) can lock out the one administrator who could fix
+ * everyone else's.
  *
- * The lockout protections in the service refuse the two rules that would lock
- * you out AT THE MOMENT YOU WRITE THEM, and they cannot help with what happens
- * afterwards: a dynamic address changing overnight, a VPN dropping, a laptop
- * moving office. Without an escape hatch the only recovery is a `DELETE` on the
- * table by somebody with database access — during an incident, which is exactly
- * when nobody has it.
- *
- * So: an environment variable, because it is recoverable by whoever can restart
- * the process, needs no database client, and leaves the rules in place to be
- * re-enabled once the address is right. It is reported on the status endpoint so
- * the console can SAY enforcement is off — a screen claiming to protect a system
- * it is not protecting is the failure mode this whole feature exists to avoid.
+ * So: an environment variable, recoverable by whoever can restart the process,
+ * needing no database client, and leaving every administrator's addresses in
+ * place to be re-enabled once the address is right.
  */
 export function ipAllowlistEnforced(): boolean {
   return process.env['ADMIN_IP_ALLOWLIST_ENABLED'] !== 'false';

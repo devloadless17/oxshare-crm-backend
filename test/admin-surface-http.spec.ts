@@ -7,9 +7,9 @@ import { startHttpTestApp, stopHttpTestApp, type HttpTestContext } from './http-
  *
  * WHY THIS FILE EXISTS. RBAC-08 shipped marked complete with 249 lines of unit
  * tests and one uncovered fact: nothing asserted the guard was REGISTERED.
- * `ip-allowlist.spec.ts` constructs `new IpAllowlistGuard(store)` by hand, so
- * deleting the `APP_GUARD` provider from `admin.module.ts` broke zero tests and
- * turned the feature off silently. Every guard in this system is only as real
+ * The unit spec constructed the guard by hand, so deleting its `APP_GUARD`
+ * provider broke zero tests and turned the feature off silently. (RBAC-08 is
+ * judged by the authenticator since 0224.) Every guard in this system is only as real
  * as its wiring, and wiring is not visible from a unit test by construction.
  *
  * THE BUG THAT PROMPTED IT. Express matches routes case-insensitively while
@@ -66,8 +66,8 @@ describe('admin surface (HTTP)', () => {
     });
   });
   /*
-   * RBAC-08's assembly — the guard registered, running before authentication,
-   * the sign-in doors agreeing with it, exempt administrators (0192) — is
-   * proved over HTTP in `ip-allowlist-exemptions-http.spec.ts`.
+   * RBAC-08's assembly — each administrator's own networks (0224), judged by
+   * the authenticator and the sign-in doors — is proved over HTTP in
+   * `admin-network-access-http.spec.ts`.
    */
 });

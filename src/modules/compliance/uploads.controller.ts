@@ -35,7 +35,6 @@ import {
   AnyAdmin,
   type AuthenticatedAdmin,
 } from '../admin/guards/admin.guard';
-import { IpAllowlistGuard } from '../admin/guards/ip-allowlist.guard';
 import {
   AVATAR_BUCKET,
   PAYMENT_LOGO_BUCKET,
@@ -75,7 +74,6 @@ export class UploadsController {
      * cutoff, RBAC-08), and here it guarded every client's passport.
      */
     private readonly adminAuth: AdminAuthenticator,
-    private readonly adminNetwork: IpAllowlistGuard,
     private readonly portalAuth: JwtStrategy,
     private readonly kycDocuments: KycDocumentAccess,
     private readonly depositReceipts: DepositReceiptAccess,
@@ -332,9 +330,9 @@ export class UploadsController {
    *
    * No `@UseGuards`: this route serves TWO principals, and which one is acting
    * is only knowable after the token resolves. `authorize` resolves it through
-   * the guards' own authenticators — including the RBAC-08 allowlist, which the
-   * global `IpAllowlistGuard` never applies here because `/uploads` is outside
-   * `/admin`, and a receipt names a bank account.
+   * the guards' own authenticators — including RBAC-08, the administrator's own
+   * networks (0224), which the authenticator judges on every session it admits,
+   * `/uploads` included — and a receipt names a bank account.
    */
   @Get('deposit-proofs/:file')
   @ApiCookieAuth()
@@ -465,10 +463,11 @@ export class UploadsController {
       try {
         admin = await this.adminAuth.authenticateSession(req);
       } catch (e) {
-        if (e instanceof SessionEndedException) throw e;
+        // An ended session, or one refused by RBAC-08 (403), is an answer.
+        if (e instanceof SessionEndedException || e instanceof ForbiddenException) throw e;
         // not an admin session after all — fall through to the client branch
       }
-      if (admin) return this.authorizeAdmin(req, admin, fileName, policy);
+      if (admin) return this.authorizeAdmin(admin, fileName, policy);
     }
 
     const clientToken = readSessionCookie(cookies, COOKIE_BASES.clientAccess);
@@ -501,25 +500,17 @@ export class UploadsController {
   }
 
   /**
-   * RBAC-08, then the permission, then territory — in that order.
-   *
-   * The network check applies HERE because `/uploads` is outside `/admin`, so
-   * the global `IpAllowlistGuard` never sees this route; it is the guard's own
-   * `assertAdmitted`, so the two cannot disagree. Before the permission check:
-   * being on a permitted network is a precondition for exercising admin
-   * authority at all. Territory is checked before any byte and before the
+   * The permission, then territory — in that order. RBAC-08 (the admin's own
+   * networks, 0224) was already judged by `authenticateSession`, the same door
+   * every admin route uses. Territory is checked before any byte and before the
    * audit row, so a refused read leaves no trace claiming it happened, and is
    * a 404 worded like a missing file.
    */
   private async authorizeAdmin(
-    req: Request,
     admin: AuthenticatedAdmin,
     fileName: string,
     policy: FileReadPolicy,
   ): Promise<Reader> {
-    // The admin is a SESSION here (`authenticateSession`, never a key), so an
-    // exempt administrator (0192) is admitted from any network, as on `/admin`.
-    await this.adminNetwork.assertAdmitted(req, admin.id);
     if (!policy.mayRead(admin.permissions.map(normalizePermissionKey))) {
       throw new ForbiddenException(policy.adminForbidden);
     }

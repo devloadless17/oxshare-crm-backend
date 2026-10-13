@@ -118,6 +118,16 @@ export class AdminProfileDto {
   @ApiProperty()
   seesAllClients: boolean;
 
+  /** RBAC-08 (0224): may reach the console from any network. */
+  @NotClientField('an ADMINISTRATOR attribute — this describes the operator, never a client')
+  @ApiProperty()
+  accessAnywhere: boolean;
+
+  /** RBAC-08 (0224): the IPv4 addresses / CIDR ranges this administrator may use. */
+  @NotClientField('an ADMINISTRATOR attribute — this describes the operator, never a client')
+  @ApiProperty({ type: [String] })
+  allowedIps: string[];
+
   /**
    * The profile photo, on `me` rather than behind a profile endpoint of its
    * own — the sidebar renders it on every page, so a second call would be a
@@ -3488,79 +3498,6 @@ export class ClientTransactionsPageDto {
   prevCursor: string | null;
   @ApiProperty() page: number;
   @ApiProperty() limit: number;
-}
-
-/** RBAC-08 — an administrator exempt from the network check (0192). */
-@NoClientFields(
-  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
-)
-export class IpAllowlistExemptionDto {
-  @ApiProperty() adminId: string;
-  @ApiProperty() name: string;
-  @ApiProperty()
-  @NotClientField('an ADMINISTRATOR attribute — this describes the operator, never a client')
-  email: string;
-  @ApiProperty({ example: 'Owner, travels' }) reason: string;
-  @ApiProperty() createdBy: string;
-  @ApiProperty({ nullable: true, type: String, description: 'Null once the granter is deleted.' })
-  createdByName: string | null;
-  @ApiProperty() createdAt: string;
-}
-
-/** RBAC-08 — one allowlist rule. */
-@NoClientFields(
-  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
-)
-export class IpAllowlistRuleDto {
-  @ApiProperty() id: string;
-  @ApiProperty({ example: '203.0.113.0/24' }) cidr: string;
-  @ApiProperty({ example: 'Beirut office' }) label: string;
-  @ApiProperty() createdBy: string;
-  @ApiProperty() createdAt: string;
-}
-
-@NoClientFields(
-  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
-)
-export class IpAllowlistStatusDto {
-  @ApiProperty({
-    description:
-      'False while the list is empty. An empty list deliberately means the feature is OFF, ' +
-      'so the deploy that adds the table cannot lock every administrator out (RBAC-08).',
-  })
-  enforced: boolean;
-
-  @ApiProperty({
-    description: "The requesting admin's own address, so the UI can warn before a lockout.",
-    nullable: true,
-    type: String,
-  })
-  yourIp: string | null;
-
-  /**
-   * Enforcement switched off by `ADMIN_IP_ALLOWLIST_ENABLED=false`, with the
-   * rules left in place.
-   *
-   * Distinct from `enforced: false` with an empty list. "Nobody has configured
-   * this yet" and "somebody turned it off and the rules are still here" are
-   * different situations and the console must not render them alike.
-   */
-  @ApiProperty() disabledByConfig: boolean;
-
-  @ApiProperty({ type: [IpAllowlistRuleDto] })
-  rules: IpAllowlistRuleDto[];
-
-  @ApiProperty({
-    type: [IpAllowlistExemptionDto],
-    description: 'Administrators who may reach the console from any network (0192).',
-  })
-  exemptAdmins: IpAllowlistExemptionDto[];
-
-  @ApiProperty({
-    description:
-      'Whether the requesting administrator is exempt — they cannot lock themselves out.',
-  })
-  youAreExempt: boolean;
 }
 
 /**

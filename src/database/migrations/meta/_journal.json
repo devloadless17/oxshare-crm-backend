@@ -1576,6 +1576,13 @@
       "when": 1789145210750,
       "tag": "0223_exchange_log_rate_limit",
       "breakpoints": true
+    },
+    {
+      "idx": 226,
+      "version": "7",
+      "when": 1791899163401,
+      "tag": "0224_per_admin_network_access",
+      "breakpoints": true
     }
   ]
 }
