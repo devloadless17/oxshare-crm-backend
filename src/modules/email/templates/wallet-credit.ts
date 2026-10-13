@@ -98,29 +98,3 @@ ${pAr('الأموال متاحة الآن. يمكنك الاطلاع على هذ
 ${buttonAr(portalUrl, 'الانتقال إلى البوابة')}`),
   };
 }
-
-/**
- * The REASON line of the hourly commission / rebate summary mail — server
- * composed, so the server writes it in the recipient's language. The English is
- * exactly what `CommissionService` wrote before it moved here.
- */
-export function commissionSummaryReason(
-  kind: 'commission' | 'rebate',
-  count: number,
-  locale: Locale = 'en',
-): string {
-  if (locale !== 'ar') {
-    return kind === 'rebate'
-      ? `Trading rebate on ${count} closed trade(s)`
-      : `Partner commission on ${count} closed trade(s)`;
-  }
-  const trades = {
-    zero: `${count} صفقة مغلقة`,
-    one: 'صفقة مغلقة واحدة',
-    two: 'صفقتين مغلقتين',
-    few: `${count} صفقات مغلقة`,
-    many: `${count} صفقة مغلقة`,
-    other: `${count} صفقة مغلقة`,
-  }[new Intl.PluralRules('ar').select(count)];
-  return kind === 'rebate' ? `عمولة مستردة عن ${trades}` : `عمولة الشريك عن ${trades}`;
-}

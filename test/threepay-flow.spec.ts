@@ -155,6 +155,9 @@ afterAll(async () => {
 
 beforeEach(async () => {
   vi.clearAllMocks();
+  // An earlier case's re-checks (`noticeRecheckMs`: up to 110 s out) must not ask 3pay
+  // during this one: each spends a read and logs an exchange this case would count.
+  deposits.onModuleDestroy();
   sim.reset();
   settings.invalidate();
   threepay.forget();
@@ -470,6 +473,10 @@ describe('3pay deposits', () => {
     expect(closed.state).toBe('failure');
     expect(closed.rejectionReason).toBe('The payment link expired before the payment arrived.');
     expect(await balance(userId)).toBe('0.00000000');
+    // An abandoned link is not a failed payment: the bell says so, no email does. The
+    // outcome mail is fire-and-forget behind a user lookup, so give it time to (not) arrive.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(email.sendDepositOutcomeEmail).not.toHaveBeenCalled();
   });
 
   it('an OPENED link past our time that 3pay never expired is closed — and a late payment still credits', async () => {

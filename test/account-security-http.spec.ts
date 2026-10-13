@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   actingAs,
   anonymous,
@@ -11,6 +11,7 @@ import {
 } from './http-setup';
 import { PasswordService } from '../src/common/security/password.service';
 import { users } from '../src/database/schema';
+import { EmailService } from '../src/modules/email/email.service';
 
 /**
  * Password change and session management, over HTTP, through the real chain.
@@ -253,6 +254,23 @@ describe('POST /auth/change-password', () => {
     await expect(
       actingAs(ctx, 'portal', { email: creds.email, password: creds.password }),
     ).rejects.toThrow();
+  });
+
+  it('warns the owner by email that the password was changed', async () => {
+    const sent = vi.spyOn(EmailService.prototype, 'sendPasswordChangedEmail');
+    sent.mockResolvedValue(undefined);
+    try {
+      const creds = await freshClient('warned');
+      const session = await actingAs(ctx, 'portal', creds);
+
+      await session
+        .post(CHANGE_PASSWORD, { currentPassword: creds.password, newPassword: 'brand-new-pass-7' })
+        .expect(200);
+
+      expect(sent).toHaveBeenCalledWith(creds.email, 'Fresh', expect.any(String));
+    } finally {
+      sent.mockRestore();
+    }
   });
 
   it('requires the CURRENT password', async () => {

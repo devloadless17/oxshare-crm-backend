@@ -10,9 +10,6 @@ import Decimal from 'decimal.js';
 import { money, toDecimal } from '../wallet/money';
 import { LIVE_REVENUE_FEED, isLiveRevenueFeed } from './revenue-feed';
 import { AppSettingsStore } from '../../store/app-settings.store';
-import { EmailService } from '../email/email.service';
-import { commissionSummaryReason } from '../email/templates';
-import { parseLocale } from '../../common/i18n/locale';
 import { tradingTermsFrom } from '../../common/trading-terms';
 import { ALERT_KINDS, raiseAlert } from '../../common/logging/alerts';
 import { WalletService } from '../wallet/wallet.service';
@@ -110,15 +107,6 @@ export class CommissionService implements CommissionAccrualPort {
      * the thing worth bounding.
      */
     private readonly settings: AppSettingsStore,
-    /*
-     * For the per-run payout SUMMARY only — never per accrual.
-     *
-     * The per-accrual notification this replaced refused to mail at all, and it
-     * was right to: "an hourly batch would mail a busy partner once per accrual
-     * per hour". One message about one run has no such problem, which is what
-     * made the email possible rather than what made it desirable.
-     */
-    private readonly emails: EmailService,
     /**
      * The by-id territory gate, for `reverseAccrual` alone.
      *
@@ -1005,13 +993,18 @@ export class CommissionService implements CommissionAccrualPort {
    * minute collapses that to one — the same at-least-once assumption the ledger
    * credit makes, expressed in the units a person reads.
    *
-   * ## An EMAIL goes with it, which the per-accrual version could never do
+   * ## The bell, and NEVER an email (the buyer's rule, 13 Oct 2026)
    *
-   * That version explicitly refused to mail: "an hourly batch would mail a busy
-   * partner once per accrual per hour". A summary has no such problem — it is
-   * one message about one run — so the thing a partner actually wants to know,
-   * that they have been paid, now reaches them somewhere other than a bell they
-   * have to be looking at.
+   * This used to email each partner too — commission and rebate separately, on
+   * every run, and once per 500-row batch on a long run: up to 96 emails a day
+   * per active partner on the 30-minute cadence production runs. The buyer
+   * called it attacking his clients' inboxes. Worse, Brevo puts an Unsubscribe
+   * button on every email, and a partner who tapped it was cut off from EVERY
+   * later email — deposits, withdrawals and password resets included. Earnings
+   * are on the partner's dashboard and in the bell; an email is for what a
+   * person asked for, must act on, or must keep as the record of their money
+   * moving (`modules/email/email-catalogue.ts`). This service has no email
+   * dependency at all, so it cannot drift back.
    *
    * Failures are swallowed per recipient. Nobody's notification failing may
    * stop anybody else's, and none of it may undo a credit that has committed.
@@ -1056,47 +1049,6 @@ export class CommissionService implements CommissionAccrualPort {
             `credited and visible regardless: ${
               error instanceof Error ? error.message : String(error)
             }`,
-        );
-      }
-
-      /*
-       * The EMAIL, reusing the wallet-credit template rather than inventing a
-       * second one: it already says "money reached your wallet, here is how
-       * much and why", which is exactly this message. The `reason` line is
-       * where the summary reads as a summary.
-       *
-       * `EmailService.send` swallows its own failures by contract, so reaching
-       * the catch means the user LOOKUP failed. Either way the money stands and
-       * is visible on the screen the notification links to.
-       */
-      try {
-        const [recipient] = await this.db
-          .select({ email: users.email, firstName: users.firstName, locale: users.locale })
-          .from(users)
-          .where(eq(users.id, payout.recipientId))
-          .limit(1);
-
-        if (recipient) {
-          // A job: the recipient's stored language, for the mail and its reason line.
-          const locale = parseLocale(recipient.locale);
-          await this.emails.sendWalletCreditEmail(
-            recipient.email,
-            recipient.firstName,
-            amount,
-            payout.currency,
-            commissionSummaryReason(
-              payout.kind === 'rebate' ? 'rebate' : 'commission',
-              payout.count,
-              locale,
-            ),
-            locale,
-          );
-        }
-      } catch (error) {
-        this.logger.warn(
-          `Could not email the ${payout.kind} summary for ${payout.recipientId}: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
         );
       }
     }

@@ -51,6 +51,7 @@ import {
 import { PasswordService } from '../../common/security/password.service';
 import { AVATAR_BUCKET, StoredFilesService } from '../../common/uploads/stored-files.service';
 import { LoginAttemptsService } from '../../common/security/login-attempts.service';
+import { SendBudget } from '../../common/security/send-budget';
 import { localizeMessage } from '../../common/i18n/localize-message';
 import {
   isTokenKind,
@@ -105,10 +106,17 @@ export interface VerifyEmailResult {
 
 @Injectable()
 export class AuthService {
-  /** Address → when each verification email in the last hour went. See `verificationBudgetAllows`. */
-  private readonly verificationSentAt = new Map<string, number[]>();
+  /**
+   * At most six verification emails an hour per address, whoever asks. The
+   * 30-second cooldown (how FAST) is the issuing UPDATE's; this bounds how MUCH.
+   */
+  private readonly verificationSends = new SendBudget(6);
 
-  private static readonly VERIFICATION_SENDS_PER_HOUR = 6;
+  /**
+   * At most one password-reset email a minute and five an hour per address
+   * (13 Oct 2026) — see `requestPasswordReset`.
+   */
+  private readonly resetSends = new SendBudget(5, 60_000);
 
   private readonly logger = new Logger(AuthService.name);
 
@@ -316,7 +324,7 @@ export class AuthService {
       new Date(issuedAt.getTime() + EMAIL_CODE_TTL_MS),
       issuedAt,
     );
-    this.recordVerificationSend(user.email);
+    this.verificationSends.record(user.email);
 
     // The link and the code are bearer credentials. They are emailed and never
     // written to stdout — the link used to be console.logged in every environment.
@@ -613,7 +621,7 @@ export class AuthService {
    * budget, and tells nobody: the caller's answer is the same either way.
    */
   private async sendVerification(user: User): Promise<void> {
-    if (user.emailVerified || !this.verificationBudgetAllows(user.email)) return;
+    if (user.emailVerified || !this.verificationSends.allows(user.email)) return;
     const now = new Date();
     const token = uuidv4();
     const code = newEmailCode();
@@ -629,7 +637,7 @@ export class AuthService {
       EMAIL_CODE_RESEND_COOLDOWN_MS,
     );
     if (!issued) return;
-    this.recordVerificationSend(user.email);
+    this.verificationSends.record(user.email);
     // The language of the screen that asked — resend may come from an anonymous
     // visitor, and a sign-in from any device; the request is what they read.
     await this.email.sendVerificationEmail(user.email, token, code, requestLocale());
@@ -643,34 +651,6 @@ export class AuthService {
       throw new Error('JWT_ACCESS_SECRET is not configured; cannot issue or check an email code.');
     }
     return secret;
-  }
-
-  /**
-   * At most six verification emails an hour per address, whoever asks.
-   *
-   * The 30-second cooldown bounds how FAST one address is mailed; this bounds
-   * how MUCH, against a caller spreading requests across many IPs to fill
-   * someone's inbox. Held in memory: a missed dedupe sends one extra email, never loses one.
-   */
-  private verificationBudgetAllows(email: string): boolean {
-    const recent = this.recentVerificationSends(email.trim().toLowerCase());
-    return recent.length < AuthService.VERIFICATION_SENDS_PER_HOUR;
-  }
-
-  private recordVerificationSend(email: string): void {
-    const key = email.trim().toLowerCase();
-    this.verificationSentAt.set(key, [...this.recentVerificationSends(key), Date.now()]);
-    // Swept on write: bounded by activity, no timer.
-    if (this.verificationSentAt.size > 1_000) {
-      for (const k of this.verificationSentAt.keys()) {
-        if (this.recentVerificationSends(k).length === 0) this.verificationSentAt.delete(k);
-      }
-    }
-  }
-
-  private recentVerificationSends(key: string): number[] {
-    const cutoff = Date.now() - 60 * 60_000;
-    return (this.verificationSentAt.get(key) ?? []).filter((at) => at > cutoff);
   }
 
   /**
@@ -747,6 +727,14 @@ export class AuthService {
     // is an admin decision, and a working reset would route around that.
     if (user.status === 'suspended') return generic;
 
+    /*
+     * At most one reset email a minute and five an hour per ADDRESS. The route
+     * counts per IP, so without this anyone could fill a client's inbox from
+     * many addresses. Asked BEFORE the token is replaced: a refused request
+     * leaves the last link working, sends nothing, and answers like any other.
+     */
+    if (!this.resetSends.allows(user.email)) return generic;
+
     const token = randomUUID();
     await this.users.update(user.id, {
       passwordResetTokenHash: hashEmailedToken(token),
@@ -754,6 +742,7 @@ export class AuthService {
       // link left in an inbox is not a standing key to the account.
       passwordResetExpiry: new Date(Date.now() + 30 * 60 * 1000),
     });
+    this.resetSends.record(user.email);
 
     // The REQUEST's language: whoever asked is reading the portal in it, and the
     // visitor is anonymous until the link is used.
@@ -829,6 +818,18 @@ export class AuthService {
 
     // Every refresh-token family for this user, not just the current one.
     await this.refreshTokens.revokeAllForSubject('portal', user.id);
+
+    /*
+     * The warning to the owner — except for the FIRST password a client created
+     * by staff chooses through their welcome link: nothing was changed, and the
+     * warning would alarm somebody who has only just arrived. That is the
+     * console's `awaitingWelcome` (created by an administrator, no password
+     * chosen yet), read from the row as it was before the write above.
+     */
+    const firstPassword = Boolean(user.createdByAdminId) && !user.passwordSetAt;
+    if (!firstPassword) {
+      void this.email.sendPasswordChangedEmail(user.email, user.firstName, requestLocale());
+    }
 
     this.logger.log(`Password reset completed for ${user.email}; all sessions revoked`);
     return {
@@ -1533,6 +1534,8 @@ export class AuthService {
     this.logger.log(
       `Password changed for ${user.email}; all ${revoked} session(s) revoked, caller re-issued`,
     );
+    // The warning to the owner, in the language of the screen it was changed on.
+    void this.email.sendPasswordChangedEmail(user.email, user.firstName, requestLocale());
 
     // Printed as is by the portal's change-password form, so in the client's language.
     return {

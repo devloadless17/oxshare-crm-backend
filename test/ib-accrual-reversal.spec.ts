@@ -1,6 +1,5 @@
 import { IbStore } from '../src/store/ib.store';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { emailStubAs } from './email-stub';
 import { sql } from 'drizzle-orm';
 import { CommissionService } from '../src/modules/ib/commission.service';
 import { WalletService } from '../src/modules/wallet/wallet.service';
@@ -187,9 +186,6 @@ beforeAll(async () => {
     // The payout ceiling (0106) — the real store against the real row, so
     // this reads the shipped default of 100 rather than a stub's opinion.
     new AppSettingsStore(ctx.db),
-    /* The per-run payout summary email (0114). Stubbed: this suite is
-       about the money, and the send is fire-and-forget by contract. */
-    emailStubAs(),
     /* The territory gate. Stubbed open for the money cases above, which are
        about WHO is debited and by how much; the gate itself is exercised with
        the real service at the end of this file. */
@@ -495,7 +491,6 @@ describe('the reversal obeys the reader’s TERRITORY, on the column it actually
         notifyAdmins: vi.fn().mockResolvedValue(undefined),
       },
       new AppSettingsStore(ctx.db),
-      emailStubAs(),
       // The REAL gate, against the real users table — a stub here would only
       // assert that a stub was called.
       new ClientVisibilityService(new UsersStore(ctx.db)),
