@@ -1604,8 +1604,9 @@ is announced). Each answer, and what was done:
    clear in the account reply. Its other recommendation is followed: ask again with a 500 ms backoff
    for 5 s, then at 20, 50 and 110 s.
 7. A link nobody opened stays `initiated` for ever and is not watched on the chain until the page is
-   opened; a 3pay cron to expire and scan them is coming. Ours closes such a link 30 minutes after
-   its timer. The two of 12 Oct received nothing (checked on the chain, 13 Oct).
+   opened; a 3pay cron to expire and scan them is coming. Ours closes such a link as soon as its timer ends (an opened one 30 minutes later, since
+   3pay's timer started when it was opened); 3pay's record says which (`updatedAt` still equal
+   to `createdAt` means never opened). The two of 12 Oct received nothing (checked on the chain, 13 Oct).
 8. `withdrawalFeePayer` is IGNORED by 3pay's current build: the recipient always receives amount
    minus the fee (2.00 TRC20, 2.50 ERC20). This build used to ask the bare amount on a `merchant`
    account, which would have paid every client short; it now always asks amount plus fee. Once 3pay
@@ -1718,8 +1719,10 @@ delivery, 429 backs off, the 90-day log).
   assumes a figure 3pay could change. The core says why it asks (`PaymentCheckUrgency`: `event` |
   `background`).
   A delivery is still verified while the budget is spent: the last webhook secret read is kept.
-  A `received` link 30 minutes past its own expiry that 3pay still calls open is closed as
-  expired (13 Oct 2026: 3pay left two `initiated` for 14 hours); a late payment still credits.
+  A `received` link past its own expiry that 3pay still calls open is closed as expired: at once
+  when nobody opened it (`untouched`), 30 minutes later when somebody did. (13 Oct 2026: 3pay left
+  two `initiated` for 14 hours, and the owner asked why an unopened one waited an hour.) A late
+  payment still credits.
   The core was changed so the background does not spend it:
   - expired links are re-asked at a widening interval (a quarter of their age, at least an hour),
     five a sweep (`LATE_BATCH`), not all of them every hour for a month;

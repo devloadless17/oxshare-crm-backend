@@ -207,6 +207,13 @@ export interface PaymentStatus {
    * may still confirm a late payment, which the core then credits.
    */
   expired?: boolean;
+  /**
+   * Still open, and the provider's record has not changed since the payment
+   * was made: nobody has opened its page. (3pay starts a link's timer only
+   * when its page is opened, so only an untouched link is truly over when its
+   * own time is up.)
+   */
+  untouched?: boolean;
   rawStatus: string;
   needsAttention: boolean;
   /** `exact`: the link's figure; `received`: what arrived. */

@@ -458,8 +458,23 @@ describe('3pay deposits', () => {
     expect(await balance(paid.userId)).toBe('30.00000000');
   });
 
-  it('a link past its own time that 3pay never expired is closed — and a late payment still credits', async () => {
+  it('a link nobody opened closes as soon as its time is up, not half an hour later', async () => {
     const { userId, tx } = await deposit('50');
+    await ctx.db.execute(sql`
+      UPDATE transactions
+         SET created_at = now() - interval '35 minutes',
+             provider_payment_expires_at = now() - interval '2 minutes'
+       WHERE id = ${tx.id}`);
+    await deposits.sweep('threepay');
+    const closed = await row(tx.id);
+    expect(closed.state).toBe('failure');
+    expect(closed.rejectionReason).toBe('The payment link expired before the payment arrived.');
+    expect(await balance(userId)).toBe('0.00000000');
+  });
+
+  it('an OPENED link past our time that 3pay never expired is closed — and a late payment still credits', async () => {
+    const { userId, tx } = await deposit('50');
+    sim.open(tx.providerPaymentId ?? ''); // 3pay's timer started late: payable after ours ends
     await ctx.db.execute(sql`
       UPDATE transactions
          SET created_at = now() - interval '2 hours',
