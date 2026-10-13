@@ -68,9 +68,17 @@ const STALE_AFTER_MS = 7 * 24 * 60 * 60_000;
 const PAYER_CHECK_EVERY_MS = 15_000;
 /**
  * How long past its own expiry a `received` provider's link is still read as
- * open: a payment sent in its last minute needs time to confirm.
+ * open: a payment sent in its last minute needs time to confirm, and 3pay's
+ * timer starts only when the page is OPENED, so an opened link may be payable
+ * after ours ends.
  */
 const LINK_GRACE_MS = 30 * 60_000;
+/**
+ * The same for a link the provider says nobody opened: it cannot be paid late,
+ * so it closes when its time is up (the owner, 13 Oct 2026: a client's card
+ * said "expired" at 30 minutes while the deposit stayed pending for an hour).
+ */
+const UNOPENED_GRACE_MS = 60_000;
 /**
  * A `received` provider may confirm an expired link late; watched this long.
  * Re-asked an hour after it expired, then at a widening interval (a quarter of
@@ -419,11 +427,12 @@ export class HostedDepositsService implements OnModuleDestroy {
        * arrived to a person, and a late confirmation is still credited.
        */
       const ends = tx.providerPaymentExpiresAt;
+      const grace = result.untouched ? UNOPENED_GRACE_MS : LINK_GRACE_MS;
       const outlived =
         policy === 'received' &&
         tx.state === 'pending' &&
         ends !== null &&
-        Date.now() > ends.getTime() + LINK_GRACE_MS;
+        Date.now() > ends.getTime() + grace;
       if (outlived) return this.fail(tx, channel, policy, { ...result, expired: true }, source);
       return { state: tx.state };
     }

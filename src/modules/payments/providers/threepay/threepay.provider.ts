@@ -407,6 +407,18 @@ export class ThreePayPaymentProvider implements PaymentProviderAdapter {
       );
     }
     const arrived = arrivedOf(data, paid);
+    /*
+     * Opening the page is what starts a link's timer at 3pay and touches its
+     * record (3pay, 13 Oct 2026): a link nobody opened still reads `updatedAt`
+     * equal to `createdAt`.
+     */
+    const made = dateOf(data['createdAt']);
+    const touched = dateOf(data['updatedAt']);
+    const untouched =
+      DEPOSIT_OPEN.has(rawStatus) &&
+      made !== undefined &&
+      touched !== undefined &&
+      made.getTime() === touched.getTime();
     const currency = textOf(data['currencyType']);
     const fee = amountOf(data['fee']);
     const net = amountOf(data['netAmount']);
@@ -415,6 +427,7 @@ export class ThreePayPaymentProvider implements PaymentProviderAdapter {
       paid,
       // 3pay's live API calls an expired link `failed`: a link has no other way to fail.
       expired: rawStatus === 'expired' || rawStatus === 'failed',
+      ...(untouched ? { untouched } : {}),
       rawStatus,
       needsAttention: false,
       ...(arrived !== undefined ? { amount: arrived } : {}),

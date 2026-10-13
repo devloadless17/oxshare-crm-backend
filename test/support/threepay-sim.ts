@@ -48,6 +48,8 @@ export interface SimInvoice {
   walletAddress: string;
   status: 'initiated' | 'amount confirmed' | 'confirmed' | 'expired' | 'failed' | 'cancelled';
   createdAt: string;
+  /** Equal to `createdAt` until somebody opens the page (which starts 3pay's timer) or it moves. */
+  updatedAt: string;
   confirmedAt?: string;
   /** Where 3pay was told to report (`webhookUrl`) and to send the payer (`callbackUrl`). */
   webhookUrl?: string;
@@ -197,9 +199,17 @@ export class ThreePaySim {
 
   /* ── what happens on the chain, and in 3pay's dashboard ─────────────────── */
 
+  /** The payer opens the payment page: 3pay's timer starts and its record is touched. */
+  open(paymentId: string): SimInvoice {
+    const invoice = this.invoice(paymentId);
+    invoice.updatedAt = new Date(Date.parse(invoice.createdAt) + 1000).toISOString();
+    return invoice;
+  }
+
   /** The payer sent `arrived` USDT; 3pay confirms the payment. */
   confirm(paymentId: string, arrived: string): SimInvoice {
     const invoice = this.invoice(paymentId);
+    invoice.updatedAt = new Date().toISOString();
     const fee = '1.00';
     invoice.status = 'confirmed';
     invoice.actualBalance = arrived;
@@ -213,6 +223,7 @@ export class ThreePaySim {
   /** The link expired — with `arrived` on it, when some came in unconfirmed. */
   expire(paymentId: string, arrived = '0'): SimInvoice {
     const invoice = this.invoice(paymentId);
+    invoice.updatedAt = new Date().toISOString();
     invoice.status = this.shape === 'live' ? 'failed' : 'expired';
     invoice.actualBalance = arrived;
     return invoice;
@@ -424,11 +435,14 @@ export class ThreePaySim {
       currencyType: network,
       walletAddress: 'TRygAGEkC4rF6wnyweM91vtcsFdnAQxWjf',
       status: 'initiated',
-      createdAt: new Date().toISOString(),
+      createdAt: '',
+      updatedAt: '',
       webhookUrl: query['webhookUrl'],
       callbackUrl: query['callbackUrl'] ?? (parsed['callbackUrl'] as string | undefined),
       timer: query['timer'],
     };
+    invoice.createdAt = new Date().toISOString();
+    invoice.updatedAt = invoice.createdAt;
     this.invoices.push(invoice);
     if (this.dropNextCreate) {
       this.dropNextCreate = false;
@@ -498,6 +512,7 @@ export class ThreePaySim {
         netAmount: num(invoice.netAmount),
         walletAddress: invoice.walletAddress,
         createdAt: invoice.createdAt,
+        updatedAt: invoice.updatedAt,
         ...(invoice.confirmedAt ? { confirmedAt: invoice.confirmedAt } : {}),
         ...(this.verifyNamesNetwork ? { currencyType: invoice.currencyType } : {}),
       },
