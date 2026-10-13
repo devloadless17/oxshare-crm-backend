@@ -22,25 +22,6 @@ export const IB_APPLICATION_STATUSES = ['pending', 'approved', 'rejected'] as co
 export type IbApplicationStatusDto = (typeof IB_APPLICATION_STATUSES)[number];
 
 /**
- * The programme a sub-partner inherits, named rather than merely identified.
- *
- * The id is what the application carries; the NAME is what the screen shows.
- * Sending only the id would force the portal to fetch the agency catalogue to
- * render one label — a request whose whole purpose is to look up a string the
- * API already had.
- */
-export class InheritedAgencyDto {
-  @ApiProperty() id: string;
-  @ApiProperty() name: string;
-  @ApiProperty({
-    type: 'string',
-    nullable: true,
-    description: 'The agency name in Arabic (0179); null = not translated, show `name`.',
-  })
-  nameAr: string | null;
-}
-
-/**
  * What a client sends to apply.
  *
  * The AGENCY is required and everything else is optional, and the split is the
@@ -59,23 +40,14 @@ export class InheritedAgencyDto {
  */
 export class CreateIbApplicationDto {
   /**
-   * The agency (وكالة) being applied for. Required for a DIRECT applicant,
-   * absent BY DESIGN for an introduced one — and only the SERVICE can tell
-   * them apart.
+   * The agency (وكالة) being applied for. Required of every applicant since
+   * 13 Oct 2026, when an introduced applicant stopped inheriting their
+   * introducer's (every new partner is a main partner).
    *
-   * A client introduced by an existing partner does not choose: the service
-   * derives their programme from the introducer and IGNORES this field, and
-   * the portal deliberately sends nothing (see apply-panel.tsx — sending a
-   * copy invites the two to disagree, and the API would silently win). A bare
-   * `@IsUUID()` here refused that shape at the pipe with "agencyId must be a
-   * UUID" — every introduced applicant was blocked by the transport edge
-   * before the rule that welcomes them could run.
-   *
-   * So the DTO validates the SHAPE (present means a UUID) and the service owns
-   * the REQUIREMENT: `apply()` refuses a direct applicant with no agency using
-   * a sentence a person can act on, which also holds for anything calling the
-   * service directly. The blank-grants-everything hole this field's history
-   * warns about stays closed — the refusal moved, it did not go.
+   * Optional at the DTO all the same: the DTO validates the SHAPE (present
+   * means a UUID) and the service owns the REQUIREMENT, refusing a missing one
+   * with a sentence a person can act on, which also holds for anything calling
+   * the service directly.
    *
    * Validated against the OPEN agencies on submit. A disabled one is refused
    * rather than accepted-and-queued: the programme is closed, and letting the
@@ -85,9 +57,8 @@ export class CreateIbApplicationDto {
   @ApiPropertyOptional({
     format: 'uuid',
     description:
-      'Which agency the applicant wants to be appointed under. Required for an applicant who ' +
-      'chooses; omitted when they were introduced by a partner — the programme is inherited from ' +
-      'the introducer and anything sent here is ignored.',
+      'Which agency the applicant wants to be appointed under. Required: an application ' +
+      'without one is refused.',
   })
   @IsOptional()
   @IsUUID()
@@ -250,10 +221,8 @@ export class IbStatusDto {
    *
    * `ineligibleReason` stays the thing a client reads, and it stays the API's
    * to word — the portal must not keep a second copy of these sentences to
-   * drift. But the two reasons need different CHROME: an unverified client gets
-   * "Verify your identity first" and a button to /kyc, while a client whose
-   * introducer is already on the deepest rung has nothing to verify and nowhere
-   * to be sent, so that same button is an instruction they cannot follow.
+   * drift. But a reason can need its own CHROME: an unverified client gets
+   * "Verify your identity first" and a button to /kyc.
    *
    * A code rather than matching on the sentence, because string-matching a
    * human-facing message is broken by the first rewording — and the reword is
@@ -266,52 +235,24 @@ export class IbStatusDto {
   @ApiProperty({
     type: 'string',
     nullable: true,
-    enum: ['unverified', 'chain_full'],
+    enum: ['unverified'],
     description:
       'Machine-readable counterpart to ineligibleReason. `unverified` — identity not verified ' +
-      'yet. `chain_full` — the partner who introduced them is already on the deepest enabled ' +
-      'level, so there is no rung to place them on. Null when eligible.',
+      'yet. Null when eligible.',
   })
   ineligibleCode: IbIneligibleCode | null;
-
-  /**
-   * The programme this applicant will be placed on when it is not theirs to
-   * pick — a partner introduced by another partner inherits theirs.
-   *
-   * NULL means the choice IS theirs, and this is what the portal keys the
-   * picker off: present, hide the picker and name the programme; absent, ask.
-   *
-   * "A programme has been chosen for you" reads as an error for something that
-   * is simply how a downline works, which is why the name travels with the id.
-   */
-  @ApiProperty({
-    type: InheritedAgencyDto,
-    nullable: true,
-    description:
-      'Set when the applicant was introduced by an existing partner and therefore inherits that ' +
-      "partner's programme — the portal must not offer a choice in that case. Null when the " +
-      'applicant chooses: any client not introduced by a partner, or one whose introducer ' +
-      'carries no programme.',
-  })
-  inheritedAgency: InheritedAgencyDto | null;
 }
 
 /**
  * @see IbStatusDto.ineligibleCode
  *
- * `'chain_full'` is BACK. It went in 0102 with the first ladder; 0112 made the
- * rung a partner stands on their whole terms again, and the business rule
- * followed: a client whose introducer stands on the deepest ENABLED level of
- * the Commission Levels ladder has no rung to be placed on and cannot become
- * a partner. The Swagger enum on `IbStatusDto.ineligibleCode` kept advertising
- * both codes throughout, so the wire contract does not move.
- *
- * The portal branches on the code — `chain_full` draws no "Verify now" button,
- * hides the Partner page from a client with no application history, and
- * `RequireAuth` bounces a typed URL. The next gate should extend this union
+ * `'chain_full'` is GONE (13 Oct 2026). It refused a client whose introducer
+ * stood on the deepest level, because approval placed them beneath that
+ * introducer. Approval places nobody beneath anybody now, so where the
+ * introducer stands decides nothing. The next gate should extend this union
  * rather than reintroduce a second field beside it.
  */
-export type IbIneligibleCode = 'unverified' | 'chain_full';
+export type IbIneligibleCode = 'unverified';
 
 export class ApproveIbApplicationDto {
   /*
@@ -323,19 +264,16 @@ export class ApproveIbApplicationDto {
    */
 
   /**
-   * OMITTED and NULL are different instructions, and collapsing them was a
-   * live bug: the console omits this field, the controller once coalesced
-   * that to null, and every partner it approved landed at the root on level 1
-   * with no tree edge — which also let a client under a mislabeled "level-1"
-   * partner apply past the two-level ladder.
+   * OMITTED and NULL mean the same since 13 Oct 2026: a main partner. The
+   * introducer recorded at registration is never made the parent; placing a
+   * partner under another is the reviewer's deliberate act.
    */
   @ApiPropertyOptional({
     type: 'integer',
     nullable: true,
     description:
-      'The parent to nest the new partner under. OMITTED means "the reviewer did not say" — ' +
-      'the introducer recorded at registration becomes the parent, which is the ordinary case. ' +
-      'An explicit NULL roots them: they deal with the broker directly at level 1, whoever ' +
+      'The main partner to place the new partner under, making them a sub-partner (level 2). ' +
+      'Omitted or null: a main partner (level 1) dealing with the broker directly, whoever ' +
       'introduced them.',
   })
   @IsOptional()
@@ -360,12 +298,17 @@ export class ApproveIbApplicationDto {
    *
    * `null` is no longer a way to appoint somebody under no agency. It is
    * refused like an omission with nothing behind it.
+   *
+   * REQUIRED with `parentIbUserId` (13 Oct 2026): placing a partner under a
+   * main partner, the administrator chooses the agency; it is never copied
+   * from the parent.
    */
   @ApiPropertyOptional({
     format: 'uuid',
     description:
-      'Omitted grants the agency the applicant chose. Required when the application carries none — ' +
-      'a partner cannot be approved without an agency.',
+      'Omitted grants the agency the applicant chose. Required when the application carries none, ' +
+      'and whenever parentIbUserId is set: the administrator chooses the agency of a partner ' +
+      'placed under a main partner.',
   })
   @IsOptional()
   @IsUUID()
@@ -431,7 +374,7 @@ export class ChangeIbLevelDto {
     description:
       'The level IS the position (0197): 1 with no parent, 2 under a main partner. Choosing the ' +
       'other level MOVES them — 1 detaches them from their parent, 2 places them under ' +
-      '`parentIbUserId` — and "introduced by" follows the new position.',
+      '`parentIbUserId` on the `agencyId` chosen — and "introduced by" follows the new position.',
   })
   @IsInt()
   @Min(1)
@@ -447,6 +390,16 @@ export class ChangeIbLevelDto {
   @IsInt()
   @Min(1)
   parentIbUserId?: number | null;
+
+  @ApiPropertyOptional({
+    format: 'uuid',
+    description:
+      'The agency they work under from the move on. Required when moving a main partner to 2: ' +
+      'the administrator chooses it, it is never copied from the main partner.',
+  })
+  @IsOptional()
+  @IsUUID()
+  agencyId?: string;
 }
 
 /**
@@ -508,6 +461,17 @@ export class ReassignIbParentDto {
   @IsInt()
   @Min(1)
   parentIbUserId: number | null;
+
+  @ApiPropertyOptional({
+    format: 'uuid',
+    description:
+      'The agency they work under from the move on. Required with a parent: the administrator ' +
+      'chooses it, it is never copied from the main partner. Ignored with null, where they keep ' +
+      'their own.',
+  })
+  @IsOptional()
+  @IsUUID()
+  agencyId?: string;
 }
 
 /**

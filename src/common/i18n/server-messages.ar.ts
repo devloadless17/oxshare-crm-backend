@@ -514,8 +514,8 @@ export const SERVER_MESSAGES_AR: Readonly<Record<string, string>> = {
   'Application not found.': 'الطلب غير موجود.',
   'Only a pending application can be approved; this one is {1}.':
     'لا يمكن قبول إلا طلب قيد الانتظار؛ حالة هذا الطلب: {1}.',
-  'This applicant’s introducer, a partner outside your territory, cannot take a new sub-partner. Choose a parent in your territory, or place them at the top.':
-    'الشريك الذي عرّف مقدّم الطلب خارج نطاقك ولا يمكنه أخذ شريك فرعي جديد. اختر شريكاً أعلى ضمن نطاقك، أو ضعه في أعلى السلسلة.',
+  'Choose the agency for this partner. It is chosen every time a partner is placed under a main partner.':
+    'اختر الوكالة لهذا الشريك. تُختار الوكالة في كل مرة يوضع فيها شريك تحت شريك رئيسي.',
   'Choose the agency to appoint this partner under. A partner cannot be approved without one — their clients would be offered the entire product catalogue.':
     'اختر الوكالة التي سيُعيَّن هذا الشريك تحتها. لا يمكن قبول شريك دون وكالة.',
   'That agency does not exist. Reload and try again.':
@@ -524,8 +524,6 @@ export const SERVER_MESSAGES_AR: Readonly<Record<string, string>> = {
     'الشريك الأعلى المختار على المستوى {1}، ولا يوجد مستوى {2} مفعّل تحته. أضف ذلك المستوى أو فعّله من صفحة مستويات العمولة، أو اقبل الطلب تحت شريك أعلى آخر.',
   'This application was changed by another reviewer. Reload and try again.':
     'عدّل مراجع آخر هذا الطلب. أعد التحميل ثم حاول مرة أخرى.',
-  'The partner who introduced you is already on the deepest level of the partner programme, so a new partner account cannot be opened beneath them.':
-    'الشريك الذي عرّفك موجود بالفعل على أعمق مستوى في برنامج الشركاء، لذا لا يمكن فتح حساب شريك جديد تحته.',
   "A commission type named '{1}' already exists. Edit that one, or choose a different name.":
     "يوجد نوع عمولة باسم '{1}' مسبقاً. عدّله أو اختر اسماً مختلفاً.",
   'Commission type not found.': 'نوع العمولة غير موجود.',

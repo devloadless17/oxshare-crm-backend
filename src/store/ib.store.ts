@@ -1438,6 +1438,7 @@ export class IbStore {
         | 'level'
         | 'programId'
         | 'parentIbUserId'
+        | 'agencyId'
         | 'active'
         | 'commissionShareOverride'
         | 'rebateShareOverride'

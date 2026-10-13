@@ -132,7 +132,14 @@ beforeAll(async () => {
     'probe.names_b',
     'ib_account',
     inId,
-    { parentIbUserId: outId, nested: [{ userId: outId }], level: outId },
+    {
+      parentIbUserId: outId,
+      nested: [{ userId: outId }],
+      level: outId,
+      // The introducer a move or an approval replaced (`ib.parent_change`, `ib.approve`).
+      referrerBefore: outId,
+      referrerAfter: null,
+    },
     { id: outId, email: 'scope-b@oxshare-e2e.test', kind: 'client' },
   );
 });
@@ -177,6 +184,8 @@ describe('a scoped reader learns nothing about a client outside their territory'
       parentIbUserId: OUTSIDE_TERRITORY,
       nested: [{ userId: OUTSIDE_TERRITORY }],
       level: outId, // not a client key: a level is shown as the number it is
+      referrerBefore: OUTSIDE_TERRITORY,
+      referrerAfter: null,
     });
     expect(row.actorId).toBe(OUTSIDE_TERRITORY);
     expect(row.actorEmail).toBe(OUTSIDE_TERRITORY);
@@ -197,6 +206,8 @@ describe('a scoped reader learns nothing about a client outside their territory'
       parentIbUserId: outPortalId,
       nested: [{ userId: outPortalId }],
       level: outId,
+      referrerBefore: outPortalId,
+      referrerAfter: null,
     });
     expect(row.actorPortalId).toBe(outPortalId);
   });

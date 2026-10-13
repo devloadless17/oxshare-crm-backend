@@ -173,13 +173,23 @@ describe('the refusals, which are the design', () => {
     expect(await referrerOf(orphanId)).toBeNull();
   });
 
-  it('names a SELF-referral distinctly — the chain would walk a self-edge', async () => {
+  /*
+   * A PARTNER's introducer follows where they sit (13 Oct 2026): nobody for a
+   * main partner. Recording one here would start paying an introducer on a main
+   * partner's own trades, so every partner is refused, whatever code is typed —
+   * their own included, which is why REFERRAL_SELF is no longer reachable.
+   */
+  it('REFUSES a PARTNER — their introducer follows where they sit — and changes nothing', async () => {
     const session = await actingAs(ctx, 'admin', ADMIN);
-    const res = await session.patch(ROUTE(selfPartnerId)).send({ referralCode: 'REPAIRSELF' });
 
-    expect(res.status).toBe(400);
-    expect((res.body as { code?: string }).code).toBe('REFERRAL_SELF');
-    expect(await referrerOf(selfPartnerId)).toBeNull();
+    for (const referralCode of ['REPAIROK1', 'REPAIRSELF']) {
+      const res = await session.patch(ROUTE(selfPartnerId)).send({ referralCode });
+      expect(res.status, `recording ${referralCode} on a main partner answered ${res.status}`).toBe(
+        409,
+      );
+      expect((res.body as { code?: string }).code).toBe('REFERRER_FOLLOWS_POSITION');
+    }
+    expect(await referrerOf(selfPartnerId), 'a main partner was given an introducer').toBeNull();
   });
 
   it('names a SUSPENDED partner distinctly — the code was right', async () => {

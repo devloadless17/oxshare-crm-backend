@@ -3,16 +3,14 @@ import { AdminIbController } from './admin-ib.controller';
 import type { IbApplicationsService } from './ib-applications.service';
 
 /**
- * The approve route's MAPPING, pinned — because it is where this feature
- * actually broke while every service spec stayed green.
+ * The approve route's MAPPING, pinned — because it is where this feature once
+ * broke while every service spec stayed green (the controller rewrote an
+ * omitted parent before the service could read it).
  *
- * To `IbApplicationsService.approve`, `parentIbUserId: undefined` means "the
- * reviewer did not say" (the introducer recorded at registration becomes the
- * parent) and `null` is an explicit "root them". The controller coalesced an
- * omitted field to null, so every partner approved through the console was
- * rooted: no tree edge, level 1 for everyone, and a chain-full guard that
- * never ran because there was never a parent to check. The service specs call
- * the service directly and never saw it.
+ * Since 13 Oct 2026 an omitted parent and `null` both make a main partner
+ * (level 1), and only a NAMED parent makes a sub-partner. The controller must
+ * still hand the reviewer's choice through untouched, so the service is the
+ * one place that decides what each means.
  */
 describe('AdminIbController approve mapping', () => {
   const APPLICATION = '5b1c4a48-9adc-4a06-8f28-0e6f7ffbe001';
@@ -34,7 +32,7 @@ describe('AdminIbController approve mapping', () => {
     return { approve, controller, req };
   }
 
-  it('passes an OMITTED parent through as undefined — the inherit instruction', async () => {
+  it('passes an OMITTED parent through as undefined', async () => {
     const { approve, controller, req } = harness();
 
     await controller.approve(req, APPLICATION, {});
@@ -47,7 +45,7 @@ describe('AdminIbController approve mapping', () => {
     );
   });
 
-  it('passes an EXPLICIT null through — the root-them instruction', async () => {
+  it('passes an EXPLICIT null through', async () => {
     const { approve, controller, req } = harness();
 
     await controller.approve(req, APPLICATION, {

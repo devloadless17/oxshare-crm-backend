@@ -492,6 +492,18 @@ export class ReferrerAlreadySetError extends DomainError {
 }
 
 /**
+ * The client is a PARTNER, whose "introduced by" is not recorded by hand. → 409
+ *
+ * It follows where they sit in the partner tree (13 Oct 2026): nobody for a
+ * main partner, their main partner for a sub-partner, moved with Change
+ * commission level. Filling it here would start paying an introducer on a main
+ * partner's own trades, which is exactly what that rule stops.
+ */
+export class ReferrerFollowsPositionError extends DomainError {
+  readonly code = 'REFERRER_FOLLOWS_POSITION';
+}
+
+/**
  * This client already has a trading account by that name. → 409
  *
  * Its OWN code rather than a bare `ConflictError`, because the portal has to be

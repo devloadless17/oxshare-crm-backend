@@ -13,6 +13,7 @@ import {
   ReferralPartnerInactiveError,
   ReferralSelfError,
   ReferrerAlreadySetError,
+  ReferrerFollowsPositionError,
   ValidationError,
 } from '../../common/errors/domain-errors';
 import {
@@ -1120,6 +1121,21 @@ export class AdminClientsService {
     const client = await this.users.findForAdmin(userId, actor.clientScope);
     if (!client) throw new ClientNotFoundError();
 
+    /*
+     * A PARTNER's introducer is never recorded here: it follows where they sit
+     * in the tree (13 Oct 2026) — nobody for a main partner, their main partner
+     * for a sub-partner — and moves with Change commission level. Recording one
+     * would start paying an introducer on a main partner's own trades. First,
+     * because it is the answer for every partner, whatever code was typed.
+     */
+    if (await this.ib.findAccount(userId)) {
+      throw new ReferrerFollowsPositionError(
+        'This client is a partner, so who introduced them follows where they sit: nobody for a ' +
+          'main partner, their main partner for a sub-partner. To place them under a main ' +
+          'partner, use Change commission level.',
+      );
+    }
+
     if (client.referredByIbUserId) {
       throw new ReferrerAlreadySetError(
         'This client already has a referring partner. Attribution is recorded once and is ' +
@@ -1134,6 +1150,8 @@ export class AdminClientsService {
     if (!account) {
       throw new ReferralCodeUnknownError(`No partner holds the referral code ${code}.`);
     }
+    // Unreachable while partners are refused above (only a partner holds a
+    // code); kept because a self-edge would make the commission walk loop.
     if (account.userId === userId) {
       throw new ReferralSelfError(
         'That is this client\u2019s own referral code. A client cannot introduce themselves, ' +

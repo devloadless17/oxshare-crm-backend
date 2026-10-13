@@ -792,6 +792,7 @@ export class AdminIbController {
         req.admin.clientScope,
         req.admin,
         dto.parentIbUserId,
+        dto.agencyId,
       ),
       req.admin.clientScope,
     );
@@ -853,6 +854,7 @@ export class AdminIbController {
         dto.parentIbUserId,
         req.admin.clientScope,
         req.admin,
+        dto.agencyId,
       ),
       req.admin.clientScope,
     );
