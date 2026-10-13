@@ -26,6 +26,7 @@ import {
   ReferralPartnerInactiveError,
   ReferralSelfError,
   ReferrerAlreadySetError,
+  ReferrerFollowsPositionError,
   ExternalServiceError,
   DomainError,
   FieldValidationError,
@@ -109,6 +110,8 @@ const DOMAIN_STATUS = new Map<new (...args: never[]) => DomainError, HttpStatus>
   [ReferralSelfError, HttpStatus.BAD_REQUEST],
   [ReferralPartnerInactiveError, HttpStatus.BAD_REQUEST],
   [ReferrerAlreadySetError, HttpStatus.CONFLICT],
+  // A partner's introducer follows their place in the tree. See the class.
+  [ReferrerFollowsPositionError, HttpStatus.CONFLICT],
   // Same 409, and the point is the distinct `code` — the portal puts this one on
   // the name FIELD rather than at the top of the dialog. See the class.
   [AccountNameTakenError, HttpStatus.CONFLICT],

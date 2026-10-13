@@ -141,6 +141,9 @@ const CLIENT_ID_KEYS: ReadonlySet<string> = new Set([
   'ownerUserId',
   'introducerId',
   'referredByIbUserId',
+  // An introducer replaced by a move or an approval (`ib.parent_change`, `ib.approve`).
+  'referrerBefore',
+  'referrerAfter',
 ]);
 const CLIENT_CHANGE_ACTIONS: ReadonlySet<string> = new Set([
   'ib.parent_change',

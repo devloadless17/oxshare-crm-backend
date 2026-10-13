@@ -340,14 +340,26 @@ export async function completeAdminTotp(
   // last moments so the code cannot expire between computing and checking.
   const intoStep = (Date.now() / 1000) % 30;
   if (intoStep > 26) await new Promise((r) => setTimeout(r, (30 - intoStep + 0.2) * 1000));
-  const verify = await request(ctx.server)
-    .post('/v1/admin/auth/totp/verify')
-    .set('Origin', origin)
-    .set('User-Agent', TEST_USER_AGENT)
-    .send({
-      challengeToken: challenge.challengeToken,
-      code: totpCode(secret, totpStepAt(new Date())),
-    });
+  const verifyWith = (step: number) =>
+    request(ctx.server)
+      .post('/v1/admin/auth/totp/verify')
+      .set('Origin', origin)
+      .set('User-Agent', TEST_USER_AGENT)
+      .send({ challengeToken: challenge.challengeToken, code: totpCode(secret, step) });
+  const step = totpStepAt(new Date());
+  let verify = await verifyWith(step);
+  /*
+   * A loaded machine (the whole suite under coverage) can take the request past
+   * the step's end — the server reads the clock after its own lookups — and it
+   * then rightly refuses the previous step's code (13 Oct 2026: one spec in a
+   * full run, never alone). Retried ONCE with the new step's code, and only when
+   * the step really moved: a refusal inside one step is a real failure and still
+   * throws below. The challenge survives a wrong code, and the success resets
+   * the failure it counted.
+   */
+  if (verify.status === 401 && totpStepAt(new Date()) !== step) {
+    verify = await verifyWith(totpStepAt(new Date()));
+  }
   if (verify.status !== 200) {
     throw new Error(
       `authenticator code refused for ${email}: ${verify.status} ${JSON.stringify(verify.body)}`,

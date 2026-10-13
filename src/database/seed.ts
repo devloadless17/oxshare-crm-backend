@@ -537,28 +537,28 @@ export async function runSeeds(): Promise<void> {
      * A two-rung chain the suite can stand clients under without driving a
      * partner application through approval on every run:
      *
-     *   e2e-partner-l1@  level 1, root — code E2EPARTL1. Carries the agency, so
-     *                    an applicant introduced by them INHERITS it and the
-     *                    apply panel's "selected for you" card renders.
-     *   e2e-partner-l2@  level 2 under l1 — code E2EPARTL2. The deepest enabled
-     *                    rung on the committed ladder, so a client registered
-     *                    under THIS code is chain_full and must be locked out of
-     *                    the programme everywhere the portal offers it.
+     *   e2e-partner-l1@  level 1, root — code E2EPARTL1, on the E2E Agency.
+     *   e2e-partner-l2@  level 2 under l1 — code E2EPARTL2, a sub-partner for
+     *                    the screens that draw the tree.
      *   e2e-partner-applicant@  verified + KYC 1, introduced by l1, no
-     *                    application — drives the inherited-agency apply flow.
-     *                    The spec keeps it repeatable by having the admin REJECT
-     *                    what it submits (rejected → "Apply again" is a loop;
-     *                    approval is deliberately irreversible and would make
-     *                    run two a different world).
-     *   e2e-partner-fresh@      same shape — the one identity the spec DOES
-     *                    approve, once, to prove approval nests a recruited
-     *                    partner beneath their introducer; later runs assert the
-     *                    standing outcome instead.
+     *                    application — drives the apply flow (choose a
+     *                    programme, submit). The spec keeps it repeatable by
+     *                    having the admin REJECT what it submits (rejected →
+     *                    "Apply again" is a loop; approval is deliberately
+     *                    irreversible and would make run two a different world).
+     *   e2e-partner-main@       same shape — the one identity the spec DOES
+     *                    approve, once, to prove an introduced applicant becomes
+     *                    a MAIN partner (level 1, no parent; 13 Oct 2026); later
+     *                    runs assert the standing outcome instead.
+     *                    `e2e-partner-fresh@` played this part when approval
+     *                    nested a partner beneath their introducer, and is left
+     *                    a level-2 partner on databases that ran it; it is no
+     *                    longer seeded.
      *
      * The ACCOUNTS are seeded rather than approved into existence because there
      * is deliberately no demote operation — a fixture that becomes a partner on
      * run one is a different world on run two. The live approve path is what
-     * `e2e-partner-fresh@` exists for.
+     * `e2e-partner-main@` exists for.
      */
     await db
       .insert(agencies)
@@ -594,10 +594,10 @@ export async function runSeeds(): Promise<void> {
         phone: '+971500000007',
       },
       {
-        email: 'e2e-partner-fresh@oxshare.com',
-        firstName: 'Nadim',
-        lastName: 'Nested',
-        phone: '+971500000008',
+        email: 'e2e-partner-main@oxshare.com',
+        firstName: 'Nadia',
+        lastName: 'Mainline',
+        phone: '+971500000009',
       },
     ] as const;
     for (const fixture of partnerFixtures) {
@@ -652,8 +652,8 @@ export async function runSeeds(): Promise<void> {
       /*
        * Attribution AFTER the l1 account exists (the column's FK points at
        * ib_accounts), and re-asserted every boot so rows inserted by an older
-       * seed pick it up. The applicant and fresh identities sit under L1 — one
-       * rung of room — while l2's own introducer is l1, matching the account.
+       * seed pick it up. The applicant and main identities were introduced by
+       * L1, and l2's own introducer is l1, matching the account.
        */
       const introduced = fixtureRows
         .filter((r) => r.email !== 'e2e-partner-l1@oxshare.com')

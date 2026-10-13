@@ -8,15 +8,13 @@ import { CreateIbApplicationDto } from './ib-application.dto';
  * validates it — because the pipe runs BEFORE the service, and it once
  * disagreed with it.
  *
- * `apply()` welcomes an introduced applicant with no `agencyId` (their
- * programme is inherited and the field is ignored), and the portal
- * deliberately sends `{}` for them. A bare `@IsUUID()` on the DTO refused
- * that shape at the transport edge with "agencyId must be a UUID", so every
- * client under a partner was blocked from applying by a validator the rule
- * never reached. These pin the contract from the pipe's side.
+ * The pipe checks only the SHAPE: a present `agencyId` must be a UUID. The
+ * REQUIREMENT (every applicant names one since 13 Oct 2026) is the service's,
+ * so a missing one is refused with "Choose the partner programme you are
+ * applying for" rather than "agencyId must be a UUID".
  */
 describe('CreateIbApplicationDto', () => {
-  it('accepts the empty shape an introduced applicant sends', async () => {
+  it('leaves a missing agency to the service, which words the refusal', async () => {
     const errors = await validate(plainToInstance(CreateIbApplicationDto, {}));
     expect(errors).toEqual([]);
   });
@@ -33,8 +31,7 @@ describe('CreateIbApplicationDto', () => {
   /*
    * Present-but-garbage is still refused: optional relaxes ABSENCE, not shape.
    * The requirement itself lives in the service ("Choose the partner programme
-   * you are applying for"), which knows whether an introducer supplies the
-   * answer — the pipe cannot.
+   * you are applying for").
    */
   it('still refuses a value that is not a UUID', async () => {
     const errors = await validate(

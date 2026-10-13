@@ -143,7 +143,7 @@ async function twoRungChain(
     (await service.apply(middle, { agencyId: AGENCY.id })).id,
     REVIEWER,
     UNRESTRICTED,
-    { parentIbUserId: topAccount.userId },
+    { parentIbUserId: topAccount.userId, agencyId: AGENCY.id },
   );
   const client = await makeClient(`${prefix}-bottom@test.local`, bottomVerification);
   await ctx.db.execute(
@@ -319,12 +319,13 @@ describe('approving a partner who is already under one', () => {
     expect(account.level).toBe(1);
   });
 
-  it('appoints a recruited partner one rung below the partner who recruited them', async () => {
+  it('appoints a partner one rung below the main partner the reviewer placed them under', async () => {
     const { parent, client } = await parentAndClient();
-    const application = await service.apply(client, {});
+    const application = await service.apply(client, { agencyId: AGENCY.id });
 
     const account = await service.approve(application.id, REVIEWER, UNRESTRICTED, {
       parentIbUserId: parent,
+      agencyId: AGENCY.id,
     });
 
     expect(account.level).toBe(2);
@@ -333,16 +334,17 @@ describe('approving a partner who is already under one', () => {
   });
 
   /*
-   * The AGENCY is still inherited, and the rung is still derived. They travel
-   * together and neither is a reviewer's choice, which is the whole reason the
-   * approval screen no longer carries a commercial control at all.
+   * Placed under a parent, the partner takes the parent's AGENCY and the rung
+   * beneath theirs. They travel together, which is why the approval screen
+   * carries no commercial control beyond the agency.
    */
-  it('inherits the agency from the parent while deriving the rung', async () => {
+  it('takes the agency from the parent while deriving the rung', async () => {
     const { parent, client } = await parentAndClient();
-    const application = await service.apply(client, {});
+    const application = await service.apply(client, { agencyId: AGENCY.id });
 
     const account = await service.approve(application.id, REVIEWER, UNRESTRICTED, {
       parentIbUserId: parent,
+      agencyId: AGENCY.id,
     });
 
     expect(account.agencyId).toBe(AGENCY.id);
@@ -449,16 +451,45 @@ describe('moving a partner onto different terms', () => {
     expect((await store.findAccount(main))?.level).toBe(1);
   });
 
-  it('moves a main partner under the named main partner onto level 2', async () => {
+  /*
+   * The AGENCY is the administrator's choice in the same step (13 Oct 2026):
+   * refused without one, and the one chosen is written — not the parent's.
+   */
+  it('refuses to move a main partner onto level 2 without an agency, and moves nobody', async () => {
+    const { main: target } = await mainAndSub('LVNOAG');
+    const mover = await makeClient('lvnoagency@test.local');
+    await store.createAccount({ userId: mover, level: 1, referralCode: 'LVNOAGNC' });
+
+    await expect(service.changeLevel(mover, 2, UNRESTRICTED, REVIEWER, target)).rejects.toThrow(
+      /choose the agency for this partner/i,
+    );
+    const still = await store.findAccount(mover);
+    expect(still?.parentIbUserId).toBeNull();
+    expect(still?.level).toBe(1);
+  });
+
+  it('moves a main partner under the named main partner onto level 2, on the agency chosen', async () => {
     const { main: target } = await mainAndSub('LVTGT');
     const mover = await makeClient('lvmove-main@test.local');
-    await store.createAccount({ userId: mover, level: 1, referralCode: 'LVMOVER1' });
+    await store.createAccount({
+      userId: mover,
+      level: 1,
+      referralCode: 'LVMOVER1',
+      agencyId: AGENCY.id,
+    });
+    const { rows } = await ctx.db.execute<{ id: string }>(sql`
+      INSERT INTO agencies (name, enabled) VALUES ('Chosen At Move', true) RETURNING id`);
 
-    const moved = await service.changeLevel(mover, 2, UNRESTRICTED, REVIEWER, target);
+    const moved = await service.changeLevel(mover, 2, UNRESTRICTED, REVIEWER, target, rows[0].id);
 
     expect(moved.level).toBe(2);
     expect(moved.parentIbUserId).toBe(target);
+    expect(moved.agencyId).toBe(rows[0].id);
     expect((await users.findById(mover))?.referredByIbUserId).toBe(target);
+    const row = audit.record.mock.calls.find(
+      (call) => call[1] === 'ib.parent_change' && call[3] === mover,
+    );
+    expect(row?.[4]).toMatchObject({ agencyBefore: AGENCY.id, agencyAfter: rows[0].id });
   });
 
   it('moves a sub-partner to level 1: detached, and "introduced by" removed', async () => {
@@ -480,9 +511,9 @@ describe('moving a partner onto different terms', () => {
     const mover = await makeClient('lvbad-mover@test.local');
     await store.createAccount({ userId: mover, level: 1, referralCode: 'LVBADMV1' });
 
-    await expect(service.changeLevel(mover, 2, UNRESTRICTED, REVIEWER, sub)).rejects.toThrow(
-      /sub-partner cannot have partners beneath them/i,
-    );
+    await expect(
+      service.changeLevel(mover, 2, UNRESTRICTED, REVIEWER, sub, AGENCY.id),
+    ).rejects.toThrow(/sub-partner cannot have partners beneath them/i);
     expect((await store.findAccount(mover))?.parentIbUserId).toBeNull();
   });
 
@@ -771,133 +802,37 @@ describe('status', () => {
   });
 
   /*
-   * ── THE CEILING IS BACK, AND THE LADDER IS WHAT CARRIES IT ─────────────────
+   * ── WHERE THE INTRODUCER STANDS DECIDES NOTHING (13 Oct 2026) ─────────────
    *
-   * 0102 removed the `chain_full` refusal on the reasoning that nesting a
-   * partner under another is always structurally possible. 0112 made the rung
-   * a partner stands on the whole of their terms again, and the business rule
-   * followed: the tree ends where the Commission Levels ladder ends, so a
-   * client introduced by a partner on the deepest ENABLED level cannot become
-   * a partner — the committed scope (IB-17) is two levels, and the seeded
-   * ladder carries exactly L1 and L2.
-   *
-   * DELIBERATELY not a constant 2: the cases below pin BOTH halves — the door
-   * is shut beneath a level-2 partner on the default ladder, and enabling a
-   * level 3 opens it with no code change, because depth is the IB Levels
-   * page's decision (0113).
+   * `chain_full` refused a client whose introducer stood on the deepest level,
+   * because approval placed them beneath that introducer. Every new partner is
+   * a main partner now, so a client introduced by a SUB-partner applies like
+   * anyone else and is approved onto level 1 — with no introducer any more.
    */
-  it('refuses a client whose introducer is on the deepest enabled level', async () => {
-    const { client } = await twoRungChain('deep');
+  it('lets a client introduced by a sub-partner apply, and approves them as a main partner', async () => {
+    const { middle, client } = await twoRungChain('under-sub');
 
     const status = await service.statusFor(client);
-    expect(status.eligible).toBe(false);
-    expect(status.ineligibleCode).toBe('chain_full');
-    // The sentence the portal renders verbatim.
-    expect(status.ineligibleReason).toMatch(/deepest level/i);
+    expect(status.eligible).toBe(true);
+    expect(status.ineligibleCode).toBeNull();
+
+    const application = await service.apply(client, { agencyId: AGENCY.id });
+    const account = await service.approve(application.id, REVIEWER, UNRESTRICTED);
+
+    expect(account.level).toBe(1);
+    expect(account.parentIbUserId).toBeNull();
+    expect(middle).toBeGreaterThan(0);
+    expect((await users.findById(client))?.referredByIbUserId).toBeUndefined();
   });
 
-  /*
-   * Since 0197 the door beneath a sub-partner stays shut for good: there is
-   * no level 3 an operator could enable to open it (the ladder refuses one),
-   * and even a level-3 row written behind the service's back changes nothing.
-   */
-  it('keeps the door shut beneath a sub-partner — no level 3 can open it', async () => {
-    const { client } = await twoRungChain('reopened');
-
-    await expect(
-      new IbLevelsService(ctx.db, auditStubAs()).create(
-        { level: 3, name: 'Three Deep', commissionShare: '10' },
-        REVIEWER,
-      ),
-    ).rejects.toThrow(/partner tree has 2 levels/i);
-
-    await ctx.db.execute(sql`
-      INSERT INTO ib_levels (level, name, commission_share, rebate_share, enabled)
-      SELECT 3, 'Smuggled', commission_share, rebate_share, true FROM ib_levels WHERE level = 2
-    `);
-    try {
-      const status = await service.statusFor(client);
-      expect(status.eligible).toBe(false);
-      expect(status.ineligibleCode).toBe('chain_full');
-    } finally {
-      await ctx.db.execute(sql`DELETE FROM ib_levels WHERE level > 2`);
-    }
-  });
-
-  /*
-   * A DISABLED rung is no rung. It pays nobody standing on it, which is the
-   * same reason `changeLevel` refuses to move a partner onto one — so a client
-   * under a LEVEL-1 partner is blocked while level 2 is switched off.
-   */
-  it('treats a disabled rung as no rung at all', async () => {
-    const top = await makeClient('disabled-rung-top@test.local');
-    const topAccount = await service.approve(
-      (await service.apply(top, { agencyId: AGENCY.id })).id,
-      REVIEWER,
-      UNRESTRICTED,
-    );
-    const client = await makeClient('disabled-rung-bottom@test.local');
-    await ctx.db.execute(
-      sql`UPDATE users SET referred_by_ib_user_id = ${topAccount.userId} WHERE id = ${client}`,
-    );
-
-    await ctx.db.execute(sql`UPDATE ib_levels SET enabled = false WHERE level = 2`);
-    try {
-      const status = await service.statusFor(client);
-      expect(status.eligible).toBe(false);
-      expect(status.ineligibleCode).toBe('chain_full');
-    } finally {
-      await ctx.db.execute(sql`UPDATE ib_levels SET enabled = true WHERE level = 2`);
-    }
-  });
-
-  /*
-   * `chain_full` OUTRANKS `unverified` when both are unmet. `unverified` comes
-   * with a "Verify now" button, and sending a client through the whole KYC
-   * wizard to reach a door that stays shut is an errand the platform knows to
-   * be pointless.
-   */
-  it('reports chain_full ahead of unverified — no errand unlocks a full ladder', async () => {
+  it('asks only for verification, whoever introduced the client', async () => {
     const { client } = await twoRungChain('unverified-under', 0);
 
     const status = await service.statusFor(client);
     expect(status.eligible).toBe(false);
-    expect(status.ineligibleCode).toBe('chain_full');
+    expect(status.ineligibleCode).toBe('unverified');
   });
 
-  /*
-   * And the door is shut, not merely the form: `statusFor` decides what a
-   * screen SHOWS, and `apply` is the control. A form that offers something the
-   * endpoint refuses — or the reverse — is the disagreement worth pinning in
-   * both directions.
-   */
-  it('refuses the application at the door, with the sentence the form shows', async () => {
-    const { client } = await twoRungChain('door');
-
-    await expect(service.apply(client, { agencyId: AGENCY.id })).rejects.toThrow(/deepest level/i);
-  });
-
-  /*
-   * Applying under a sub-partner is chain-full (0197): the case that used to
-   * prove a third level opened the door now proves nothing can, and that no
-   * application row is left behind by the refusal.
-   */
-  it('refuses an application under a sub-partner as chain-full, leaving no row', async () => {
-    const { client } = await twoRungChain('accepted');
-
-    await expect(service.apply(client, { agencyId: AGENCY.id })).rejects.toThrow(/deepest level/i);
-
-    const { rows } = await ctx.db.execute<{ n: number }>(
-      sql`SELECT count(*)::int n FROM ib_applications WHERE user_id = ${client}`,
-    );
-    expect(rows[0].n).toBe(0);
-  });
-
-  /*
-   * The bias that matters: a false positive HIDES the form from somebody
-   * entitled to it. A client under a level-1 partner still has rung 2 free, and
-   * an unattributed client is the case the ladder always has room for.
-   */
   it('leaves a client under a top-level partner eligible', async () => {
     const top = await makeClient('room-top@test.local');
     const topAccount = await service.approve(
@@ -915,17 +850,6 @@ describe('status', () => {
     expect(status.ineligibleCode).toBeNull();
   });
 
-  /*
-   * There is deliberately no "introducer is not a partner" case here.
-   *
-   * `users.referred_by_ib_user_id` is a foreign key onto `ib_accounts.user_id`,
-   * so an attribution to a non-partner cannot be written at all — the setup for
-   * that test fails on the constraint rather than on the assertion. The service
-   * still handles the shape defensively (`if (!introducer) return false`),
-   * because the store returns null for a row it cannot find and a check that
-   * assumed otherwise would fail closed, hiding the form from an entitled
-   * client. It is unreachable, not unconsidered.
-   */
   it('leaves an unattributed client eligible', async () => {
     const client = await makeClient('unattributed@test.local');
 
@@ -984,20 +908,18 @@ describe('approval', () => {
   });
 
   /**
-   * ── A SUB-PARTNER INHERITS THEIR INTRODUCER'S AGENCY ──────────────────────
+   * ── A SUB-PARTNER SELLS UNDER THEIR PARENT'S AGENCY ───────────────────────
    *
-   * The rule the whole agency feature exists for, and it was enforced by code
-   * that nothing asserted. `agencies` carry products, products carry MT5
-   * groups — so the agency decides what a partner's clients may open. A
-   * sub-partner who ended up on a different agency would be selling a catalogue
-   * their introducer has no relationship with, while commission flowed up a
-   * chain whose top never agreed to it.
+   * `agencies` carry products, products carry MT5 groups — so the agency
+   * decides what a partner's clients may open. A sub-partner on a different
+   * agency would be selling a catalogue their parent has no relationship
+   * with, while commission flowed up a chain whose top never agreed to it.
    *
-   * Three cases, because the rule has three halves that can each break alone:
-   * the inheritance itself, the fact that a stale form CANNOT override it, and
-   * the products that follow from it.
+   * Since 13 Oct 2026 neither the introducer nor the parent decides it: every
+   * applicant is a future main partner and chooses, and an administrator who
+   * places a partner under a main partner chooses the agency in that step.
    */
-  describe('a sub-partner sells under their introducer', () => {
+  describe('a sub-partner sells under their parent', () => {
     /** A second agency, so "inherited" is distinguishable from "the only one". */
     async function otherAgency(): Promise<string> {
       const { rows } = await ctx.db.execute<{ id: string }>(sql`
@@ -1022,35 +944,41 @@ describe('approval', () => {
       return { partner, client };
     }
 
-    it('takes the introducer’s agency, not the one the applicant sent', async () => {
+    it('lets an introduced applicant choose their own agency', async () => {
       const other = await otherAgency();
       const { client } = await partnerWithClient(AGENCY.id, [
         'inherit-parent@test.local',
         'inherit-child@test.local',
       ]);
 
-      /*
-       * The applicant asks for the OTHER agency. The portal does not draw the
-       * picker for a sub-partner, so this is a stale form or a hand-made
-       * request — ignored rather than refused, and the introducer's answer
-       * wins.
-       */
+      await expect(service.apply(client, {})).rejects.toThrow(/choose the partner programme/i);
       const application = await service.apply(client, { agencyId: other });
+      const account = await service.approve(application.id, REVIEWER, UNRESTRICTED);
 
-      expect(application.agencyId).toBe(AGENCY.id);
-      expect(application.agencyId).not.toBe(other);
+      expect(application.agencyId).toBe(other);
+      expect(account.agencyId).toBe(other);
     });
 
-    it('carries that agency onto the approved partner account', async () => {
-      const { client } = await partnerWithClient(AGENCY.id, [
+    it('places a sub-partner on the agency the administrator chose, never the parent’s', async () => {
+      const other = await otherAgency();
+      const { partner, client } = await partnerWithClient(AGENCY.id, [
         'inherit-approve-parent@test.local',
         'inherit-approve-child@test.local',
       ]);
+      const application = await service.apply(client, { agencyId: AGENCY.id });
 
-      const application = await service.apply(client, {});
-      const account = await service.approve(application.id, REVIEWER, UNRESTRICTED);
+      // Not copied from the parent, nor from the application: chosen.
+      await expect(
+        service.approve(application.id, REVIEWER, UNRESTRICTED, { parentIbUserId: partner }),
+      ).rejects.toThrow(/choose the agency for this partner/i);
+      const account = await service.approve(application.id, REVIEWER, UNRESTRICTED, {
+        parentIbUserId: partner,
+        agencyId: other,
+      });
 
-      expect(account.agencyId).toBe(AGENCY.id);
+      expect(account.agencyId).toBe(other);
+      expect(account.level).toBe(2);
+      expect((await users.findById(client))?.referredByIbUserId).toBe(partner);
     });
 
     /*
@@ -1058,7 +986,7 @@ describe('approval', () => {
      * products → MT5 groups. Two partners on one agency are offered the same
      * catalogue, so their clients can open the same accounts.
      */
-    it('offers the sub-partner the same products as their introducer', async () => {
+    it('offers a sub-partner on their parent’s agency the same products', async () => {
       const { rows: product } = await ctx.db.execute<{ id: string }>(sql`
         INSERT INTO trading_products (name, enabled, type, sort_order)
         VALUES ('Agency Product', true, 'real', 950)
@@ -1075,8 +1003,11 @@ describe('approval', () => {
         'inherit-products-parent@test.local',
         'inherit-products-child@test.local',
       ]);
-      const application = await service.apply(client, {});
-      await service.approve(application.id, REVIEWER, UNRESTRICTED);
+      const application = await service.apply(client, { agencyId: AGENCY.id });
+      await service.approve(application.id, REVIEWER, UNRESTRICTED, {
+        parentIbUserId: partner,
+        agencyId: AGENCY.id,
+      });
 
       const parentStatus = await service.statusFor(partner);
       const childStatus = await service.statusFor(client);
@@ -1106,13 +1037,8 @@ describe('approval', () => {
         'arabic-parent@test.local',
         'arabic-child@test.local',
       ]);
-      const before = await service.statusFor(client);
-      expect(before.inheritedAgency).toMatchObject({
-        name: 'Test Agency',
-        nameAr: 'وكالة الاختبار',
-      });
 
-      const application = await service.apply(client, {});
+      const application = await service.apply(client, { agencyId: AGENCY.id });
       expect((await service.statusFor(client)).application?.agencyNameAr).toBe('وكالة الاختبار');
       await service.approve(application.id, REVIEWER, UNRESTRICTED);
 
@@ -1125,11 +1051,7 @@ describe('approval', () => {
       expect(pairs).toContainEqual(['Arabic Product', 'منتج عربي']);
     });
 
-    /*
-     * A DIRECT applicant — nobody above them — still chooses, because there is
-     * no introducer for the answer to come from. The mirror of the cases above,
-     * so none of them can pass by the service simply always using `AGENCY.id`.
-     */
+    /* A DIRECT applicant — nobody introduced them — chooses too. */
     it('still lets an unattributed applicant choose', async () => {
       const other = await otherAgency();
       const userId = await makeClient('inherit-direct@test.local');
@@ -1222,6 +1144,7 @@ describe('approval', () => {
     const childApp = await service.apply(childId, { agencyId: AGENCY.id });
     const child = await service.approve(childApp.id, REVIEWER, UNRESTRICTED, {
       parentIbUserId: parentId,
+      agencyId: AGENCY.id,
     });
 
     expect(child.parentIbUserId).toBe(parentId);
@@ -1256,17 +1179,17 @@ describe('approval', () => {
     const childApp = await service.apply(childId, { agencyId: AGENCY.id });
 
     await expect(
-      service.approve(childApp.id, REVIEWER, UNRESTRICTED, { parentIbUserId: parentId }),
+      service.approve(childApp.id, REVIEWER, UNRESTRICTED, {
+        parentIbUserId: parentId,
+        agencyId: AGENCY.id,
+      }),
     ).rejects.toThrow(/suspended/i);
   });
 
   /*
-   * The approval half of the chain-room rule. `apply` shuts the door on a
-   * client whose INTRODUCER is on the deepest rung, but the reviewer resolves
-   * the parent at approval time — so an application that entered the queue
-   * legitimately (no introducer at all) can still be AIMED beneath a partner
-   * the ladder ends at, and that is where this refusal bites. The message
-   * names both remedies, because both are ordinary decisions.
+   * A reviewer may AIM an application beneath a sub-partner; the tree has two
+   * levels, so that is refused. The message names both remedies, because both
+   * are ordinary decisions.
    */
   it('refuses to nest a new partner beneath a parent on the deepest enabled level', async () => {
     const { middle } = await twoRungChain('nest-refused');
@@ -1275,7 +1198,10 @@ describe('approval', () => {
     const application = await service.apply(applicant, { agencyId: AGENCY.id });
 
     await expect(
-      service.approve(application.id, REVIEWER, UNRESTRICTED, { parentIbUserId: middle }),
+      service.approve(application.id, REVIEWER, UNRESTRICTED, {
+        parentIbUserId: middle,
+        agencyId: AGENCY.id,
+      }),
     ).rejects.toThrow(/sub-partner cannot have partners beneath them/i);
   });
 
@@ -1295,7 +1221,10 @@ describe('approval', () => {
     `);
     try {
       await expect(
-        service.approve(application.id, REVIEWER, UNRESTRICTED, { parentIbUserId: middle }),
+        service.approve(application.id, REVIEWER, UNRESTRICTED, {
+          parentIbUserId: middle,
+          agencyId: AGENCY.id,
+        }),
       ).rejects.toThrow(/sub-partner cannot have partners beneath them/i);
     } finally {
       await ctx.db.execute(sql`DELETE FROM ib_levels WHERE level > 2`);
@@ -1309,26 +1238,19 @@ describe('approval', () => {
   });
 
   /*
-   * The escape hatch the refusal must not close: a reviewer may still ROOT an
-   * applicant whose introducer is chain-blocked. Explicit null means "deal
-   * direct", the rung written is 1, and the ladder has nothing to say about a
-   * partner placed at its top. The application predates the attribution here
-   * because `apply` would refuse it afterwards — the same order the door test
-   * pins from the other side.
+   * A refused placement leaves the application pending, and the reviewer can
+   * still approve them as a main partner.
    */
-  it('still lets the reviewer root an applicant whose introducer is chain-blocked', async () => {
+  it('still approves as a main partner after a placement under a sub-partner is refused', async () => {
     const applicant = await makeClient('rooted-anyway@test.local');
     const application = await service.apply(applicant, { agencyId: AGENCY.id });
-
     const { middle } = await twoRungChain('rooted-anyway');
-    await ctx.db.execute(
-      sql`UPDATE users SET referred_by_ib_user_id = ${middle} WHERE id = ${applicant}`,
-    );
 
-    // Omitting the parent would inherit the level-2 introducer and be refused;
-    // the explicit null is the reviewer's decision, and it stands.
     await expect(
-      service.approve(application.id, REVIEWER, UNRESTRICTED, { parentIbUserId: middle }),
+      service.approve(application.id, REVIEWER, UNRESTRICTED, {
+        parentIbUserId: middle,
+        agencyId: AGENCY.id,
+      }),
     ).rejects.toThrow(/sub-partner cannot have partners beneath them/i);
 
     const account = await service.approve(application.id, REVIEWER, UNRESTRICTED, {
@@ -1483,8 +1405,8 @@ describe('the cycle guard', () => {
         sql`UPDATE ib_accounts SET parent_ib_user_id = NULL WHERE user_id IN (${x}, ${y})`,
       );
       const results = await Promise.allSettled([
-        service.reassignParent(x, y, UNRESTRICTED, REVIEWER),
-        service.reassignParent(y, x, UNRESTRICTED, REVIEWER),
+        service.reassignParent(x, y, UNRESTRICTED, REVIEWER, AGENCY.id),
+        service.reassignParent(y, x, UNRESTRICTED, REVIEWER, AGENCY.id),
       ]);
       expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
       const { rows } = await ctx.db.execute<{ n: number }>(sql`
@@ -1599,9 +1521,9 @@ describe('managing a live partner', () => {
     const [, child] = await makePair();
     const mover = await makeRoot('mgmt-mover@test.local', 'MGMTMOVE');
 
-    await expect(service.reassignParent(mover, child, UNRESTRICTED, REVIEWER)).rejects.toThrow(
-      /sub-partner cannot have partners beneath them/i,
-    );
+    await expect(
+      service.reassignParent(mover, child, UNRESTRICTED, REVIEWER, AGENCY.id),
+    ).rejects.toThrow(/sub-partner cannot have partners beneath them/i);
     const unchanged = await store.findAccount(mover);
     expect(unchanged?.parentIbUserId).toBeNull();
     expect(unchanged?.level).toBe(1);
@@ -1611,9 +1533,9 @@ describe('managing a live partner', () => {
     const [parent, child] = await makePair();
     const newParent = await makeRoot('mgmt-newparent@test.local', 'MGMTNEWP');
 
-    await expect(service.reassignParent(parent, newParent, UNRESTRICTED, REVIEWER)).rejects.toThrow(
-      /has sub-partners of their own/i,
-    );
+    await expect(
+      service.reassignParent(parent, newParent, UNRESTRICTED, REVIEWER, AGENCY.id),
+    ).rejects.toThrow(/has sub-partners of their own/i);
     // Nobody moved: the parent is still a root on level 1, the child still theirs.
     const stillRoot = await store.findAccount(parent);
     expect(stillRoot?.parentIbUserId).toBeNull();
@@ -1625,11 +1547,21 @@ describe('managing a live partner', () => {
     const mover = await makeRoot('mgmt-relevel-down@test.local', 'MGMTRLDN');
     const newParent = await makeRoot('mgmt-relevel-parent@test.local', 'MGMTRLPR');
 
-    const moved = await service.reassignParent(mover, newParent, UNRESTRICTED, REVIEWER);
+    const moved = await service.reassignParent(mover, newParent, UNRESTRICTED, REVIEWER, AGENCY.id);
 
     expect(moved.parentIbUserId).toBe(newParent);
     expect(moved.level).toBe(2);
     expect((await store.findAccount(mover))?.level).toBe(2);
+  });
+
+  it('refuses to place a partner under a main partner without an agency, and moves nobody', async () => {
+    const mover = await makeRoot('mgmt-no-agency@test.local', 'MGMTNOAG');
+    const newParent = await makeRoot('mgmt-no-agency-parent@test.local', 'MGMTNOAP');
+
+    await expect(service.reassignParent(mover, newParent, UNRESTRICTED, REVIEWER)).rejects.toThrow(
+      /choose the agency for this partner/i,
+    );
+    expect((await store.findAccount(mover))?.parentIbUserId).toBeNull();
   });
 
   it('re-levels a partner cut loose to level 1 and clears their own terms', async () => {
@@ -1662,7 +1594,7 @@ describe('managing a live partner', () => {
     await service.setTerms(child, { commissionShare: '25' }, UNRESTRICTED, REVIEWER);
     const other = await makeRoot('mgmt-sideways@test.local', 'MGMTSIDE');
 
-    const moved = await service.reassignParent(child, other, UNRESTRICTED, REVIEWER);
+    const moved = await service.reassignParent(child, other, UNRESTRICTED, REVIEWER, AGENCY.id);
 
     expect(moved.parentIbUserId).toBe(other);
     expect(moved.level).toBe(2);
@@ -1685,16 +1617,16 @@ describe('managing a live partner', () => {
 
     // Making the child the parent's parent completes A→B→A. Postgres would
     // accept it; this is the only guard.
-    await expect(service.reassignParent(parent, child, UNRESTRICTED, REVIEWER)).rejects.toThrow(
-      /loop/i,
-    );
+    await expect(
+      service.reassignParent(parent, child, UNRESTRICTED, REVIEWER, AGENCY.id),
+    ).rejects.toThrow(/loop/i);
   });
 
   it('refuses a partner as their own parent', async () => {
     const [parent] = await makePair();
-    await expect(service.reassignParent(parent, parent, UNRESTRICTED, REVIEWER)).rejects.toThrow(
-      /under themselves/i,
-    );
+    await expect(
+      service.reassignParent(parent, parent, UNRESTRICTED, REVIEWER, AGENCY.id),
+    ).rejects.toThrow(/under themselves/i);
   });
 
   /*
@@ -1708,7 +1640,7 @@ describe('managing a live partner', () => {
     );
     const other = await makeRoot('mgmt-ref-follow@test.local', 'MGMTREFF');
 
-    await service.reassignParent(child, other, UNRESTRICTED, REVIEWER);
+    await service.reassignParent(child, other, UNRESTRICTED, REVIEWER, AGENCY.id);
 
     expect((await users.findById(child))?.referredByIbUserId).toBe(other);
   });
@@ -1731,7 +1663,9 @@ describe('managing a live partner', () => {
       sql`UPDATE users SET referred_by_ib_user_id = ${parent} WHERE id = ${mover}`,
     );
 
-    await expect(service.reassignParent(mover, child, UNRESTRICTED, REVIEWER)).rejects.toThrow();
+    await expect(
+      service.reassignParent(mover, child, UNRESTRICTED, REVIEWER, AGENCY.id),
+    ).rejects.toThrow();
 
     expect((await users.findById(mover))?.referredByIbUserId).toBe(parent);
   });
@@ -1745,7 +1679,7 @@ describe('managing a live partner', () => {
       referralCode: 'MGMTOUTS',
     });
 
-    const moved = await service.reassignParent(child, outsider, UNRESTRICTED, REVIEWER);
+    const moved = await service.reassignParent(child, outsider, UNRESTRICTED, REVIEWER, AGENCY.id);
     expect(moved.parentIbUserId).toBe(outsider);
   });
 
@@ -1783,38 +1717,34 @@ describe('managing a live partner', () => {
     `);
     const scope = scopeOf([tagId], false);
 
-    await expect(service.reassignParent(child, outsider, scope, REVIEWER)).rejects.toThrow(
-      /not.*(found|exist)/i,
-    );
+    await expect(
+      service.reassignParent(child, outsider, scope, REVIEWER, AGENCY.id),
+    ).rejects.toThrow(/not.*(found|exist)/i);
     // Unchanged: the child still has its original parent.
     const stillChild = await store.findAccount(child);
     expect(stillChild?.parentIbUserId).not.toBe(outsider);
 
     // And an unrestricted actor CAN make the same move, proving the refusal was
     // about territory, not the parent being invalid.
-    const moved = await service.reassignParent(child, outsider, UNRESTRICTED, REVIEWER);
+    const moved = await service.reassignParent(child, outsider, UNRESTRICTED, REVIEWER, AGENCY.id);
     expect(moved.parentIbUserId).toBe(outsider);
   });
 
-  it('approves their OWN client under an introducer outside the territory — and hides who (R1)', async () => {
+  it('approves their OWN client introduced from outside the territory as a main partner', async () => {
     /*
-     * The introducer is INHERITED, not chosen: the reviewer holds the applicant
-     * and the platform places a partner under whoever recruited them. Scoping
-     * the inherited parent made a desk unable to approve its own client
-     * whenever the recruiter sat in another territory. A CHOSEN outside parent
-     * is still refused (#5, above).
+     * The introducer sits in another territory. Approval never places anybody
+     * under their introducer (13 Oct 2026), so the desk approves its own
+     * client without reaching outside its territory at all.
      */
     const introducer = await makeClient('inherit-outside-top@test.local');
-    const middle = (
-      await service.approve(
-        (await service.apply(introducer, { agencyId: AGENCY.id })).id,
-        REVIEWER,
-        UNRESTRICTED,
-      )
-    ).userId;
+    await service.approve(
+      (await service.apply(introducer, { agencyId: AGENCY.id })).id,
+      REVIEWER,
+      UNRESTRICTED,
+    );
     const client = await makeClient('inherit-outside-client@test.local');
     await ctx.db.execute(
-      sql`UPDATE users SET referred_by_ib_user_id = ${middle} WHERE id = ${client}`,
+      sql`UPDATE users SET referred_by_ib_user_id = ${introducer} WHERE id = ${client}`,
     );
     const { rows: tagRows } = await ctx.db.execute<{ id: string }>(sql`
       INSERT INTO client_tags (slug, label) VALUES ('ib-inherit-mine', 'Mine') RETURNING id`);
@@ -1822,16 +1752,39 @@ describe('managing a live partner', () => {
       INSERT INTO client_tag_assignments (user_id, tag_id) VALUES (${client}, ${tagRows[0].id})`);
     const scope = scopeOf([tagRows[0].id], false);
 
-    const application = await service.apply(client, {});
+    const application = await service.apply(client, { agencyId: AGENCY.id });
     const account = await service.approve(application.id, REVIEWER, scope);
-    expect(account.parentIbUserId).toBe(middle); // placed under the recruiter
+
+    expect(account.level).toBe(1);
+    expect(account.parentIbUserId).toBeNull();
+  });
+
+  /*
+   * R1: a parent outside the reader's territory is the FACT, never the id.
+   * Partners placed before 13 Oct 2026 can sit under one.
+   */
+  it('hides a parent outside the reader’s territory, and says one exists (R1)', async () => {
+    const parent = await makeClient('r1-outside-parent@test.local');
+    await store.createAccount({ userId: parent, level: 1, referralCode: 'R1OUTPAR' });
+    const child = await makeClient('r1-inside-child@test.local');
+    const account = await store.createAccount({
+      userId: child,
+      level: 2,
+      parentIbUserId: parent,
+      referralCode: 'R1INCHLD',
+    });
+    const { rows: tagRows } = await ctx.db.execute<{ id: string }>(sql`
+      INSERT INTO client_tags (slug, label) VALUES ('ib-r1-mine', 'Mine R1') RETURNING id`);
+    await ctx.db.execute(sql`
+      INSERT INTO client_tag_assignments (user_id, tag_id) VALUES (${child}, ${tagRows[0].id})`);
+    const scope = scopeOf([tagRows[0].id], false);
 
     const view = await service.accountViewFor(account, scope);
     expect(view.parentIbUserId).toBeNull();
     expect(view.parentOutsideTerritory).toBe(true);
-    expect(JSON.stringify(view)).not.toContain(middle);
+    expect(JSON.stringify(view)).not.toContain(String(parent));
     // The same account, seen by an unrestricted reader, names the parent.
-    expect((await service.accountViewFor(account, UNRESTRICTED)).parentIbUserId).toBe(middle);
+    expect((await service.accountViewFor(account, UNRESTRICTED)).parentIbUserId).toBe(parent);
   });
 
   /*
@@ -1851,9 +1804,9 @@ describe('managing a live partner', () => {
       referralCode: 'MGMTANOT',
     });
 
-    await expect(service.reassignParent(another, parent, UNRESTRICTED, REVIEWER)).rejects.toThrow(
-      /suspended/i,
-    );
+    await expect(
+      service.reassignParent(another, parent, UNRESTRICTED, REVIEWER, AGENCY.id),
+    ).rejects.toThrow(/suspended/i);
   });
 
   it('suspends without deleting the tree', async () => {
@@ -1885,9 +1838,9 @@ describe('managing a live partner', () => {
       referralCode: 'MGMTORPH',
     });
 
-    await expect(service.reassignParent(orphan, parent, UNRESTRICTED, REVIEWER)).rejects.toThrow(
-      /suspended/i,
-    );
+    await expect(
+      service.reassignParent(orphan, parent, UNRESTRICTED, REVIEWER, AGENCY.id),
+    ).rejects.toThrow(/suspended/i);
   });
 
   it('lists partners with their person and rung', async () => {
@@ -1970,43 +1923,58 @@ describe('who a new partner sits under', () => {
     return { parent, child };
   }
 
-  it('inherits the introducer as the parent when the reviewer names none', async () => {
+  /*
+   * ── EVERY NEW PARTNER IS A MAIN PARTNER (tech lead, 13 Oct 2026) ─────────
+   *
+   * The introducer is never made the parent, and "introduced by" follows the
+   * position: a client who becomes a main partner has no introducer any more,
+   * so whoever introduced them stops earning on them — on their own trades as
+   * well as their clients' (the teammate's rule, 13 Oct 2026). Who it was
+   * survives on the audit row only, so that is pinned too.
+   */
+  it('approves a recruited applicant as a main partner, and their introducer stops earning on them', async () => {
     const { parent, child } = await recruitedBy('rec-parent@test.local', 'rec-child@test.local');
 
-    const application = await service.apply(child, {});
+    const application = await service.apply(child, { agencyId: AGENCY.id });
     const account = await service.approve(application.id, REVIEWER, UNRESTRICTED, {});
 
-    expect(account.parentIbUserId).toBe(parent);
+    expect(account.parentIbUserId).toBeNull();
+    expect(account.level).toBe(1);
+    expect((await users.findById(child))?.referredByIbUserId).toBeUndefined();
+    const row = audit.recordWithin.mock.calls.find(
+      (call) => call[2] === 'ib.approve' && call[4] === child,
+    );
+    expect(row?.[5]).toMatchObject({ referrerBefore: parent, referrerAfter: null });
   });
 
-  it('lets the reviewer override the introducer', async () => {
+  it('places them under the main partner the reviewer names, as level 2', async () => {
     const { child } = await recruitedBy('ovr-parent@test.local', 'ovr-child@test.local');
     const elsewhere = await makeClient('ovr-elsewhere@test.local');
     const elsewhereApp = await service.apply(elsewhere, { agencyId: AGENCY.id });
     await service.approve(elsewhereApp.id, REVIEWER, UNRESTRICTED, {});
 
-    const application = await service.apply(child, {});
+    const application = await service.apply(child, { agencyId: AGENCY.id });
     const account = await service.approve(application.id, REVIEWER, UNRESTRICTED, {
       parentIbUserId: elsewhere,
+      agencyId: AGENCY.id,
     });
 
     expect(account.parentIbUserId).toBe(elsewhere);
+    expect(account.level).toBe(2);
+    // "Introduced by" follows them to the main partner they now sit under.
+    expect((await users.findById(child))?.referredByIbUserId).toBe(elsewhere);
   });
 
-  /*
-   * An explicit `null` is a different instruction from omitting the field, and
-   * `??` could not tell them apart — it would have made deliberately rooting a
-   * recruited partner impossible.
-   */
-  it('honours an explicit null as "put them at the root"', async () => {
+  it('treats an explicit null like an omitted parent', async () => {
     const { child } = await recruitedBy('root-parent@test.local', 'root-child@test.local');
 
-    const application = await service.apply(child, {});
+    const application = await service.apply(child, { agencyId: AGENCY.id });
     const account = await service.approve(application.id, REVIEWER, UNRESTRICTED, {
       parentIbUserId: null,
     });
 
     expect(account.parentIbUserId).toBeNull();
+    expect(account.level).toBe(1);
   });
 
   it('leaves a partner nobody recruited at the root', async () => {
@@ -2024,9 +1992,7 @@ describe('who a new partner sits under', () => {
    *
    * `users_referred_by_ib_accounts_user_id_fk` points at `ib_accounts.user_id`,
    * not at `users.id`, so attributing a client to somebody who holds no partner
-   * account is refused at the INSERT. `inheritedParentIbUserIdFor` still checks
-   * — a pure function should not assume a constraint it cannot see — but the
-   * branch is unreachable through any real write.
+   * account is refused at the INSERT.
    *
    * Worth pinning as the guarantee rather than as a service behaviour: if that
    * FK is ever pointed at `users.id`, this fails and says exactly what changed.

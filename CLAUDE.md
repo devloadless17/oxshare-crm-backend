@@ -324,15 +324,34 @@ per qualified client, never a percentage. `test/deal-commission.spec.ts` pins al
 rung on both sides). It replaced `/program` in 0112 and, before that, an earlier `/level` route that
 0102 removed — the route has come back with the reason: a rung decides terms again.
 
-**A partner's level is DERIVED at approval, not chosen.** `IbApplicationsService.approve` reads the
-parent's level and writes one deeper, capped at the structural ceiling — so approval carries no
-commercial decision at all, and `ApproveIbApplicationDto.programId` is gone. The picker went from
-the admin approve dialog with it.
+**Every new partner is a MAIN partner (level 1) — the tech lead's rule, 13 Oct 2026.** Approval
+never makes the introducer (`users.referred_by_ib_user_id`) the parent. With no
+`parentIbUserId` named, `approve` writes level 1 and no parent, whoever introduced them; naming a
+main partner writes level 2 under them. Until then the introducer became the parent
+automatically, which is why two rules went with it: `chain_full` (a client introduced by a
+sub-partner could not apply) and the inherited programme (an introduced applicant was given the
+introducer's agency and not asked). Every applicant now chooses their agency. Partners approved
+before 13 Oct 2026 keep their positions.
 
-**So why is it editable?** Because "one deeper than your recruiter" is right in the ordinary case
-and cannot be right in every one: a partner whose recruiter is later cut loose to deal direct, or
-one the broker has agreed to treat as a main partner despite sitting under another. Without this the
-number was decided once by the shape of the tree on one particular afternoon.
+Two rules from the teammate, the same day, hold at EVERY door (approve, appoint, change level,
+reassign parent):
+
+- **"Introduced by" follows the position, approval included.** A client who becomes a main partner
+  has no introducer any more, so whoever introduced them stops earning on them: on their own
+  trades as well as their clients'. Commission already accrued stays theirs. The `ib.approve` and
+  `ib.parent_change` rows keep `referrerBefore`/`referrerAfter`, the only record of who it was
+  (both keys are in `CLIENT_ID_KEYS`, so a scoped reader sees the fact, not the number; the move
+  wrote them unmasked until then).
+- **Placing a partner under a main partner needs the AGENCY chosen in the same request**
+  (`SUB_PARTNER_AGENCY_REQUIRED`): `agencyId` on approve-with-parent, `PATCH …/level` to 2 and
+  `PATCH …/parent` with a parent. It is never copied from the parent any more; cut loose to level 1,
+  a partner keeps their own. The console asks it with `AgencyPicker`.
+
+`test/ib-applications.spec.ts` ("who a new partner sits under", the level-change and reassignment
+blocks) pins both, with the audit rows.
+
+**Level 2 is an administrator's act**: Change commission level on the partner's profile (or the
+API: a parent and an agency at approval).
 
 It refuses a DISABLED or UNCONFIGURED rung, and the first is the other half of an existing
 guarantee: `IbLevelsService.update` refuses to disable a rung partners stand on, so without this

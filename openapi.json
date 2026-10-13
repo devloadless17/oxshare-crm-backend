@@ -9057,7 +9057,7 @@
     },
     "/v1/admin/clients/{id}/referrer": {
       "patch": {
-        "description": "Attribution is captured in ONE place — `?ref=` on the registration screen — and both portal auth cross-links dropped it, so a client who followed a partner link, clicked \"Sign in\", then \"Create an account\" registered attributed to nobody. Permanently: `referred_by_ib_user_id` was written at registration and nowhere else.\n\n⚠️ **NULL to A only.** A client who already has a referrer answers **409 REFERRER_ALREADY_SET**. Re-pointing attribution would move a partner’s client and their future commissions to somebody else, which `docs/` forbids — and the refusal is in the service rather than in a screen so this route cannot become that flow later.\n\nTakes the CODE the client reports, never a partner id: looking a partner up means picking one off a list, which is the shape of choosing who gets paid.\n\nThree distinct refusals, because they need three sentences — `REFERRAL_CODE_UNKNOWN` (a typo), `REFERRAL_SELF` (the client’s own code), and `REFERRAL_PARTNER_INACTIVE` (the code was RIGHT; that partner is suspended).\n\nDoes NOT backdate: commission reads attribution at accrual time, so this pays on deals not yet accrued and restates nothing already credited.",
+        "description": "Attribution is captured in ONE place — `?ref=` on the registration screen — and both portal auth cross-links dropped it, so a client who followed a partner link, clicked \"Sign in\", then \"Create an account\" registered attributed to nobody. Permanently: `referred_by_ib_user_id` was written at registration and nowhere else.\n\n⚠️ **NULL to A only.** A client who already has a referrer answers **409 REFERRER_ALREADY_SET**. Re-pointing attribution would move a partner’s client and their future commissions to somebody else, which `docs/` forbids — and the refusal is in the service rather than in a screen so this route cannot become that flow later.\n\nTakes the CODE the client reports, never a partner id: looking a partner up means picking one off a list, which is the shape of choosing who gets paid.\n\nThree distinct refusals, because they need three sentences — `REFERRAL_CODE_UNKNOWN` (a typo), `REFERRAL_SELF` (the client’s own code), and `REFERRAL_PARTNER_INACTIVE` (the code was RIGHT; that partner is suspended).\n\nA PARTNER answers **409 REFERRER_FOLLOWS_POSITION**: their introducer follows where they sit in the partner tree (nobody for a main partner, their main partner for a sub-partner) and moves with Change commission level, never here.\n\nDoes NOT backdate: commission reads attribution at accrual time, so this pays on deals not yet accrued and restates nothing already credited.",
         "operationId": "AdminClientsController_setClientReferrer",
         "parameters": [
           {
@@ -16780,27 +16780,6 @@
           "submittedAt"
         ]
       },
-      "InheritedAgencyDto": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          },
-          "nameAr": {
-            "type": "string",
-            "nullable": true,
-            "description": "The agency name in Arabic (0179); null = not translated, show `name`."
-          }
-        },
-        "required": [
-          "id",
-          "name",
-          "nameAr"
-        ]
-      },
       "IbStatusDto": {
         "type": "object",
         "properties": {
@@ -16833,20 +16812,9 @@
             "type": "string",
             "nullable": true,
             "enum": [
-              "unverified",
-              "chain_full"
+              "unverified"
             ],
-            "description": "Machine-readable counterpart to ineligibleReason. `unverified` — identity not verified yet. `chain_full` — the partner who introduced them is already on the deepest enabled level, so there is no rung to place them on. Null when eligible."
-          },
-          "inheritedAgency": {
-            "nullable": true,
-            "description": "Set when the applicant was introduced by an existing partner and therefore inherits that partner's programme — the portal must not offer a choice in that case. Null when the applicant chooses: any client not introduced by a partner, or one whose introducer carries no programme.",
-            "type": "object",
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/InheritedAgencyDto"
-              }
-            ]
+            "description": "Machine-readable counterpart to ineligibleReason. `unverified` — identity not verified yet. Null when eligible."
           }
         },
         "required": [
@@ -16854,8 +16822,7 @@
           "application",
           "eligible",
           "ineligibleReason",
-          "ineligibleCode",
-          "inheritedAgency"
+          "ineligibleCode"
         ]
       },
       "IbEarningsDto": {
@@ -17266,7 +17233,7 @@
           "agencyId": {
             "type": "string",
             "format": "uuid",
-            "description": "Which agency the applicant wants to be appointed under. Required for an applicant who chooses; omitted when they were introduced by a partner — the programme is inherited from the introducer and anything sent here is ignored."
+            "description": "Which agency the applicant wants to be appointed under. Required: an application without one is refused."
           },
           "motivation": {
             "type": "string",
@@ -17285,12 +17252,12 @@
           "parentIbUserId": {
             "type": "integer",
             "nullable": true,
-            "description": "The parent to nest the new partner under. OMITTED means \"the reviewer did not say\" — the introducer recorded at registration becomes the parent, which is the ordinary case. An explicit NULL roots them: they deal with the broker directly at level 1, whoever introduced them."
+            "description": "The main partner to place the new partner under, making them a sub-partner (level 2). Omitted or null: a main partner (level 1) dealing with the broker directly, whoever introduced them."
           },
           "agencyId": {
             "type": "string",
             "format": "uuid",
-            "description": "Omitted grants the agency the applicant chose. Required when the application carries none — a partner cannot be approved without an agency."
+            "description": "Omitted grants the agency the applicant chose. Required when the application carries none, and whenever parentIbUserId is set: the administrator chooses the agency of a partner placed under a main partner."
           }
         }
       },
@@ -17777,12 +17744,17 @@
             "example": 2,
             "minimum": 1,
             "maximum": 2,
-            "description": "The level IS the position (0197): 1 with no parent, 2 under a main partner. Choosing the other level MOVES them — 1 detaches them from their parent, 2 places them under `parentIbUserId` — and \"introduced by\" follows the new position."
+            "description": "The level IS the position (0197): 1 with no parent, 2 under a main partner. Choosing the other level MOVES them — 1 detaches them from their parent, 2 places them under `parentIbUserId` on the `agencyId` chosen — and \"introduced by\" follows the new position."
           },
           "parentIbUserId": {
             "type": "integer",
             "nullable": true,
             "description": "The main partner to place them under. Required when moving a main partner to 2."
+          },
+          "agencyId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The agency they work under from the move on. Required when moving a main partner to 2: the administrator chooses it, it is never copied from the main partner."
           }
         },
         "required": [
@@ -17814,6 +17786,11 @@
             "type": "integer",
             "nullable": true,
             "description": "The new parent partner, or null to make them a direct partner."
+          },
+          "agencyId": {
+            "type": "string",
+            "format": "uuid",
+            "description": "The agency they work under from the move on. Required with a parent: the administrator chooses it, it is never copied from the main partner. Ignored with null, where they keep their own."
           }
         },
         "required": [

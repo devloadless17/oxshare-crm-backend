@@ -554,6 +554,9 @@ export class AdminClientsController {
       'Three distinct refusals, because they need three sentences — ' +
       '`REFERRAL_CODE_UNKNOWN` (a typo), `REFERRAL_SELF` (the client\u2019s own code), and ' +
       '`REFERRAL_PARTNER_INACTIVE` (the code was RIGHT; that partner is suspended).\n\n' +
+      'A PARTNER answers **409 REFERRER_FOLLOWS_POSITION**: their introducer follows where they ' +
+      'sit in the partner tree (nobody for a main partner, their main partner for a ' +
+      'sub-partner) and moves with Change commission level, never here.\n\n' +
       'Does NOT backdate: commission reads attribution at accrual time, so this pays on deals ' +
       'not yet accrued and restates nothing already credited.',
   })

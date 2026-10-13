@@ -72,31 +72,43 @@ const CODE_ALPHABET = REFERRAL_CODE_ALPHABET;
 const CODE_LENGTH = REFERRAL_CODE_LENGTH;
 
 /*
- * `CHAIN_FULL_REASON` IS BACK, in the catalogue-driven form.
+ * ── EVERY NEW PARTNER IS A MAIN PARTNER (tech lead, 13 Oct 2026) ──────────
  *
- * It went in 0102 with the first ladder, on the reasoning that nesting a
- * partner under another is always structurally possible. Structurally it still
- * is — but 0112 made the rung a partner stands on the whole of their terms, so
- * "which rung would this applicant land on" is a commercial question again, and
- * the business answer is explicit: the tree ends where the Commission Levels
- * ladder ends. A client introduced by a partner on the deepest enabled level
- * has no rung to be placed on, and MUST NOT be able to become a partner (the
- * committed scope is two levels — Feature List Rev 9, IB-17 — and the seeded
- * ladder carries exactly L1 and L2).
+ * Approval places nobody under anybody. A client who applies becomes a main
+ * partner (level 1) whoever introduced them, and an administrator makes a
+ * partner a sub-partner (level 2) as a deliberate act: by naming the main
+ * partner at approval, or later with the level control on the partner's
+ * profile (`changeLevel` → `reassignParent`).
  *
- * DELIBERATELY NOT a constant `2`. The ladder is what decides depth (0113
- * removed `ib_max_levels` so the IB Levels page is the only authority), so the
- * question asked everywhere below is "does an ENABLED `ib_levels` row exist one
- * rung beneath the introducer". An operator who adds and enables level 3 opens
- * the door with no code change; a deployment that configured nothing keeps the
- * agreed two.
+ * Until then the introducer recorded at registration became the parent
+ * automatically, and two rules followed from it that are gone with it:
  *
- * One sentence, shared by `statusFor` (the explanation) and `apply` (the
- * refusal), so the form and the door cannot word the same rule differently.
+ * - `chain_full`: a client introduced by a sub-partner could not apply,
+ *   because there was no rung beneath their introducer. Nobody lands beneath
+ *   their introducer now, so nobody is refused for where their introducer
+ *   stands.
+ * - The inherited programme: a sub-partner sells under their master's agency,
+ *   so the applicant was not asked. A main partner has no master, so the
+ *   applicant chooses, and the reviewer may still override.
+ *
+ * Two rules decided with it (13 Oct 2026):
+ *
+ * - "Introduced by" (`users.referred_by_ib_user_id`) FOLLOWS THE POSITION at
+ *   approval too, as it already did on every move: a client who becomes a main
+ *   partner has no introducer any more, so whoever introduced them stops
+ *   earning on them — on their own trades as well as their clients'. The audit
+ *   row keeps who it was.
+ * - Whenever an administrator places a partner under a main partner (at
+ *   approval, or by any move), they CHOOSE the agency in the same step. It is
+ *   never copied from the parent.
  */
-const CHAIN_FULL_REASON =
-  'The partner who introduced you is already on the deepest level of the partner programme, ' +
-  'so a new partner account cannot be opened beneath them.';
+
+/*
+ * The refusal when a partner is placed under a main partner without an agency.
+ * One sentence for approval and for every move, so the doors word it alike.
+ */
+const SUB_PARTNER_AGENCY_REQUIRED =
+  'Choose the agency for this partner. It is chosen every time a partner is placed under a main partner.';
 
 /**
  * Partner applications and the accounts they grant.
@@ -160,57 +172,6 @@ export class IbApplicationsService {
 
   // ── the client's side ──────────────────────────────────────────────────────
 
-  /*
-   * `inheritedAgencyIdFor` IS GONE — folded into `apply`, which already holds
-   * the user row it re-read and now needs the introducer's whole ACCOUNT (for
-   * the chain-room check) rather than only their agency. One read serves both;
-   * the reasoning about why a sub-partner does not choose lives at that site.
-   */
-
-  /**
-   * Who this applicant sits UNDER in the partner tree — the partner who
-   * recruited them.
-   *
-   * ## The gap this closes
-   *
-   * `approve()` read `options.parentIbUserId ?? null`, so a tree position was
-   * only ever set when a reviewer passed one — and the console never did. Every
-   * approved partner landed at the ROOT, whoever had recruited them.
-   *
-   * The consequence was not cosmetic: FR-IB-17's whole distribution mechanism
-   * needs a chain, and through the ordinary flow no chain was ever built. A
-   * partner who recruited another partner earned nothing on their downline,
-   * because they were not above it. The only remedy was for somebody to
-   * remember, afterwards, to open that partner's profile and use the separate
-   * "reassign parent" control on a different screen.
-   *
-   * It was also INCONSISTENT with the agency, which has always been inherited
-   * from the introducer (`apply` resolves it from the same row). One
-   * relationship, `users.referred_by_ib_user_id`, answered two ways.
-   *
-   * ## Only a partner can be a parent
-   *
-   * The introducer must hold an `ib_accounts` row. A client referred by another
-   * CLIENT has no chain to join, and `null` puts them at the root — which is
-   * exactly right for somebody nobody recruited.
-   *
-   * ## A SUSPENDED introducer still becomes the parent
-   *
-   * Suspension stops them EARNING — `resolveChain` breaks at a suspended
-   * partner and pays nobody above them — but it is not a statement about who
-   * recruited whom. Re-parenting the people they brought in would rewrite
-   * history to record a fact that is not true, and would silently move a whole
-   * sub-tree the day somebody is switched off and on again.
-   */
-  private async inheritedParentIbUserIdFor(userId: number): Promise<number | null> {
-    const user = await this.users.findById(userId);
-    const introducerId = user?.referredByIbUserId;
-    if (!introducerId) return null;
-
-    const introducer = await this.ib.findAccount(introducerId);
-    return introducer ? introducerId : null;
-  }
-
   /**
    * Everything the portal needs to decide which screen to render.
    *
@@ -237,17 +198,6 @@ export class IbApplicationsService {
     ineligibleReason: string | null;
     /** WHICH requirement is unmet, for chrome the sentence cannot carry. */
     ineligibleCode: IbIneligibleCode | null;
-    /**
-     * The programme this applicant will be placed on, when it is not theirs to
-     * pick — a partner introduced by another partner inherits theirs.
-     *
-     * NULL means the choice IS theirs, which is what the portal keys the picker
-     * off: present, hide the picker and name the programme; absent, ask.
-     * Sending the name rather than only the id is what lets the screen say
-     * which programme they are joining instead of "one has been chosen for
-     * you", which reads as an error.
-     */
-    inheritedAgency: { id: string; name: string; nameAr: string | null } | null;
   }> {
     const [account, application, user] = await Promise.all([
       this.ib.findAccount(userId),
@@ -258,40 +208,13 @@ export class IbApplicationsService {
     const verified = (user?.verificationLevel ?? 0) >= REQUIRED_VERIFICATION_LEVEL;
 
     /*
-     * The INTRODUCER's account, read once and answering two questions: which
-     * agency this applicant would inherit, and whether the ladder has a rung
-     * left beneath them (`chainFull` below).
-     *
-     * Resolved from the `user` already loaded above rather than through a
-     * helper that would fetch that row a second time for an answer this method
-     * is holding.
-     *
-     * Skipped for somebody who is already a partner: they will never see the
-     * application form, so both answers describe a screen nothing renders.
-     */
-    const introducer =
-      account || !user?.referredByIbUserId
-        ? null
-        : await this.ib.findAccount(user.referredByIbUserId);
-
-    /*
-     * The SECOND requirement, back after 0102 removed it: the ladder must have
-     * an enabled rung beneath the introducer, or there is nowhere to place this
-     * applicant — see `CHAIN_FULL_REASON` for why the ladder is the authority.
-     * A client under nobody lands on rung 1 and is never chain-blocked.
-     */
-    const chainFull = introducer ? !(await this.ladderHasRungBeneath(introducer.level)) : false;
-
-    const inheritedAgencyId = introducer?.agencyId ?? null;
-
-    /*
      * The agency NAMES, resolved once for both halves.
      *
      * Read only when something references an agency, so the common case — a
      * client who has never applied — costs no extra query. The catalogue is a
      * handful of rows, so listing it whole beats two id lookups.
      */
-    const needsCatalogue = Boolean(account?.agencyId ?? application?.agencyId ?? inheritedAgencyId);
+    const needsCatalogue = Boolean(account?.agencyId ?? application?.agencyId);
     const [agencies, products] = needsCatalogue
       ? await Promise.all([this.catalogue.listAgencies(), this.catalogue.listProducts()])
       : [[], []];
@@ -300,7 +223,6 @@ export class IbApplicationsService {
     const productOf = new Map(products.map((product) => [product.id, product]));
 
     const accountAgency = agencyOf(account?.agencyId ?? null);
-    const inheritedAgency = agencyOf(inheritedAgencyId);
     const applicationAgency = application ? agencyOf(application.agencyId) : null;
     // Index for index with their Arabic (0179), so the two lists cannot misalign.
     const sold = (accountAgency?.productIds ?? [])
@@ -330,27 +252,19 @@ export class IbApplicationsService {
           }
         : null,
       /*
-       * TWO gates again, and `chain_full` is reported FIRST when both are
-       * unmet. The precedence is about what each code makes the portal draw:
-       * `unverified` comes with a "Verify now" button, and sending a client
-       * through the whole KYC wizard to reach a door that stays shut is an
-       * errand the platform knows to be pointless. `chain_full` has no next
-       * step, which is the honest answer for somebody the ladder cannot hold.
+       * ONE gate: verification. Who introduced the client no longer decides
+       * whether they may apply, because approval never places them beneath
+       * their introducer (see the note above the class).
        */
-      eligible: verified && !chainFull,
+      eligible: verified,
       // Printed as is by the portal, so in the client's language.
-      ineligibleReason: chainFull
-        ? localizeMessage(CHAIN_FULL_REASON, requestLocale())
-        : verified
-          ? null
-          : localizeMessage(
-              'Your identity must be verified before you can apply to the partner programme.',
-              requestLocale(),
-            ),
-      ineligibleCode: chainFull ? 'chain_full' : verified ? null : 'unverified',
-      inheritedAgency: inheritedAgency
-        ? { id: inheritedAgency.id, name: inheritedAgency.name, nameAr: inheritedAgency.nameAr }
-        : null,
+      ineligibleReason: verified
+        ? null
+        : localizeMessage(
+            'Your identity must be verified before you can apply to the partner programme.',
+            requestLocale(),
+          ),
+      ineligibleCode: verified ? null : 'unverified',
     };
   }
 
@@ -358,10 +272,8 @@ export class IbApplicationsService {
    * Apply.
    *
    * The refusals are ordered by what the client can DO about them: they are
-   * already a partner (nothing to do), the ladder has no rung for them
-   * (nothing to do, and no verification errand changes it — the same
-   * precedence `statusFor` gives the code), they are not verified (go and
-   * verify), they already have one open (wait). Each says which.
+   * already a partner (nothing to do), they are not verified (go and verify),
+   * they already have one open (wait). Each says which.
    */
   async apply(
     userId: number,
@@ -378,31 +290,6 @@ export class IbApplicationsService {
 
     const user = await this.users.findById(userId);
     if (!user) throw new NotFoundError('Account not found.');
-
-    /*
-     * The INTRODUCER's account, read once for the two things it decides here:
-     * whether the ladder has a rung left beneath them, and which agency a
-     * sub-partner inherits (below).
-     */
-    const introducer = user.referredByIbUserId
-      ? await this.ib.findAccount(user.referredByIbUserId)
-      : null;
-
-    /*
-     * The same refusal the portal already renders, enforced rather than
-     * assumed: a client whose introducer stands on the deepest enabled level
-     * has no rung to be placed on, and their application must not enter the
-     * queue — accepting it would ask a reviewer to decide something the ladder
-     * has already decided, weeks after the client was told the door was open.
-     * See `CHAIN_FULL_REASON` for why the ladder is the authority.
-     *
-     * BEFORE the verification refusals, matching `statusFor`'s precedence:
-     * "verify your email" to somebody the ladder cannot hold is an errand that
-     * unlocks nothing.
-     */
-    if (introducer && !(await this.ladderHasRungBeneath(introducer.level))) {
-      throw new ValidationError(CHAIN_FULL_REASON);
-    }
 
     /*
      * A VERIFIED ADDRESS, checked here as well as at the guard.
@@ -476,54 +363,30 @@ export class IbApplicationsService {
      * block exists to prevent.
      */
     /*
-     * ── A SUB-PARTNER DOES NOT CHOOSE ────────────────────────────────────────
-     *
-     * An applicant introduced by an existing partner inherits that partner's
-     * programme. Left to choose, they could take a programme their introducer
-     * does not carry — a master partner's own downline selling a catalogue the
-     * master has no relationship with, while commission flowed up a chain
-     * whose top never agreed to it. So the programme comes from the introducer
-     * and the applicant is not asked; a client under NOBODY is a direct
-     * partner and still chooses, because there is nobody above them for the
-     * answer to come from.
-     *
-     * Their `agencyId` is IGNORED rather than refused, because the portal does
-     * not draw the picker for them — so anything arriving in that field is a
-     * stale form or a hand-made request, and neither is worth an error the
-     * honest client would never see.
-     *
-     * NULL has two meanings and both mean "let them choose": no introducer at
-     * all, or an introducer carrying no agency — the pre-agency partners
-     * `ib_accounts.agencyId` is nullable for. Refusing the second would punish
-     * an applicant for an operator's unfinished migration.
-     *
-     * The inherited id deliberately skips the "open for applications" check
-     * below. That check protects a CHOICE, and this is not one: an operator
-     * closing a programme to new direct applicants must not thereby sever the
-     * downline of every partner already selling it, which is what refusing here
-     * would do.
+     * Every applicant CHOOSES, because every applicant becomes a main partner
+     * (see the note above the class). Until 13 Oct 2026 an applicant introduced
+     * by a partner was given that partner's agency and not asked, because they
+     * were about to sell beneath them; a main partner sells beneath nobody.
+     * Placing a partner under a parent is now an administrator's act, and
+     * `approve` gives them the parent's agency when it is.
      */
-    const inheritedAgencyId = introducer?.agencyId ?? null;
+    if (!input.agencyId) {
+      throw new ValidationError(
+        'Choose the partner programme you are applying for. An application cannot be submitted without one.',
+      );
+    }
 
-    if (!inheritedAgencyId) {
-      if (!input.agencyId) {
-        throw new ValidationError(
-          'Choose the partner programme you are applying for. An application cannot be submitted without one.',
-        );
-      }
-
-      const agencies = await this.catalogue.listAgencies();
-      if (!agencies.some((agency) => agency.id === input.agencyId && agency.enabled)) {
-        throw new ValidationError(
-          'That partner programme is not open for applications. Choose one from the list.',
-        );
-      }
+    const agencies = await this.catalogue.listAgencies();
+    if (!agencies.some((agency) => agency.id === input.agencyId && agency.enabled)) {
+      throw new ValidationError(
+        'That partner programme is not open for applications. Choose one from the list.',
+      );
     }
 
     try {
       const created = await this.ib.createApplication({
         userId,
-        agencyId: inheritedAgencyId ?? input.agencyId ?? null,
+        agencyId: input.agencyId,
         motivation: input.motivation ?? null,
         website: input.website ?? null,
       });
@@ -686,18 +549,21 @@ export class IbApplicationsService {
        * ── `programId` IS GONE (0112) ────────────────────────────────────────
        *
        * A reviewer used to appoint a partner onto a named programme. Terms come
-       * from the partner's RUNG now, and a rung is not a choice — it follows
-       * from who recruited them. So there is nothing to pass here and nothing on
-       * the approval screen to get wrong.
+       * from the partner's RUNG now, and the rung follows the position: no
+       * parent is level 1, a main partner as parent is level 2.
+       */
+      /**
+       * The main partner to place them under, making them a sub-partner
+       * (level 2). Omitted or null: a main partner (level 1), whoever
+       * introduced them. Never inferred from the introducer (13 Oct 2026).
        */
       parentIbUserId?: number | null;
-      agencyId?: string | null;
       /**
-       * Point "introduced by" at the parent (or clear it at the top) — set by
-       * `appointPartner`, where the administrator chooses the position and the
-       * attribution follows it, as it does on every later move.
+       * The agency to appoint them under. Omitted: what the applicant asked
+       * for. REQUIRED with a parent: the administrator chooses it whenever a
+       * partner is placed under a main partner (13 Oct 2026).
        */
-      syncReferrer?: boolean;
+      agencyId?: string | null;
     } = {},
   ): Promise<IbAccountRow> {
     const reviewerId = actor.id;
@@ -724,80 +590,88 @@ export class IbApplicationsService {
     }
 
     /*
-     * The reviewer's choice wins; OMITTING it inherits from whoever recruited
-     * the applicant. See `inheritedParentIbUserIdFor` for why that inheritance
-     * had to exist at all.
-     *
-     * `!== undefined` rather than `??`, so an explicit `null` still means "put
-     * them at the ROOT". Those are different instructions and `??` cannot tell
-     * them apart — it would make deliberately rooting a partner impossible the
-     * moment they had an introducer.
+     * The parent is the reviewer's choice and nothing else: no parent named is
+     * a main partner (see the note above the class). A chosen parent is
+     * scoped (#5): a scoped reviewer places the new partner only under a
+     * parent in their own territory, and out of it is a 404 before
+     * `assertParentHasRoom` can describe it.
      */
-    const parentIbUserId =
-      options.parentIbUserId !== undefined
-        ? options.parentIbUserId
-        : await this.inheritedParentIbUserIdFor(application.userId);
-
+    const parentIbUserId = options.parentIbUserId ?? null;
     if (parentIbUserId) {
-      const parentVisible = await this.canSee(parentIbUserId, scope);
-      if (options.parentIbUserId !== undefined && !parentVisible) {
-        // A CHOSEN parent is scoped (#5): a scoped reviewer places the new
-        // partner only under a parent in their own territory — out of it is a
-        // 404, before `assertParentHasRoom` can describe it.
-        await this.visibility.assertVisible(parentIbUserId, scope);
-      }
-      /*
-       * An INHERITED parent is not the reviewer's choice: it is the platform's
-       * rule that a partner starts under whoever recruited them, and the
-       * reviewer holds the applicant. Refusing it made a reviewer unable to
-       * approve their own client whenever the introducer sat in another
-       * territory. If that hidden introducer cannot take them, say so without
-       * describing a partner the reviewer may not see.
-       */
-      try {
-        await this.assertParentHasRoom(parentIbUserId);
-      } catch (error) {
-        if (parentVisible || !(error instanceof ValidationError)) throw error;
-        throw new ValidationError(
-          'This applicant’s introducer, a partner outside your territory, cannot take a new ' +
-            'sub-partner. Choose a parent in your territory, or place them at the top.',
-        );
-      }
+      await this.visibility.assertVisible(parentIbUserId, scope);
+      await this.assertParentHasRoom(parentIbUserId);
     }
 
     /*
-     * WHAT THE APPLICANT ASKED FOR, unless the reviewer says otherwise — and
-     * unless they are being placed BENEATH somebody, in which case the parent
-     * decides.
+     * ── THE PARTNER'S LEVEL FOLLOWS THEIR POSITION (0112, 0197) ──────────
      *
-     * The reviewer may still override explicitly: appointing an applicant who
-     * asked for Gold onto Silver is an ordinary decision, and approving a
-     * request while silently substituting a different programme is the version
-     * of this that produces an angry partner. `undefined` means "the reviewer
-     * did not say".
+     * A reviewer used to pick a commission programme here, falling back to the
+     * agency's default and then to the catalogue's. None of that exists now:
+     * terms come from the partner's RUNG, and the rung is where they sit.
      *
-     * The PARENT's programme wins over the application's, because a sub-partner
-     * sells beneath their master and cannot carry a catalogue the master has no
-     * relationship with — the same rule `apply` enforces when the application
-     * is submitted. It is re-derived here rather than trusted from
-     * the application because the reviewer chooses the parent at THIS moment:
-     * an applicant introduced by nobody can still be placed under a partner,
-     * and one introduced by A can be placed under B. In both cases the
-     * application's stored agency describes a chain that is not the one being
-     * created.
+     * A partner with no parent deals with the broker directly and is level 1,
+     * which is every approval unless the reviewer named a parent; under a main
+     * partner they are one rung deeper.
      *
-     * A parent with no agency of their own falls through to the application's,
-     * which keeps the pre-agency partners recruiting rather than making every
-     * approval beneath them impossible.
+     * CAPPED at the structural ceiling the column itself carries, not at the
+     * platform's configured ladder depth. Those are different bounds and the
+     * wider one belongs here: clamping to the ladder would write a rung the
+     * partner does not occupy.
      */
-    const parentAgencyId = parentIbUserId
-      ? ((await this.ib.findAccount(parentIbUserId))?.agencyId ?? null)
-      : null;
+    const parentLevel = parentIbUserId
+      ? ((await this.ib.findAccount(parentIbUserId))?.level ?? 1)
+      : 0;
+    const level = Math.min(parentLevel + 1, MAX_STORED_LEVEL);
 
+    /*
+     * ── NO RUNG, NO APPROVAL ─────────────────────────────────────────────────
+     *
+     * The rung a partner placed under a parent would land on must EXIST and be
+     * ENABLED on the Commission Levels ladder: a reviewer can aim an
+     * application beneath a sub-partner, or beneath a main partner while level
+     * 2 is switched off.
+     *
+     * Only when there IS a parent. A root approval lands on rung 1, which
+     * `IbLevelsService.remove` refuses to delete — and refusing every direct
+     * appointment over a disabled rung 1 would be a platform-wide lockout no
+     * one asked this method to enforce.
+     *
+     * A partner on a rung with no configured terms earns nothing silently —
+     * `calculate` reports it per trade, but per trade is after the fact. The
+     * refusal names both remedies because both are ordinary decisions.
+     */
+    if (parentIbUserId && parentLevel >= IB_TREE_MAX_LEVELS) {
+      throw new ValidationError(
+        'The chosen parent is a sub-partner, and a sub-partner cannot have partners beneath ' +
+          'them — the tree has two levels. Approve this application under a main partner, or ' +
+          'with no parent.',
+      );
+    }
+    if (parentIbUserId && !(await this.ladderHasRungBeneath(parentLevel))) {
+      throw new ValidationError(
+        `The chosen parent stands on level ${parentLevel}, and the ladder has no enabled ` +
+          `level ${parentLevel + 1} beneath them. Add or enable that level on the Commission ` +
+          'Levels page, or approve this application under a different parent.',
+      );
+    }
+
+    /*
+     * THE AGENCY. As a main partner: WHAT THE APPLICANT ASKED FOR, unless the
+     * reviewer says otherwise — appointing an applicant who asked for Gold onto
+     * Silver is an ordinary decision, and approving a request while silently
+     * substituting a different programme is the version of this that produces
+     * an angry partner. `undefined` means "the reviewer did not say".
+     *
+     * Under a parent the administrator CHOOSES it, in this same request
+     * (13 Oct 2026). It used to be copied from the parent; it is never inferred
+     * now, from the parent or from the application, because placing somebody
+     * under a main partner is a fresh decision about what they may sell.
+     */
+    if (parentIbUserId && !options.agencyId) {
+      throw new ValidationError(SUB_PARTNER_AGENCY_REQUIRED);
+    }
     const agencyId =
-      options.agencyId === undefined
-        ? (parentAgencyId ?? application.agencyId ?? null)
-        : options.agencyId;
+      options.agencyId === undefined ? (application.agencyId ?? null) : options.agencyId;
 
     /*
      * ── NO AGENCY, NO PARTNER ────────────────────────────────────────────────
@@ -825,10 +699,7 @@ export class IbApplicationsService {
       );
     }
 
-    const agencies = await this.catalogue.listAgencies();
-    if (!agencies.some((agency) => agency.id === agencyId)) {
-      throw new ValidationError('That agency does not exist. Reload and try again.');
-    }
+    await this.assertAgencyExists(agencyId);
     /*
      * A DISABLED agency is accepted here, unlike on apply. Closing a programme
      * stops new applications; it does not invalidate the ones already in the
@@ -839,62 +710,16 @@ export class IbApplicationsService {
     const referralCode = await this.generateReferralCode();
 
     /*
-     * ── THE PARTNER'S LEVEL, DERIVED FROM WHO RECRUITED THEM (0112) ──────
-     *
-     * A reviewer used to pick a commission programme here, falling back to the
-     * agency's default and then to the catalogue's. None of that exists now:
-     * terms come from the partner's RUNG, and a rung is not a choice — it is
-     * where they sit.
-     *
-     * A partner with no parent deals with the broker directly and is level 1.
-     * One recruited by another partner is one rung deeper than their recruiter.
-     * So there is nothing to choose, nothing to default, and nothing on the
-     * approval screen to get wrong.
-     *
-     * CAPPED at the structural ceiling the column itself carries, not at the
-     * platform's configured ladder depth. Those are different bounds and the
-     * wider one belongs here: clamping to the ladder would write a rung the
-     * partner does not occupy.
+     * "Introduced by" FOLLOWS THE POSITION, here as on every later move (the
+     * owner's rule of 7 Oct 2026, applied to approval on 13 Oct 2026): a main
+     * partner has no introducer, and a sub-partner's introducer is the main
+     * partner they sit under. So whoever introduced a client who becomes a main
+     * partner stops earning on that client's trades from this approval on.
+     * Commission already accrued is theirs and stays. Read here so the audit row
+     * keeps who it was: the users row will not.
      */
-    const parentLevel = parentIbUserId
-      ? ((await this.ib.findAccount(parentIbUserId))?.level ?? 1)
-      : 0;
-    const level = Math.min(parentLevel + 1, MAX_STORED_LEVEL);
-
-    /*
-     * ── NO RUNG, NO APPROVAL ─────────────────────────────────────────────────
-     *
-     * The rung a recruited partner would land on must EXIST and be ENABLED on
-     * the Commission Levels ladder — the same rule `apply` enforces at the
-     * door, repeated here because the reviewer resolves the parent at THIS
-     * moment: an application that entered the queue legitimately can still be
-     * aimed beneath a partner the ladder ends at, either because the reviewer
-     * chose that parent or because the introducer's own level changed while
-     * the application waited.
-     *
-     * Only when there IS a parent. A root approval lands on rung 1, which
-     * `IbLevelsService.remove` refuses to delete — and refusing every direct
-     * appointment over a disabled rung 1 would be a platform-wide lockout no
-     * one asked this method to enforce.
-     *
-     * A partner on a rung with no configured terms earns nothing silently —
-     * `calculate` reports it per trade, but per trade is after the fact. The
-     * refusal names both remedies because both are ordinary decisions.
-     */
-    if (parentIbUserId && parentLevel >= IB_TREE_MAX_LEVELS) {
-      throw new ValidationError(
-        'The chosen parent is a sub-partner, and a sub-partner cannot have partners beneath ' +
-          'them — the tree has two levels. Approve this application under a main partner, or ' +
-          'with no parent.',
-      );
-    }
-    if (parentIbUserId && !(await this.ladderHasRungBeneath(parentLevel))) {
-      throw new ValidationError(
-        `The chosen parent stands on level ${parentLevel}, and the ladder has no enabled ` +
-          `level ${parentLevel + 1} beneath them. Add or enable that level on the Commission ` +
-          'Levels page, or approve this application under a different parent.',
-      );
-    }
+    const referrerBefore =
+      (await this.users.findById(application.userId))?.referredByIbUserId ?? null;
 
     const account = await this.db.transaction(async (tx) => {
       /*
@@ -933,7 +758,7 @@ export class IbApplicationsService {
         },
         tx,
       );
-      if (options.syncReferrer) {
+      if (referrerBefore !== parentIbUserId) {
         await this.users.update(
           application.userId,
           { referredByIbUserId: parentIbUserId ?? undefined },
@@ -954,6 +779,9 @@ export class IbApplicationsService {
         applicationId,
         level,
         parentIbUserId,
+        // Who introduced them before, and after: the only place the first survives.
+        referrerBefore,
+        referrerAfter: parentIbUserId,
         /*
          * Both what was asked for and what was granted. They are usually the
          * same and the interesting case is when they are not — "I applied for
@@ -1302,8 +1130,8 @@ export class IbApplicationsService {
   /**
    * A partner account as THIS reader may see it (`IbAccountDto`): a parent
    * outside their territory is the fact, never the uuid (R1). Every admin route
-   * answering an account goes through here — approval can place a partner
-   * under an introducer the reviewer may not see.
+   * answering an account goes through here — a partner placed before 13 Oct
+   * 2026 may sit under an introducer the reviewer may not see.
    */
   async accountViewFor(account: Parameters<typeof ibAccountView>[0], scope: ClientScope) {
     const view = ibAccountView(account);
@@ -1396,10 +1224,9 @@ export class IbApplicationsService {
     const detail = {
       userId,
       /*
-       * The rung, and nothing about a catalogue. It is EDITABLE (see
-       * `changeLevel`) but not chosen at approval — it follows from who
-       * recruited this partner — so the screen reports it with a correction
-       * available, rather than presenting it as a decision somebody made.
+       * The rung, and nothing about a catalogue. It follows the position
+       * (level 1 unless an administrator placed them under a main partner)
+       * and is changed with `changeLevel`.
        */
       level: account.level,
       levelName: levelTerms?.name ?? null,
@@ -1558,6 +1385,8 @@ export class IbApplicationsService {
     actor: Actor,
     /** The main partner to sit under, when moving a main partner down to level 2. */
     parentIbUserId?: number | null,
+    /** The agency they work under there — required with the parent (13 Oct 2026). */
+    agencyId?: string | null,
   ): Promise<IbAccountRow> {
     await this.visibility.assertVisible(userId, scope);
 
@@ -1594,6 +1423,7 @@ export class IbApplicationsService {
         level === 1 ? null : (parentIbUserId ?? null),
         scope,
         actor,
+        agencyId,
       );
       this.audit.record(actor.id, 'ib.level_change', 'ib_account', userId, {
         before: account.level,
@@ -1704,6 +1534,11 @@ export class IbApplicationsService {
     parentIbUserId: number | null,
     scope: ClientScope,
     actor: Actor,
+    /**
+     * The agency they work under from now on. REQUIRED when a parent is named
+     * (13 Oct 2026); a partner cut loose to deal direct keeps their own.
+     */
+    agencyId?: string | null,
   ): Promise<IbAccountRow> {
     await this.visibility.assertVisible(userId, scope);
 
@@ -1725,6 +1560,13 @@ export class IbApplicationsService {
        * can speak, and a scoped desk can only reassign within its own territory.
        */
       await this.visibility.assertVisible(parentIbUserId, scope);
+      /*
+       * Placing a partner under a main partner decides what they may SELL as
+       * well as where they sit, so the administrator names the agency in the
+       * same request (13 Oct 2026). It is never copied from the parent.
+       */
+      if (!agencyId) throw new ValidationError(SUB_PARTNER_AGENCY_REQUIRED);
+      await this.assertAgencyExists(agencyId);
     }
 
     /*
@@ -1769,7 +1611,7 @@ export class IbApplicationsService {
       const moved = await this.ib.updateAccount(
         userId,
         parentIbUserId
-          ? { parentIbUserId, level: 2 }
+          ? { parentIbUserId, level: 2, agencyId }
           : { parentIbUserId, level: 1, commissionShareOverride: null, rebateShareOverride: null },
         tx,
       );
@@ -1795,6 +1637,8 @@ export class IbApplicationsService {
       after: updated.parentIbUserId,
       referrerBefore: referrerBefore,
       referrerAfter: parentIbUserId ?? null,
+      agencyBefore: account.agencyId,
+      agencyAfter: updated.agencyId,
     });
     return updated;
   }
@@ -1833,7 +1677,6 @@ export class IbApplicationsService {
       return await this.approve(application.id, actor, scope, {
         agencyId: options.agencyId,
         parentIbUserId: options.parentIbUserId ?? null,
-        syncReferrer: true,
       });
     } catch (error) {
       if (!pending) await this.ib.deletePendingApplication(application.id);
@@ -1944,9 +1787,20 @@ export class IbApplicationsService {
   }
 
   /**
+   * The agency must EXIST. A closed one is accepted: closing a programme stops
+   * new applications, not an administrator's decision (see `approve`).
+   */
+  private async assertAgencyExists(agencyId: string): Promise<void> {
+    const agencies = await this.catalogue.listAgencies();
+    if (!agencies.some((agency) => agency.id === agencyId)) {
+      throw new ValidationError('That agency does not exist. Reload and try again.');
+    }
+  }
+
+  /**
    * Does the Commission Levels ladder have an ENABLED rung one below
-   * `parentLevel` — i.e. is there anywhere to place a partner recruited by
-   * somebody standing there?
+   * `parentLevel` — i.e. is there anywhere to place a partner an
+   * administrator puts beneath somebody standing there?
    *
    * The ladder is the authority on depth (0113), so this asks the catalogue
    * rather than comparing against a constant: a deployment that configured

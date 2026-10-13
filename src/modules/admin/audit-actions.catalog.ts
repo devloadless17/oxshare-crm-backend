@@ -627,18 +627,34 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
    * `PermissionsGuard` with the route and the keys it demanded.
    */
   { action: 'security.denied', label: 'Action refused (permission)', group: 'Security' },
-  { action: 'ip_allowlist.add', label: 'Network rule added', group: 'Security' },
-  { action: 'ip_allowlist.remove', label: 'Network rule removed', group: 'Security' },
-  // 0192: an administrator allowed to reach the console from ANY network.
+  /*
+   * The platform-wide allowlist and its exemptions (RBAC-08, 0192), retired by
+   * per-administrator networks (d048646, 13 Oct 2026). No code writes these any
+   * more; rows already carry them, so the audit filter still offers them.
+   */
+  {
+    action: 'ip_allowlist.add',
+    label: 'Network rule added',
+    group: 'Security',
+    historical: true,
+  },
+  {
+    action: 'ip_allowlist.remove',
+    label: 'Network rule removed',
+    group: 'Security',
+    historical: true,
+  },
   {
     action: 'ip_allowlist.exempt_add',
     label: 'Admin allowed from any network',
     group: 'Security',
+    historical: true,
   },
   {
     action: 'ip_allowlist.exempt_remove',
     label: 'Admin any-network access removed',
     group: 'Security',
+    historical: true,
   },
   /*
    * Grouped under Security rather than Configuration, unlike the other settings
