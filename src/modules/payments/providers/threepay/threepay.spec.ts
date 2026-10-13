@@ -250,6 +250,20 @@ describe('3pay’s request limits, kept on our side', () => {
     expect(() => budget.take('high')).toThrow(ProviderBusyError);
   });
 
+  it('a limit 3pay states differently scales what is kept back, and its window is followed', () => {
+    // Built for 100 a quarter-hour; 3pay then states its guide's 60 a minute.
+    const budget = new RequestBudget(100, 900_000, { high: 0, normal: 60, low: 75 }, () => 0);
+    budget.observe({ limit: 60, remaining: 60, resetSeconds: 60, windowSeconds: 60 });
+    expect(budget.state()).toMatchObject({ limit: 60, windowSeconds: 60, left: 60, stated: true });
+    // `low` keeps back 45 of 60 (three quarters), not 75 of 60 — which would starve it for ever.
+    for (let i = 0; i < 15; i += 1) budget.take('low');
+    expect(() => budget.take('low')).toThrow(ProviderBusyError);
+    // `normal` keeps back 36 of 60.
+    for (let i = 0; i < 9; i += 1) budget.take('normal');
+    expect(() => budget.take('normal')).toThrow(ProviderBusyError);
+    expect(() => budget.take('high')).not.toThrow();
+  });
+
   it('follows what 3pay’s own headers say is left', () => {
     let now = 0;
     const budget = new RequestBudget(100, 900_000, { high: 0, normal: 0, low: 0 }, () => now);

@@ -159,6 +159,7 @@ const ACCOUNT_TTL_MS = 15 * 60_000;
 export class ThreePayClient {
   private readonly logger = new Logger(ThreePayClient.name);
   private budgets = freshBudgets();
+  private accountFailedAt = 0;
   private hostChecked: { url: string; at: number } | null = null;
   private readonly pages = new Map<string, { at: number; page: ThreePayPage }>();
   private accountRead: { at: number; baseUrl: string; account: ThreePayAccount } | null = null;
@@ -191,6 +192,7 @@ export class ThreePayClient {
     this.budgets = freshBudgets();
     this.pages.clear();
     this.accountRead = null;
+    this.accountFailedAt = 0;
     this.hostChecked = null;
   }
 
@@ -313,10 +315,17 @@ export class ThreePayClient {
     ) {
       return held.account;
     }
-    const { body } = await this.get('/getMerchantDetails', {}, { priority });
+    let body: Record<string, unknown>;
+    try {
+      ({ body } = await this.get('/getMerchantDetails', {}, { priority }));
+    } catch (error) {
+      this.accountFailedAt = Date.now();
+      throw error;
+    }
     const data = objectOf(body['data']);
     const available = amountOf(data?.['totalAmt']);
     if (!data || available === undefined) {
+      this.accountFailedAt = Date.now();
       throw new ThreePayRequestError('unreadable', '3pay did not report a balance.');
     }
     const inFlight = amountOf(data['pendingAmt']);
@@ -358,6 +367,11 @@ export class ThreePayClient {
       create: this.budgets.create.state(),
       payout: this.budgets.payout.state(),
     };
+  }
+
+  /** Did a read of the account fail in the last `ms`? A delivery then does not jump the queue to repeat it. */
+  accountFailedWithin(ms: number): boolean {
+    return Date.now() - this.accountFailedAt < ms;
   }
 
   /** How old the remembered account reading is, or null when there is none. */
@@ -507,11 +521,13 @@ export class ThreePayClient {
 function freshBudgets(): Record<ThreePayCall, RequestBudget> {
   return {
     /*
-     * `normal` (a sweep or a waiting screen re-asking about a deposit) leaves 40
-     * for what 3pay itself reports: at most 20 links open per window, and each
-     * paid one is asked about twice (3pay rings before its API agrees).
+     * What each kind of read leaves for the ones above it, at 3pay's 100 (a
+     * stated limit that differs scales them). `normal` — the sweep, or a waiting
+     * screen asking again — leaves 60 for what 3pay itself reports: at most 20
+     * links open per window, each asked about when 3pay rings and up to twice
+     * more until its API agrees. `low` leaves 75.
      */
-    read: new RequestBudget(100, WINDOW_MS, { high: 0, normal: 40, low: 60 }),
+    read: new RequestBudget(100, WINDOW_MS, { high: 0, normal: 60, low: 75 }),
     create: new RequestBudget(20, WINDOW_MS),
     payout: new RequestBudget(30, WINDOW_MS),
   };

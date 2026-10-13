@@ -32,10 +32,14 @@ import { ProviderBusyError } from '../payment-provider';
  * states what the read is for and the lower two leave a reserve:
  *
  *   high    what a payout's state hangs on, a deposit 3pay itself just
- *           reported (its webhook), and a person's Test connection
+ *           reported (its webhook, and the core asking again for it), and a
+ *           person's Test connection
  *   normal  a deposit asked about again by the sweep or a waiting screen,
- *           or recovered; leaves 40
- *   low     the balance watch and the records audit; leaves 60
+ *           or recovered; leaves 60
+ *   low     the balance watch and the records audit; leaves 75
+ *
+ * The reserves are shares: stated for the 100 measured, scaled when 3pay
+ * states another limit.
  *
  * Per process. Two API instances each follow the same headers, so they
  * converge on 3pay's own count; its 429 is the backstop, handled the same way.
@@ -106,6 +110,9 @@ export class RequestBudget {
   private resetAt = 0;
   private pausedUntil = 0;
 
+  /** The limit the reserves were stated for. */
+  private readonly builtFor: number;
+
   constructor(
     limit: number,
     private windowMs: number,
@@ -118,6 +125,7 @@ export class RequestBudget {
     private readonly now: () => number = () => Date.now(),
   ) {
     this.limit = limit;
+    this.builtFor = limit;
     this.remaining = limit;
   }
 
@@ -132,11 +140,20 @@ export class RequestBudget {
       this.resetAt = 0;
     }
     if (this.pausedUntil > now) throw busy(this.pausedUntil - now);
-    if (this.remaining - this.reserve[priority] <= 0) {
+    if (this.remaining - this.reserveOf(priority) <= 0) {
       throw busy(this.resetAt === 0 ? this.windowMs : this.resetAt - now);
     }
     if (this.resetAt === 0) this.resetAt = now + this.windowMs;
     this.remaining -= 1;
+  }
+
+  /**
+   * What this priority leaves for the ones above it. Stated for the limit the
+   * budget was built with, and scaled when 3pay states another: a share of the
+   * allowance, never a count that a smaller allowance could not cover.
+   */
+  private reserveOf(priority: ThreePayPriority): number {
+    return Math.ceil((this.reserve[priority] * this.limit) / this.builtFor);
   }
 
   /**

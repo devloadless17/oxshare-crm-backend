@@ -119,6 +119,13 @@ export class ThreePayPaymentProvider implements PaymentProviderAdapter {
   readonly name = '3pay';
   // Its exchanges carry no client identity: amounts, our reference, payout addresses (0175).
   readonly keepsExchangeLog = true;
+  /*
+   * 3pay's guide and its online reference both ask for a 200 to every verified
+   * delivery, and it rings before its own API agrees (seen on every paid
+   * deposit in production, 12 Oct 2026: `initiated` at the delivery,
+   * `confirmed` within the minute). So the deposit is asked about again here.
+   */
+  readonly noticeRecheckMs: readonly number[] = [15_000, 60_000];
   readonly builtIn = false;
 
   readonly configFields: readonly ProviderConfigField[] = [
@@ -127,9 +134,8 @@ export class ThreePayPaymentProvider implements PaymentProviderAdapter {
       label: 'API base URL',
       kind: 'url',
       required: true,
-      hint:
-        'Live: https://pay.3pa-y.com/api/v1 — 3pay’s PDF guide prints api.3pa-y.com, which ' +
-        'does not exist. Sandbox: https://sandbox.pay.3pa-y.com/api/v1.',
+      // Read by the buyer's staff: the address, and nothing about where it was learned.
+      hint: 'The address of 3pay’s API: https://pay.3pa-y.com/api/v1',
     },
     {
       name: THREEPAY_SETTINGS.apiKey,
@@ -160,7 +166,7 @@ export class ThreePayPaymentProvider implements PaymentProviderAdapter {
       kind: 'text',
       required: true,
       hint:
-        '3pay’s withdrawal fee on Tron (2.00 in its guide). When 3pay takes it out of the ' +
+        '3pay’s withdrawal fee on Tron, usually 2.00. When 3pay takes it out of the ' +
         'amount sent, payouts are grossed up by it, so the client receives exactly what they ' +
         'withdraw.',
       validate: payoutFeeIssue,
@@ -170,7 +176,7 @@ export class ThreePayPaymentProvider implements PaymentProviderAdapter {
       label: 'ERC20 payout fee (USDT)',
       kind: 'text',
       required: true,
-      hint: '3pay’s withdrawal fee on Ethereum (2.50 in its guide).',
+      hint: '3pay’s withdrawal fee on Ethereum, usually 2.50.',
       validate: payoutFeeIssue,
     },
   ];

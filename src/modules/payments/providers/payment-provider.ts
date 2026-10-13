@@ -453,6 +453,15 @@ export interface PaymentProviderAdapter {
    * its calls (`PaymentProviderExchangesStore`); the core records deliveries.
    */
   readonly keepsExchangeLog?: boolean;
+  /**
+   * How soon a hosted payment is asked about AGAIN when the provider's own
+   * delivery called it finished and its API does not yet — the delays, in
+   * order. Declared by a provider whose verified deliveries are always answered
+   * 200 (3pay asks for exactly that, so it never sends the report again): the
+   * core returns to the payment itself rather than leaving it to the sweep.
+   * Absent: the provider is asked to deliver again instead.
+   */
+  readonly noticeRecheckMs?: readonly number[];
 
   /**
    * Can it move money on this deployment right now: switched on, its required

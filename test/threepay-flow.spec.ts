@@ -148,6 +148,7 @@ beforeAll(async () => {
 }, 120_000);
 
 afterAll(async () => {
+  deposits.onModuleDestroy(); // no re-check outlives the database
   await sim.stop();
   await stopMoneyTestDb(ctx);
 });
@@ -293,10 +294,29 @@ describe('3pay deposits', () => {
   it('a delivery is only a doorbell: a signed "confirmed" 3pay’s API does not confirm credits nothing', async () => {
     const { userId, tx } = await deposit('100');
     const answer = await deliver(confirmed(tx));
-    // 3pay's stored state has not caught up: retry, nothing credited.
-    expect(answer.status).toBe(503);
+    // Answered 200, as 3pay's guide asks of every verified delivery — and nothing credited.
+    expect(answer.status).toBe(200);
     expect((await row(tx.id)).state).toBe('pending');
     expect(await balance(userId)).toBe('0.00000000');
+  });
+
+  it('3pay rings before its API agrees: the deposit is asked about again, and credited with no second delivery', async () => {
+    const paced = adapter as unknown as { noticeRecheckMs: readonly number[] };
+    const declared = paced.noticeRecheckMs;
+    paced.noticeRecheckMs = [40, 80];
+    try {
+      const { userId, tx } = await deposit('100');
+      expect((await deliver(confirmed(tx))).status).toBe(200);
+      expect((await row(tx.id)).state).toBe('pending');
+
+      sim.confirm(tx.providerPaymentId ?? '', '100'); // its API catches up; it sends nothing more
+      await vi.waitFor(async () => expect((await row(tx.id)).state).toBe('success'), {
+        timeout: 5000,
+      });
+      expect(await balance(userId)).toBe('100.00000000');
+    } finally {
+      paced.noticeRecheckMs = declared;
+    }
   });
 
   it('refuses a forged delivery before reading it — under either signature scheme', async () => {

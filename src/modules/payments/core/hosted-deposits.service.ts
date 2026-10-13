@@ -1,5 +1,5 @@
 import { ResourceChangedPublisher } from '../../../common/realtime/resource-changed';
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, type OnModuleDestroy } from '@nestjs/common';
 import Decimal from 'decimal.js';
 import { and, eq, inArray, isNotNull, lt, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../../database/database.module';
@@ -41,6 +41,7 @@ import {
   type DepositCreditPolicy,
   type NoticeOutcome,
   type PaymentChannel,
+  type PaymentCheckUrgency,
   type PaymentRoute,
   type PaymentStatus,
   type ProviderNotice,
@@ -115,9 +116,11 @@ export const CLIENT_SAFE_DEPOSIT_CLOSED =
  * it with `creditReceived` or `closeWithoutCredit` — never guessed.
  */
 @Injectable()
-export class HostedDepositsService {
+export class HostedDepositsService implements OnModuleDestroy {
   private readonly logger = new Logger(HostedDepositsService.name);
   private readonly providerEvents: PaymentProviderEventsStore;
+  /** Deposits to ask about again shortly (`recheckSoon`), by transaction id. */
+  private readonly rechecks = new Map<string, NodeJS.Timeout>();
 
   constructor(
     @Inject(DRIZZLE_DB) private readonly db: Db,
@@ -223,10 +226,26 @@ export class HostedDepositsService {
       return this.paidAfterFailure(tx, log);
     }
     const before = tx.state;
-    const { state } = await this.settleRow(tx, 'webhook');
+    let state: string;
+    try {
+      ({ state } = await this.settleRow(tx, 'webhook'));
+    } catch (error) {
+      // The provider could not be asked just now: asked again shortly, whatever it retries.
+      this.recheckSoon(tx.id, providerCode);
+      throw error;
+    }
     if (state !== before) return 'applied';
     const after = await this.transactions.getById(tx.id);
     if (after.needsAttention && !tx.needsAttention) return 'needs-attention';
+    /*
+     * Unmoved, and the report is NEWS — a payment said to have succeeded, or
+     * anything about a deposit still open: the provider's API has not caught up
+     * with its own delivery (3pay rings first). An echo about a deposit that
+     * already failed here is not asked about again.
+     */
+    if (notice.eventType === 'payment.succeeded' || state === 'pending') {
+      this.recheckSoon(tx.id, providerCode);
+    }
     if (state === 'pending') {
       await log(
         'failed',
@@ -235,6 +254,46 @@ export class HostedDepositsService {
       return 'pending';
     }
     return 'stale';
+  }
+
+  /**
+   * ASK AGAIN SHORTLY. A provider whose deliveries are always answered 200
+   * never sends a report twice, so when its API has not caught up with its own
+   * delivery the core returns to the payment after the delays its adapter
+   * declares (`noticeRecheckMs`), instead of leaving the client to the sweep.
+   * A provider that declares none is asked to deliver again, as before.
+   *
+   * In memory on purpose: a restart loses nothing, because the sweep asks too.
+   */
+  private recheckSoon(txId: string, providerCode: string, attempt = 0): void {
+    const delay = this.registry.find(providerCode)?.noticeRecheckMs?.[attempt];
+    if (delay === undefined || this.rechecks.has(txId)) return;
+    const timer = setTimeout(() => {
+      this.rechecks.delete(txId);
+      void this.recheck(txId, providerCode, attempt);
+    }, delay);
+    timer.unref();
+    this.rechecks.set(txId, timer);
+  }
+
+  private async recheck(txId: string, providerCode: string, attempt: number): Promise<void> {
+    try {
+      const tx = await this.transactions.getById(txId);
+      if (tx.state === 'success' || tx.needsAttention) return;
+      // Asked for the provider's own report, so ahead of the sweep; recorded as the poll it is.
+      const { state } = await this.settleRow(tx, 'poll', 'event');
+      if (state === tx.state) this.recheckSoon(txId, providerCode, attempt + 1);
+    } catch (error) {
+      this.logger.warn(
+        `Could not ask ${providerCode} again about deposit ${txId}: ${messageOf(error)}`,
+      );
+      this.recheckSoon(txId, providerCode, attempt + 1);
+    }
+  }
+
+  onModuleDestroy(): void {
+    for (const timer of this.rechecks.values()) clearTimeout(timer);
+    this.rechecks.clear();
   }
 
   /**
@@ -272,8 +331,13 @@ export class HostedDepositsService {
    * admin request to announce it, so it is announced here: every open Financial
    * screen and deposit desk refreshes instead of waiting for a reload.
    */
-  async settleRow(tx: TransactionRow, source: ProviderEventSource): Promise<{ state: string }> {
-    const result = await this.settleRowOnce(tx, source);
+  async settleRow(
+    tx: TransactionRow,
+    source: ProviderEventSource,
+    // The provider's own report, or the desk: served ahead of the sweep's re-asking.
+    urgency: PaymentCheckUrgency = source === 'poll' ? 'background' : 'event',
+  ): Promise<{ state: string }> {
+    const result = await this.settleRowOnce(tx, source, urgency);
     if (result.state !== tx.state) await this.resourceChanged.publish({ resource: 'wallets' });
     return result;
   }
@@ -281,6 +345,7 @@ export class HostedDepositsService {
   private async settleRowOnce(
     tx: TransactionRow,
     source: ProviderEventSource,
+    urgency: PaymentCheckUrgency,
   ): Promise<{ state: string }> {
     const route: PaymentRoute = { providerCode: tx.providerCode, channelCode: tx.channelCode };
     const channel = this.registry.findChannel(route, 'deposit');
@@ -299,12 +364,7 @@ export class HostedDepositsService {
     // The start never confirmed: the sweep recovers it first.
     if (!tx.providerPaymentId) return { state: tx.state };
 
-    // The provider's own report, or the desk: served ahead of the sweep's re-asking.
-    const result = await this.registry.checkPayment(
-      route,
-      tx.providerPaymentId,
-      source === 'poll' ? 'background' : 'event',
-    );
+    const result = await this.registry.checkPayment(route, tx.providerPaymentId, urgency);
     const now = new Date();
     await this.db
       .update(transactions)
