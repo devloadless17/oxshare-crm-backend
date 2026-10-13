@@ -1556,9 +1556,19 @@ an HTML 404, an existing one a JSON 401):
   `/withdrawal-requests/:id/approve|reject`, `/transaction/cancel`.
 - **`POST /transaction/create` reads `currencyType` and `amount` from the QUERY STRING.** In the body
   they are ignored.
-- **Rate limits are a tenth of the PDFs'**, in fixed 15-minute windows, per calling IP, counted even
-  for a refused request: **100 reads (ONE budget for every read endpoint), 20 payment links, 30
-  payout requests.**
+- **Rate limits are NOT the PDFs'** (both print 60 reads, 30 links and 30 payouts a MINUTE). They
+  are per calling IP, in 15-minute windows, counted even for a refused request: **100 reads (ONE
+  budget for every read endpoint), 20 payment links, 30 payout requests.** Three things agree
+  (checked again 13 Oct 2026, when the owner doubted the 20):
+  - 3pay's ONLINE page _Authentication & Security → Rate Limits_ prints exactly this table, "per
+    IP". A payment link is its "Wallet Generation" tier (each link is given its own wallet).
+  - Every reply states it (`RateLimit-Limit`, `-Remaining`, `-Reset`). Asked from production's
+    own address, 3pay said 95 of 100 reads were left: production's 4 authenticated reads in that
+    window plus the probe. So authenticated calls are counted in that same per-address bucket.
+  - It is enforced: the 21st link request in a window was answered 429, "Too many wallet generation
+    requests. Try again in 15 minutes."
+  - Only 3pay can raise them. The adapter assumes none of this: it follows the headers of each real
+    answer, so a raised limit is used the moment 3pay states it.
 - **Seen in production's exchange log**: `/transaction/list` answers `{data: {docs, page, limit}}`;
   `/getMerchantDetails` carries `webhookSecret` in clear, `autoWithdraw`, `maxAutoWithdrawAmount`,
   `depositFeePayer`, `withdrawalFeePayer`; three deliveries from 3pay's dashboard were refused for
@@ -1572,6 +1582,29 @@ withdrawal list (`{data: [...], totalPages}`, destination `clientWallet`, or the
 (`X-Webhook-Signature: sha256=…` with the account's webhook secret, or `x-3pay-signature` with the
 API secret); whether `actualBalance` is on a verify reply; how `withdrawalFeePayer` changes what a
 payout delivers.
+
+#### The updated guide, point by point (13 Oct 2026)
+
+The owner's rule: follow `docs/integration-guide-3pay-updated.pdf` in everything, unless the live
+server makes that impossible; then say so, with the evidence. Everything not listed here is done as
+the guide says (headers, the query-string create, `timer`, `referenceId`, the payout body, minimums,
+the five payout answers, "do not retry executing", list filters and client-side dates, signature on
+the raw body, idempotent handler, 200 to every verified delivery, 429 backs off, the 90-day log).
+
+| The guide says                                                     | What is done, and why                                                                                                                                                                                                                                                                   |
+| ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Base URL `api.3pa-y.com`                                           | `pay.3pa-y.com`. The guide's host has no DNS record.                                                                                                                                                                                                                                    |
+| Create answers `data.{invoiceNo, paymentUrl, expiresAt}`           | The server answers `{url, transactionId, invoiceNo}` at the top. Both are read.                                                                                                                                                                                                         |
+| `callbackUrl` is where webhooks are POSTed                         | The server sends the payer's BROWSER there (production's access log: `GET …/return/success` from Chrome and Android). Webhooks arrive at `webhookUrl`, which the guide also documents as the override, so both are sent.                                                                |
+| Look a deposit up with `verify?invoiceNo=`                         | By the `transactionId` the create answer gives (`&type=deposit`). An id that is an invoice number is asked the guide's way.                                                                                                                                                             |
+| Lists answer `data: [...]` + `pagination`                          | The server answers `data: {docs, page, limit}`. Both are read.                                                                                                                                                                                                                          |
+| Webhook signed `x-3pay-signature` with the API secret              | The server signs `X-Webhook-Signature: sha256=…` with a separate webhook secret. Both are accepted, each against its own key.                                                                                                                                                           |
+| Webhook body is flat                                               | The server wraps it in `{success, message, idempotencyKey, data}`. Both are read.                                                                                                                                                                                                       |
+| Limits: 60 reads, 30 links, 30 payouts a minute                    | The server states and enforces 100 / 20 / 30 per fifteen minutes per calling IP. The adapter follows the headers of each answer, so the guide's figures would be used if the server ever stated them.                                                                                   |
+| A 500 on a payout: "retry with the same idempotency key"           | The request has no key to repeat, and the guide itself warns a repeat can pay twice. A 500 is held, looked for in 3pay's list and adopted; a person resends.                                                                                                                            |
+| The payout fee is taken out of the amount (ask 502 to deliver 500) | Done exactly so when the account says `withdrawalFeePayer: user`, or does not say. The buyer's account says `merchant`, which the guide does not describe: the amount is asked as it is. NOT proven until the first payout; a payout that delivers short or over is flagged either way. |
+| Reconcile `totalAmt` against the books                             | The sweep, the unmatched-records audit and the balance watch cover deposits, payouts and a short balance. The books comparison was removed in 0177 at the owner's request.                                                                                                              |
+| The deposit fee is flat                                            | It is a share with a minimum (1.00 on 96, 1.60 on 200, 4 on 500, 6.28 on 787). Nothing assumes it: each answer's fee is recorded.                                                                                                                                                       |
 
 #### How it works
 
@@ -1621,12 +1654,27 @@ payout delivers.
   in 3pay's account reply (kept in memory by `ThreePayClient.account`, never stored); after a failed
   signature it is re-read at most once in ten minutes, so a forged flood spends no requests. The
   dashboard's test delivery (`X-Webhook-Test: true`) is answered 200. There is NO replay nonce: 3pay
-  retries with the same bytes, and the doorbell rule makes a replay harmless. The answer is 200 for
-  every verified event, except 503 when every notice hit "not stored yet" or "not caught up".
+  retries with the same bytes, and the doorbell rule makes a replay harmless. **Every verified event
+  is answered 200**, whatever came of it: 3pay's guide (§7) and its online reference both ask for
+  exactly that. Until 13 Oct 2026 a record 3pay's API had not caught up on was answered 503 to be
+  sent again; it worked, and it was against both documents.
+- **3pay rings before its own API agrees** (every paid deposit in production: `initiated` at the
+  delivery, `confirmed` within the minute). So the adapter declares `noticeRecheckMs` (15 s, 60 s)
+  and the CORE asks about the deposit again itself (`HostedDepositsService.recheckSoon`: in memory,
+  one timer per deposit, only when the report is news; the sweep is behind it). A provider that
+  declares none is asked to deliver again, as Rival is.
 - **Request budgets** (`threepay-rate-limit.ts`): each class follows 3pay's own `RateLimit-*`
   headers, and a call that would overdraw is refused before it is sent (`ProviderBusyError`). Reads
-  share one budget, so they have priorities: `high` (a payout's state, Test connection), `normal` (a
-  deposit; leaves 10), `low` (the balance watch, the records audit, the webhook secret; leaves 35).
+  share one budget, so they have priorities: `high` (a payout's state, a deposit 3pay itself just
+  reported by webhook, Test connection), `normal` (a deposit re-asked by the sweep or a waiting
+  screen; leaves 60), `low` (the balance watch, the records audit, the routine webhook-secret
+  re-read; leaves 75). The reserves are SHARES, stated for the 100 measured and scaled when 3pay
+  states another limit, and the window is followed too (`RateLimit-Policy`), so nothing here
+  assumes a figure 3pay could change. The core says why it asks (`PaymentCheckUrgency`: `event` |
+  `background`).
+  A delivery is still verified while the budget is spent: the last webhook secret read is kept.
+  A `received` link 30 minutes past its own expiry that 3pay still calls open is closed as
+  expired (13 Oct 2026: 3pay left two `initiated` for 14 hours); a late payment still credits.
   The core was changed so the background does not spend it:
   - expired links are re-asked at a widening interval (a quarter of their age, at least an hour),
     five a sweep (`LATE_BATCH`), not all of them every hour for a month;
@@ -1652,6 +1700,9 @@ payout delivers.
   first place to look when 3pay refuses something**: the request, the reply and 3pay's `errors`
   detail are all there.
   - It never holds headers, so no credential we send and no webhook signature is kept.
+  - The one exception is four NUMBERS (0223): what 3pay said about its request allowance on that
+    answer (`rate_limit`, `rate_remaining`, `rate_reset_seconds`, `rate_window_seconds`). Its PDFs
+    print other limits, so this is where production's real figures are read, per kind of call.
   - ⚠️ 3pay's account reply carries its webhook secret and its owner's contact details. Since
     12 Oct 2026 `loggableBody` cuts that reply down to its figures and blanks any field named like
     a credential; migration **0222** removed what had already been stored (the one edit the log
@@ -1661,7 +1712,8 @@ payout delivers.
 - **Test connection** reads the account and one page of each list, so a reply this build cannot
   read is found by a person pressing a button. Its message says how the ACCOUNT is set: whether
   payouts wait for approval in 3pay's dashboard, who carries each fee, and whether a static wallet
-  is on.
+  is on. It ends with the request limits 3pay STATED to this server on real calls (a kind of call
+  not made since the last restart is said to be not stated yet).
 - **Proof**: `providers/threepay/threepay.spec.ts` (pure) and `test/threepay-flow.spec.ts` (the real
   adapter through the real core against `test/support/threepay-sim.ts`, which behaves as the LIVE
   server was measured to, with a switch to the guides' shapes).

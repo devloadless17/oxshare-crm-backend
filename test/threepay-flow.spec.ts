@@ -148,6 +148,7 @@ beforeAll(async () => {
 }, 120_000);
 
 afterAll(async () => {
+  deposits.onModuleDestroy(); // no re-check outlives the database
   await sim.stop();
   await stopMoneyTestDb(ctx);
 });
@@ -293,10 +294,29 @@ describe('3pay deposits', () => {
   it('a delivery is only a doorbell: a signed "confirmed" 3pay’s API does not confirm credits nothing', async () => {
     const { userId, tx } = await deposit('100');
     const answer = await deliver(confirmed(tx));
-    // 3pay's stored state has not caught up: retry, nothing credited.
-    expect(answer.status).toBe(503);
+    // Answered 200, as 3pay's guide asks of every verified delivery — and nothing credited.
+    expect(answer.status).toBe(200);
     expect((await row(tx.id)).state).toBe('pending');
     expect(await balance(userId)).toBe('0.00000000');
+  });
+
+  it('3pay rings before its API agrees: the deposit is asked about again, and credited with no second delivery', async () => {
+    const paced = adapter as unknown as { noticeRecheckMs: readonly number[] };
+    const declared = paced.noticeRecheckMs;
+    paced.noticeRecheckMs = [40, 80];
+    try {
+      const { userId, tx } = await deposit('100');
+      expect((await deliver(confirmed(tx))).status).toBe(200);
+      expect((await row(tx.id)).state).toBe('pending');
+
+      sim.confirm(tx.providerPaymentId ?? '', '100'); // its API catches up; it sends nothing more
+      await vi.waitFor(async () => expect((await row(tx.id)).state).toBe('success'), {
+        timeout: 5000,
+      });
+      expect(await balance(userId)).toBe('100.00000000');
+    } finally {
+      paced.noticeRecheckMs = declared;
+    }
   });
 
   it('refuses a forged delivery before reading it — under either signature scheme', async () => {
@@ -377,6 +397,50 @@ describe('3pay deposits', () => {
       sql`UPDATE transactions SET provider_checked_at = now() - interval '2 hours' WHERE id = ${tx.id}`,
     );
     await deposits.sweep('threepay');
+    await deposits.sweep('threepay');
+    expect((await row(tx.id)).state).toBe('success');
+    expect(await balance(userId)).toBe('50.00000000');
+  });
+
+  it('when the sweep has used its share of 3pay’s reads, a delivery from 3pay is still checked and credited', async () => {
+    const first = await deposit('20');
+    const paid = await deposit('30');
+    await ctx.db.execute(sql`
+      UPDATE transactions SET created_at = now() - interval '5 minutes'
+       WHERE id IN (${first.tx.id}, ${paid.tx.id})`);
+    sim.used.read = 65; // 35 left at 3pay: inside what the sweep must leave
+    sim.calls.length = 0;
+    await deposits.sweep('threepay');
+    // One read told us where 3pay's count stands; the sweep then stopped.
+    expect(sim.calls.filter((call) => call.includes('/transaction/verify'))).toHaveLength(1);
+
+    sim.confirm(paid.tx.providerPaymentId ?? '', '30');
+    expect((await deliver(confirmed(paid.tx))).status).toBe(200);
+    expect((await row(paid.tx.id)).state).toBe('success');
+    expect(await balance(paid.userId)).toBe('30.00000000');
+  });
+
+  it('a link past its own time that 3pay never expired is closed — and a late payment still credits', async () => {
+    const { userId, tx } = await deposit('50');
+    await ctx.db.execute(sql`
+      UPDATE transactions
+         SET created_at = now() - interval '2 hours',
+             provider_payment_expires_at = now() - interval '20 minutes'
+       WHERE id = ${tx.id}`);
+    await deposits.sweep('threepay');
+    expect((await row(tx.id)).state).toBe('pending'); // inside the grace: a last-minute payment confirms
+
+    await ctx.db.execute(sql`
+      UPDATE transactions SET provider_payment_expires_at = now() - interval '90 minutes'
+       WHERE id = ${tx.id}`);
+    await deposits.sweep('threepay');
+    expect((await row(tx.id)).state).toBe('failure');
+    expect(await balance(userId)).toBe('0.00000000');
+
+    sim.confirm(tx.providerPaymentId ?? '', '50');
+    await ctx.db.execute(
+      sql`UPDATE transactions SET provider_checked_at = now() - interval '2 hours' WHERE id = ${tx.id}`,
+    );
     await deposits.sweep('threepay');
     expect((await row(tx.id)).state).toBe('success');
     expect(await balance(userId)).toBe('50.00000000');
@@ -804,6 +868,9 @@ describe('the connection test', () => {
     expect(check.message).toMatch(/Available: 10000 USDT/);
     expect(check.message).toMatch(/every one waits for approval in 3pay’s dashboard/);
     expect(check.message).toMatch(/charged to the 3pay balance/);
+    // The limits are 3pay's own words on these very calls; a kind not called yet is said so.
+    expect(check.message).toMatch(/100 status checks per 15 minutes \(97 left now\)/);
+    expect(check.message).toMatch(/payment links not stated yet/);
     expect(sim.calls.map((call) => call.split('?')[0])).toEqual([
       'GET /getMerchantDetails',
       'GET /transaction/list',
@@ -848,6 +915,11 @@ describe('the exchange log (guide §10: every request and response, 90 days)', (
     expect(create?.status).toBe(200);
     expect(create?.reference).toBe(tx.providerRef);
     expect(create?.path).toMatch(/currencyType=USDT-TRC20&amount=100/);
+    // What 3pay said it allows, kept with the call: its PDF guides print other limits.
+    expect(create?.rateLimit).toBe(20);
+    expect(create?.rateRemaining).toBe(19);
+    expect(create?.rateResetSeconds).toBeGreaterThan(0);
+    expect(create?.rateWindowSeconds).toBe(900);
     const inbound = rows.find((r) => r.direction === 'inbound');
     expect(inbound?.reference).toBe(tx.providerPaymentId);
     expect(inbound?.status).toBe(200);

@@ -20671,6 +20671,26 @@
             "nullable": true,
             "description": "Ours or the provider’s id for what it was about: an OX- reference, a withdrawal."
           },
+          "rateLimit": {
+            "type": "number",
+            "nullable": true,
+            "description": "The request limit the provider stated on this answer (its `RateLimit-Limit`), for the kind of call this was. Null when it said nothing, and on a delivery."
+          },
+          "rateRemaining": {
+            "type": "number",
+            "nullable": true,
+            "description": "How many such requests it said were left in its current window."
+          },
+          "rateResetSeconds": {
+            "type": "number",
+            "nullable": true,
+            "description": "The seconds it said remained until that window ends."
+          },
+          "rateWindowSeconds": {
+            "type": "number",
+            "nullable": true,
+            "description": "How long that window is, in seconds (900 is fifteen minutes)."
+          },
           "occurredAt": {
             "type": "string"
           }
@@ -20686,6 +20706,10 @@
           "error",
           "durationMs",
           "reference",
+          "rateLimit",
+          "rateRemaining",
+          "rateResetSeconds",
+          "rateWindowSeconds",
           "occurredAt"
         ]
       },

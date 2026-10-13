@@ -11,6 +11,7 @@ import {
   type ConnectionCheck,
   type PaymentChannel,
   type PaymentProviderAdapter,
+  type PaymentCheckUrgency,
   type PaymentStatus,
   type ProviderBalance,
   type ProviderConfigField,
@@ -23,6 +24,7 @@ import { evmAddressIssue, evmAddressKey, tronAddressIssue } from './threepay-add
 import { amountOf, dateOf, firstText, numberLiteral, objectOf, textOf } from './threepay-json';
 import { ThreePayPayouts, payoutDestinationOf } from './threepay-payouts';
 import { ThreePayClient, ThreePayRequestError, type ThreePayAccount } from './threepay.client';
+import type { BudgetState } from './threepay-rate-limit';
 import {
   THREEPAY_CODE,
   THREEPAY_SETTINGS,
@@ -117,6 +119,13 @@ export class ThreePayPaymentProvider implements PaymentProviderAdapter {
   readonly name = '3pay';
   // Its exchanges carry no client identity: amounts, our reference, payout addresses (0175).
   readonly keepsExchangeLog = true;
+  /*
+   * 3pay's guide and its online reference both ask for a 200 to every verified
+   * delivery, and it rings before its own API agrees (seen on every paid
+   * deposit in production, 12 Oct 2026: `initiated` at the delivery,
+   * `confirmed` within the minute). So the deposit is asked about again here.
+   */
+  readonly noticeRecheckMs: readonly number[] = [15_000, 60_000];
   readonly builtIn = false;
 
   readonly configFields: readonly ProviderConfigField[] = [
@@ -125,9 +134,8 @@ export class ThreePayPaymentProvider implements PaymentProviderAdapter {
       label: 'API base URL',
       kind: 'url',
       required: true,
-      hint:
-        'Live: https://pay.3pa-y.com/api/v1 — 3pay’s PDF guide prints api.3pa-y.com, which ' +
-        'does not exist. Sandbox: https://sandbox.pay.3pa-y.com/api/v1.',
+      // Read by the buyer's staff: the address, and nothing about where it was learned.
+      hint: 'The address of 3pay’s API: https://pay.3pa-y.com/api/v1',
     },
     {
       name: THREEPAY_SETTINGS.apiKey,
@@ -158,7 +166,7 @@ export class ThreePayPaymentProvider implements PaymentProviderAdapter {
       kind: 'text',
       required: true,
       hint:
-        '3pay’s withdrawal fee on Tron (2.00 in its guide). When 3pay takes it out of the ' +
+        '3pay’s withdrawal fee on Tron, usually 2.00. When 3pay takes it out of the ' +
         'amount sent, payouts are grossed up by it, so the client receives exactly what they ' +
         'withdraw.',
       validate: payoutFeeIssue,
@@ -168,7 +176,7 @@ export class ThreePayPaymentProvider implements PaymentProviderAdapter {
       label: 'ERC20 payout fee (USDT)',
       kind: 'text',
       required: true,
-      hint: '3pay’s withdrawal fee on Ethereum (2.50 in its guide).',
+      hint: '3pay’s withdrawal fee on Ethereum, usually 2.50.',
       validate: payoutFeeIssue,
     },
   ];
@@ -242,6 +250,7 @@ export class ThreePayPaymentProvider implements PaymentProviderAdapter {
           'Connected. 3pay accepts the credentials from this server.',
           `Available: ${account.available} USDT; in payouts under way: ${account.inFlight ?? '0'} USDT.`,
           ...accountNotes(account),
+          limitsNote(this.client.limits()),
           secret
             ? null
             : 'The webhook secret could not be read from the account: deliveries signed with ' +
@@ -354,14 +363,19 @@ export class ThreePayPaymentProvider implements PaymentProviderAdapter {
    * A figure 3pay does not state plainly is reported absent, and a person
    * decides (`arrivedOf`).
    */
-  async checkPayment(channel: PaymentChannel, externalId: string): Promise<PaymentStatus> {
+  async checkPayment(
+    channel: PaymentChannel,
+    externalId: string,
+    urgency: PaymentCheckUrgency = 'background',
+  ): Promise<PaymentStatus> {
     depositAsset(channel);
     let body: Record<string, unknown>;
     try {
       body = (
         await this.client.get('/transaction/verify', verifyQuery(externalId), {
           reference: externalId,
-          priority: 'normal',
+          // 3pay's own delivery is news; a sweep asking again leaves room for it.
+          priority: urgency === 'event' ? 'high' : 'normal',
         })
       ).body;
     } catch (error) {
@@ -647,6 +661,32 @@ function accountNotes(account: ThreePayAccount): (string | null)[] {
         'the client — each one is held here for a person.'
       : null,
   ];
+}
+
+/**
+ * What the connection test says about 3pay's request limits: the figures its
+ * server stated to THIS server on real, authenticated calls — the limit AND
+ * the window it is counted in. 3pay's PDF guides print other limits, so this
+ * sentence is where a person reads the ones in force. A kind of call not made
+ * since the last restart has not been stated yet, and is said so.
+ */
+function limitsNote(limits: ReturnType<ThreePayClient['limits']>): string {
+  const part = (state: BudgetState, name: string) =>
+    state.stated
+      ? `${state.limit} ${name} per ${windowWords(state.windowSeconds)}`
+      : `${name} not stated yet (none since the last restart)`;
+  return (
+    'Request limits, as 3pay’s server states them to this server: ' +
+    `${part(limits.read, 'status checks')}${limits.read.stated ? ` (${limits.read.left} left now)` : ''}; ` +
+    `${part(limits.create, 'payment links')}; ${part(limits.payout, 'payout requests')}.`
+  );
+}
+
+/** A window's length in words: 900 → "15 minutes", 60 → "minute". */
+function windowWords(seconds: number): string {
+  if (seconds === 60) return 'minute';
+  if (seconds % 60 === 0) return `${seconds / 60} minutes`;
+  return `${seconds} seconds`;
 }
 
 /** A read that failed, as the core expects it: busy stays busy, the rest is a 502. */

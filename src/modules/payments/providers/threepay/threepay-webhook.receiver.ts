@@ -16,6 +16,8 @@ import type {
 const MAX_BODY_BYTES = 64 * 1024;
 /** The account's webhook secret is re-read at most this often when a signature fails. */
 const SECRET_REFRESH_MS = 10 * 60_000;
+/** After a read of the account FAILS, it is not made ahead of the other reads again for this long. */
+const URGENT_RETRY_MS = 60_000;
 
 /** Statuses that promise nothing final — the doorbell is not rung for them. */
 const NOT_FINAL = new Set(['pending', 'initiated', 'executing', 'amount confirmed', 'processing']);
@@ -113,14 +115,19 @@ export function signatureProblem(
  * replay-nonce here, unlike Rival's receiver: 3pay RETRIES a delivery with the
  * same bytes, and a nonce would refuse its own retries.
  *
- * ## Answers follow 3pay's retry policy
+ * ## Every verified delivery is answered 200
  *
- * 3pay retries anything but a 2xx, five times over about fifteen hours, and
- * asks that every VERIFIED event gets a 200. So: 413 oversize, 401 forged, 503
- * while 3pay is not set up here (an operator mid-setup — worth a retry), and
- * 200 for everything verified — except when every notice hit a movement not
- * stored yet or a record 3pay has not caught up on, which a retry can resolve.
- * The reconciler sweeps behind all of it either way.
+ * 3pay's guide (§7, "always respond 200 for verified events") and its online
+ * reference ("respond with HTTP 200 immediately") both ask for it, and it
+ * retries anything else five times over about fifteen hours. So: 413 oversize,
+ * 401 forged, 503 while 3pay is not set up here (an operator mid-setup — worth
+ * a retry), and 200 for everything verified, whatever came of it.
+ *
+ * Until 13 Oct 2026 a delivery about a record 3pay's own API had not caught up
+ * on was answered 503, to be sent again. It worked (3pay rings before its API
+ * agrees, on every paid deposit), and it was against both documents. The core
+ * now asks again itself after a few seconds (`noticeRecheckMs`), and the
+ * reconciler sweeps behind all of it either way.
  */
 @Injectable()
 export class ThreePayWebhookReceiver implements ProviderWebhookReceiver {
@@ -208,12 +215,26 @@ export class ThreePayWebhookReceiver implements ProviderWebhookReceiver {
    */
   private async webhookSecrets(configured: string | null, fresh: boolean): Promise<string[]> {
     const secrets = configured ? [configured] : [];
+    const add = (secret: string | undefined) => {
+      if (secret && !secrets.includes(secret)) secrets.push(secret);
+    };
+    const remembered = await this.client.rememberedWebhookSecret().catch(() => undefined);
+    /*
+     * A routine re-read is background work. With NO secret in hand (a fresh
+     * start), or after a failed signature (once in ten minutes at most), the
+     * read is what a delivery's verification hangs on, so it goes first. One
+     * that fails is not repeated for a minute: while the account cannot be
+     * read, a flood of forged deliveries must not spend the reads a payout or
+     * a paying client needs.
+     */
+    const urgent =
+      fresh || (!remembered && !configured && !this.client.accountFailedWithin(URGENT_RETRY_MS));
     try {
-      const account = await this.client.account(fresh ? 0 : undefined, 'low');
-      if (account.webhookSecret && !secrets.includes(account.webhookSecret)) {
-        secrets.push(account.webhookSecret);
-      }
+      const account = await this.client.account(fresh ? 0 : undefined, urgent ? 'high' : 'low');
+      add(account.webhookSecret);
     } catch (error) {
+      // The last secret read still verifies while 3pay's read allowance is spent.
+      add(remembered);
       this.logger.warn(
         `Could not read 3pay’s account for its webhook secret: ${
           error instanceof Error ? error.message : String(error)
@@ -298,10 +319,7 @@ export function noticesOf(delivery: Record<string, unknown>): ProviderNotice[] {
   return [];
 }
 
-/** 503 only when a retry can help every notice; otherwise 200, as 3pay asks. */
+/** 200 for every verified event, as 3pay asks; the outcome is for the log. */
 function answerFor(outcomes: readonly NoticeOutcome[]): WebhookAnswer {
-  const retry =
-    outcomes.length > 0 &&
-    outcomes.every((outcome) => outcome === 'unknown-reference' || outcome === 'pending');
-  return retry ? answer(503, outcomes[0]) : answer(200, outcomes[0] ?? 'ignored');
+  return answer(200, outcomes[0] ?? 'ignored');
 }

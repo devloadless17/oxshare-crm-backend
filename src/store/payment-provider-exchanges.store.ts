@@ -22,6 +22,13 @@ export interface ExchangeRecord {
   error?: string | null;
   durationMs?: number | null;
   reference?: string | null;
+  /** What the provider's answer said about its request allowance, when it said anything (0223). */
+  rate?: {
+    limit?: number;
+    remaining?: number;
+    resetSeconds?: number;
+    windowSeconds?: number;
+  } | null;
 }
 
 /**
@@ -57,6 +64,10 @@ export class PaymentProviderExchangesStore {
         error: entry.error ? entry.error.slice(0, 500) : null,
         durationMs: entry.durationMs ?? null,
         reference: entry.reference ? entry.reference.slice(0, 128) : null,
+        rateLimit: entry.rate?.limit ?? null,
+        rateRemaining: entry.rate?.remaining ?? null,
+        rateResetSeconds: entry.rate?.resetSeconds ?? null,
+        rateWindowSeconds: entry.rate?.windowSeconds ?? null,
       })
       .catch((error: unknown) =>
         this.logger.error(

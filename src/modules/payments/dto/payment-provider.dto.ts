@@ -414,6 +414,36 @@ export class ProviderExchangeDto {
   })
   reference: string | null;
 
+  @ApiProperty({
+    type: Number,
+    nullable: true,
+    description:
+      'The request limit the provider stated on this answer (its `RateLimit-Limit`), for the ' +
+      'kind of call this was. Null when it said nothing, and on a delivery.',
+  })
+  rateLimit: number | null;
+
+  @ApiProperty({
+    type: Number,
+    nullable: true,
+    description: 'How many such requests it said were left in its current window.',
+  })
+  rateRemaining: number | null;
+
+  @ApiProperty({
+    type: Number,
+    nullable: true,
+    description: 'The seconds it said remained until that window ends.',
+  })
+  rateResetSeconds: number | null;
+
+  @ApiProperty({
+    type: Number,
+    nullable: true,
+    description: 'How long that window is, in seconds (900 is fifteen minutes).',
+  })
+  rateWindowSeconds: number | null;
+
   @ApiProperty()
   occurredAt: string;
 }
