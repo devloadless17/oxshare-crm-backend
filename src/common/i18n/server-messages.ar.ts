@@ -486,6 +486,14 @@ export const SERVER_MESSAGES_AR: Readonly<Record<string, string>> = {
   'A sub-partner (level 2) sits under a main partner. Choose the main partner to place them under.':
     'الشريك الفرعي (المستوى 2) يكون تحت شريك رئيسي. اختر الشريك الرئيسي الذي سيُوضع تحته.',
   'A partner cannot be placed under themselves.': 'لا يمكن وضع الشريك تحت نفسه.',
+  // A referral moved to another partner (15 Oct 2026).
+  'A client cannot be introduced by themselves.': 'لا يمكن أن يكون العميل هو من عرّف نفسه.',
+  'This client is a partner, so who introduced them follows where they sit. Use Move under another partner instead.':
+    'هذا العميل شريك، لذا فإن من عرّفه يتبع موقعه في الشبكة. استخدم «النقل تحت شريك آخر» بدلاً من ذلك.',
+  'No partner introduced this client yet. Record the partner who introduced them instead.':
+    'لم يُسجَّل بعد أي شريك عرّف هذا العميل. سجّل الشريك الذي عرّفه بدلاً من ذلك.',
+  'This client is already with that partner.': 'هذا العميل لدى هذا الشريك بالفعل.',
+  'That partner is suspended.': 'هذا الشريك موقوف.',
   'This client is already a partner.': 'هذا العميل شريك بالفعل.',
   'That client does not exist.': 'هذا العميل غير موجود.',
   'Level {1} is not configured, and a partner on an unconfigured level earns nothing. Add it on the Commission Levels page first.':

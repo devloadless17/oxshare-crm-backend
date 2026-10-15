@@ -11,6 +11,8 @@ import { WalletService } from '../src/modules/wallet/wallet.service';
 import { WalletProvisioningService } from '../src/modules/wallet/wallet-provisioning.service';
 import { CurrenciesService } from '../src/modules/currencies/currencies.service';
 import { WalletsStore } from '../src/store/wallets.store';
+import { SignupLinksStore } from '../src/store/signup-links.store';
+import { AuditLogStore } from '../src/store/audit-log.store';
 import type { EmailService } from '../src/modules/email/email.service';
 import { scopeOf, UNRESTRICTED } from '../src/common/security/client-scope';
 import type { Actor } from '../src/common/security/actor';
@@ -81,6 +83,9 @@ beforeAll(async () => {
       new CurrenciesService(ctx.db, auditStubAs()),
       new WalletsStore(ctx.db),
     ),
+    undefined,
+    // Real, so a moved referral's inherited tags are observable.
+    new SignupLinksStore(ctx.db, new AuditLogStore(ctx.db)),
   );
 }, 120_000);
 
@@ -2121,5 +2126,110 @@ describe('making an individual a partner from the console (7 Oct 2026)', () => {
       service.appointPartner(client, { agencyId: AGENCY.id }, scopeOf([], false), scoped),
     ).rejects.toThrow(/not found|does not exist/i);
     expect(await store.findAccount(client)).toBeUndefined();
+  });
+});
+
+describe('moving a referral to another partner (15 Oct 2026)', () => {
+  /** A main partner, a sub-partner under them, a second main partner, and a referral of the first. */
+  async function setUp(prefix: string) {
+    const { top, middle, client } = await twoRungChain(prefix);
+    const other = await makeClient(`${prefix}-other@test.local`);
+    const otherAccount = await service.approve(
+      (await service.apply(other, { agencyId: AGENCY.id })).id,
+      REVIEWER,
+      UNRESTRICTED,
+    );
+    return { top, middle, client, other: otherAccount.userId };
+  }
+  const introducerOf = async (userId: number) =>
+    (await users.findById(userId))?.referredByIbUserId ?? null;
+
+  it('moves a referral to a main partner, and to a sub-partner — either level is fine', async () => {
+    const { middle, client, other, top } = await setUp('mv-ok');
+    expect(await introducerOf(client)).toBe(middle);
+
+    audit.record.mockClear();
+    await expect(service.moveReferral(client, other, UNRESTRICTED, REVIEWER)).resolves.toEqual({
+      referredByIbUserId: other,
+    });
+    expect(await introducerOf(client)).toBe(other);
+    expect(audit.record).toHaveBeenCalledWith(REVIEWER.id, 'client.referrer_move', 'user', client, {
+      before: middle,
+      after: other,
+    });
+
+    // Back under a sub-partner (level 2) — the tree's depth rules do not apply to a referral.
+    await service.moveReferral(client, middle, UNRESTRICTED, REVIEWER);
+    expect(await introducerOf(client)).toBe(middle);
+    // And to the main partner above them.
+    await service.moveReferral(client, top, UNRESTRICTED, REVIEWER);
+    expect(await introducerOf(client)).toBe(top);
+  });
+
+  it('adds the new partner’s tags and keeps the ones the client had', async () => {
+    const { client, other } = await setUp('mv-tags');
+    const { rows } = await ctx.db.execute<{ id: string }>(sql`
+      INSERT INTO client_tags (slug, label) VALUES ('mv-old', 'Old'), ('mv-new', 'New') RETURNING id
+    `);
+    const [oldTag, newTag] = rows.map((row) => row.id);
+    await ctx.db.execute(sql`
+      INSERT INTO client_tag_assignments (user_id, tag_id) VALUES (${client}, ${oldTag}), (${other}, ${newTag})
+    `);
+
+    await service.moveReferral(client, other, UNRESTRICTED, REVIEWER);
+
+    const { rows: held } = await ctx.db.execute<{ tag_id: string }>(sql`
+      SELECT tag_id FROM client_tag_assignments WHERE user_id = ${client} ORDER BY tag_id
+    `);
+    expect(held.map((row) => row.tag_id).sort()).toEqual([oldTag, newTag].sort());
+  });
+
+  it('refuses a partner, a client nobody introduced, the same partner and a suspended one', async () => {
+    const { middle, client, other } = await setUp('mv-refuse');
+
+    // A partner's introducer follows the tree; that is the parent route.
+    await expect(service.moveReferral(middle, other, UNRESTRICTED, REVIEWER)).rejects.toThrow(
+      /is a partner/,
+    );
+
+    const loner = await makeClient('mv-refuse-loner@test.local');
+    await expect(service.moveReferral(loner, other, UNRESTRICTED, REVIEWER)).rejects.toThrow(
+      /No partner introduced this client/,
+    );
+    expect(await introducerOf(loner)).toBeNull();
+
+    await expect(service.moveReferral(client, middle, UNRESTRICTED, REVIEWER)).rejects.toThrow(
+      /already with that partner/,
+    );
+    await expect(service.moveReferral(client, client, UNRESTRICTED, REVIEWER)).rejects.toThrow(
+      /introduced by themselves/,
+    );
+
+    await service.setActive(other, false, UNRESTRICTED, REVIEWER);
+    await expect(service.moveReferral(client, other, UNRESTRICTED, REVIEWER)).rejects.toThrow(
+      /suspended/,
+    );
+
+    // A client who is not a partner is not a target.
+    await expect(service.moveReferral(client, loner, UNRESTRICTED, REVIEWER)).rejects.toThrow(
+      /partner does not exist/,
+    );
+    expect(await introducerOf(client)).toBe(middle);
+  });
+
+  it('a partner outside the actor’s territory is "not found", and the referral stays put', async () => {
+    const { middle, client, other } = await setUp('mv-scope');
+    const { rows } = await ctx.db.execute<{ id: string }>(sql`
+      INSERT INTO client_tags (slug, label) VALUES ('mv-scope-mine', 'Mine') RETURNING id
+    `);
+    await ctx.db.execute(sql`
+      INSERT INTO client_tag_assignments (user_id, tag_id) VALUES (${client}, ${rows[0].id})
+    `);
+    const scope = scopeOf([rows[0].id], false);
+
+    await expect(service.moveReferral(client, other, scope, REVIEWER)).rejects.toThrow(
+      /not.*(found|exist)/i,
+    );
+    expect(await introducerOf(client)).toBe(middle);
   });
 });

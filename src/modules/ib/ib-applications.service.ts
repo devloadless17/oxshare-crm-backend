@@ -25,6 +25,7 @@ import {
 } from '../../store/ib.store';
 import { sortKey, sortOrder } from '../../common/sorting';
 import { UsersStore } from '../../store/users.store';
+import { SignupLinksStore } from '../../store/signup-links.store';
 import { IbLevelsService } from './ib-levels.service';
 import { ClientVisibilityService } from '../../common/security/client-visibility.service';
 import { EmailService } from '../email/email.service';
@@ -168,6 +169,12 @@ export class IbApplicationsService {
      * without it a refusal simply stores the reviewer's own Arabic, if any.
      */
     @Optional() private readonly reasons?: RejectionReasonsStore,
+    /*
+     * A partner's tags, copied onto a referral moved to them (0195). APPENDED
+     * LAST and optional, for the positional construction above: without it a
+     * move changes the introducer and attaches nothing.
+     */
+    @Optional() private readonly signupLinks?: SignupLinksStore,
   ) {}
 
   // ── the client's side ──────────────────────────────────────────────────────
@@ -1641,6 +1648,75 @@ export class IbApplicationsService {
       agencyAfter: updated.agencyId,
     });
     return updated;
+  }
+
+  /**
+   * Move a REFERRAL — a client a partner introduced — to another partner
+   * (owner, 15 Oct 2026). The twin of `reassignParent` for a client who is not
+   * a partner themselves.
+   *
+   * Any active partner may take them, main or sub-partner: a referral is a
+   * leaf, so the two-level rule and the cycle check have nothing to say here.
+   * The commission walk reads `referred_by_ib_user_id` per deal, so this pays
+   * the new partner from the next accrual and restates nothing credited.
+   *
+   * The new partner's tags come with the client, as at sign-up (0195). Only
+   * ADDS tags; the old partner's stay, because a system-attached tag cannot be
+   * told apart from one an administrator's link gave them.
+   */
+  async moveReferral(
+    userId: number,
+    ibUserId: number,
+    scope: ClientScope,
+    actor: Actor,
+  ): Promise<{ referredByIbUserId: number }> {
+    await this.visibility.assertVisible(userId, scope);
+    // The new partner is scoped too: out of territory reads as "does not exist".
+    await this.visibility.assertVisible(ibUserId, scope);
+    if (ibUserId === userId) {
+      throw new ValidationError('A client cannot be introduced by themselves.');
+    }
+
+    // Under the tree lock, so an appointment cannot make them a partner between
+    // the check below and the write.
+    const before = await this.db.transaction(async (tx) => {
+      await this.ib.lockTree(tx);
+      if (await this.ib.findAccount(userId, tx)) {
+        throw new ValidationError(
+          'This client is a partner, so who introduced them follows where they sit. Use ' +
+            'Move under another partner instead.',
+        );
+      }
+      const client = await this.users.findById(userId, tx);
+      if (!client) throw new NotFoundError('That client does not exist.');
+      if (!client.referredByIbUserId) {
+        throw new ValidationError(
+          'No partner introduced this client yet. Record the partner who introduced them instead.',
+        );
+      }
+      if (client.referredByIbUserId === ibUserId) {
+        throw new ValidationError('This client is already with that partner.');
+      }
+      const partner = await this.ib.findAccount(ibUserId, tx);
+      if (!partner) throw new NotFoundError('That partner does not exist.');
+      if (!partner.active) throw new ValidationError('That partner is suspended.');
+
+      await this.users.update(userId, { referredByIbUserId: ibUserId }, tx);
+      if (this.signupLinks) {
+        await this.signupLinks.attach(
+          userId,
+          await this.signupLinks.partnerTagIds(ibUserId, tx),
+          tx,
+        );
+      }
+      return client.referredByIbUserId;
+    });
+
+    this.audit.record(actor.id, 'client.referrer_move', 'user', userId, {
+      before,
+      after: ibUserId,
+    });
+    return { referredByIbUserId: ibUserId };
   }
 
   /**
