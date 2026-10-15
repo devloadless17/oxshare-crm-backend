@@ -158,6 +158,7 @@ const WRITES_DETAILS: readonly string[] = [
   'client.lookup_hidden_phone',
   'client.profile_consolidated',
   'client.profile_update',
+  'client.referrer_move',
   'client.referrer_set',
   'client.suspend',
   'client_tag.assign',

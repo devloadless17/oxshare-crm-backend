@@ -505,6 +505,11 @@ describe('by-id routes answer 404 for an out-of-scope client, never 403', () => 
         s.patch(`/v1/admin/ib/partners/${id}/parent`, { parentIbUserId: null }),
     },
     {
+      signature: 'PATCH /admin/ib/referrals/:userId/partner',
+      run: (s: Session, id: number) =>
+        s.patch(`/v1/admin/ib/referrals/${id}/partner`, { ibUserId: 1 }),
+    },
+    {
       signature: 'POST /admin/ib/partners/:userId',
       run: (s: Session, id: number) =>
         s.post(`/v1/admin/ib/partners/${id}`, {

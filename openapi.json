@@ -3397,6 +3397,53 @@
         ]
       }
     },
+    "/v1/admin/ib/referrals/{userId}/partner": {
+      "patch": {
+        "description": "Re-points who introduced a referred client to any active partner, main or sub-partner. Applies from the next trade: commission reads the introducer at accrual time, so nothing already credited is restated. The new partner’s tags are added to the client. Refused for a partner (their introducer follows where they sit — use the parent route), for a client with no introducer yet, and for the partner they already have.",
+        "operationId": "AdminIbController_moveReferral",
+        "parameters": [
+          {
+            "name": "userId",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MoveReferralDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReferralMovedDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Move a referral to another partner",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
     "/v1/admin/ib/partners/{userId}/terms": {
       "patch": {
         "description": "Sub-partners only. `commissionShare` is their percentage of the product’s commission; the main partner above them takes the rest (100 − it). `rebateShare` is what their CLIENTS get back of the product’s rebate. Null = level 2’s share; an absent key is left unchanged. Applies from the next trade.",
@@ -17795,6 +17842,30 @@
         },
         "required": [
           "parentIbUserId"
+        ]
+      },
+      "MoveReferralDto": {
+        "type": "object",
+        "properties": {
+          "ibUserId": {
+            "type": "integer",
+            "description": "The partner who introduces them from now on — any active partner, level 1 or 2."
+          }
+        },
+        "required": [
+          "ibUserId"
+        ]
+      },
+      "ReferralMovedDto": {
+        "type": "object",
+        "properties": {
+          "referredByIbUserId": {
+            "type": "integer",
+            "description": "The partner who introduces them now."
+          }
+        },
+        "required": [
+          "referredByIbUserId"
         ]
       },
       "SetIbTermsDto": {

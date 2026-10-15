@@ -106,6 +106,7 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
     label: 'Referring partner recorded',
     group: 'Clients',
   },
+  { action: 'client.referrer_move', label: 'Referral moved to another partner', group: 'Clients' },
   { action: 'client.activate', label: 'Client reactivated', group: 'Clients' },
   { action: 'client_tag.assign', label: 'Tag added to client', group: 'Clients' },
   {

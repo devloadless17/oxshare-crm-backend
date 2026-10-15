@@ -47,6 +47,8 @@ import {
   IB_APPLICATION_STATUSES,
   IB_PARTNER_STATUSES,
   ReassignIbParentDto,
+  MoveReferralDto,
+  ReferralMovedDto,
   SetIbTermsDto,
   RejectIbApplicationDto,
   SetIbActiveDto,
@@ -858,6 +860,35 @@ export class AdminIbController {
       ),
       req.admin.clientScope,
     );
+  }
+
+  /**
+   * A REFERRAL moved to another partner (owner, 15 Oct 2026) — the twin of
+   * reassigning a partner's parent, for a client who is not a partner.
+   */
+  @Patch('referrals/:userId/partner')
+  @AnnouncesChange('clients')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('ib.partners.edit')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Move a referral to another partner',
+    description:
+      'Re-points who introduced a referred client to any active partner, main or sub-partner. ' +
+      'Applies from the next trade: commission reads the introducer at accrual time, so nothing ' +
+      'already credited is restated. The new partner’s tags are added to the client. ' +
+      'Refused for a partner (their introducer follows where they sit — use the parent route), ' +
+      'for a client with no introducer yet, and for the partner they already have.',
+  })
+  @ApiOkResponse({ type: ReferralMovedDto })
+  @ScopedToClients('Checks the client AND the new partner with assertVisible; out-of-scope 404s.')
+  @Audited('client.referrer_move')
+  moveReferral(
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+    @Param('userId', ClientRefPipe) userId: number,
+    @Body() dto: MoveReferralDto,
+  ): Promise<ReferralMovedDto> {
+    return this.applications.moveReferral(userId, dto.ibUserId, req.admin.clientScope, req.admin);
   }
 
   /**

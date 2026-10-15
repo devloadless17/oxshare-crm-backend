@@ -148,6 +148,7 @@ const CLIENT_ID_KEYS: ReadonlySet<string> = new Set([
 const CLIENT_CHANGE_ACTIONS: ReadonlySet<string> = new Set([
   'ib.parent_change',
   'client.referrer_set',
+  'client.referrer_move',
 ]);
 
 /** Subject types whose `subject_id` IS the client's Portal ID. */

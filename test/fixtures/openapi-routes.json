@@ -183,6 +183,7 @@
   "PATCH /v1/admin/ib/partners/{userId}/level",
   "PATCH /v1/admin/ib/partners/{userId}/parent",
   "PATCH /v1/admin/ib/partners/{userId}/terms",
+  "PATCH /v1/admin/ib/referrals/{userId}/partner",
   "PATCH /v1/admin/kyc/{userId}/approve",
   "PATCH /v1/admin/kyc/{userId}/claim",
   "PATCH /v1/admin/kyc/{userId}/personal-info",

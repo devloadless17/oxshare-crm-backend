@@ -474,6 +474,23 @@ export class ReassignIbParentDto {
   agencyId?: string;
 }
 
+/** `PATCH /admin/ib/referrals/{userId}/partner` — a referral moved to another partner. */
+export class MoveReferralDto {
+  @ApiProperty({
+    type: 'integer',
+    description: 'The partner who introduces them from now on — any active partner, level 1 or 2.',
+  })
+  @IsInt()
+  @Min(1)
+  ibUserId: number;
+}
+
+export class ReferralMovedDto {
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty({ type: 'integer', description: 'The partner who introduces them now.' })
+  referredByIbUserId: number;
+}
+
 /**
  * `PATCH /admin/ib/partners/{userId}/terms` — a SUB-PARTNER's own commission
  * and rebate (0197). `null` falls back to level 2's share; an absent key is
