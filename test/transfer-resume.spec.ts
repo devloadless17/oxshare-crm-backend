@@ -133,9 +133,22 @@ describe('the stuck-transfer alarm counts the BACKLOG, not the batch', () => {
       stuckAlert!.context.count,
       'the alarm reported the batch size rather than the backlog',
     ).toBe(25);
-    // And it still says what this particular run could reach, which is the
-    // signal that the queue is not draining.
-    expect(stuckAlert!.context.inThisBatch).toBe(10);
+    // And how many this pass announced as newly stuck — one page per transfer, not per minute.
+    expect(stuckAlert!.context.newlyStuck).toBeGreaterThan(0);
+  });
+
+  it('pages and announces even when EVERY stuck transfer is waiting out its backoff (audit R3-4)', async () => {
+    await seedStuck(3);
+    // Nothing is due: the batch is empty, which used to return before the alarm.
+    await ctx.db.execute(sql`UPDATE transfers SET resume_after = now() + interval '30 minutes'`);
+    const { sched, notifications, execute } = scheduler();
+
+    await sched.resume();
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(notifications.notifyAdmins).toHaveBeenCalledTimes(3);
+    const stuckAlert = alertsRaised().find((a) => a.kind === ALERT_KINDS.TRANSFER_STUCK);
+    expect(stuckAlert?.context.count).toBe(3);
   });
 
   it('raises NOTHING when the pending transfers are young', async () => {

@@ -134,9 +134,12 @@ export class TransferResumeScheduler {
         .orderBy(transfers.createdAt)
         .limit(BATCH);
 
-      if (stuck.length === 0) return;
-
-      this.logger.log(`Resuming ${stuck.length} pending transfer(s)`);
+      /*
+       * NO early return when nothing is due (audit R3-4, 16 Oct 2026): every pending transfer
+       * may be waiting out its backoff, and that is exactly when they are stuck — the
+       * announcement below has its own query and must run on every pass.
+       */
+      if (stuck.length > 0) this.logger.log(`Resuming ${stuck.length} pending transfer(s)`);
 
       let settled = 0;
       for (const row of stuck) {
@@ -213,70 +216,33 @@ export class TransferResumeScheduler {
       if (settled > 0) this.logger.log(`Settled ${settled} previously pending transfer(s)`);
 
       /*
-       * ── A STUCK TRANSFER RAISES AN ALARM, IT DOES NOT JUST LOG ───────────
-       *
-       * This wrote a warning after SIX HOURS and that was the entire response.
-       * Nothing paged, nothing notified, and the client — who is watching
-       * "Processing" on their own money the whole time — was told nothing at
-       * all. A log line nobody is tailing is not a response to somebody's
-       * $1,000 being in an unknown state.
-       *
-       * It is still NOT failed, and that part was always right: the executor
-       * cannot tell "MT5 refused" from "MT5 never answered", and failing a
-       * transfer MT5 actually applied would hand back money that has already
-       * moved. The row waits for a person; what changes is that a person is
-       * now told to come.
+       * The page and the desk's task, from their OWN queries — never from this pass's batch,
+       * which leaves out every row in backoff (audit R3-4). One page per transfer, when it is
+       * first announced as stuck; the task then stays in the bell until a person handles it.
        */
-      const stale = stuck.filter((row) => Date.now() - row.createdAt.getTime() > STALE_MS);
-      /*
-       * ── THE COUNT IS A BACKLOG, NOT A BATCH TALLY ────────────────────────
-       *
-       * `stale` is filtered out of `stuck`, and `stuck` is capped at BATCH (10)
-       * and drained OLDEST FIRST. So the number that used to reach the page was
-       * never "how many transfers are stuck" — it was "how many of the ten
-       * oldest are stuck", which saturates at ten and stops moving exactly when
-       * things are getting worse.
-       *
-       * That matters because of how this loop behaves under a persistent
-       * failure: ten transfers that cannot be resumed keep their place at the
-       * front every minute, so newer pending transfers are never even examined
-       * — and therefore never counted, however long they wait. An operator
-       * reading "10 transfers pending" while fifty are is under-reacting to a
-       * number the system gave them.
-       *
-       * This codebase has met that distinction before and written it down: the
-       * commission engine returns `orphaned` and `deferred` as BACKLOGS rather
-       * than batch tallies, for the same reason and in nearly the same words.
-       * It also solved the starvation half with `commission_retry_after`, a
-       * per-row backoff that moves a failing row off the front of the queue.
-       * `transfers` has no such column — see the note below.
-       */
-      const [{ backlog } = { backlog: 0 }] = await this.db
-        .select({ backlog: count() })
-        .from(transfers)
-        .where(
-          and(
-            eq(transfers.state, 'pending'),
-            lt(transfers.createdAt, new Date(Date.now() - STALE_MS)),
-          ),
-        );
-      if (stale.length > 0) {
+      const announced = await this.announceStuck();
+      if (announced.length > 0) {
+        const [{ backlog } = { backlog: 0 }] = await this.db
+          .select({ backlog: count() })
+          .from(transfers)
+          .where(
+            and(
+              eq(transfers.state, 'pending'),
+              lt(transfers.createdAt, new Date(Date.now() - STALE_MS)),
+            ),
+          );
         raiseAlert(
           this.logger,
           ALERT_KINDS.TRANSFER_STUCK,
           'page',
-          `${backlog} transfer(s) have been pending for over ${STALE_MS / 60_000} minutes ` +
-            'and are not clearing on their own. No money has moved — the wallet is debited only ' +
-            'once MT5 confirms — but a client is watching a spinner. The usual cause is the MT5 ' +
-            `bridge having lost its session; check GET /admin/live on it. Transfers: ${stale
-              .map((row) => row.id)
-              .join(', ')}`,
-          // `count` is the whole backlog; `inThisBatch` is what this run could
-          // actually look at. When they diverge, the queue is not draining.
-          { count: backlog, inThisBatch: stale.length, oldestId: stale[0]?.id },
+          `${announced.length} transfer(s) have been pending for over ${STALE_MS / 60_000} ` +
+            `minutes (${backlog} pending in all). Whether MT5 applied them is NOT yet known: the ` +
+            'wallet is debited only once MT5 confirms, and a transfer MT5 did apply is completed ' +
+            'from its deal on the next pass. The usual cause is the MT5 bridge having lost its ' +
+            `session; check GET /admin/live on it. Transfers: ${announced.join(', ')}`,
+          { count: backlog, newlyStuck: announced.length, oldestId: announced[0] },
         );
       }
-      await this.announceStuck();
     } catch (error) {
       /*
        * The scheduler must never die. An unhandled rejection here would take the
@@ -309,7 +275,7 @@ export class TransferResumeScheduler {
    * covers the client) is asked again next minute, which is cheap and means a
    * newly granted admin is told.
    */
-  private async announceStuck(): Promise<void> {
+  private async announceStuck(): Promise<string[]> {
     const unannounced = await this.db
       .select({
         id: transfers.id,
@@ -354,6 +320,7 @@ export class TransferResumeScheduler {
         subject: { id: row.id, clientId: row.userId },
       });
     }
+    return unannounced.map((row) => row.id);
   }
 
   /**
