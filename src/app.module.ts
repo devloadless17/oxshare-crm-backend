@@ -65,6 +65,7 @@ import { AssistantModule } from './modules/assistant/assistant.module';
 import { ClientIdentityModule } from './modules/client-identity/client-identity.module';
 import { KycIdentityReviewModule } from './modules/compliance/kyc-identity-review';
 import { HealthModule } from './modules/health/health.module';
+import { ClientErrorsModule } from './modules/client-errors/client-errors.module';
 import { SecurityModule } from './common/security/security.module';
 import { CsrfGuard } from './common/security/csrf.guard';
 import { RedisThrottlerStorage } from './common/security/redis-throttler.storage';
@@ -169,6 +170,7 @@ import { PlatformDefaults } from './database/platform-defaults';
     NotificationsModule,
     SecurityModule,
     HealthModule,
+    ClientErrorsModule,
 
     // Domain modules
     IdentityModule,
