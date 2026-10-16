@@ -1772,8 +1772,10 @@ export class TransactionQueries {
            */
           tr.failure_reason,
           tr.failure_reason_ar,
-          NULL::uuid,                             -- reviewed_by
-          NULL::timestamptz,                      -- reviewed_at
+          -- WHO released it by hand (0230): the transfer's decider, named like a payment's.
+          tr.released_by_admin_id,                -- reviewed_by
+          CASE WHEN tr.released_by_admin_id IS NOT NULL
+               THEN tr.settled_at END,            -- reviewed_at
           tr.settled_at,
           NULL::varchar,                          -- provider_payment_id
           NULL::varchar,                          -- provider_payout_id

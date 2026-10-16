@@ -167,6 +167,8 @@ describe('a keyed transfer is made once', () => {
  * call, it refuses once MT5 shows the deal, and the executor completes such a transfer from the
  * deal instead of asking MT5 again.
  */
+const DESK_ADMIN = '00000000-0000-4000-8000-0000000000a1';
+
 describe("a person's release never pays twice", () => {
   const neverCalled = {
     isConfigured: true,
@@ -187,9 +189,9 @@ describe("a person's release never pays twice", () => {
     const t = await toAccount(userId, accountId, '300');
     await dealFor(t.id, String(6_000_000 + userId), '300');
 
-    await expect(transfers.fail(t.id, 'abandoned', null, { byPerson: true })).rejects.toThrow(
-      /applied/,
-    );
+    await expect(
+      transfers.fail(t.id, 'abandoned', null, { byAdminId: DESK_ADMIN }),
+    ).rejects.toThrow(/applied/);
     expect((await walletOf(userId)).onHold).toBe('300.00000000');
 
     await new TransferExecutor(ctx.db, transfers, neverCalled).execute(t.id);
@@ -202,9 +204,9 @@ describe("a person's release never pays twice", () => {
     const t = await toAccount(userId, accountId, '120');
     expect(await transfers.markBridgeCall(t.id)).toBe(true);
 
-    await expect(transfers.fail(t.id, 'abandoned', null, { byPerson: true })).rejects.toThrow(
-      /moments ago/,
-    );
+    await expect(
+      transfers.fail(t.id, 'abandoned', null, { byAdminId: DESK_ADMIN }),
+    ).rejects.toThrow(/moments ago/);
     expect((await walletOf(userId)).onHold).toBe('120.00000000');
 
     // MT5's own refusal is not a person guessing: it still releases.
@@ -215,7 +217,12 @@ describe("a person's release never pays twice", () => {
   it('a released transfer is never sent to MT5', async () => {
     const { userId, accountId } = await setup('released@test.local');
     const t = await toAccount(userId, accountId, '80');
-    await transfers.fail(t.id, 'abandoned', null, { byPerson: true });
+    await transfers.fail(t.id, 'abandoned', null, { byAdminId: DESK_ADMIN });
+    // WHO released it is on the row, written in the release's own transaction (audit R3-10).
+    const { rows } = await ctx.db.execute<{ by: string }>(
+      sql`SELECT released_by_admin_id::text AS by FROM transfers WHERE id = ${t.id}`,
+    );
+    expect(rows[0].by).toBe(DESK_ADMIN);
     expect(await transfers.markBridgeCall(t.id)).toBe(false);
     await new TransferExecutor(ctx.db, transfers, neverCalled).execute(t.id);
     expect((await transfers.findById(t.id)).state).toBe('failed');

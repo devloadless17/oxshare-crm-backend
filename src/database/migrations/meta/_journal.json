@@ -1618,6 +1618,13 @@
       "when": 1791899623401,
       "tag": "0229_transfer_bridge_call",
       "breakpoints": true
+    },
+    {
+      "idx": 232,
+      "version": "7",
+      "when": 1791899683401,
+      "tag": "0230_transfer_released_by",
+      "breakpoints": true
     }
   ]
 }
