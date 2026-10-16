@@ -249,6 +249,33 @@ describe('Mark resolved', () => {
     expect(task.resolution).toBe('resolved');
   });
 
+  it('refuses to "resolve" a provider payout that never reached the provider — it would resend itself (audit R2-1)', async () => {
+    const clientId = await client('north');
+    seq += 1;
+    const { rows: wallet } = await ctx.db.db.execute<{ id: string }>(sql`
+      INSERT INTO wallets (user_id, currency, balance) VALUES (${clientId}, 'USD', '0')
+      ON CONFLICT (user_id, currency, kind) DO UPDATE SET balance = wallets.balance
+      RETURNING id`);
+    const { rows: tx } = await ctx.db.db.execute<{ id: string }>(sql`
+      INSERT INTO transactions
+        (user_id, wallet_id, direction, amount, currency, state, provider, provider_ref,
+         destination, needs_attention, attention_reason)
+      VALUES (${clientId}, ${wallet[0].id}, 'withdrawal', '100.00000000', 'USD', 'approved',
+              'whish', ${`attn-unsent-${seq}`}, '+96170123456', true,
+              'The provider holds no payout for this withdrawal.')
+      RETURNING id`);
+    const master = await actingAs(ctx, 'admin', MASTER);
+
+    const res = await master.patch(resolvePath(tx[0].id), { note: NOTE });
+    expect(res.status).toBe(400);
+    expect(String(res.body.message)).toMatch(/never reached the provider/);
+    const [row] = await ctx.db.db
+      .select({ flag: transactions.needsAttention })
+      .from(transactions)
+      .where(eq(transactions.id, tx[0].id));
+    expect(row.flag).toBe(true);
+  });
+
   it('refuses a payment that is no longer flagged — the second click, or a colleague first', async () => {
     const { txId } = await flagged(await client('north'), 'deposit');
     const master = await actingAs(ctx, 'admin', MASTER);

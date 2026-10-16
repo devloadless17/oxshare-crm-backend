@@ -807,7 +807,7 @@ export class AdminMoneyController {
     description: 'A unique value per intended action (PLATFORM-CONVENTIONS R-5.2).',
   })
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('withdrawals.approve')
+  @RequirePermissions('withdrawals.settle')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'Resend an approved withdrawal to its payment provider',

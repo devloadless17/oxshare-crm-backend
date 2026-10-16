@@ -764,6 +764,13 @@ export class TransfersService {
     reason: string,
     /** The reason in Arabic (0179); omitted = the catalogue's Arabic of a system sentence. */
     reasonAr?: string | null,
+    /**
+     * A PERSON releasing a stuck transfer (abandon), not the executor reporting MT5's refusal.
+     * Refused, under the same row lock the executor's call stamp takes, while MT5 may still be
+     * applying it, and once MT5 shows its deal — releasing then would pay the client twice (audit
+     * R1-1, 16 Oct 2026).
+     */
+    opts: { byPerson?: boolean } = {},
   ) {
     const found = await this.findOne(transferId);
     if (!found) throw new NotFoundError('Transfer not found.');
@@ -787,6 +794,7 @@ export class TransfersService {
       if (row.state !== 'pending') {
         throw new ValidationError(`Only a pending transfer can fail; this one is ${row.state}.`);
       }
+      if (opts.byPerson) await this.assertNotOnMt5(row, tx);
       if (row.direction === 'wallet_to_account') {
         await this.wallets.release(row.userId, row.currency, toDecimal(row.amount), tx);
       }
@@ -804,6 +812,62 @@ export class TransfersService {
 
     this.logger.warn(`Transfer ${transfer.id} failed: ${reason}`);
     return this.findOne(transfer.id);
+  }
+
+  /**
+   * The MT5 deal that applied this transfer, if MT5 shows one: the executor tags every deal
+   * `CRM transfer <id>`, which MT5 cuts to 31 characters (the id's first 18), so it is matched by
+   * that prefix on the account's login and the signed amount. `mt5_deals` is fed by the bridge's
+   * push and its 5-minute sweep.
+   */
+  async appliedMt5Deal(
+    row: Pick<typeof transfers.$inferSelect, 'id' | 'tradingAccountId' | 'direction' | 'amount'>,
+    tx: Pick<Db, 'execute'> = this.db,
+  ): Promise<string | null> {
+    const signed = row.direction === 'wallet_to_account' ? row.amount : `-${row.amount}`;
+    const result = await tx.execute(sql`
+      SELECT d.mt5_deal_id AS ticket
+        FROM mt5_deals d
+        JOIN trading_accounts ta ON ta.login = d.login
+       WHERE ta.id = ${row.tradingAccountId}
+         AND d.comment = ${`CRM transfer ${row.id.slice(0, 18)}`}
+         AND d.profit = ${signed}::numeric
+       LIMIT 1`);
+    const rows = (result as unknown as { rows?: { ticket: string }[] }).rows ?? [];
+    return rows[0]?.ticket ?? null;
+  }
+
+  /** How long after asking MT5 a person may not release a transfer: the deal may still arrive. */
+  static readonly BRIDGE_SETTLE_WINDOW_MS = 10 * 60_000;
+
+  private async assertNotOnMt5(row: typeof transfers.$inferSelect, tx: Pick<Db, 'execute'>) {
+    const deal = await this.appliedMt5Deal(row, tx);
+    if (deal) {
+      throw new ValidationError(
+        `MT5 shows this transfer as applied (deal ${deal}), so its hold cannot be released. It will be completed automatically.`,
+      );
+    }
+    const since = row.bridgeCalledAt ? Date.now() - row.bridgeCalledAt.getTime() : Infinity;
+    if (since < TransfersService.BRIDGE_SETTLE_WINDOW_MS) {
+      const minutes = Math.ceil((TransfersService.BRIDGE_SETTLE_WINDOW_MS - since) / 60_000);
+      throw new ValidationError(
+        `MT5 was asked to apply this transfer moments ago and may still confirm it. Try again in ${minutes} minute(s).`,
+      );
+    }
+  }
+
+  /**
+   * The executor's claim, taken just before it asks MT5: stamps the call under the row lock and
+   * returns false if the transfer is no longer pending (a person released it) — then MT5 must NOT
+   * be asked.
+   */
+  async markBridgeCall(transferId: string): Promise<boolean> {
+    const updated = await this.db
+      .update(transfers)
+      .set({ bridgeCalledAt: new Date() })
+      .where(and(eq(transfers.id, transferId), eq(transfers.state, 'pending')))
+      .returning({ id: transfers.id });
+    return updated.length > 0;
   }
 
   /**

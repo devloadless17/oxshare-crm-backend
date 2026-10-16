@@ -41,6 +41,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  await ctx.db.execute(sql`DELETE FROM mt5_deals`);
   await ctx.db.execute(sql`DELETE FROM transfers`);
   await ctx.db.execute(sql`TRUNCATE ledger_entries CASCADE`);
   await ctx.db.execute(sql`DELETE FROM trading_accounts`);
@@ -158,5 +159,65 @@ describe('a keyed transfer is made once', () => {
     await expect(toAccount(userId, accountId, '300', 'admin-fund:key-2')).rejects.toThrow(
       /different transfer/,
     );
+  });
+});
+
+/*
+ * A PERSON's release never pays twice (audit R1-1/R1-2, 16 Oct 2026): it waits out a recent MT5
+ * call, it refuses once MT5 shows the deal, and the executor completes such a transfer from the
+ * deal instead of asking MT5 again.
+ */
+describe("a person's release never pays twice", () => {
+  const neverCalled = {
+    isConfigured: true,
+    getAccount: () => Promise.resolve({ balance: '0.00000000' }),
+    balance: () => Promise.reject(new Error('MT5 must not be asked again')),
+  } as unknown as Mt5BridgeClient;
+
+  async function dealFor(transferId: string, login: string, profit: string) {
+    await ctx.db.execute(sql`
+      INSERT INTO mt5_deals (mt5_deal_id, login, symbol, action, entry, volume, price, profit,
+                             commission, swap, comment, dealt_at)
+      VALUES (${`9${Date.now()}`}, ${login}, '', 2, 0, 0, 0, ${profit}, 0, 0,
+              ${`CRM transfer ${transferId.slice(0, 18)}`}, now())`);
+  }
+
+  it('refuses once MT5 shows the deal, and the executor settles from it', async () => {
+    const { userId, accountId } = await setup('applied@test.local');
+    const t = await toAccount(userId, accountId, '300');
+    await dealFor(t.id, String(6_000_000 + userId), '300');
+
+    await expect(transfers.fail(t.id, 'abandoned', null, { byPerson: true })).rejects.toThrow(
+      /applied/,
+    );
+    expect((await walletOf(userId)).onHold).toBe('300.00000000');
+
+    await new TransferExecutor(ctx.db, transfers, neverCalled).execute(t.id);
+    expect((await transfers.findById(t.id)).state).toBe('settled');
+    expect(await walletOf(userId)).toEqual({ balance: '700.00000000', onHold: '0.00000000' });
+  });
+
+  it('waits out a recent MT5 call; the system path is unaffected', async () => {
+    const { userId, accountId } = await setup('recent@test.local');
+    const t = await toAccount(userId, accountId, '120');
+    expect(await transfers.markBridgeCall(t.id)).toBe(true);
+
+    await expect(transfers.fail(t.id, 'abandoned', null, { byPerson: true })).rejects.toThrow(
+      /moments ago/,
+    );
+    expect((await walletOf(userId)).onHold).toBe('120.00000000');
+
+    // MT5's own refusal is not a person guessing: it still releases.
+    await transfers.fail(t.id, 'MT5 refused');
+    expect(await walletOf(userId)).toEqual({ balance: '1000.00000000', onHold: '0.00000000' });
+  });
+
+  it('a released transfer is never sent to MT5', async () => {
+    const { userId, accountId } = await setup('released@test.local');
+    const t = await toAccount(userId, accountId, '80');
+    await transfers.fail(t.id, 'abandoned', null, { byPerson: true });
+    expect(await transfers.markBridgeCall(t.id)).toBe(false);
+    await new TransferExecutor(ctx.db, transfers, neverCalled).execute(t.id);
+    expect((await transfers.findById(t.id)).state).toBe('failed');
   });
 });

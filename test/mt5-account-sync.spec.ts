@@ -236,6 +236,27 @@ describe('ingesting a pushed snapshot', () => {
     expect(after.leverage).toBe(200);
   });
 
+  it('the BATCH feed moves Live/Demo with the group, like the single path (audit R3-3)', async () => {
+    // The demo account is moved into a group the catalogue sells as LIVE, by the batch feed.
+    await ctx.db.execute(sql`
+      WITH p AS (INSERT INTO trading_products (name) VALUES ('Sync Batch Live') RETURNING id)
+      INSERT INTO trading_product_groups (product_id, environment, mt5_group, currency)
+      SELECT id, 'live', 'real\\Batch', 'USD' FROM p`);
+    await service.ingestSnapshotBatch([
+      {
+        login: OTHER_LOGIN,
+        balance: '500.00000000',
+        readAt: new Date(LATER.getTime() + 300_000).toISOString(),
+        group: 'REAL\\batch',
+      },
+    ]);
+    const [row] = await ctx.db
+      .select({ environment: tradingAccounts.environment })
+      .from(tradingAccounts)
+      .where(eq(tradingAccounts.login, OTHER_LOGIN));
+    expect(row.environment).toBe('live');
+  });
+
   it('an OMITTED group does not blank the one already known', async () => {
     /*
      * Absent means "no news", not "no group". Both fields are optional on the

@@ -1443,7 +1443,7 @@ export class AdminMoneyService {
    * reconciler resolves it. The flag clears only when the provider accepts it.
    */
   async resendPayout(id: string, actor: AuthenticatedAdmin) {
-    assertActorCan(actor, 'withdrawals.approve', 'resend a payout');
+    assertActorCan(actor, 'withdrawals.settle', 'resend a payout');
     await this.assertWithdrawalVisible(id, actor.clientScope);
     this.audit.record(actor.id, 'withdrawal.provider.submit', 'transaction', id, {
       retriedBy: 'admin',
@@ -2164,7 +2164,7 @@ export class AdminMoneyService {
     }
 
     const arabic = composeReasonArabic({ note: reason, noteAr: reasonAr });
-    const failed = await this.transfers.fail(id, reason.trim(), arabic);
+    const failed = await this.transfers.fail(id, reason.trim(), arabic, { byPerson: true });
 
     /*
      * Audited with BOTH sides and the reason, because this is the one operation
@@ -2220,6 +2220,24 @@ export class AdminMoneyService {
         'This payment no longer needs attention — somebody resolved it while you were looking.',
       );
     if (!payment.needsAttention) throw stale();
+
+    /*
+     * A provider payout that never reached the provider (its claim was cleared or refused) is
+     * still `approved`: clearing its flag re-arms the reconciler's automatic send, which pays twice
+     * when the provider's list was merely late (audit R2-1, 16 Oct 2026). A person must decide
+     * it: Resend, cancel, or finish it by hand.
+     */
+    if (
+      payment.direction === 'withdrawal' &&
+      payment.state === 'approved' &&
+      payment.providerCode !== 'manual' &&
+      !payment.providerSubmittedAt &&
+      !payment.providerPayoutId
+    ) {
+      throw new ValidationError(
+        'This payout never reached the provider, so marking it resolved would send it again automatically. Resend it, cancel it, or finish it by hand instead.',
+      );
+    }
 
     const resolved = await this.transactions.resolveAttention(id, (tx) =>
       this.audit.recordWithin(tx, actor.id, 'transaction.attention_resolve', 'transaction', id, {

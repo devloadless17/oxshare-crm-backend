@@ -2385,14 +2385,15 @@ export class WithdrawalListResponseDto {
 /**
  * One end of a movement (16 Oct 2026) — where its money came FROM or went TO. `kind` says which
  * fields apply: a wallet (number, kind, currency), a trading account (login, Live/Demo — never the
- * client's nickname for it), the payment method it crossed on, or the company's own money.
+ * client's nickname for it), `external` (outside the platform — the method it crossed on is the
+ * row's own `method`, never an end), or the company's own money.
  * The payout destination TEXT is never here: it stays in the row's masked `destination`.
  */
 @NoClientFields(
   'a description of the RECORD: wallet numbers, MT5 logins, method names and desk member names, never an attribute of the client',
 )
 export class MovementEndDto {
-  @ApiProperty({ enum: ['wallet', 'trading_account', 'method', 'company'] })
+  @ApiProperty({ enum: ['wallet', 'trading_account', 'external', 'company'] })
   kind: string;
   @ApiPropertyOptional({ type: String, nullable: true }) walletId?: string | null;
   @ApiPropertyOptional({ type: String, nullable: true, description: 'The wallet number.' })
@@ -2406,18 +2407,27 @@ export class MovementEndDto {
   @ApiPropertyOptional({
     type: String,
     nullable: true,
-    description: 'live or demo; a provider’s environment on a method end.',
+    description: 'live or demo, on a trading account end.',
   })
   environment?: string | null;
-  @ApiPropertyOptional({ type: String, nullable: true, description: 'The method’s desk label.' })
-  methodLabel?: string | null;
-  @ApiPropertyOptional({ type: String, nullable: true }) providerCode?: string | null;
-  @ApiPropertyOptional({
+}
+
+/** The rail a payment crossed the platform on — its own attribute, never an end (16 Oct 2026). */
+@NoClientFields(
+  'a description of the RECORD: wallet numbers, MT5 logins, method names and desk member names, never an attribute of the client',
+)
+export class MovementMethodDto {
+  @ApiProperty({ type: String, nullable: true, description: 'The method’s desk label.' })
+  label: string | null;
+  @ApiProperty({ type: String, nullable: true }) providerCode: string | null;
+  @ApiProperty({ type: String, nullable: true, description: 'The channel, e.g. a network.' })
+  channelCode: string | null;
+  @ApiProperty({
     type: String,
     nullable: true,
-    description: 'The channel, e.g. a network.',
+    description: 'The provider environment (e.g. sandbox); live is the norm.',
   })
-  channelCode?: string | null;
+  environment: string | null;
 }
 
 /** A desk member, by NAME only — never an email (`admins.view` keeps the directory narrow). */
@@ -2678,6 +2688,13 @@ export class AdminTransactionRowDto {
   @NotClientField('the nested end, whose own shape carries no client attribute')
   @ApiProperty({ type: MovementEndDto })
   to: MovementEndDto;
+  @NotClientField('the nested method, whose own shape carries no client attribute')
+  @ApiProperty({
+    type: MovementMethodDto,
+    nullable: true,
+    description: 'The rail a PAYMENT crossed on; null for a transfer or a commission move.',
+  })
+  method: MovementMethodDto | null;
   @NotClientField('the nested onward move, whose own shape carries no client attribute')
   @ApiProperty({ type: MovementOnwardDto, nullable: true })
   onward: MovementOnwardDto | null;

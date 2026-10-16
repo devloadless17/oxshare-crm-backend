@@ -1,7 +1,7 @@
 import { ResourceChangedPublisher } from '../../../common/realtime/resource-changed';
 import { Inject, Injectable, Logger, type OnModuleDestroy } from '@nestjs/common';
 import Decimal from 'decimal.js';
-import { and, eq, inArray, isNotNull, lt, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, lt, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../../database/database.module';
 import type { Db } from '../../../database/db';
 import { transactions } from '../../../database/schema';
@@ -390,7 +390,13 @@ export class HostedDepositsService implements OnModuleDestroy {
       return { state: tx.state };
     }
     const policy: DepositCreditPolicy = channel.creditPolicy ?? 'exact';
-    const lateCredit = tx.state === 'failure' && policy === 'received';
+    /*
+     * A deposit a PERSON closed ("Close without credit", which records them in `reviewed_by`) is
+     * final: the money may have been returned, and the provider can still report the original
+     * payment as confirmed. It is never credited late (audit R2-4, 16 Oct 2026); a person reopens
+     * it if they must.
+     */
+    const lateCredit = tx.state === 'failure' && policy === 'received' && !tx.reviewedBy;
     if (tx.state !== 'pending' && !lateCredit) return { state: tx.state };
     /*
      * A person's: a flagged deposit is finished from the desk (`creditReceived`,
@@ -929,6 +935,8 @@ export class HostedDepositsService implements OnModuleDestroy {
           eq(transactions.direction, 'deposit'),
           eq(transactions.state, 'failure'),
           eq(transactions.needsAttention, false),
+          // A person's close is final — see `settleRow` (audit R2-4).
+          isNull(transactions.reviewedBy),
           isNotNull(transactions.providerPaymentId),
           sql`${transactions.settledAt} > now() - make_interval(secs => ${LATE_WATCH_MS / 1000})`,
           sql`coalesce(${transactions.providerCheckedAt}, 'epoch') < now() - greatest(

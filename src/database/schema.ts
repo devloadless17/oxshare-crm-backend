@@ -4058,6 +4058,8 @@ export const transfers = pgTable(
     resumeAttempts: integer('resume_attempts').notNull().default(0),
     resumeAfter: timestamp('resume_after', { withTimezone: true }),
     resumeLastError: text('resume_last_error'),
+    /** When the executor last asked MT5 to move this transfer's money (0229) — abandon waits it out. */
+    bridgeCalledAt: timestamp('bridge_called_at', { withTimezone: true }),
     /**
      * The caller's idempotency reference, when the transfer is one leg of a
      * keyed operation (an admin's deposit-to-account: credit, then this). NULL
