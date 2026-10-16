@@ -15235,7 +15235,7 @@
     },
     "/v1/admin/wallets/export": {
       "get": {
-        "description": "The same `userId` and `currency` filters as GET /admin/wallets, over every matching row rather than one page. Balances are the exact decimal strings the column holds — never rounded, never locale-formatted (§6.1). Client scope applies exactly as it does to the list.",
+        "description": "The same `userId`, `currency` and `q` filters as GET /admin/wallets, over every matching row rather than one page. Balances are the exact decimal strings the column holds — never rounded, never locale-formatted (§6.1). Client scope applies exactly as it does to the list.",
         "operationId": "AdminHoldingsController_exportWallets",
         "parameters": [
           {
@@ -15263,6 +15263,15 @@
             "required": false,
             "in": "query",
             "description": "Exact match on the wallet code.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "required": false,
+            "in": "query",
+            "description": "The same search as the list: the owner’s Portal ID, email, name or phone.",
             "schema": {
               "type": "string"
             }

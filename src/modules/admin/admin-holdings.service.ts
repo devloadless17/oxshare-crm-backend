@@ -646,7 +646,7 @@ export class AdminHoldingsService {
    * `AdminExportService.transactionBatch` already threads one.
    */
   async walletExportBatch(
-    query: { userId?: number; currency?: string },
+    query: { userId?: number; currency?: string; q?: string },
     actor: AuthenticatedAdmin,
     offset: number,
     limit: number,
