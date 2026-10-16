@@ -337,6 +337,15 @@ export class Mt5AccountSyncService {
              balance_synced_at = v.read_at,
              credit            = COALESCE(v.credit, t.credit),
              mt5_group         = COALESCE(v.grp, t.mt5_group),
+             -- The environment FOLLOWS the group, exactly as the single-snapshot path above:
+             -- a group move left it stale here (audit R3-3, 16 Oct 2026). A group the
+             -- catalogue does not sell keeps the existing value.
+             environment       = COALESCE(
+                                   (SELECT g.environment FROM trading_product_groups g
+                                     WHERE v.grp IS NOT NULL
+                                       AND lower(g.mt5_group) = lower(v.grp)
+                                     LIMIT 1),
+                                   t.environment),
              leverage          = COALESCE(v.lev, t.leverage),
              updated_at        = now()
         FROM (VALUES ${values}) AS v(login, balance, read_at, credit, grp, lev)
