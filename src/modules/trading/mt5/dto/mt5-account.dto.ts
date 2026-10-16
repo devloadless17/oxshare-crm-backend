@@ -319,6 +319,13 @@ export class TradingAccountProductDto {
   @ApiProperty({ format: 'uuid', nullable: true, type: String }) productId: string | null;
 }
 
+/** An account after Archive or Restore (0225). */
+@NoClientFields('a trading account record addressed by id; the client is named elsewhere')
+export class TradingAccountArchiveDto {
+  @ApiProperty({ format: 'uuid' }) id: string;
+  @ApiProperty({ type: String, format: 'date-time', nullable: true }) archivedAt: Date | null;
+}
+
 /** The account as the link recorded it. */
 @NoClientFields('a trading account record addressed by id; the client is named elsewhere')
 export class LinkedMt5AccountDto {

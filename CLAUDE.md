@@ -1300,6 +1300,112 @@ they live here:
   and `test/kyc-form-customizable.spec.ts` (details taken off, optional selfie, a tightened form, a
   moved question).
 
+## Every movement records where its money came from (0226–0227, 16 Oct 2026)
+
+The buyer's accountants asked, for every transfer, which account it moved money from and to and where
+the money on a trading account came from. The data did not exist, so it is now WRITTEN by the code
+that moves the money. It is never inferred later.
+
+- **`transfers.origin`** is `client | deposit | desk_credit | desk_wallet | desk_debit`. The
+  `transfer_origin` enum also holds `commission`, which only the money union's commission arm
+  states; a CHECK refuses it on the table.
+  - `source_transaction_id` is the deposit (or the desk's manual credit) whose money the transfer
+    moves.
+  - `requested_by_admin_id` (no FK, like `reviewed_by`) and `desk_reason(_ar)` are set on `desk_*`
+    rows only.
+- **`TransfersService.request` takes a required `provenance: TransferProvenance`**
+  (`modules/payments/transfer-provenance.ts`, discriminated). A new caller that forgets it is a
+  compile error. Each of the five callers states its own: the portal (`client`), the deposit chain
+  (`deposit`, keyed `deposit:<txId>`), and the desk's fund, move and debit.
+- **The database holds the same rules a second time:**
+  - CHECKs tie origin ↔ direction ↔ source, and an admin or reason appears only on `desk_*`.
+  - `UNIQUE (source_transaction_id)`: one deposit funds at most one transfer. A racing or retried
+    chain converges on it (one hold), and `request()` treats either unique index as a replay.
+  - The BEFORE INSERT trigger `transfers_provenance_fill`:
+    - works out the origin from `request_ref` for a writer that states none (the previous build after
+      a rollback, raw SQL);
+    - **refuses a source that is not THIS client's settled deposit of the same currency and amount**
+      (`transfers_source_matches`), so a wrong link can never print another client's deposit on
+      a row.
+  - Provenance is frozen (`transfers_provenance_immutable`, which fires only when a value changes).
+    State updates are unaffected.
+- **Payments (0227):**
+  - `approved_by_admin_id` / `approved_at` keep who APPROVED (approval wrote `reviewed_by`, which
+    the settler then overwrote, hiding the two-person control). `reviewed_by` stays the final
+    decider.
+  - The desk's own credit and debit (`creditDeposit` / `debitAdjustment`) take a required
+    `desk: DeskAttribution` and write `reviewed_by`, `reviewed_at` and `desk_reason(_ar)` in their
+    one transaction.
+  - All of these are frozen once set.
+- **Backfill.** History was classified exactly:
+  - desk origins from the ref prefixes;
+  - a desk credit's source by its shared idempotency key;
+  - who and why from the audit rows;
+  - deposit chains matched one-to-one within settled −2 min…+10 min, with ambiguous rows left
+    `client`.
+
+  Both migrations are re-runnable, which is how `test/transfer-provenance.spec.ts` proves the
+  backfill.
+
+- **A client never sees which admin decided**: the client `TransactionDto`, `transactionView` and
+  `listForUser` carry no `reviewedBy`. Admin shapes do.
+- A raw fixture INSERT into `transfers` must state `origin`, or the trigger derives `client`.
+  Teardowns delete transfers BEFORE transactions (`source_transaction_id` is RESTRICT).
+
+### Every movement EXPLAINS itself: one read model (0228, 16 Oct 2026)
+
+Every admin money surface (Financial, Transfers, the client profile, the record panel, both
+CSVs) reads the SAME server fields. No screen classifies, guesses or adds money.
+
+- **Accounting type is the server's** (`modules/payments/movement-type.ts`, a pure module plus
+  its SQL twins `unionTypeCase` / `totalsTypeCase`):
+
+  | type                   | rule                                                     | effect   |
+  | ---------------------- | -------------------------------------------------------- | -------- |
+  | `deposit`              | payment, deposit, route ≠ `manual:adjustment`            | in       |
+  | `desk_credit`          | payment, deposit, route = `manual:adjustment` (the desk) | in       |
+  | `withdrawal`           | payment, withdrawal, route ≠ `manual:adjustment`         | out      |
+  | `desk_debit`           | payment, withdrawal, route = `manual:adjustment`         | out      |
+  | `transfer_to_account`  | transfer, wallet side "withdrawal"                       | internal |
+  | `transfer_to_wallet`   | transfer, wallet side "deposit"                          | internal |
+  | `commission_to_wallet` | commission_transfer                                      | internal |
+
+  Route is a key of the stored totals, so type counts and type totals come from the totals,
+  never a live scan. Buckets: `settled` (success) · `inProgress` (pending/approved) ·
+  `notCompleted` (rejected/failure). **Never summed across currencies or across buckets.**
+
+- **The summary** (`summarizeForAdmin`) returns `accounting[]` (currency × type × bucket),
+  `effects[]` (currency × effect × bucket) and `net[]` (settled in − out per currency,
+  decimal.js), beside the old `rows`/`directions`.
+- **Details are added AFTER the page is cut** (`MOVEMENT_DETAIL_COLUMNS` / `_JOINS`: key and
+  unique-index lookups only; admins by NAME, never email). Every row carries `type`, `effect`,
+  `from`/`to` (`wallet` with its number · `trading_account` with login and Live/Demo · `method` ·
+  `company`), `origin`, `source` (the deposit a transfer moves), `onward` (a deposit aimed at an
+  account: its transfer, or "never moved", which used to be one log line), `requestedBy`,
+  `approvedBy`, `decidedBy`, `deskReason(Ar)` and the provider money fields. The payout
+  destination stays only in the masked `destination`. `movementDetails()`
+  (`queries/movement-details.ts`) is the one mapper, and the CSV appends `MOVEMENT_DETAIL_CSV`
+  from it, so list = export = panel. The original CSV columns are unchanged and in order.
+- **The union** appends `transfer_origin` as the LAST column of every arm, with identical types
+  in every arm, or Merge Append is lost.
+- **Filters:** `?type=` (CSV), `?origin=` (CSV), `?account=` (an MT5 login or account id).
+  `accountFilterId` resolves the account first; an unknown, malformed-but-plausible or
+  out-of-scope account becomes the NIL uuid, which returns an ordinary empty page, so the filter
+  never reveals that an account exists. Only an impossible format is a 400. Origin and account
+  read live rows (capped facets).
+- **`?id=` on one record** adds `ledger`, its postings, but only for a `ledger.view` holder.
+- **Transfers** (`GET /admin/transfers`, `/summary`, `/export`, in `admin-financial.controller.ts`)
+  answer to `transfers.view` OR `transactions.view`. **The kinds are forced in the SERVICE and
+  the export batch** (`transfer` + `commission_transfer`): that is the only wall between the two
+  keys, so a `transfers.view`-only reader can never read a payment by `?id=` or `?type=`. The
+  export is audited `export.transfers`. The stuck count (`transfers/stuck`) accepts either key.
+- **0228** creates `transfers.view` (opens `/transfers`; `transfers.abandon` requires it) and
+  carries it, by the 0207 pattern, to every role, admin, pending invite and API key holding
+  `transactions.view` or `transfers.abandon`, and to nobody else.
+- Pinned by `test/movement-totals.spec.ts` (totals = live recount, per type and effect) and
+  `test/admin-transactions-http.spec.ts` (the Transfers wall, scope, masking, the export audit,
+  ledger postings).
+
 ## The client's identity RECORD (0151–0153, 0171; 28–30 Sep 2026)
 
 The owner's direction: a client's documents, selfie and verification belong to the CLIENT; KYC is

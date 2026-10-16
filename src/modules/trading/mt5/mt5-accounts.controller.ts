@@ -11,6 +11,7 @@ import {
   Mt5AccountLookupDto,
   Mt5AccountsSyncRunDto,
   SetTradingAccountProductDto,
+  TradingAccountArchiveDto,
   TradingAccountProductDto,
 } from './dto/mt5-account.dto';
 import {
@@ -216,6 +217,51 @@ export class Mt5AccountsController {
     @Body() dto: SetTradingAccountProductDto,
   ) {
     return this.accounts.setAccountProduct(id, dto.productId, req.admin);
+  }
+
+  /**
+   * Hide a client's account from them, or show it again (0225). Nothing changes
+   * on MT5. A live account is archived only while MT5 says it holds nothing.
+   */
+  @Post('trading-accounts/:id/archive')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('trading.archive')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: "Archive a client's trading account",
+    description:
+      'The client no longer sees it in the portal and no money moves to or from it. The MT5 ' +
+      'login is untouched. Refused while MT5 reports a balance, credit, equity or open position.',
+  })
+  @ScopedToClients(
+    'Mt5AccountsService.setAccountArchived reads the account under clientScopePredicate; ' +
+      'an account of a client outside the territory is 404.',
+  )
+  @Audited('trading.account_archive')
+  @ApiOkResponse({ type: TradingAccountArchiveDto })
+  archive(
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ) {
+    return this.accounts.setAccountArchived(id, true, req.admin);
+  }
+
+  @Post('trading-accounts/:id/unarchive')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('trading.archive')
+  @ApiCookieAuth()
+  @ApiOperation({ summary: 'Show an archived trading account to its client again' })
+  @ScopedToClients(
+    'Mt5AccountsService.setAccountArchived reads the account under clientScopePredicate; ' +
+      'an account of a client outside the territory is 404.',
+  )
+  @Audited('trading.account_unarchive')
+  @ApiOkResponse({ type: TradingAccountArchiveDto })
+  unarchive(
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+    @Param('id', new ParseUUIDPipe()) id: string,
+  ) {
+    return this.accounts.setAccountArchived(id, false, req.admin);
   }
 
   /*

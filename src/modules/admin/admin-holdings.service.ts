@@ -241,6 +241,9 @@ export const DEFAULT_TRADING_ACCOUNT_SORT: TradingAccountSortKey = 'createdAt';
 /** `?client=` on the trading-account list and export: owned, or found on MT5 unowned (0166). */
 export const TRADING_ACCOUNT_CLIENT_FILTERS = ['assigned', 'unassigned'] as const;
 
+/** `exclude`: what the client sees; `only`: what the desk archived (0225). */
+export const TRADING_ACCOUNT_ARCHIVED_FILTERS = ['exclude', 'only'] as const;
+
 /** The one sort key whose column is nullable, so the query must pin its nulls. */
 const NULLABLE_TRADING_ACCOUNT_SORT: TradingAccountSortKey = 'login';
 
@@ -745,6 +748,7 @@ export class AdminHoldingsService {
       referredBy?: number;
       environment?: string;
       status?: string;
+      archived?: string;
       client?: string;
       q?: string;
       page?: string;
@@ -805,6 +809,7 @@ export class AdminHoldingsService {
       // database error; R-2.5 wants a 400 naming what IS allowed.
       environment: enumQuery(query.environment, tradingEnvironmentEnum.enumValues, 'environment'),
       status: enumQuery(query.status, tradingAccountStatusEnum.enumValues, 'status'),
+      archived: enumQuery(query.archived, TRADING_ACCOUNT_ARCHIVED_FILTERS, 'archived'),
       client: enumQuery(query.client, TRADING_ACCOUNT_CLIENT_FILTERS, 'client'),
       page: Math.max(1, Number.parseInt(query.page ?? '1', 10) || 1),
       limit: pageSize(query.limit),
@@ -842,6 +847,7 @@ export class AdminHoldingsService {
     referredBy?: number;
     environment?: string;
     status?: string;
+    archived?: string;
     client?: string;
     q?: string;
     scope?: ClientScope;
@@ -889,6 +895,9 @@ export class AdminHoldingsService {
     if (filter.status) {
       conditions.push(eq(tradingAccounts.status, filter.status as 'active'));
     }
+    // Archived = hidden from the client by the desk (0225). Absent: both.
+    if (filter.archived === 'exclude') conditions.push(isNull(tradingAccounts.archivedAt));
+    if (filter.archived === 'only') conditions.push(isNotNull(tradingAccounts.archivedAt));
 
     const scoped = clientScopePredicate(filter.scope ?? UNRESTRICTED, tradingAccounts.userId);
     if (scoped) {
@@ -912,6 +921,7 @@ export class AdminHoldingsService {
     q?: string;
     environment?: string;
     status?: string;
+    archived?: string;
     client?: string;
     page: number;
     limit: number;
@@ -990,6 +1000,7 @@ export class AdminHoldingsService {
         balanceSyncedAt: tradingAccounts.balanceSyncedAt,
         leverage: tradingAccounts.leverage,
         status: tradingAccounts.status,
+        archivedAt: tradingAccounts.archivedAt,
         createdAt: tradingAccounts.createdAt,
         updatedAt: tradingAccounts.updatedAt,
         userId: tradingAccounts.userId,
@@ -1047,6 +1058,7 @@ export class AdminHoldingsService {
         balanceSyncedAt: r.balanceSyncedAt,
         leverage: r.leverage,
         status: r.status,
+        archivedAt: r.archivedAt,
         createdAt: r.createdAt,
         updatedAt: r.updatedAt,
         // NULL: no client owns it yet — the screen offers "Assign" (0166).

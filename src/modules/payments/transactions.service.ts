@@ -107,6 +107,12 @@ export class TransactionsService implements TransactionLedgerPort {
   summaryForUser(...a: Parameters<TransactionQueries['summaryForUser']>) {
     return this.queries.summaryForUser(...a);
   }
+  ledgerPostingsFor(...a: Parameters<TransactionQueries['ledgerPostingsFor']>) {
+    return this.queries.ledgerPostingsFor(...a);
+  }
+  accountFilterId(...a: Parameters<TransactionQueries['accountFilterId']>) {
+    return this.queries.accountFilterId(...a);
+  }
   listAllForAdmin(...a: Parameters<TransactionQueries['listAllForAdmin']>) {
     return this.queries.listAllForAdmin(...a);
   }

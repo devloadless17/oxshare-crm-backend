@@ -193,6 +193,7 @@ describe('a transfer out is never refused on a stale mirror', () => {
       direction: 'account_to_wallet',
       amount: '150',
       currency: 'USD',
+      provenance: { origin: 'client' },
     });
 
     expect(getAccount).toHaveBeenCalledWith('7710001');
@@ -211,6 +212,7 @@ describe('a transfer out is never refused on a stale mirror', () => {
         direction: 'account_to_wallet',
         amount: '150',
         currency: 'USD',
+        provenance: { origin: 'client' },
       }),
     ).rejects.toThrow(/holds 120\.00000000 USD/);
   });
@@ -227,6 +229,7 @@ describe('a transfer out is never refused on a stale mirror', () => {
         direction: 'account_to_wallet',
         amount: '150',
         currency: 'USD',
+        provenance: { origin: 'client' },
       }),
     ).rejects.toThrow(/holds 100\.00000000 USD/);
   });
@@ -242,6 +245,7 @@ describe('a transfer out is never refused on a stale mirror', () => {
       direction: 'account_to_wallet',
       amount: '150',
       currency: 'USD',
+      provenance: { origin: 'client' },
     });
 
     expect(getAccount).not.toHaveBeenCalled();

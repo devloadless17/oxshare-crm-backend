@@ -1522,6 +1522,31 @@
         ]
       }
     },
+    "/v1/client-errors": {
+      "post": {
+        "operationId": "ClientErrorsController_report",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClientErrorReportDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": ""
+          }
+        },
+        "summary": "Report a crash a frontend's error screen caught",
+        "tags": [
+          "client-errors"
+        ]
+      }
+    },
     "/v1/platforms": {
       "get": {
         "description": "Always returns every platform the portal offers, in presentation order. A platform the operator has not configured has a null url — which the portal renders as \"not available yet\" rather than as a link that goes nowhere.",
@@ -6258,6 +6283,19 @@
             }
           },
           {
+            "name": "archived",
+            "required": false,
+            "in": "query",
+            "description": "`exclude`: the accounts the client sees; `only`: the ones archived (hidden from the client). Absent: both.",
+            "schema": {
+              "enum": [
+                "exclude",
+                "only"
+              ],
+              "type": "string"
+            }
+          },
+          {
             "name": "client",
             "required": false,
             "in": "query",
@@ -6537,6 +6575,79 @@
           }
         ],
         "summary": "Set a trading account's product",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/trading-accounts/{id}/archive": {
+      "post": {
+        "description": "The client no longer sees it in the portal and no money moves to or from it. The MT5 login is untouched. Refused while MT5 reports a balance, credit, equity or open position.",
+        "operationId": "Mt5AccountsController_archive",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TradingAccountArchiveDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Archive a client's trading account",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/trading-accounts/{id}/unarchive": {
+      "post": {
+        "operationId": "Mt5AccountsController_unarchive",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TradingAccountArchiveDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Show an archived trading account to its client again",
         "tags": [
           "admin"
         ]
@@ -13489,6 +13600,33 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "type",
+            "required": false,
+            "in": "query",
+            "description": "Accounting types, comma-separated: deposit, desk_credit, withdrawal, desk_debit, transfer_to_account, transfer_to_wallet, commission_to_wallet. A desk credit or debit is the desk’s own money (route manual:adjustment), never a client’s deposit or withdrawal; the three transfer types never leave the platform.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "origin",
+            "required": false,
+            "in": "query",
+            "description": "Where a transfer’s money came from, comma-separated: client, deposit, desk_credit, desk_wallet, desk_debit, commission. Only transfers carry one, so a payment never matches.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "account",
+            "required": false,
+            "in": "query",
+            "description": "One trading account’s transfers: its id or its MT5 login. An unknown or out-of-territory account answers an empty list, never \"not found\".",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -13646,6 +13784,33 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "type",
+            "required": false,
+            "in": "query",
+            "description": "Accounting types, comma-separated: deposit, desk_credit, withdrawal, desk_debit, transfer_to_account, transfer_to_wallet, commission_to_wallet. A desk credit or debit is the desk’s own money (route manual:adjustment), never a client’s deposit or withdrawal; the three transfer types never leave the platform.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "origin",
+            "required": false,
+            "in": "query",
+            "description": "Where a transfer’s money came from, comma-separated: client, deposit, desk_credit, desk_wallet, desk_debit, commission. Only transfers carry one, so a payment never matches.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "account",
+            "required": false,
+            "in": "query",
+            "description": "One trading account’s transfers: its id or its MT5 login. An unknown or out-of-territory account answers an empty list, never \"not found\".",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -13666,6 +13831,480 @@
           }
         ],
         "summary": "Totals over the filtered movement list, grouped per currency (amounts are strings)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/transfers/export": {
+      "get": {
+        "description": "The same filters as GET /admin/transfers, over every matching row. Amounts are the exact decimal strings the ledger holds (§6.1).",
+        "operationId": "AdminFinancialController_exportTransfers",
+        "parameters": [
+          {
+            "name": "format",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "csv"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "direction",
+            "required": false,
+            "in": "query",
+            "description": "Wallet-side, like Financial: withdrawal = wallet → trading account, deposit = into the wallet (from an account, or commission → main wallet).",
+            "schema": {
+              "enum": [
+                "deposit",
+                "withdrawal"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "pending",
+                "approved",
+                "success",
+                "failure",
+                "rejected"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "userId",
+            "required": false,
+            "in": "query",
+            "description": "Narrow to one client.",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "currency",
+            "required": false,
+            "in": "query",
+            "description": "A currency code.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "required": false,
+            "in": "query",
+            "description": "A Portal ID (exact) or free text over the client’s email, name or phone.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Earliest created time, inclusive: a date-time with offset (2026-10-06T00:00:00+03:00) or a date (YYYY-MM-DD, a UTC day).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "origin",
+            "required": false,
+            "in": "query",
+            "description": "Where the money came from, comma-separated: client, deposit, desk_credit, desk_wallet, desk_debit, commission",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "account",
+            "required": false,
+            "in": "query",
+            "description": "One trading account: its id or MT5 login. Unknown or out of territory is an empty list.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "required": false,
+            "in": "query",
+            "description": "One transfer by its uuid.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A CSV file. `Content-Disposition` names it `transfers-<YYYY-MM-DD>.csv`.",
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Export the filtered transfers as CSV",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/transfers/summary": {
+      "get": {
+        "operationId": "AdminFinancialController_transfersSummary",
+        "parameters": [
+          {
+            "name": "direction",
+            "required": false,
+            "in": "query",
+            "description": "Wallet-side, like Financial: withdrawal = wallet → trading account, deposit = into the wallet (from an account, or commission → main wallet).",
+            "schema": {
+              "enum": [
+                "deposit",
+                "withdrawal"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "pending",
+                "approved",
+                "success",
+                "failure",
+                "rejected"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "userId",
+            "required": false,
+            "in": "query",
+            "description": "Narrow to one client.",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "currency",
+            "required": false,
+            "in": "query",
+            "description": "A currency code.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "required": false,
+            "in": "query",
+            "description": "A Portal ID (exact) or free text over the client’s email, name or phone.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Earliest created time, inclusive: a date-time with offset (2026-10-06T00:00:00+03:00) or a date (YYYY-MM-DD, a UTC day).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "origin",
+            "required": false,
+            "in": "query",
+            "description": "Where the money came from, comma-separated: client, deposit, desk_credit, desk_wallet, desk_debit, commission",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "account",
+            "required": false,
+            "in": "query",
+            "description": "One trading account: its id or MT5 login. Unknown or out of territory is an empty list.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "required": false,
+            "in": "query",
+            "description": "One transfer by its uuid.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminTransactionsSummaryDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Totals over the filtered transfers, per currency, type and settlement (strings)",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/transfers": {
+      "get": {
+        "operationId": "AdminFinancialController_listTransfers",
+        "parameters": [
+          {
+            "name": "direction",
+            "required": false,
+            "in": "query",
+            "description": "Wallet-side, like Financial: withdrawal = wallet → trading account, deposit = into the wallet (from an account, or commission → main wallet).",
+            "schema": {
+              "enum": [
+                "deposit",
+                "withdrawal"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "pending",
+                "approved",
+                "success",
+                "failure",
+                "rejected"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "userId",
+            "required": false,
+            "in": "query",
+            "description": "Narrow to one client.",
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "currency",
+            "required": false,
+            "in": "query",
+            "description": "A currency code.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "required": false,
+            "in": "query",
+            "description": "A Portal ID (exact) or free text over the client’s email, name or phone.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Earliest created time, inclusive: a date-time with offset (2026-10-06T00:00:00+03:00) or a date (YYYY-MM-DD, a UTC day).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "origin",
+            "required": false,
+            "in": "query",
+            "description": "Where the money came from, comma-separated: client, deposit, desk_credit, desk_wallet, desk_debit, commission",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "account",
+            "required": false,
+            "in": "query",
+            "description": "One trading account: its id or MT5 login. Unknown or out of territory is an empty list.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "id",
+            "required": false,
+            "in": "query",
+            "description": "One transfer by its uuid.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page",
+            "required": false,
+            "in": "query",
+            "description": "Legacy offset paging. Prefer cursor.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "cursor",
+            "required": false,
+            "in": "query",
+            "description": "Opaque keyset cursor (R-2.4).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dir",
+            "required": false,
+            "in": "query",
+            "description": "prev: the page before ?cursor. last: the final page (no cursor).",
+            "schema": {
+              "enum": [
+                "next",
+                "prev",
+                "last"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "sort",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "createdAt",
+                "amount",
+                "state"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "order",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "asc",
+                "desc"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "name": "facet",
+            "required": false,
+            "in": "query",
+            "schema": {
+              "enum": [
+                "direction",
+                "type"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminTransactionListResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Every transfer between a client’s own accounts, with where its money came from (amounts are strings)",
         "tags": [
           "admin"
         ]
@@ -14026,6 +14665,41 @@
             "required": false,
             "in": "query",
             "description": "One movement by its row uuid (a deposit’s transaction, a transfer’s transfer) — where a notification deep link lands. AND-ed with every other filter and the reader's scope, so a record outside it answers an empty result. No state is implied.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "type",
+            "required": false,
+            "in": "query",
+            "description": "Accounting types, comma-separated: deposit, desk_credit, withdrawal, desk_debit, transfer_to_account, transfer_to_wallet, commission_to_wallet. A desk credit or debit is the desk’s own money (route manual:adjustment), never a client’s deposit or withdrawal; the three transfer types never leave the platform.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "origin",
+            "required": false,
+            "in": "query",
+            "description": "Where a transfer’s money came from, comma-separated: client, deposit, desk_credit, desk_wallet, desk_debit, commission. Only transfers carry one, so a payment never matches.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "account",
+            "required": false,
+            "in": "query",
+            "description": "One trading account’s transfers: its id or its MT5 login. An unknown or out-of-territory account answers an empty list, never \"not found\".",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "facet",
+            "required": true,
+            "in": "query",
             "schema": {
               "type": "string"
             }
@@ -16168,6 +16842,54 @@
           "peerTrusted",
           "forwardedChain",
           "proxyHeaders"
+        ]
+      },
+      "ClientErrorReportDto": {
+        "type": "object",
+        "properties": {
+          "app": {
+            "type": "string",
+            "enum": [
+              "portal",
+              "admin"
+            ]
+          },
+          "boundary": {
+            "type": "string",
+            "enum": [
+              "page",
+              "global"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "description": "The error name, e.g. TypeError or ChunkLoadError."
+          },
+          "message": {
+            "type": "string"
+          },
+          "stack": {
+            "type": "string"
+          },
+          "digest": {
+            "type": "string",
+            "description": "Next's digest, present only for a server-rendered error."
+          },
+          "path": {
+            "type": "string",
+            "description": "The page PATH only. The query string is never sent."
+          },
+          "build": {
+            "type": "string",
+            "description": "The build the tab is running (its deployment id)."
+          }
+        },
+        "required": [
+          "app",
+          "boundary",
+          "name",
+          "message",
+          "path"
         ]
       },
       "PlatformLinkDto": {
@@ -18771,10 +19493,6 @@
           "rejectionReasonAr": {
             "type": "string",
             "description": "Arabic for `rejectionReason`: written with the decision, else the configured reason’s, else the system sentence’s. Absent when there is none (show the English)."
-          },
-          "reviewedBy": {
-            "type": "string",
-            "nullable": true
           },
           "reviewedAt": {
             "format": "date-time",
@@ -22161,6 +22879,24 @@
         "required": [
           "id",
           "productId"
+        ]
+      },
+      "TradingAccountArchiveDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "archivedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          }
+        },
+        "required": [
+          "id",
+          "archivedAt"
         ]
       },
       "Mt5GroupCommissionTierDto": {
@@ -28083,6 +28819,23 @@
             "type": "string",
             "nullable": true
           },
+          "approvedByAdminId": {
+            "type": "string",
+            "nullable": true
+          },
+          "approvedAt": {
+            "format": "date-time",
+            "type": "string",
+            "nullable": true
+          },
+          "deskReason": {
+            "type": "string",
+            "nullable": true
+          },
+          "deskReasonAr": {
+            "type": "string",
+            "nullable": true
+          },
           "providerPaymentId": {
             "type": "string",
             "nullable": true,
@@ -28868,6 +29621,114 @@
           "total"
         ]
       },
+      "AccountingLineDto": {
+        "type": "object",
+        "properties": {
+          "currency": {
+            "type": "string",
+            "example": "USD"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "deposit",
+              "desk_credit",
+              "withdrawal",
+              "desk_debit",
+              "transfer_to_account",
+              "transfer_to_wallet",
+              "commission_to_wallet"
+            ]
+          },
+          "effect": {
+            "type": "string",
+            "enum": [
+              "in",
+              "out",
+              "internal"
+            ]
+          },
+          "bucket": {
+            "type": "string",
+            "enum": [
+              "settled",
+              "inProgress",
+              "notCompleted"
+            ]
+          },
+          "count": {
+            "type": "number"
+          },
+          "total": {
+            "type": "string",
+            "example": "12400.00000000"
+          }
+        },
+        "required": [
+          "currency",
+          "type",
+          "effect",
+          "bucket",
+          "count",
+          "total"
+        ]
+      },
+      "AccountingEffectDto": {
+        "type": "object",
+        "properties": {
+          "currency": {
+            "type": "string",
+            "example": "USD"
+          },
+          "effect": {
+            "type": "string",
+            "enum": [
+              "in",
+              "out",
+              "internal"
+            ]
+          },
+          "bucket": {
+            "type": "string",
+            "enum": [
+              "settled",
+              "inProgress",
+              "notCompleted"
+            ]
+          },
+          "count": {
+            "type": "number"
+          },
+          "total": {
+            "type": "string",
+            "example": "12400.00000000"
+          }
+        },
+        "required": [
+          "currency",
+          "effect",
+          "bucket",
+          "count",
+          "total"
+        ]
+      },
+      "AccountingNetDto": {
+        "type": "object",
+        "properties": {
+          "currency": {
+            "type": "string",
+            "example": "USD"
+          },
+          "total": {
+            "type": "string",
+            "example": "-310.50000000"
+          }
+        },
+        "required": [
+          "currency",
+          "total"
+        ]
+      },
       "AdminTransactionsSummaryDto": {
         "type": "object",
         "properties": {
@@ -28882,11 +29743,205 @@
             "items": {
               "$ref": "#/components/schemas/AdminTransactionDirectionTotalDto"
             }
+          },
+          "accounting": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountingLineDto"
+            }
+          },
+          "effects": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountingEffectDto"
+            }
+          },
+          "net": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountingNetDto"
+            }
           }
         },
         "required": [
           "rows",
-          "directions"
+          "directions",
+          "accounting",
+          "effects",
+          "net"
+        ]
+      },
+      "MovementEndDto": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "wallet",
+              "trading_account",
+              "method",
+              "company"
+            ]
+          },
+          "walletId": {
+            "type": "string",
+            "nullable": true
+          },
+          "walletNumber": {
+            "type": "string",
+            "nullable": true,
+            "description": "The wallet number."
+          },
+          "walletKind": {
+            "type": "string",
+            "nullable": true,
+            "description": "main or commission."
+          },
+          "currency": {
+            "type": "string",
+            "nullable": true
+          },
+          "tradingAccountId": {
+            "type": "string",
+            "nullable": true
+          },
+          "login": {
+            "type": "string",
+            "nullable": true,
+            "description": "The MT5 login."
+          },
+          "environment": {
+            "type": "string",
+            "nullable": true,
+            "description": "live or demo; a provider’s environment on a method end."
+          },
+          "methodLabel": {
+            "type": "string",
+            "nullable": true,
+            "description": "The method’s desk label."
+          },
+          "providerCode": {
+            "type": "string",
+            "nullable": true
+          },
+          "channelCode": {
+            "type": "string",
+            "nullable": true,
+            "description": "The channel, e.g. a network."
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "MovementOnwardDto": {
+        "type": "object",
+        "properties": {
+          "transferId": {
+            "type": "string",
+            "nullable": true
+          },
+          "state": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "pending",
+              "success",
+              "failure"
+            ]
+          },
+          "account": {
+            "$ref": "#/components/schemas/MovementEndDto"
+          }
+        },
+        "required": [
+          "transferId",
+          "state",
+          "account"
+        ]
+      },
+      "MovementSourceDto": {
+        "type": "object",
+        "properties": {
+          "transactionId": {
+            "type": "string"
+          },
+          "methodLabel": {
+            "type": "string",
+            "nullable": true
+          },
+          "reference": {
+            "type": "string",
+            "nullable": true,
+            "description": "The deposit’s reference (OX-…); null for the desk’s own credit."
+          },
+          "settledAt": {
+            "format": "date-time",
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": [
+          "transactionId",
+          "methodLabel",
+          "reference",
+          "settledAt"
+        ]
+      },
+      "MovementAdminDto": {
+        "type": "object",
+        "properties": {
+          "adminId": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "nullable": true
+          },
+          "at": {
+            "format": "date-time",
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": [
+          "adminId",
+          "name"
+        ]
+      },
+      "MovementLedgerPostingDto": {
+        "type": "object",
+        "properties": {
+          "walletId": {
+            "type": "string"
+          },
+          "walletNumber": {
+            "type": "string",
+            "nullable": true
+          },
+          "entryType": {
+            "type": "string"
+          },
+          "amount": {
+            "type": "string",
+            "example": "-50.00000000"
+          },
+          "balanceAfter": {
+            "type": "string",
+            "example": "450.00000000"
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [
+          "walletId",
+          "walletNumber",
+          "entryType",
+          "amount",
+          "balanceAfter",
+          "createdAt"
         ]
       },
       "AdminTransactionRowDto": {
@@ -29018,6 +30073,151 @@
           },
           "user": {
             "$ref": "#/components/schemas/WithdrawalUserDto"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "deposit",
+              "desk_credit",
+              "withdrawal",
+              "desk_debit",
+              "transfer_to_account",
+              "transfer_to_wallet",
+              "commission_to_wallet"
+            ]
+          },
+          "effect": {
+            "type": "string",
+            "enum": [
+              "in",
+              "out",
+              "internal"
+            ]
+          },
+          "from": {
+            "$ref": "#/components/schemas/MovementEndDto"
+          },
+          "to": {
+            "$ref": "#/components/schemas/MovementEndDto"
+          },
+          "onward": {
+            "nullable": true,
+            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/MovementOnwardDto"
+              }
+            ]
+          },
+          "origin": {
+            "type": "string",
+            "nullable": true,
+            "enum": [
+              "client",
+              "deposit",
+              "desk_credit",
+              "desk_wallet",
+              "desk_debit",
+              "commission",
+              null
+            ]
+          },
+          "source": {
+            "nullable": true,
+            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/MovementSourceDto"
+              }
+            ]
+          },
+          "requestedBy": {
+            "nullable": true,
+            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/MovementAdminDto"
+              }
+            ]
+          },
+          "approvedBy": {
+            "nullable": true,
+            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/MovementAdminDto"
+              }
+            ]
+          },
+          "decidedBy": {
+            "nullable": true,
+            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/MovementAdminDto"
+              }
+            ]
+          },
+          "deskReason": {
+            "type": "string",
+            "nullable": true
+          },
+          "deskReasonAr": {
+            "type": "string",
+            "nullable": true
+          },
+          "providerEnvironment": {
+            "type": "string",
+            "nullable": true
+          },
+          "providerFee": {
+            "type": "string",
+            "nullable": true,
+            "description": "The provider’s fee (a string)."
+          },
+          "providerNetAmount": {
+            "type": "string",
+            "nullable": true,
+            "description": "What the provider delivered."
+          },
+          "providerRequestAmount": {
+            "type": "string",
+            "nullable": true,
+            "description": "What the provider was asked."
+          },
+          "providerAmountReceived": {
+            "type": "string",
+            "nullable": true,
+            "description": "What actually arrived."
+          },
+          "requestedAmount": {
+            "type": "string",
+            "nullable": true,
+            "description": "What the client asked for."
+          },
+          "providerStatus": {
+            "type": "string",
+            "nullable": true
+          },
+          "providerPayoutId": {
+            "type": "string",
+            "nullable": true
+          },
+          "providerSubmittedAt": {
+            "format": "date-time",
+            "type": "string",
+            "nullable": true
+          },
+          "providerCheckedAt": {
+            "format": "date-time",
+            "type": "string",
+            "nullable": true
+          },
+          "ledger": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MovementLedgerPostingDto"
+            }
           }
         },
         "required": [
@@ -29032,7 +30232,29 @@
           "walletId",
           "createdAt",
           "needsAttention",
-          "user"
+          "user",
+          "type",
+          "effect",
+          "from",
+          "to",
+          "onward",
+          "origin",
+          "source",
+          "requestedBy",
+          "approvedBy",
+          "decidedBy",
+          "deskReason",
+          "deskReasonAr",
+          "providerEnvironment",
+          "providerFee",
+          "providerNetAmount",
+          "providerRequestAmount",
+          "providerAmountReceived",
+          "requestedAmount",
+          "providerStatus",
+          "providerPayoutId",
+          "providerSubmittedAt",
+          "providerCheckedAt"
         ]
       },
       "AdminTransactionListResponseDto": {
@@ -29078,6 +30300,18 @@
               "type": "number"
             }
           },
+          "typeCounts": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "number"
+            }
+          },
+          "groupCounts": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "number"
+            }
+          },
           "countsCapped": {
             "type": "array",
             "items": {
@@ -29099,6 +30333,8 @@
           "limit",
           "counts",
           "directionCounts",
+          "typeCounts",
+          "groupCounts",
           "countsCapped"
         ]
       },
@@ -29668,6 +30904,11 @@
               "closed"
             ]
           },
+          "archivedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
           "createdAt": {
             "format": "date-time",
             "type": "string"
@@ -29701,6 +30942,7 @@
           "currency",
           "balance",
           "status",
+          "archivedAt",
           "createdAt",
           "updatedAt",
           "user"

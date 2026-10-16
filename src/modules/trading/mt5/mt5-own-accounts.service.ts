@@ -1,7 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import Decimal from 'decimal.js';
-import { and, eq, ne, sql } from 'drizzle-orm';
+import { and, eq, isNull, ne, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../../database/database.module';
 import type { Db } from '../../../database/db';
 import {
@@ -426,7 +426,13 @@ export class Mt5OwnAccountsService {
       })
       .from(tradingAccounts)
       .innerJoin(users, eq(users.id, tradingAccounts.userId))
-      .where(and(eq(tradingAccounts.id, accountId), eq(tradingAccounts.userId, userId)))
+      .where(
+        and(
+          eq(tradingAccounts.id, accountId),
+          eq(tradingAccounts.userId, userId),
+          isNull(tradingAccounts.archivedAt),
+        ),
+      )
       .limit(1);
 
     if (!row) throw new NotFoundError('Trading account not found.');

@@ -122,6 +122,7 @@ describe('wallet → account', () => {
       direction: 'wallet_to_account',
       amount: '250',
       currency: 'USD',
+      provenance: { origin: 'client' },
     });
 
     /*
@@ -143,6 +144,7 @@ describe('wallet → account', () => {
       direction: 'wallet_to_account',
       amount: '250',
       currency: 'USD',
+      provenance: { origin: 'client' },
     });
 
     // What the executor passes: MT5's own reading, taken after it moved the
@@ -171,6 +173,7 @@ describe('wallet → account', () => {
         direction: 'wallet_to_account',
         amount: '200',
         currency: 'USD',
+        provenance: { origin: 'client' },
       }),
     ).rejects.toThrow(/insufficient available/i);
   });
@@ -184,6 +187,7 @@ describe('wallet → account', () => {
       direction: 'wallet_to_account',
       amount: '250',
       currency: 'USD',
+      provenance: { origin: 'client' },
     });
 
     await transfers.fail(transfer.id, 'Bridge refused');
@@ -208,6 +212,7 @@ describe('account → wallet', () => {
       direction: 'account_to_wallet',
       amount: '200',
       currency: 'USD',
+      provenance: { origin: 'client' },
     });
 
     /*
@@ -227,6 +232,7 @@ describe('account → wallet', () => {
       direction: 'account_to_wallet',
       amount: '200',
       currency: 'USD',
+      provenance: { origin: 'client' },
     });
 
     await transfers.settle(transfer.id, '300.00000000', new Date());
@@ -260,6 +266,7 @@ describe('account → wallet', () => {
         direction: 'account_to_wallet',
         amount: '200',
         currency: 'USD',
+        provenance: { origin: 'client' },
       }),
     ).rejects.toThrow(/holds 50\.00000000 USD/i);
 
@@ -286,6 +293,7 @@ describe('account → wallet', () => {
       direction: 'account_to_wallet',
       amount: '40',
       currency: 'USD',
+      provenance: { origin: 'client' },
     });
 
     await expect(
@@ -295,6 +303,7 @@ describe('account → wallet', () => {
         direction: 'account_to_wallet',
         amount: '40',
         currency: 'USD',
+        provenance: { origin: 'client' },
       }),
     ).rejects.toThrow(/already committed to a transfer in progress/i);
   });
@@ -322,6 +331,7 @@ describe('account → wallet', () => {
       direction: 'account_to_wallet',
       amount: '40',
       currency: 'USD',
+      provenance: { origin: 'client' },
     });
 
     const raised: Record<string, unknown>[] = [];
@@ -369,6 +379,7 @@ describe('what a transfer refuses', () => {
         direction: 'wallet_to_account',
         amount: '10',
         currency: 'USD',
+        provenance: { origin: 'client' },
       }),
     ).rejects.toThrow(/demo/i);
   });
@@ -384,6 +395,7 @@ describe('what a transfer refuses', () => {
         direction: 'wallet_to_account',
         amount: '10',
         currency: 'USD',
+        provenance: { origin: 'client' },
       }),
     ).rejects.toThrow(/suspended/i);
   });
@@ -404,6 +416,7 @@ describe('what a transfer refuses', () => {
         direction: 'wallet_to_account',
         amount: '10',
         currency: 'USD',
+        provenance: { origin: 'client' },
       }),
     ).rejects.toThrow(/do not convert/i);
   });
@@ -425,6 +438,7 @@ describe('what a transfer refuses', () => {
         direction: 'wallet_to_account',
         amount: '10',
         currency: 'USD',
+        provenance: { origin: 'client' },
       }),
     ).rejects.toThrow(/not found/i);
   });
@@ -445,6 +459,7 @@ describe('what a transfer refuses', () => {
         direction: 'wallet_to_account',
         amount: '10',
         currency: 'USD',
+        provenance: { origin: 'client' },
       }),
     ).rejects.toThrow(/verified/i);
   });
@@ -460,6 +475,7 @@ describe('settling twice', () => {
       direction: 'wallet_to_account',
       amount: '100',
       currency: 'USD',
+      provenance: { origin: 'client' },
     });
 
     await transfers.settle(transfer.id, '100.00000000', new Date());
@@ -499,6 +515,7 @@ describe('the transfer mirror respects read times', () => {
       direction: 'wallet_to_account',
       amount: '100',
       currency: 'USD',
+      provenance: { origin: 'client' },
     });
 
     // The sweep already wrote a NEWER reading than the one this settle carries.
@@ -530,6 +547,7 @@ describe('the transfer mirror respects read times', () => {
       direction: 'wallet_to_account',
       amount: '100',
       currency: 'USD',
+      provenance: { origin: 'client' },
     });
 
     const olderSweep = new Date(Date.now() - 120_000);
@@ -560,6 +578,7 @@ describe('the transfer mirror respects read times', () => {
       direction: 'wallet_to_account',
       amount: '100',
       currency: 'USD',
+      provenance: { origin: 'client' },
     });
 
     const readAt = new Date(Date.now() - 90_000);
@@ -626,6 +645,7 @@ describe('a zero transfer is refused by the AMOUNT, not by the ledger', () => {
         direction: 'wallet_to_account',
         amount: '0',
         currency: 'USD',
+        provenance: { origin: 'client' },
       }),
     ).rejects.toThrow(/Transfer amount must be positive/);
   });
@@ -640,6 +660,7 @@ describe('a zero transfer is refused by the AMOUNT, not by the ledger', () => {
         direction: 'wallet_to_account',
         amount: '-50',
         currency: 'USD',
+        provenance: { origin: 'client' },
       }),
     ).rejects.toThrow(/Transfer amount must be positive/);
   });
@@ -691,6 +712,7 @@ describe('the resume precondition: one transfer, one idempotency key', () => {
       direction: 'wallet_to_account',
       amount: '250',
       currency: 'USD',
+      provenance: { origin: 'client' },
     });
 
     // Twice, exactly as the scheduler does when the first attempt is left
@@ -757,6 +779,7 @@ describe('an unanswered MT5 call: who keeps the hold', () => {
       direction: 'wallet_to_account',
       amount: '250',
       currency: 'USD',
+      provenance: { origin: 'client' },
     });
     await new TransferExecutor(ctx.db, transfers, bridgeThrowing(error)).execute(transfer.id);
     const after = await transfers.findById(transfer.id);
@@ -835,6 +858,7 @@ describe('the client is told a transfer completed only when it WAITED (0140)', (
       direction: 'wallet_to_account',
       amount: '50',
       currency: 'USD',
+      provenance: { origin: 'client' },
     });
   }
 
@@ -896,6 +920,7 @@ describe("a product group's minimum deposit, on transfers", () => {
       direction: 'wallet_to_account',
       amount,
       currency: 'USD',
+      provenance: { origin: 'client' },
     });
 
   /*

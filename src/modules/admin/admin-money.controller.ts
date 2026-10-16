@@ -1044,7 +1044,8 @@ export class AdminMoneyController {
    */
   @Get('transfers/stuck')
   @UseGuards(PermissionsGuard)
-  @RequirePermissions('transactions.view')
+  // Either key: the Transfers page carries the same banner as Financial (16 Oct 2026).
+  @RequirePermissions('transfers.view', 'transactions.view')
   @ApiCookieAuth()
   @ApiOperation({
     summary: 'How many transfers have been pending long enough to need a person',

@@ -109,6 +109,7 @@ const NO_JSON_BODY: readonly string[] = [
   'GET /admin/tags/export',
   'GET /admin/trading-accounts/export',
   'GET /admin/transactions/export',
+  'GET /admin/transfers/export',
   'GET /admin/wallets/export',
   'GET /admin/withdrawals/export',
   'GET /uploads/admin-avatars/:file',

@@ -2137,6 +2137,26 @@ export const transferDirectionEnum = pgEnum('transfer_direction', [
  */
 export const transferStateEnum = pgEnum('transfer_state', ['pending', 'settled', 'failed']);
 
+/**
+ * WHERE a transfer's money came from — written by the code that moves it (0226).
+ *
+ *   client       the client moved it (portal or API)
+ *   deposit      a deposit the client sent straight to the account; `source_transaction_id` is it
+ *   desk_credit  the desk added NEW money (a manual credit, then this); the credit is the source
+ *   desk_wallet  the desk moved the client's own wallet money onto the account
+ *   desk_debit   the desk took money off the account into the wallet
+ *   commission   NOT a transfers value (a CHECK refuses it): the money union's commission arm
+ *                states it, so one origin filter covers every kind of transfer
+ */
+export const transferOriginEnum = pgEnum('transfer_origin', [
+  'client',
+  'deposit',
+  'desk_credit',
+  'desk_wallet',
+  'desk_debit',
+  'commission',
+]);
+
 export const tradingEnvironmentEnum = pgEnum('trading_environment', ['live', 'demo']);
 
 /*
@@ -3351,6 +3371,16 @@ export const tradingAccounts = pgTable(
     tier: varchar('tier', { length: 50 }),
     leverage: integer('leverage'),
     status: tradingAccountStatusEnum('status').notNull().default('active'),
+    /*
+     * Hidden from the CLIENT by an administrator (0225), nothing else: the MT5
+     * login is untouched. Every client read leaves an archived account out and
+     * no money moves to or from one; it still counts toward a product's cap.
+     * Archiving is refused while MT5 says the account holds anything.
+     */
+    archivedAt: timestamp('archived_at', { withTimezone: true }),
+    archivedByAdminId: uuid('archived_by_admin_id').references(() => admins.id, {
+      onDelete: 'set null',
+    }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -3836,6 +3866,19 @@ export const transactions = pgTable(
     /** The admin who decided. No FK — same reasoning as `audit_log.actor_id`. */
     reviewedBy: uuid('reviewed_by'),
     reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
+    /**
+     * Who APPROVED it, kept apart from `reviewedBy` (0227): a withdrawal approved by one admin and
+     * settled by another kept only the settler, so the two-person control was invisible. Written
+     * once by the approval; frozen after (trigger). No FK, as `reviewedBy`.
+     */
+    approvedByAdminId: uuid('approved_by_admin_id'),
+    approvedAt: timestamp('approved_at', { withTimezone: true }),
+    /**
+     * Why the desk made this by hand — its own credit or debit (`manual_admin`, 0227), as typed.
+     * Null on every other payment. Frozen once written.
+     */
+    deskReason: text('desk_reason'),
+    deskReasonAr: text('desk_reason_ar'),
     settledAt: timestamp('settled_at', { withTimezone: true }),
     /**
      * The payment provider's OPERATOR note on a refused payout (Rival's
@@ -4023,16 +4066,46 @@ export const transfers = pgTable(
      * (0184) — each transfer has its own uuid, so the bridge's key cannot.
      */
     requestRef: text('request_ref'),
+    /*
+     * ── PROVENANCE (0226) — written once by the code that moves the money ───
+     *
+     * NOT NULL with no default: every writer states it (`TransfersService.request`
+     * requires a `TransferProvenance`), and a writer that does not — the previous
+     * build, raw SQL — gets it worked out from `request_ref` by the BEFORE INSERT
+     * trigger, which also REFUSES a source that is not this client's settled deposit
+     * of the same currency and amount. Frozen after (trigger).
+     */
+    origin: transferOriginEnum('origin').notNull(),
+    /** The deposit, or the desk's credit, whose money this moves. UNIQUE: one funds one. */
+    sourceTransactionId: uuid('source_transaction_id').references(() => transactions.id, {
+      onDelete: 'restrict',
+    }),
+    /** The desk member, on a desk_* transfer. No FK — `transactions.reviewed_by`'s reasoning. */
+    requestedByAdminId: uuid('requested_by_admin_id'),
+    /** Why, as the desk typed it (desk_* only). */
+    deskReason: text('desk_reason'),
+    deskReasonAr: text('desk_reason_ar'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     uniqueIndex('transfers_request_ref_uq')
       .on(t.requestRef)
       .where(sql`${t.requestRef} IS NOT NULL`),
+    uniqueIndex('transfers_source_transaction_uq')
+      .on(t.sourceTransactionId)
+      .where(sql`${t.sourceTransactionId} IS NOT NULL`),
     index('transfers_user_idx').on(t.userId),
     index('transfers_state_idx').on(t.state),
     index('transfers_created_at_idx').on(t.createdAt),
-    index('transfers_trading_account_idx').on(t.tradingAccountId),
+    // One account's transfers, newest first; also serves the trading_accounts FK check (0226).
+    index('transfers_trading_account_created_at_id_idx').on(
+      t.tradingAccountId,
+      t.createdAt.desc(),
+      t.id.desc(),
+    ),
+    index('transfers_origin_created_at_id_idx')
+      .on(t.origin, t.createdAt.desc(), t.id.desc())
+      .where(sql`${t.origin} <> 'client'`),
     index('transfers_wallet_idx').on(t.walletId), // FK lookups by wallet (0181)
   ],
 );

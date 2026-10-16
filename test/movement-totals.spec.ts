@@ -91,12 +91,19 @@ const tx = (
 async function read(filter: AdminMovementsFilter) {
   const summary = await service.summarizeForAdmin(filter);
   const list = await service.listAllForAdmin({ ...filter, limit: 1 });
+  // The accounting tabs' facet (16 Oct 2026), from the totals or the rows alike.
+  const typed = await service.listAllForAdmin({ ...filter, limit: 1, facet: 'type' });
   const key = (r: object) => JSON.stringify(r);
   return {
     rows: [...summary.rows].sort((a, b) => key(a).localeCompare(key(b))),
     directions: [...summary.directions].sort((a, b) => key(a).localeCompare(key(b))),
+    accounting: [...summary.accounting].sort((a, b) => key(a).localeCompare(key(b))),
+    net: [...summary.net].sort((a, b) => key(a).localeCompare(key(b))),
+    effects: [...summary.effects].sort((a, b) => key(a).localeCompare(key(b))),
     counts: list.counts,
     directionCounts: list.directionCounts,
+    typeCounts: typed.typeCounts,
+    groupCounts: typed.groupCounts,
     total: list.total,
   };
 }
@@ -106,7 +113,12 @@ const FILTERS: Omit<AdminMovementsFilter, 'scope'>[] = [
   { currency: 'EUR' },
   { direction: 'withdrawal' },
   { state: 'pending' },
-  { kind: 'transfer' },
+  { kinds: ['transfer'] },
+  { kinds: ['transfer', 'commission_transfer'] },
+  // The accounting types (16 Oct 2026): the desk's own money told apart by its route.
+  { types: ['desk_credit'] },
+  { types: ['deposit', 'withdrawal'] },
+  { types: ['transfer_to_account', 'commission_to_wallet'], state: 'success' },
   // The desk's own rows, kept by route since 0221.
   { deskDecided: true },
   { deskDecided: true, state: 'pending' },
@@ -206,6 +218,20 @@ beforeAll(async () => {
   await tx(b.id, b.usd, 'withdrawal', 'approved', 'USD', '75.00000000', '2026-03-02T11:00:00Z');
   await tx(b.id, b.usd, 'withdrawal', 'rejected', 'USD', '12.34000000', '2026-03-03T09:00:00Z');
   await tx(b.id, b.eur, 'deposit', 'failure', 'EUR', '9.99000000', '2026-03-01T08:00:00Z');
+  // The desk's own credit and debit — Manual's adjustment route, the accounting types' split.
+  for (const [direction, amount] of [
+    ['deposit', '40.00000000'],
+    ['withdrawal', '15.50000000'],
+  ]) {
+    await q(
+      `INSERT INTO transactions (user_id, wallet_id, direction, state, currency, amount, provider,
+                                 provider_ref, provider_code, channel_code, provider_environment,
+                                 created_at)
+       VALUES ($1, $2, $3, 'success', 'USD', $4, 'manual_admin', $5, 'manual', 'adjustment', 'live',
+               '2026-03-02T14:00:00Z')`,
+      [a.id, a.usd, direction, amount, `desk-${direction}`],
+    );
+  }
 
   const [account] = await q(
     `INSERT INTO trading_accounts (user_id, login, currency) VALUES ($1, '99100001', 'USD') RETURNING id`,
@@ -270,7 +296,9 @@ describe('the stored totals (0165) are the live rows, counted', () => {
         scope,
         currency: 'USD',
         direction: 'deposit',
-        kind: 'payment',
+        kinds: ['payment'],
+        // A CLIENT's deposits: the desk's own 40.00 credit is another accounting line.
+        types: ['deposit'],
       });
       const success = summary.rows.find((r) => r.state === 'success');
       expect(success?.total).toBe('100.12345679');
@@ -330,10 +358,11 @@ describe('the stored totals (0165) are the live rows, counted', () => {
     // The invariant itself: each tag's kept total is its members' client totals.
     const drift = await q(`
       SELECT * FROM (
-        SELECT g.tag_id, c.kind, c.direction, c.state, c.currency, sum(c.count) AS count, sum(c.total) AS total
+        SELECT g.tag_id, c.kind, c.direction, c.state, c.currency, c.route,
+               sum(c.count) AS count, sum(c.total) AS total
           FROM movement_tag_members g JOIN movement_client_totals c ON c.user_id = g.user_id
-         GROUP BY 1, 2, 3, 4, 5
-      ) want FULL JOIN movement_tag_totals got USING (tag_id, kind, direction, state, currency)
+         GROUP BY 1, 2, 3, 4, 5, 6
+      ) want FULL JOIN movement_tag_totals got USING (tag_id, kind, direction, state, currency, route)
        WHERE want.count IS DISTINCT FROM got.count OR want.total IS DISTINCT FROM got.total`);
     expect(drift).toEqual([]);
   });

@@ -1,4 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import Decimal from 'decimal.js';
 import { and, eq, isNotNull, isNull, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../../database/database.module';
 import type { Db } from '../../../database/db';
@@ -956,6 +957,103 @@ export class Mt5AccountsService {
     return { id: account.id, productId };
   }
 
+  /**
+   * Hide an account from its client (0225), or show it again.
+   *
+   * Nothing changes on MT5. The rule that matters is the refusal: a LIVE account
+   * is archived only when MT5 itself says it holds nothing (balance, credit and
+   * equity zero, no open position), because hiding an account that holds money
+   * hides the client's money from them. An unreachable bridge refuses rather
+   * than assuming empty. Demo accounts hold practice money and skip the check.
+   */
+  async setAccountArchived(accountId: string, archived: boolean, actor: AuthenticatedAdmin) {
+    assertActorCan(actor, 'trading.archive', "archive a client's trading account");
+    const [account] = await this.db
+      .select({
+        id: tradingAccounts.id,
+        login: tradingAccounts.login,
+        userId: tradingAccounts.userId,
+        environment: tradingAccounts.environment,
+        currency: tradingAccounts.currency,
+        balance: tradingAccounts.balance,
+        credit: tradingAccounts.credit,
+        archivedAt: tradingAccounts.archivedAt,
+      })
+      .from(tradingAccounts)
+      .where(and(eq(tradingAccounts.id, accountId), accountInScope(actor)))
+      .limit(1);
+    if (!account) throw new NotFoundError('Trading account not found.');
+    if (account.userId === null) {
+      throw new ValidationError(
+        'This account belongs to no client, so there is nobody to hide it from.',
+      );
+    }
+    if (archived === (account.archivedAt !== null)) {
+      return { id: account.id, archivedAt: account.archivedAt };
+    }
+
+    if (archived && account.environment === 'live') {
+      // What the CRM itself shows first: a login MT5 does not recognise is no
+      // proof of an empty account while the CRM still shows money on it.
+      refuseIfHolding(
+        [
+          ['balance', account.balance],
+          ['credit', account.credit],
+        ],
+        account.currency,
+        'in the CRM',
+      );
+      if (account.login) await this.assertHoldsNothing(account.login, account.currency);
+    }
+
+    const archivedAt = archived ? new Date() : null;
+    await this.db
+      .update(tradingAccounts)
+      .set({
+        archivedAt,
+        archivedByAdminId: archived ? actor.id : null,
+        updatedAt: new Date(),
+      })
+      .where(eq(tradingAccounts.id, account.id));
+
+    if (archived) {
+      this.audit.record(actor.id, 'trading.account_archive', 'trading_account', account.id, {
+        login: account.login,
+        clientId: account.userId,
+      });
+    } else {
+      this.audit.record(actor.id, 'trading.account_unarchive', 'trading_account', account.id, {
+        login: account.login,
+        clientId: account.userId,
+      });
+    }
+    return { id: account.id, archivedAt };
+  }
+
+  /** Refuses unless MT5 says the login holds no money and no open position. */
+  private async assertHoldsNothing(login: string, currency: string): Promise<void> {
+    this.assertBridge();
+    const snapshot = await this.bridge.getAccount(login);
+    // MT5 knows no such login, and the CRM's own figures were zero: nothing to hide.
+    if (!snapshot) return;
+    refuseIfHolding(
+      [
+        ['balance', snapshot.balance],
+        ['credit', snapshot.credit],
+        ['equity', snapshot.equity],
+      ],
+      currency,
+      'on MT5',
+    );
+    const open = await this.bridge.getPositions(login);
+    if (open.length > 0) {
+      throw new ValidationError(
+        `This account has ${open.length} open position${open.length === 1 ? '' : 's'} on MT5. ` +
+          'Archive it only once they are closed.',
+      );
+    }
+  }
+
   /** Deals on a login ingested but not yet decided — what a link sets moving. */
   private async waitingDeals(login: string): Promise<number> {
     const [{ value }] = await this.db
@@ -982,6 +1080,21 @@ export class Mt5AccountsService {
 function accountInScope(actor: AuthenticatedAdmin) {
   const scoped = clientScopePredicate(actor.clientScope, tradingAccounts.userId);
   return scoped ? and(isNotNull(tradingAccounts.userId), scoped) : undefined;
+}
+
+/** Refuses, naming the first figure that is not zero. Money stays decimal.js. */
+function refuseIfHolding(
+  figures: [string, string | null][],
+  currency: string,
+  where: 'in the CRM' | 'on MT5',
+): void {
+  const held = figures.find(([, value]) => !new Decimal(value || '0').isZero());
+  if (!held) return;
+  throw new ValidationError(
+    `This account still has a ${held[0]} of ${new Decimal(held[1] ?? '0').toFixed(2)} ` +
+      `${currency} ${where}. Archive it only once it is empty, or the client loses sight of ` +
+      'that money.',
+  );
 }
 
 /** An MT5 login as digits, or a 400 naming the problem. */

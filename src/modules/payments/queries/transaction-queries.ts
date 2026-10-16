@@ -34,6 +34,22 @@ import type { Db } from '../../../database/db';
 import { PaymentProviderRegistry } from '../providers/payment-provider-registry';
 import { ValidationError } from '../../../common/errors/domain-errors';
 import { rebateNameArabic } from '../../../common/i18n/reason-arabic';
+import Decimal from 'decimal.js';
+import {
+  MOVEMENT_GROUPS,
+  MOVEMENT_TYPES,
+  bucketCase,
+  effectOf,
+  type MovementEffect,
+  type SettlementBucket,
+  totalsTypeCase,
+  totalsTypesPredicate,
+  unionTypeCase,
+  unionTypesPredicate,
+  type MovementType,
+} from '../movement-type';
+import type { TransferOrigin } from '../transfer-provenance';
+import { movementDetails, type MovementDetailRow, type MovementDetails } from './movement-details';
 import {
   clientScopePredicate,
   UNRESTRICTED,
@@ -65,6 +81,23 @@ type TransactionRow = typeof transactions.$inferSelect;
  * transfer has no method, no provider and no destination — but "the method is
  * null" is also true of a manual admin credit.
  */
+/**
+ * The kinds a TRANSFERS read may return, narrowed by its origin filter (16 Oct 2026). Forced by the
+ * Transfers endpoints whatever the caller asked: it is the wall between a transfers reader and
+ * every payment on the platform. `commission` is the commission arm's; every other origin is a
+ * wallet ⇄ account transfer's.
+ */
+export function transferKindsFor(origins: readonly TransferOrigin[] | undefined): MovementKind[] {
+  if (!origins?.length) return ['transfer', 'commission_transfer'];
+  const kinds: MovementKind[] = [];
+  if (origins.some((origin) => origin !== 'commission')) kinds.push('transfer');
+  if (origins.includes('commission')) kinds.push('commission_transfer');
+  return kinds;
+}
+
+/** The id an unknown account filter resolves to: no row has it, so the list is simply empty. */
+const NIL_ACCOUNT = '00000000-0000-0000-0000-000000000000';
+
 /** The most clients a money-list search may name — see `assertSearchNarrow`. */
 const MAX_SEARCHED_CLIENTS = 1_000;
 
@@ -143,15 +176,18 @@ interface CombinedRow {
   method_label?: string | null;
   kind: MovementKind;
   trading_account_id: string | null;
+  /** Where a transfer's money came from (0226); 'commission' on the commission arm; else null. */
+  transfer_origin: TransferOrigin | null;
 }
 
 /** The admin Financial list's raw rows: the union's columns plus the client. */
-interface AdminCombinedRow extends CombinedRow {
-  user_email: string;
-  user_first_name: string;
-  user_portal_id: number;
-  user_last_name: string;
-}
+type AdminCombinedRow = CombinedRow &
+  MovementDetailRow & {
+    user_email: string;
+    user_first_name: string;
+    user_portal_id: number;
+    user_last_name: string;
+  };
 
 /** The union's direction vocabulary — wallet-side, for every kind. */
 export type MovementDirection = (typeof transactionDirectionEnum.enumValues)[number];
@@ -181,7 +217,20 @@ export interface AdminMovementsFilter {
   /** Narrow to one client — already validated as a UUID at the edge. */
   userId?: number;
   direction?: MovementDirection;
-  kind?: MovementKind;
+  /** Any of these kinds (the HTTP `kind` is a one-item list; the Transfers page forces two). */
+  kinds?: readonly MovementKind[];
+  /** Any of these accounting types (`movement-type.ts`) — the Financial tabs and Type filter. */
+  types?: readonly MovementType[];
+  /**
+   * Any of these transfer origins (0226). Only the transfer and commission arms carry one, so the
+   * payment arm never matches. Read live: no stored total is kept per origin.
+   */
+  origins?: readonly TransferOrigin[];
+  /**
+   * One trading account's transfers, by its id — resolved from a login at the edge, and the NIL
+   * uuid for an unknown or out-of-territory one, so the answer never says whether it exists.
+   */
+  tradingAccountId?: string;
   state?: MovementState;
   currency?: string;
   /** Free text over the client's email and name — see `listForAdmin.q`. */
@@ -262,6 +311,8 @@ export function movementTotalsSource(
   // The desk's own rows ARE kept since 0221: the totals carry each payment's route.
   if (filter.q?.trim() || filter.attention || filter.id) return undefined;
   if (filter.methods?.length) return undefined;
+  // No total is kept per transfer origin or per trading account (0226): read the rows.
+  if (filter.origins?.length || filter.tradingAccountId) return undefined;
   /*
    * The daily totals are UTC days: they answer a period only when it starts and
    * ends on UTC midnights. A viewer's own "today" in Beirut does not, so it reads
@@ -305,9 +356,9 @@ function keyedTotalsSource(totals: 'daily' | 'client', where: SQL): SQL {
    */
   return sql`
     WITH m AS (
-      SELECT ${key}, kind, direction, state, currency, count, total FROM ${table} m${where}
+      SELECT ${key}, kind, direction, state, currency, route, count, total FROM ${table} m${where}
       UNION ALL
-      SELECT ${key}, kind, direction, state, currency, count, total
+      SELECT ${key}, kind, direction, state, currency, route, count, total
         FROM movement_total_deltas m${where}
     )`;
 }
@@ -351,7 +402,11 @@ function tagTotalsSource(tagId: string, where: SQL): SQL {
  */
 export function movementTotalsQuery(
   filter: AdminMovementsFilter,
-  shape: 'state' | 'direction' | 'summary',
+  /**
+   * `type` — counts per accounting type, its own axis left out (the Financial tabs).
+   * `accounting` — count and total per currency × type × settlement bucket (the tiles).
+   */
+  shape: 'state' | 'direction' | 'summary' | 'type' | 'accounting',
   /** The routes a person decides (`deskDecidedRoutes`): read only for `deskDecided`. */
   deskRoutes: readonly DeskRoute[] = [],
 ): SQL {
@@ -369,7 +424,15 @@ export function movementTotalsQuery(
           )})`,
     );
   }
-  if (filter.kind) conditions.push(sql`kind = ${filter.kind}`);
+  if (filter.kinds?.length) {
+    conditions.push(
+      sql`kind IN (${sql.join(
+        filter.kinds.map((kind) => sql`${kind}`),
+        sql`, `,
+      )})`,
+    );
+  }
+  if (filter.types?.length && shape !== 'type') conditions.push(totalsTypesPredicate(filter.types));
   if (filter.currency) conditions.push(sql`currency = ${filter.currency}`);
   if (shape !== 'direction' && filter.direction) {
     conditions.push(sql`direction = ${filter.direction}`);
@@ -397,10 +460,44 @@ export function movementTotalsQuery(
       HAVING sum(count) <> 0
        ORDER BY direction, kind NULLS LAST, state, currency`;
   }
+  if (shape === 'type') {
+    return sql`${source}
+      SELECT ${totalsTypeCase()} AS type, sum(count)::int AS value FROM m
+       GROUP BY 1 HAVING sum(count) <> 0`;
+  }
+  if (shape === 'accounting') {
+    return sql`${source}
+      SELECT currency, ${totalsTypeCase()} AS type, ${bucketCase(sql`state`)} AS bucket,
+             sum(count)::int AS value, sum(total)::text AS total
+        FROM m
+       GROUP BY 1, 2, 3 HAVING sum(count) <> 0
+       ORDER BY 1, 2, 3`;
+  }
   const axis = shape === 'state' ? sql`state` : sql`direction`;
   return sql`${source}
     SELECT ${axis}, sum(count)::int AS value FROM m
      GROUP BY ${axis} HAVING sum(count) <> 0`;
+}
+
+/** One accounting line of the summary: a currency × type × settlement bucket. */
+export interface AccountingLine {
+  currency: string;
+  type: MovementType;
+  effect: MovementEffect;
+  bucket: SettlementBucket;
+  count: number;
+  /** A decimal STRING (§6.1). */
+  total: string;
+}
+
+/** A summary's money per currency × effect × settlement bucket (16 Oct 2026). */
+export interface EffectTotal {
+  currency: string;
+  effect: MovementEffect;
+  bucket: SettlementBucket;
+  count: number;
+  /** A decimal STRING (§6.1). */
+  total: string;
 }
 
 /** One row of the Financial CSV export — flattened, the amount a STRING. */
@@ -429,6 +526,8 @@ export interface AdminTransactionExportRow {
   userLastName: string;
   createdAt: Date;
   settledAt: Date | null;
+  /** From where to where, who and why — the same facts the list row carries (16 Oct 2026). */
+  details: MovementDetails;
   /**
    * The row's `created_at` as the raw Postgres literal, microseconds intact —
    * the keyset position the NEXT batch seeks from. Deliberately not the `Date`
@@ -545,6 +644,76 @@ function depositEvidenceSearch(q: string): SQL | undefined {
   if (matches.length === 0) return undefined;
   return sql.join(matches, sql` UNION `);
 }
+
+/*
+ * ── WHAT EVERY ADMIN MOVEMENT ROW SAYS ABOUT ITSELF (16 Oct 2026) ──────────────────────────────
+ *
+ * From where to where the money moved, who started it, who approved and who decided it, why, and
+ * what the provider charged — read for the rows a page SHOWS, after it is cut, never inside the
+ * union. Every join is a primary-key or unique-index probe on at most `limit` rows, so the cost is
+ * the page's, not the book's. Admin reads only: the client's own history never selects this.
+ *
+ *   w / ta        the row's wallet and trading account (numbers and logins, never nicknames)
+ *   tr / src      a transfer's provenance (0226) and the deposit or desk credit that funded it
+ *   iwt / fw      a commission move's FROM wallet
+ *   tx            the payment's own row, for what the union does not carry (fees, approval, reason)
+ *   onward / dest a deposit aimed at an account: the transfer that moved it on — or none
+ *   rq / ap / dc  the desk member who asked, approved, decided — by NAME, never email
+ */
+const MOVEMENT_DETAIL_COLUMNS = sql`
+          w.wallet_number          AS wallet_number,
+          w.kind                   AS wallet_kind,
+          ta.login                 AS account_login,
+          ta.environment           AS account_environment,
+          fw.id                    AS from_wallet_id,
+          fw.wallet_number         AS from_wallet_number,
+          fw.kind                  AS from_wallet_kind,
+          tr.source_transaction_id AS source_transaction_id,
+          tr.requested_by_admin_id AS transfer_requested_by,
+          tr.desk_reason           AS transfer_desk_reason,
+          tr.desk_reason_ar        AS transfer_desk_reason_ar,
+          src.provider             AS source_provider,
+          src.provider_ref         AS source_ref,
+          src.settled_at           AS source_settled_at,
+          (SELECT coalesce(spm.internal_label, spm.name) FROM payment_methods spm
+            WHERE spm.key = src.method_key) AS source_method_label,
+          tx.approved_by_admin_id  AS approved_by,
+          tx.approved_at           AS approved_at,
+          tx.desk_reason           AS payment_desk_reason,
+          tx.desk_reason_ar        AS payment_desk_reason_ar,
+          tx.provider_environment  AS provider_environment,
+          tx.provider_fee          AS provider_fee,
+          tx.provider_net_amount   AS provider_net_amount,
+          tx.provider_request_amount AS provider_request_amount,
+          tx.provider_amount_received AS provider_amount_received,
+          tx.requested_amount      AS requested_amount,
+          tx.provider_status       AS provider_status,
+          tx.provider_checked_at   AS provider_checked_at,
+          onward.id                AS onward_transfer_id,
+          onward.state             AS onward_state,
+          dest.id                  AS onward_account_id,
+          dest.login               AS onward_login,
+          dest.environment         AS onward_environment,
+          rq.name                  AS requested_by_name,
+          ap.name                  AS approved_by_name,
+          dc.name                  AS decided_by_name`;
+
+const MOVEMENT_DETAIL_JOINS = sql`
+        LEFT JOIN wallets w ON w.id = page.wallet_id
+        LEFT JOIN trading_accounts ta ON ta.id = page.trading_account_id
+        LEFT JOIN transfers tr ON page.kind = 'transfer' AND tr.id = page.id
+        LEFT JOIN transactions src ON src.id = tr.source_transaction_id
+        LEFT JOIN ib_wallet_transfers iwt ON page.kind = 'commission_transfer' AND iwt.id = page.id
+        LEFT JOIN wallets fw ON fw.id = iwt.from_wallet_id
+        LEFT JOIN transactions tx ON page.kind = 'payment' AND tx.id = page.id
+        LEFT JOIN transfers onward ON page.kind = 'payment' AND onward.source_transaction_id = page.id
+        LEFT JOIN trading_accounts dest
+          ON dest.id = coalesce(onward.trading_account_id, tx.destination_trading_account_id)
+        LEFT JOIN admins rq ON rq.id = coalesce(tr.requested_by_admin_id,
+          CASE WHEN tx.provider_code = 'manual' AND tx.channel_code = 'adjustment'
+               THEN tx.reviewed_by END)
+        LEFT JOIN admins ap ON ap.id = tx.approved_by_admin_id
+        LEFT JOIN admins dc ON dc.id = page.reviewed_by`;
 
 function toMovementRow(row: AdminCombinedRow) {
   return {
@@ -1006,7 +1175,7 @@ export class TransactionQueries {
     const countRowsOf = async (): Promise<{ state: string; value: number }[]> => {
       const totalsFilter: AdminMovementsFilter = {
         scope,
-        kind: 'payment',
+        kinds: ['payment'],
         direction: 'withdrawal',
         ...filter.range,
       };
@@ -1453,7 +1622,8 @@ export class TransactionQueries {
           'rebate'::text                          AS kind,
           NULL::uuid                              AS trading_account_id,
           NULL::varchar                           AS route_provider,
-          NULL::varchar                           AS route_channel
+          NULL::varchar                           AS route_channel,
+          NULL::transfer_origin                   AS transfer_origin
         /*
          * The rebate predicate rides on the JOIN, not on a WHERE.
          *
@@ -1542,7 +1712,9 @@ export class TransactionQueries {
           NULL::uuid                              AS trading_account_id,
           -- The route (0168), for the admin list's desk filter.
           t.provider_code                         AS route_provider,
-          t.channel_code                          AS route_channel
+          t.channel_code                          AS route_channel,
+          -- Where a TRANSFER's money came from (0226): never on a payment.
+          NULL::transfer_origin                   AS transfer_origin
         FROM transactions t
         ${arm({
           owner: sql`t.user_id`,
@@ -1614,7 +1786,8 @@ export class TransactionQueries {
           'transfer'::text                        AS kind,
           tr.trading_account_id,
           NULL::varchar,                          -- route_provider
-          NULL::varchar                           -- route_channel
+          NULL::varchar,                          -- route_channel
+          tr.origin                               -- transfer_origin, never cast (0226)
         FROM transfers tr
         ${arm({ owner: sql`tr.user_id`, id: sql`tr.id`, payments: false, isPayment: sql`FALSE`, route: null })}
 
@@ -1687,7 +1860,8 @@ export class TransactionQueries {
           'commission_transfer'::text             AS kind,
           NULL::uuid                              AS trading_account_id,
           NULL::varchar                           AS route_provider,
-          NULL::varchar                           AS route_channel
+          NULL::varchar                           AS route_channel,
+          'commission'::transfer_origin           AS transfer_origin
         FROM ib_wallet_transfers iwt
         ${arm({ owner: sql`iwt.user_id`, id: sql`iwt.id`, payments: false, isPayment: sql`FALSE`, route: null })}
 
@@ -1846,7 +2020,10 @@ export class TransactionQueries {
         rejectionReason: row.rejection_reason,
         // The Arabic written with it (0179); the controller falls back to the catalogue.
         ...(row.rejection_reason_ar ? { rejectionReasonAr: row.rejection_reason_ar } : {}),
-        reviewedBy: row.reviewed_by,
+        /*
+         * NO reviewedBy (16 Oct 2026): which administrator decided is the desk's business,
+         * not the client's — the KYC side strips the same field on purpose.
+         */
         reviewedAt: instantOrNull(row.reviewed_at),
         settledAt: instantOrNull(row.settled_at),
         providerPaymentId: row.provider_payment_id,
@@ -2074,9 +2251,11 @@ export class TransactionQueries {
           users.email      AS user_email,
           users.first_name AS user_first_name,
           users.last_name  AS user_last_name,
-          users.id         AS user_portal_id
+          users.id         AS user_portal_id,
+          ${MOVEMENT_DETAIL_COLUMNS}
         FROM page
         JOIN users ON users.id = page.user_id
+        ${MOVEMENT_DETAIL_JOINS}
         ORDER BY ${sql.raw(`page.${order.column}`)} ${dir}, page.id ${dir}`;
     };
 
@@ -2093,12 +2272,38 @@ export class TransactionQueries {
      * them: a status tab reads `(state, created_at, id)`, a currency its own,
      * "needs attention" a partial index of the few flagged rows.
      */
-    const conditionsFor = (omit: { state?: boolean; direction?: boolean } = {}): SQL[] => {
+    const conditionsFor = (
+      omit: { state?: boolean; direction?: boolean; type?: boolean } = {},
+    ): SQL[] => {
       const conditions: SQL[] = [];
       if (!omit.direction && filter.direction) {
         conditions.push(sql`combined.direction = ${filter.direction}::transaction_direction`);
       }
-      if (filter.kind) conditions.push(sql`combined.kind = ${filter.kind}`);
+      if (filter.kinds?.length) {
+        conditions.push(
+          sql`combined.kind IN (${sql.join(
+            filter.kinds.map((kind) => sql`${kind}`),
+            sql`, `,
+          )})`,
+        );
+      }
+      // The accounting types (movement-type.ts): kind, wallet-side direction and the desk's route.
+      if (!omit.type && filter.types?.length) conditions.push(unionTypesPredicate(filter.types));
+      /*
+       * Origin and account exist only on the transfer arms (0226). On every other arm the column
+       * is a constant NULL, so the condition folds away and that arm is never read.
+       */
+      if (filter.origins?.length) {
+        conditions.push(
+          sql`combined.transfer_origin IN (${sql.join(
+            filter.origins.map((origin) => sql`${origin}::transfer_origin`),
+            sql`, `,
+          )})`,
+        );
+      }
+      if (filter.tradingAccountId) {
+        conditions.push(sql`combined.trading_account_id = ${filter.tradingAccountId}::uuid`);
+      }
       if (!omit.state && filter.state) conditions.push(sql`combined.state = ${filter.state}`);
       if (filter.currency) conditions.push(sql`combined.currency = ${filter.currency}`);
       if (filter.attention) conditions.push(sql`combined.needs_attention`);
@@ -2145,6 +2350,88 @@ export class TransactionQueries {
     }
   }
 
+  /**
+   * The trading account a money list is narrowed to, from what an operator holds: its id, or its
+   * MT5 login (16 Oct 2026). An unknown login answers the NIL id — an ordinary empty list, exactly
+   * like an account outside the reader's territory — so the filter never says whether an account
+   * exists. Only a malformed value is refused, and only for its format.
+   */
+  async accountFilterId(raw: string | undefined): Promise<string | undefined> {
+    const value = raw?.trim();
+    if (!value) return undefined;
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) {
+      return value.toLowerCase();
+    }
+    if (!/^[A-Za-z0-9_-]{1,50}$/.test(value)) {
+      throw new ValidationError('account must be a trading account id or an MT5 login.');
+    }
+    const { rows } = await this.db.execute(
+      sql`SELECT id FROM trading_accounts WHERE login = ${value} LIMIT 1`,
+    );
+    return (rows[0] as { id: string } | undefined)?.id ?? NIL_ACCOUNT;
+  }
+
+  /**
+   * The ledger postings ONE movement made (16 Oct 2026) — what a single-record read shows a
+   * `ledger.view` holder, so a movement and its accounting entries are read side by side. Each
+   * (wallet, reference type, reference id) is a probe of `ledger_entries_wallet_reference_uq`:
+   * a payment posts under `transaction` (and `<id>:refund`), a transfer under `transfer`, a
+   * commission move under `ib_transfer` on both of its wallets.
+   */
+  async ledgerPostingsFor(movement: {
+    id: string;
+    kind: MovementKind;
+    walletId: string;
+    fromWalletId?: string | null;
+  }): Promise<
+    {
+      walletId: string;
+      walletNumber: string | null;
+      entryType: string;
+      amount: string;
+      balanceAfter: string;
+      createdAt: Date;
+    }[]
+  > {
+    const keys: SQL[] =
+      movement.kind === 'payment'
+        ? [
+            sql`(${movement.walletId}::uuid, 'transaction', ${movement.id})`,
+            sql`(${movement.walletId}::uuid, 'transaction', ${`${movement.id}:refund`})`,
+          ]
+        : movement.kind === 'transfer'
+          ? [sql`(${movement.walletId}::uuid, 'transfer', ${movement.id})`]
+          : [
+              sql`(${movement.walletId}::uuid, 'ib_transfer', ${movement.id})`,
+              ...(movement.fromWalletId
+                ? [sql`(${movement.fromWalletId}::uuid, 'ib_transfer', ${movement.id})`]
+                : []),
+            ];
+    const { rows } = await this.db.execute(sql`
+      SELECT le.wallet_id, w.wallet_number, le.entry_type, le.amount, le.balance_after, le.created_at
+        FROM ledger_entries le
+        JOIN wallets w ON w.id = le.wallet_id
+       WHERE (le.wallet_id, le.reference_type, le.reference_id) IN (${sql.join(keys, sql`, `)})
+       ORDER BY le.created_at, le.id`);
+    return (
+      rows as unknown as {
+        wallet_id: string;
+        wallet_number: string | null;
+        entry_type: string;
+        amount: string;
+        balance_after: string;
+        created_at: string;
+      }[]
+    ).map((row) => ({
+      walletId: row.wallet_id,
+      walletNumber: row.wallet_number,
+      entryType: row.entry_type,
+      amount: money(row.amount),
+      balanceAfter: money(row.balance_after),
+      createdAt: instantOf(row.created_at),
+    }));
+  }
+
   async listAllForAdmin(
     filter: AdminMovementsFilter & {
       page?: number;
@@ -2156,9 +2443,15 @@ export class TransactionQueries {
       order?: SortOrder;
       /** Previous / Last walk the same indexes backward — `pageDirection`. */
       paging?: PageDirection;
+      /**
+       * Which second facet to count: `direction` (the wallet-side tabs older consoles read) or
+       * `type` (the accounting tabs, 16 Oct 2026). Only the one asked for is paid for.
+       */
+      facet?: 'direction' | 'type';
     },
   ) {
     const page = Math.max(1, filter.page ?? 1);
+    const facet = filter.facet ?? 'direction';
     const limit = pageSize(filter.limit);
     const sortKey: AdminTransactionSortKey = filter.sort ?? DEFAULT_ADMIN_TRANSACTION_SORT;
     const direction = walkOrder(filter.order ?? 'desc', filter.paging);
@@ -2204,9 +2497,9 @@ export class TransactionQueries {
      * desk took 0.6–0.9 s at three million rows, and grew with each deposit.
      */
     const cappedFacet = (
-      axis: 'state' | 'direction',
+      axis: 'state' | 'direction' | 'type',
       values: readonly string[],
-      omit: { state?: boolean; direction?: boolean },
+      omit: { state?: boolean; direction?: boolean; type?: boolean },
     ): SQL =>
       sql.join(
         values.map(
@@ -2219,7 +2512,9 @@ export class TransactionQueries {
                   // state index, and a bare text parameter is refused by the enum.
                   axis === 'state'
                     ? sql`combined.state = ${value}::transaction_state`
-                    : sql`combined.direction = ${value}::transaction_direction`,
+                    : axis === 'type'
+                      ? unionTypesPredicate([value as MovementType])
+                      : sql`combined.direction = ${value}::transaction_direction`,
                 ])} LIMIT ${TOTAL_CAP + 1}
               ) capped
             ) AS value`,
@@ -2238,11 +2533,15 @@ export class TransactionQueries {
       totals
         ? this.db.execute(movementTotalsQuery(filter, 'state', this.deskRoutesOf(filter)))
         : this.db.execute(cappedFacet('state', transactionStateEnum.enumValues, { state: true })),
-      totals
-        ? this.db.execute(movementTotalsQuery(filter, 'direction', this.deskRoutesOf(filter)))
-        : this.db.execute(
-            cappedFacet('direction', transactionDirectionEnum.enumValues, { direction: true }),
-          ),
+      facet === 'type'
+        ? totals
+          ? this.db.execute(movementTotalsQuery(filter, 'type', this.deskRoutesOf(filter)))
+          : this.db.execute(cappedFacet('type', MOVEMENT_TYPES, { type: true }))
+        : totals
+          ? this.db.execute(movementTotalsQuery(filter, 'direction', this.deskRoutesOf(filter)))
+          : this.db.execute(
+              cappedFacet('direction', transactionDirectionEnum.enumValues, { direction: true }),
+            ),
     ]);
 
     /** The tabs whose count stopped at the cap: the console shows them as "10,000+". */
@@ -2256,11 +2555,28 @@ export class TransactionQueries {
       if (!totals && row.value > TOTAL_CAP) countsCapped.push(row.state);
     }
     const directionCounts: Record<string, number> = { all: 0 };
-    for (const row of directionRows.rows as unknown as { direction: string; value: number }[]) {
-      if (row.value === 0) continue;
-      directionCounts[row.direction] = totals ? row.value : Math.min(row.value, TOTAL_CAP);
-      directionCounts['all'] += directionCounts[row.direction];
-      if (!totals && row.value > TOTAL_CAP) countsCapped.push(row.direction);
+    const typeCounts: Record<string, number> = { all: 0 };
+    const groupCounts: Record<string, number> = { all: 0 };
+    if (facet === 'type') {
+      for (const row of directionRows.rows as unknown as { type: string; value: number }[]) {
+        if (row.value === 0) continue;
+        typeCounts[row.type] = totals ? row.value : Math.min(row.value, TOTAL_CAP);
+        typeCounts['all'] += typeCounts[row.type];
+        if (!totals && row.value > TOTAL_CAP) countsCapped.push(row.type);
+      }
+      // The tabs' groups, added up here so no screen adds counts; a capped part caps its group.
+      for (const [group, members] of Object.entries(MOVEMENT_GROUPS)) {
+        groupCounts[group] = members.reduce((sum, type) => sum + (typeCounts[type] ?? 0), 0);
+        if (members.some((type) => countsCapped.includes(type))) countsCapped.push(group);
+      }
+      groupCounts['all'] = typeCounts['all'];
+    } else {
+      for (const row of directionRows.rows as unknown as { direction: string; value: number }[]) {
+        if (row.value === 0) continue;
+        directionCounts[row.direction] = totals ? row.value : Math.min(row.value, TOTAL_CAP);
+        directionCounts['all'] += directionCounts[row.direction];
+        if (!totals && row.value > TOTAL_CAP) countsCapped.push(row.direction);
+      }
     }
     // A sum holding a capped part is itself "at least", on both rows of tabs:
     // they describe the same set of movements.
@@ -2268,6 +2584,8 @@ export class TransactionQueries {
       countsCapped.push('all');
       counts['all'] = Math.min(counts['all'], TOTAL_CAP);
       directionCounts['all'] = Math.min(directionCounts['all'], TOTAL_CAP);
+      typeCounts['all'] = Math.min(typeCounts['all'], TOTAL_CAP);
+      groupCounts['all'] = Math.min(groupCounts['all'], TOTAL_CAP);
     }
 
     const total = filter.state ? (counts[filter.state] ?? 0) : counts['all'];
@@ -2295,6 +2613,8 @@ export class TransactionQueries {
 
     const items = paged.items.map((row) => ({
       ...toMovementRow(row),
+      // From where to where, who and why, what the provider charged (16 Oct 2026).
+      ...movementDetails(row),
       tradingAccountId: row.trading_account_id,
       walletId: row.wallet_id,
       // The row's badge and its "Mark resolved" — the finish line of the
@@ -2320,6 +2640,8 @@ export class TransactionQueries {
       limit,
       counts,
       directionCounts,
+      typeCounts,
+      groupCounts,
       countsCapped,
     };
   }
@@ -2377,6 +2699,7 @@ export class TransactionQueries {
       // The shared mapper — the CSV must describe a row exactly as the screen
       // does, §6.1 string amount included.
       ...toMovementRow(row),
+      details: movementDetails(row),
       userId: row.user_id,
       userPortalId: row.user_portal_id,
       userEmail: row.user_email,
@@ -2407,9 +2730,13 @@ export class TransactionQueries {
       total: string;
     }[];
     directions: { direction: string; currency: string; count: number; total: string }[];
+    accounting: AccountingLine[];
+    effects: EffectTotal[];
+    net: { currency: string; total: string }[];
   }> {
     await this.assertSearchNarrow(filter.q);
     const { countSource, conditionsFor, whereOf } = this.adminMovements(filter);
+    const totalsSource = movementTotalsSource(filter);
 
     /*
      * ONE scan for both granularities — GROUPING SETS aggregates the fine
@@ -2437,6 +2764,72 @@ export class TransactionQueries {
       GROUP BY GROUPING SETS ((direction, kind, state, currency), (direction, currency))
       ORDER BY direction, kind NULLS LAST, state, currency
     `);
+    /*
+     * THE ACCOUNTING LINES (16 Oct 2026): per currency × type × settlement bucket, from the stored
+     * totals when they answer (their route separates the desk's own money), the rows otherwise.
+     * Settled is money that moved; in progress is still moving; not completed never moved. The
+     * buckets are never added together, and nothing crosses a currency.
+     */
+    const accountingRows = (totalsSource
+      ? await this.db.execute(movementTotalsQuery(filter, 'accounting', this.deskRoutesOf(filter)))
+      : await this.db.execute(sql`
+            WITH counted AS (${countSource}${whereOf(conditionsFor())})
+            SELECT currency, ${unionTypeCase()} AS type, ${bucketCase(sql`state`)} AS bucket,
+                   count(*)::int AS value, coalesce(sum(amount), 0)::text AS total
+              FROM counted
+             GROUP BY 1, 2, 3
+             ORDER BY 1, 2, 3`)
+    ).rows as unknown as {
+      currency: string;
+      type: MovementType;
+      bucket: SettlementBucket;
+      value: number;
+      total: string;
+    }[];
+    const accounting: AccountingLine[] = accountingRows.map((row) => ({
+      currency: row.currency,
+      type: row.type,
+      effect: effectOf(row.type),
+      bucket: row.bucket,
+      count: row.value,
+      // Never Number(row.total) — the string IS the value (§6.1).
+      total: money(row.total),
+    }));
+    // Net = settled money in − settled money out, per currency: decimal arithmetic, never a float.
+    const netByCurrency = new Map<string, Decimal>();
+    for (const line of accounting) {
+      if (line.bucket !== 'settled' || line.effect === 'internal') continue;
+      const running = netByCurrency.get(line.currency) ?? new Decimal(0);
+      netByCurrency.set(
+        line.currency,
+        line.effect === 'in' ? running.plus(line.total) : running.minus(line.total),
+      );
+    }
+    const net = [...netByCurrency.entries()].map(([currency, total]) => ({
+      currency,
+      total: money(total.toFixed(8)),
+    }));
+    // Per currency × effect × bucket — what a tile shows, added up HERE so no screen adds money.
+    const byEffect = new Map<string, EffectTotal & { sum: Decimal }>();
+    for (const line of accounting) {
+      const key = `${line.currency}|${line.effect}|${line.bucket}`;
+      const entry = byEffect.get(key) ?? {
+        currency: line.currency,
+        effect: line.effect,
+        bucket: line.bucket,
+        count: 0,
+        total: '0',
+        sum: new Decimal(0),
+      };
+      entry.count += line.count;
+      entry.sum = entry.sum.plus(line.total);
+      byEffect.set(key, entry);
+    }
+    const effects: EffectTotal[] = [...byEffect.values()].map(({ sum, ...entry }) => ({
+      ...entry,
+      total: money(sum.toFixed(8)),
+    }));
+
     const allRows = grouped.rows as unknown as {
       direction: string;
       kind: MovementKind | null;
@@ -2467,6 +2860,9 @@ export class TransactionQueries {
         count: row.value,
         total: row.total,
       })),
+      accounting,
+      effects,
+      net,
     };
   }
 }

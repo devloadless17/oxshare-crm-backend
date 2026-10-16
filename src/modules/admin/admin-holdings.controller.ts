@@ -13,6 +13,7 @@ import { ApiCookieAuth, ApiOkResponse, ApiOperation, ApiQuery, ApiTags } from '@
 import { Request, Response } from 'express';
 import { AdminHoldingsService } from './admin-holdings.service';
 import {
+  TRADING_ACCOUNT_ARCHIVED_FILTERS,
   TRADING_ACCOUNT_CLIENT_FILTERS,
   TRADING_ACCOUNT_SORT_COLUMNS,
   WALLET_SORT_COLUMNS,
@@ -385,6 +386,14 @@ export class AdminHoldingsController {
   @ApiQuery({ name: 'environment', required: false, enum: tradingEnvironmentEnum.enumValues })
   @ApiQuery({ name: 'status', required: false, enum: tradingAccountStatusEnum.enumValues })
   @ApiQuery({
+    name: 'archived',
+    required: false,
+    enum: TRADING_ACCOUNT_ARCHIVED_FILTERS,
+    description:
+      '`exclude`: the accounts the client sees; `only`: the ones archived (hidden from the ' +
+      'client). Absent: both.',
+  })
+  @ApiQuery({
     name: 'client',
     required: false,
     enum: TRADING_ACCOUNT_CLIENT_FILTERS,
@@ -420,6 +429,7 @@ export class AdminHoldingsController {
     @Query('q') q?: string,
     @Query('environment') environment?: string,
     @Query('status') status?: string,
+    @Query('archived') archived?: string,
     @Query('client') client?: string,
     @Query('from') from?: string,
     @Query('to') to?: string,
@@ -450,6 +460,7 @@ export class AdminHoldingsController {
         // where the schema enums are already imported.
         environment,
         status,
+        archived,
         client,
         page,
         limit,

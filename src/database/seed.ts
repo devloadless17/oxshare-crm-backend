@@ -1622,6 +1622,8 @@ async function seedTradingFixtures(db: ReturnType<typeof getDb>): Promise<void> 
       state: transfer.state,
       failureReason: transfer.failureReason,
       settledAt: transfer.state === 'settled' ? new Date() : null,
+      // Fixture transfers stand for the client's own moves (0226).
+      origin: 'client',
     });
   }
 }

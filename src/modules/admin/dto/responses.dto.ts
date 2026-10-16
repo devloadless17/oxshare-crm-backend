@@ -9,8 +9,10 @@ import {
   rejectionContextEnum,
   transactionDirectionEnum,
   transactionStateEnum,
+  transferOriginEnum,
 } from '../../../database/schema';
 import { TRANSACTION_KINDS } from '../../payments/transactions.service';
+import { MOVEMENT_TYPES } from '../../payments/movement-type';
 import type { RejectionContext } from '../../../store/rejection-reasons.store';
 import { PROFILE_FIELD_KEYS } from '../../../common/profile/client-profile';
 import { TransactionDto } from '../../payments/dto/withdrawal.dto';
@@ -2274,6 +2276,20 @@ export class WithdrawalRowDto {
   @NotClientField('the ADMIN who decided; an operator identity, never client-owned data')
   @ApiPropertyOptional({ type: String, nullable: true })
   reviewedBy?: string | null;
+  /** Who APPROVED it (0227), kept apart from `reviewedBy` — the final decider. */
+  @NotClientField('the ADMIN who approved; an operator identity, never client-owned data')
+  @ApiPropertyOptional({ type: String, nullable: true })
+  approvedByAdminId?: string | null;
+  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
+  @ApiPropertyOptional({ type: Date, nullable: true })
+  approvedAt?: Date | null;
+  /** Why the desk made it by hand (0227) — a desk debit's reason. Null on a client's request. */
+  @NotClientField('the desk\u2019s own words about the record, not an attribute of the person')
+  @ApiPropertyOptional({ type: String, nullable: true })
+  deskReason?: string | null;
+  @NotClientField('the desk\u2019s own words about the record, not an attribute of the person')
+  @ApiPropertyOptional({ type: String, nullable: true })
+  deskReasonAr?: string | null;
   @NotClientField('a payment-provider reference describing the record rather than the person')
   @ApiPropertyOptional({
     type: String,
@@ -2365,6 +2381,97 @@ export class WithdrawalListResponseDto {
 }
 
 // ── The Financial page: every money movement, platform-wide ─────────────────
+
+/**
+ * One end of a movement (16 Oct 2026) — where its money came FROM or went TO. `kind` says which
+ * fields apply: a wallet (number, kind, currency), a trading account (login, Live/Demo — never the
+ * client's nickname for it), the payment method it crossed on, or the company's own money.
+ * The payout destination TEXT is never here: it stays in the row's masked `destination`.
+ */
+@NoClientFields(
+  'a description of the RECORD: wallet numbers, MT5 logins, method names and desk member names, never an attribute of the client',
+)
+export class MovementEndDto {
+  @ApiProperty({ enum: ['wallet', 'trading_account', 'method', 'company'] })
+  kind: string;
+  @ApiPropertyOptional({ type: String, nullable: true }) walletId?: string | null;
+  @ApiPropertyOptional({ type: String, nullable: true, description: 'The wallet number.' })
+  walletNumber?: string | null;
+  @ApiPropertyOptional({ type: String, nullable: true, description: 'main or commission.' })
+  walletKind?: string | null;
+  @ApiPropertyOptional({ type: String, nullable: true }) currency?: string | null;
+  @ApiPropertyOptional({ type: String, nullable: true }) tradingAccountId?: string | null;
+  @ApiPropertyOptional({ type: String, nullable: true, description: 'The MT5 login.' })
+  login?: string | null;
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    description: 'live or demo; a provider’s environment on a method end.',
+  })
+  environment?: string | null;
+  @ApiPropertyOptional({ type: String, nullable: true, description: 'The method’s desk label.' })
+  methodLabel?: string | null;
+  @ApiPropertyOptional({ type: String, nullable: true }) providerCode?: string | null;
+  @ApiPropertyOptional({
+    type: String,
+    nullable: true,
+    description: 'The channel, e.g. a network.',
+  })
+  channelCode?: string | null;
+}
+
+/** A desk member, by NAME only — never an email (`admins.view` keeps the directory narrow). */
+@NoClientFields(
+  'a description of the RECORD: wallet numbers, MT5 logins, method names and desk member names, never an attribute of the client',
+)
+export class MovementAdminDto {
+  @ApiProperty() adminId: string;
+  @ApiProperty({ type: String, nullable: true }) name: string | null;
+  @ApiPropertyOptional({ type: Date, nullable: true }) at?: Date | null;
+}
+
+/** The deposit, or the desk's credit, whose money a transfer moved (0226). */
+@NoClientFields(
+  'a description of the RECORD: wallet numbers, MT5 logins, method names and desk member names, never an attribute of the client',
+)
+export class MovementSourceDto {
+  @ApiProperty() transactionId: string;
+  @ApiProperty({ type: String, nullable: true }) methodLabel: string | null;
+  @ApiProperty({
+    type: String,
+    nullable: true,
+    description: 'The deposit’s reference (OX-…); null for the desk’s own credit.',
+  })
+  reference: string | null;
+  @ApiProperty({ type: Date, nullable: true }) settledAt: Date | null;
+}
+
+/**
+ * A deposit aimed at a trading account: the transfer that moved it on, or — `transferId` null —
+ * the fact that it never moved and the money is still in the wallet.
+ */
+@NoClientFields(
+  'a description of the RECORD: wallet numbers, MT5 logins, method names and desk member names, never an attribute of the client',
+)
+export class MovementOnwardDto {
+  @ApiProperty({ type: String, nullable: true }) transferId: string | null;
+  @ApiProperty({ type: String, nullable: true, enum: ['pending', 'success', 'failure'] })
+  state: string | null;
+  @ApiProperty({ type: MovementEndDto }) account: MovementEndDto;
+}
+
+/** One ledger posting a movement made — on a single-record read, for a `ledger.view` holder. */
+@NoClientFields(
+  'a description of the RECORD: wallet numbers, MT5 logins, method names and desk member names, never an attribute of the client',
+)
+export class MovementLedgerPostingDto {
+  @ApiProperty() walletId: string;
+  @ApiProperty({ type: String, nullable: true }) walletNumber: string | null;
+  @ApiProperty() entryType: string;
+  @ApiProperty({ type: 'string', example: '-50.00000000' }) amount: string;
+  @ApiProperty({ type: 'string', example: '450.00000000' }) balanceAfter: string;
+  @ApiProperty() createdAt: Date;
+}
 
 export class AdminTransactionRowDto {
   @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
@@ -2557,6 +2664,78 @@ export class AdminTransactionRowDto {
   )
   @ApiProperty({ type: WithdrawalUserDto })
   user: WithdrawalUserDto;
+
+  /* ── What the movement IS, from where to where, who and why (16 Oct 2026) ── */
+  @NotClientField('a classification of the record for accounting, not client-owned data')
+  @ApiProperty({ enum: MOVEMENT_TYPES })
+  type: string;
+  @NotClientField('a classification of the record for accounting, not client-owned data')
+  @ApiProperty({ enum: ['in', 'out', 'internal'] })
+  effect: string;
+  @NotClientField('the nested end, whose own shape carries no client attribute')
+  @ApiProperty({ type: MovementEndDto })
+  from: MovementEndDto;
+  @NotClientField('the nested end, whose own shape carries no client attribute')
+  @ApiProperty({ type: MovementEndDto })
+  to: MovementEndDto;
+  @NotClientField('the nested onward move, whose own shape carries no client attribute')
+  @ApiProperty({ type: MovementOnwardDto, nullable: true })
+  onward: MovementOnwardDto | null;
+  @NotClientField('a classification of the record, not client-owned data')
+  @ApiProperty({ type: String, nullable: true, enum: [...transferOriginEnum.enumValues, null] })
+  origin: string | null;
+  @NotClientField('the nested funding movement, whose own shape carries no client attribute')
+  @ApiProperty({ type: MovementSourceDto, nullable: true })
+  source: MovementSourceDto | null;
+  @NotClientField('the ADMIN who asked; an operator identity, never client-owned data')
+  @ApiProperty({ type: MovementAdminDto, nullable: true })
+  requestedBy: MovementAdminDto | null;
+  @NotClientField('the ADMIN who approved; an operator identity, never client-owned data')
+  @ApiProperty({ type: MovementAdminDto, nullable: true })
+  approvedBy: MovementAdminDto | null;
+  @NotClientField('the ADMIN who decided; an operator identity, never client-owned data')
+  @ApiProperty({ type: MovementAdminDto, nullable: true })
+  decidedBy: MovementAdminDto | null;
+  @NotClientField('the desk\u2019s own words about the record, not an attribute of the person')
+  @ApiProperty({ type: String, nullable: true })
+  deskReason: string | null;
+  @NotClientField('the desk\u2019s own words about the record, not an attribute of the person')
+  @ApiProperty({ type: String, nullable: true })
+  deskReasonAr: string | null;
+  @NotClientField('a provider environment describing the record rather than the person')
+  @ApiProperty({ type: String, nullable: true })
+  providerEnvironment: string | null;
+  @NotClientField('a money value on the RECORD, carrying no client attribute')
+  @ApiProperty({ type: 'string', nullable: true, description: 'The provider’s fee (a string).' })
+  providerFee: string | null;
+  @NotClientField('a money value on the RECORD, carrying no client attribute')
+  @ApiProperty({ type: 'string', nullable: true, description: 'What the provider delivered.' })
+  providerNetAmount: string | null;
+  @NotClientField('a money value on the RECORD, carrying no client attribute')
+  @ApiProperty({ type: 'string', nullable: true, description: 'What the provider was asked.' })
+  providerRequestAmount: string | null;
+  @NotClientField('a money value on the RECORD, carrying no client attribute')
+  @ApiProperty({ type: 'string', nullable: true, description: 'What actually arrived.' })
+  providerAmountReceived: string | null;
+  @NotClientField('a money value on the RECORD, carrying no client attribute')
+  @ApiProperty({ type: 'string', nullable: true, description: 'What the client asked for.' })
+  requestedAmount: string | null;
+  @NotClientField('a provider status describing the record rather than the person')
+  @ApiProperty({ type: String, nullable: true })
+  providerStatus: string | null;
+  @NotClientField('an identifier addressing the record, not an attribute of the person behind it')
+  @ApiProperty({ type: String, nullable: true })
+  providerPayoutId: string | null;
+  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
+  @ApiProperty({ type: Date, nullable: true })
+  providerSubmittedAt: Date | null;
+  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
+  @ApiProperty({ type: Date, nullable: true })
+  providerCheckedAt: Date | null;
+  /** Only on a single-record read (`?id=`), and only for a `ledger.view` holder. */
+  @NotClientField('the nested ledger postings, whose own shape carries no client attribute')
+  @ApiPropertyOptional({ type: [MovementLedgerPostingDto] })
+  ledger?: MovementLedgerPostingDto[];
 }
 
 export class AdminTransactionListResponseDto {
@@ -2624,6 +2803,18 @@ export class AdminTransactionListResponseDto {
   )
   @ApiProperty({ type: 'object', additionalProperties: { type: 'number' } })
   directionCounts: Record<string, number>;
+  /** Per accounting TYPE plus `all` — only when `?facet=type` (the accounting tabs). */
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  @ApiProperty({ type: 'object', additionalProperties: { type: 'number' } })
+  typeCounts: Record<string, number>;
+  /** The tabs' groups (deposit, withdrawal, transfer) plus `all`, added up on the server. */
+  @NotClientField(
+    'a money, paging or configuration value on the RECORD, carrying no client attribute',
+  )
+  @ApiProperty({ type: 'object', additionalProperties: { type: 'number' } })
+  groupCounts: Record<string, number>;
   /** The tabs whose count stopped at 10,000: shown as "10,000+". Empty when all are exact. */
   @NotClientField(
     'a money, paging or configuration value on the RECORD, carrying no client attribute',
@@ -2690,11 +2881,55 @@ export class AdminTransactionDirectionTotalDto {
 @NoClientFields(
   'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
 )
+export class AccountingLineDto {
+  @ApiProperty({ example: 'USD' }) currency: string;
+  @ApiProperty({ enum: MOVEMENT_TYPES }) type: string;
+  @ApiProperty({ enum: ['in', 'out', 'internal'] }) effect: string;
+  @ApiProperty({ enum: ['settled', 'inProgress', 'notCompleted'] }) bucket: string;
+  @ApiProperty() count: number;
+  @ApiProperty({ type: 'string', example: '12400.00000000' }) total: string;
+}
+
+@NoClientFields(
+  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
+)
+export class AccountingEffectDto {
+  @ApiProperty({ example: 'USD' }) currency: string;
+  @ApiProperty({ enum: ['in', 'out', 'internal'] }) effect: string;
+  @ApiProperty({ enum: ['settled', 'inProgress', 'notCompleted'] }) bucket: string;
+  @ApiProperty() count: number;
+  @ApiProperty({ type: 'string', example: '12400.00000000' }) total: string;
+}
+
+@NoClientFields(
+  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
+)
+export class AccountingNetDto {
+  @ApiProperty({ example: 'USD' }) currency: string;
+  @ApiProperty({ type: 'string', example: '-310.50000000' }) total: string;
+}
+
+@NoClientFields(
+  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
+)
 export class AdminTransactionsSummaryDto {
   @ApiProperty({ type: [AdminTransactionSummaryRowDto] })
   rows: AdminTransactionSummaryRowDto[];
   @ApiProperty({ type: [AdminTransactionDirectionTotalDto] })
   directions: AdminTransactionDirectionTotalDto[];
+  /**
+   * The ACCOUNTING lines (16 Oct 2026): per currency × type × settlement bucket. Settled money
+   * moved; in progress is still moving; not completed never moved. Never added across buckets or
+   * currencies by the server, and never by a screen.
+   */
+  @ApiProperty({ type: [AccountingLineDto] })
+  accounting: AccountingLineDto[];
+  /** Per currency × effect (in, out, internal) × bucket — what a tile shows, added up server-side. */
+  @ApiProperty({ type: [AccountingEffectDto] })
+  effects: AccountingEffectDto[];
+  /** Settled money in − settled money out, per currency (internal moves excluded). */
+  @ApiProperty({ type: [AccountingNetDto] })
+  net: AccountingNetDto[];
 }
 
 // ── Client holdings: wallets and trading accounts ───────────────────────────
@@ -2946,6 +3181,10 @@ export class TradingAccountRowDto {
   @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
   @ApiProperty({ enum: ['active', 'suspended', 'closed'] })
   status: string;
+  /** Hidden from the client by the desk (0225); NULL = the client sees it. */
+  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
+  @ApiProperty({ type: String, format: 'date-time', nullable: true })
+  archivedAt: Date | null;
   @NotClientField('a timestamp the system recorded, describing the record rather than the client')
   @ApiProperty()
   createdAt: Date;

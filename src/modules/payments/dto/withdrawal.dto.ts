@@ -336,7 +336,10 @@ export class TransactionDto {
       'else the system sentence’s. Absent when there is none (show the English).',
   })
   rejectionReasonAr?: string;
-  @ApiPropertyOptional({ type: String, nullable: true }) reviewedBy?: string | null;
+  /*
+   * No `reviewedBy`: the deciding administrator's id is the desk's business, not the client's
+   * (16 Oct 2026; the KYC client view strips the same field). Admin shapes carry it.
+   */
   @ApiPropertyOptional({ type: Date, nullable: true }) reviewedAt?: Date | null;
   @ApiPropertyOptional({ type: Date, nullable: true }) settledAt?: Date | null;
   @ApiProperty() createdAt: Date;

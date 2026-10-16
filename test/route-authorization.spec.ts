@@ -58,6 +58,8 @@ const HANDLER_AUTHENTICATED: Record<string, string> = {
 };
 
 const PUBLIC_ROUTES: Record<string, string> = {
+  'POST /client-errors':
+    'a crash in the browser happens signed out as often as signed in (sign-up, login); it only writes a scrubbed log line, reads nothing, and is Origin-checked and rate-limited',
   /*
    * DEVELOPMENT ONLY, and it is the MODULE that is gated rather than the route:
    * `AppModule` imports `E2eFixturesModule` only when NODE_ENV !== 'production',

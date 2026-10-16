@@ -256,6 +256,7 @@ describe('the KYC gate on wallet-to-account transfers — the SECOND door', () =
       direction: 'wallet_to_account',
       amount: '10',
       currency: 'USD',
+      provenance: { origin: 'client' },
     });
 
   it('REFUSES a transfer for an unverified client, naming KYC', async () => {

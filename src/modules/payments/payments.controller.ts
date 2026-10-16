@@ -548,6 +548,8 @@ export class PaymentsController {
       direction: dto.direction,
       amount: dto.amount,
       currency: dto.currency,
+      // The client moved it themselves (0226).
+      provenance: { origin: 'client' },
     });
 
     /*

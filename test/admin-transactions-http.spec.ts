@@ -60,6 +60,9 @@ const MONEY_DESK = { email: 'fin-desk@oxshare.com', password: 'admin-password-12
 const SCOPED = { email: 'fin-scoped@oxshare.com', password: 'admin-password-123' };
 /** RBAC-03: may read the page, may NOT see the client's email or first name. */
 const MASKED = { email: 'fin-masked@oxshare.com', password: 'admin-password-123' };
+/** Holds the Transfers page's key and nothing else (16 Oct 2026). */
+const TRANSFERS_ONLY = { email: 'fin-transfers@oxshare.com', password: 'admin-password-123' };
+const TRANSFERS = '/v1/admin/transfers';
 
 let ctx: HttpTestContext;
 
@@ -107,6 +110,14 @@ beforeAll(async () => {
       name: 'Fin Reader',
       role: 'sub_admin',
       permissions: ['transactions.view'],
+      status: 'active',
+    },
+    {
+      email: TRANSFERS_ONLY.email,
+      passwordHash: hash,
+      name: 'Fin Transfers',
+      role: 'sub_admin',
+      permissions: ['transfers.view'],
       status: 'active',
     },
     {
@@ -206,6 +217,7 @@ beforeAll(async () => {
     state: 'settled',
     settledAt: new Date('2026-08-03T12:05:00Z'),
     createdAt: new Date('2026-08-03T12:00:00Z'),
+    origin: 'client',
   });
   await db.insert(ibWalletTransfers).values({
     userId: client.id,
@@ -936,5 +948,164 @@ describe('the export is frozen at its start and keyset-batched', () => {
     } finally {
       await ctx.db.db.delete(transactions).where(eq(transactions.providerRef, 'fin-export-mid'));
     }
+  });
+});
+
+describe('the Transfers page (16 Oct 2026): its own key, its own rows, nothing else', () => {
+  type TransferBody = {
+    items: Array<{
+      id: string;
+      kind: string;
+      type: string;
+      effect: string;
+      origin: string | null;
+      from: {
+        kind: string;
+        walletNumber?: string | null;
+        walletKind?: string | null;
+        login?: string | null;
+      };
+      to: {
+        kind: string;
+        walletNumber?: string | null;
+        walletKind?: string | null;
+        login?: string | null;
+      };
+    }>;
+    total: number;
+    typeCounts: Record<string, number>;
+  };
+
+  it('admits a transfers.view reader to the transfers, and REFUSES them every payment', async () => {
+    const session = await actingAs(ctx, 'admin', TRANSFERS_ONLY);
+    const body = (await session.get(`${TRANSFERS}?userId=${unionClientId}`).expect(200))
+      .body as TransferBody;
+    expect(body.items.map((row) => row.kind).sort()).toEqual(['commission_transfer', 'transfer']);
+    await session.get(`${TRANSFERS}/summary`).expect(200);
+    await session.get(`${TRANSFERS}/stuck`).expect(200);
+    await session.get(LIST).expect(403);
+    await session.get(SUMMARY).expect(403);
+    await session.get(EXPORT).expect(403);
+  });
+
+  it('forces the kinds in the service: asking it for a payment by id returns nothing', async () => {
+    const [payment] = await ctx.db.db
+      .select({ id: transactions.id })
+      .from(transactions)
+      .where(eq(transactions.providerRef, 'fin-union-dep'));
+    const session = await actingAs(ctx, 'admin', TRANSFERS_ONLY);
+    const body = (await session.get(`${TRANSFERS}?id=${payment.id}`).expect(200))
+      .body as TransferBody;
+    expect(body.items).toEqual([]);
+    const file = await session.get(`${TRANSFERS}/export`).expect(200);
+    expect(file.text).not.toContain('100.12345678');
+  });
+
+  it('says from where to where: wallet → MT5 login, commission wallet → main wallet', async () => {
+    const session = await actingAs(ctx, 'admin', TRANSFERS_ONLY);
+    const body = (await session.get(`${TRANSFERS}?userId=${unionClientId}`).expect(200))
+      .body as TransferBody;
+    const transfer = body.items.find((row) => row.kind === 'transfer');
+    expect(transfer).toMatchObject({
+      type: 'transfer_to_account',
+      effect: 'internal',
+      origin: 'client',
+      from: { kind: 'wallet', walletKind: 'main' },
+      to: { kind: 'trading_account', login: '5109001' },
+    });
+    expect(transfer?.from.walletNumber).toMatch(/^[0-9a-hjkmnp-tv-z]{12}$/);
+    const commission = body.items.find((row) => row.kind === 'commission_transfer');
+    expect(commission).toMatchObject({
+      type: 'commission_to_wallet',
+      origin: 'commission',
+      from: { kind: 'wallet', walletKind: 'commission' },
+      to: { kind: 'wallet', walletKind: 'main' },
+    });
+  });
+
+  it('narrows to one account by its login — and never says whether an account exists', async () => {
+    const reader = await actingAs(ctx, 'admin', TRANSFERS_ONLY);
+    const one = (await reader.get(`${TRANSFERS}?account=5109001`).expect(200)).body as TransferBody;
+    expect(one.items.map((row) => row.to.login)).toEqual(['5109001']);
+    // Unknown, and outside the territory: the same ordinary empty answer.
+    const unknown = (await reader.get(`${TRANSFERS}?account=4040404`).expect(200))
+      .body as TransferBody;
+    const scoped = await actingAs(ctx, 'admin', SCOPED);
+    const outside = (await scoped.get(`${TRANSFERS}?account=5109001`).expect(200))
+      .body as TransferBody;
+    expect(unknown.items).toEqual([]);
+    expect(outside.items).toEqual([]);
+    expect(unknown.total).toBe(outside.total);
+    // Only the FORMAT can be refused.
+    await reader.get(`${TRANSFERS}?account=${encodeURIComponent('5109001; drop')}`).expect(400);
+  });
+
+  it('filters by origin, the commission arm included', async () => {
+    const session = await actingAs(ctx, 'admin', TRANSFERS_ONLY);
+    const commission = (await session.get(`${TRANSFERS}?origin=commission`).expect(200))
+      .body as TransferBody;
+    expect(new Set(commission.items.map((row) => row.kind))).toEqual(
+      new Set(['commission_transfer']),
+    );
+    const desk = (await session.get(`${TRANSFERS}?origin=desk_credit`).expect(200))
+      .body as TransferBody;
+    expect(desk.items).toEqual([]);
+    await session.get(`${TRANSFERS}?origin=magic`).expect(400);
+  });
+
+  it('exports what the page shows, and records who exported it', async () => {
+    const session = await actingAs(ctx, 'admin', TRANSFERS_ONLY);
+    const file = await session.get(`${TRANSFERS}/export?userId=${unionClientId}`).expect(200);
+    expect(file.headers['content-type']).toContain('text/csv');
+    expect(file.text).toContain('MT5 5109001');
+    expect(file.text).toContain('transfer_to_account');
+    const rows = await ctx.db.db
+      .select({ action: auditLog.action })
+      .from(auditLog)
+      .where(eq(auditLog.action, 'export.transfers'));
+    expect(rows.length).toBeGreaterThan(0);
+  });
+
+  it('the Financial list classifies for accounting: type counts, and type filters', async () => {
+    const session = await actingAs(ctx, 'admin', READER);
+    const body = (await session.get(`${LIST}?userId=${unionClientId}&facet=type`).expect(200))
+      .body as TransferBody & { groupCounts: Record<string, number> };
+    expect(body.typeCounts).toMatchObject({
+      deposit: 1,
+      withdrawal: 1,
+      transfer_to_account: 1,
+      commission_to_wallet: 1,
+      all: 4,
+    });
+    expect(body.groupCounts).toMatchObject({ deposit: 1, withdrawal: 1, transfer: 2, all: 4 });
+    const transfersOnly = (
+      await session
+        .get(`${LIST}?userId=${unionClientId}&type=transfer_to_account,commission_to_wallet`)
+        .expect(200)
+    ).body as TransferBody;
+    expect(transfersOnly.items.map((row) => row.type).sort()).toEqual([
+      'commission_to_wallet',
+      'transfer_to_account',
+    ]);
+  });
+});
+
+describe('one record carries its ledger postings — for a ledger.view holder only', () => {
+  it('shows the postings to a reader of the ledger, and nothing to anyone else', async () => {
+    const [transfer] = await ctx.db.db
+      .select({ id: transfers.id })
+      .from(transfers)
+      .where(eq(transfers.userId, unionClientId));
+    const full = await actingAs(ctx, 'admin', FULL);
+    const withLedger = (await full.get(`${LIST}?id=${transfer.id}`).expect(200)).body as {
+      items: { ledger?: unknown[] }[];
+    };
+    expect(Array.isArray(withLedger.items[0]?.ledger)).toBe(true);
+    const reader = await actingAs(ctx, 'admin', READER);
+    const without = (await reader.get(`${LIST}?id=${transfer.id}`).expect(200)).body as {
+      items: { ledger?: unknown[] }[];
+    };
+    expect(without.items).toHaveLength(1);
+    expect(without.items[0]).not.toHaveProperty('ledger');
   });
 });

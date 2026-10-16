@@ -34,7 +34,6 @@ export type TransactionView = Pick<
   | 'proofFilename'
   | 'proofDetails'
   | 'rejectionReason'
-  | 'reviewedBy'
   | 'reviewedAt'
   | 'settledAt'
   | 'createdAt'
@@ -61,7 +60,6 @@ export function transactionView(row: TransactionRow): TransactionView {
     proofDetails: row.proofDetails,
     rejectionReason: row.rejectionReason,
     ...(row.rejectionReasonAr ? { rejectionReasonAr: row.rejectionReasonAr } : {}),
-    reviewedBy: row.reviewedBy,
     reviewedAt: row.reviewedAt,
     settledAt: row.settledAt,
     createdAt: row.createdAt,

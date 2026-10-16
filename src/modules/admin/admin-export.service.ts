@@ -28,6 +28,7 @@ import {
 } from './dto/export-rows.dto';
 import {
   TransactionsService,
+  transferKindsFor,
   type AdminMovementsFilter,
   type AdminTransactionExportRow,
 } from '../payments/transactions.service';
@@ -35,6 +36,7 @@ import { AdminHoldingsService } from './admin-holdings.service';
 import { WalletService } from '../wallet/wallet.service';
 import type { AuthenticatedAdmin } from './guards/admin.guard';
 import type { CsvColumn } from '../../common/export/csv';
+import { MOVEMENT_DETAIL_CSV } from '../payments/queries/movement-details';
 import {
   assertClientTagExists,
   clientLevelFilter,
@@ -418,6 +420,13 @@ export class AdminExportService {
     { header: 'Rejection / failure reason', value: (r) => r.rejectionReason },
     { header: 'Created at', value: (r) => r.createdAt },
     { header: 'Settled at', value: (r) => r.settledAt },
+    /*
+     * APPENDED (16 Oct 2026), never inserted: a spreadsheet built on the columns above keeps
+     * reading them where they were. What an accountant needs to read a movement without the
+     * console — what it is, from where to where, who and why, what the provider charged — the
+     * same facts the list row carries (`movementDetails`).
+     */
+    ...MOVEMENT_DETAIL_CSV,
   ];
 
   /**
@@ -456,6 +465,28 @@ export class AdminExportService {
     assertActorCanAny(actor, ['deposits.view', 'transactions.view'], 'export deposit requests');
     return this.movementBatch(
       { ...query, direction: 'deposit', deskDecided: true },
+      actor,
+      limit,
+      startedAt,
+      after,
+    );
+  }
+
+  /**
+   * The TRANSFERS file — `GET /admin/transfers/export`, on its own key (`transfers.view`, or the
+   * platform-wide `transactions.view`). The kinds are FORCED here, whatever the caller passed:
+   * this is the wall between a transfers reader and every payment on the platform.
+   */
+  async transferBatch(
+    query: Omit<AdminMovementsFilter, 'scope'>,
+    actor: AuthenticatedAdmin,
+    limit: number,
+    startedAt: Date,
+    after?: { createdAt: string; id: string },
+  ): Promise<AdminTransactionExportRow[]> {
+    assertActorCanAny(actor, ['transfers.view', 'transactions.view'], 'export transfers');
+    return this.movementBatch(
+      { ...query, kinds: transferKindsFor(query.origins) },
       actor,
       limit,
       startedAt,
