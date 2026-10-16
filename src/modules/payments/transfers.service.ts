@@ -770,7 +770,7 @@ export class TransfersService {
      * applying it, and once MT5 shows its deal — releasing then would pay the client twice (audit
      * R1-1, 16 Oct 2026).
      */
-    opts: { byPerson?: boolean } = {},
+    opts: { byAdminId?: string } = {},
   ) {
     const found = await this.findOne(transferId);
     if (!found) throw new NotFoundError('Transfer not found.');
@@ -794,7 +794,7 @@ export class TransfersService {
       if (row.state !== 'pending') {
         throw new ValidationError(`Only a pending transfer can fail; this one is ${row.state}.`);
       }
-      if (opts.byPerson) await this.assertNotOnMt5(row, tx);
+      if (opts.byAdminId) await this.assertNotOnMt5(row, tx);
       if (row.direction === 'wallet_to_account') {
         await this.wallets.release(row.userId, row.currency, toDecimal(row.amount), tx);
       }
@@ -802,6 +802,7 @@ export class TransfersService {
         .update(transfers)
         .set({
           state: 'failed',
+          ...(opts.byAdminId ? { releasedByAdminId: opts.byAdminId } : {}),
           failureReason: reason,
           failureReasonAr: reasonAr === undefined ? systemSentenceArabic(reason) : reasonAr,
           settledAt: new Date(),

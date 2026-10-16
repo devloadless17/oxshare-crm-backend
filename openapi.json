@@ -29315,6 +29315,50 @@
           "difference"
         ]
       },
+      "TransferMt5MismatchDto": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "settled_without_deal",
+              "deal_without_settled_transfer"
+            ]
+          },
+          "transferId": {
+            "type": "string",
+            "nullable": true
+          },
+          "transferState": {
+            "type": "string",
+            "nullable": true
+          },
+          "dealId": {
+            "type": "string",
+            "nullable": true
+          },
+          "login": {
+            "type": "string",
+            "nullable": true
+          },
+          "amount": {
+            "type": "string",
+            "description": "Signed as MT5 holds it: + into the account. A money string."
+          },
+          "at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "transferId",
+          "transferState",
+          "dealId",
+          "login",
+          "amount",
+          "at"
+        ]
+      },
       "ReconciliationReportDto": {
         "type": "object",
         "properties": {
@@ -29342,6 +29386,17 @@
             "description": "The SUM OF ABSOLUTE differences across every mismatched wallet — the size of the problem. Absolute rather than net, so two large opposite errors do not report as nearly balanced. Monetary value — always a string.",
             "example": "24995.35000000"
           },
+          "transferMismatches": {
+            "description": "Transfers and MT5 deals that disagree over the last week (a sample of up to 20; the count is exact): a settled transfer with no MT5 deal, or an MT5 deal whose transfer is not settled.",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TransferMt5MismatchDto"
+            }
+          },
+          "transferMismatchCount": {
+            "type": "number",
+            "description": "How many transfers disagree with MT5 over the last week."
+          },
           "balanced": {
             "type": "boolean",
             "description": "True when nothing is wrong. Read this rather than testing the array length — it is the field the service decides, and a future check can make it false without adding a wallet discrepancy."
@@ -29353,6 +29408,8 @@
           "walletDiscrepancies",
           "discrepancyCount",
           "totalDifference",
+          "transferMismatches",
+          "transferMismatchCount",
           "balanced"
         ]
       },

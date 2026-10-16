@@ -3491,6 +3491,20 @@ export class WalletDiscrepancyDto {
   difference: string;
 }
 
+/** A transfer and MT5 disagree (audit R3-1, 16 Oct 2026). */
+@NoClientFields('a description of the RECORD: transfer and deal ids, an MT5 login, an amount')
+export class TransferMt5MismatchDto {
+  @ApiProperty({ enum: ['settled_without_deal', 'deal_without_settled_transfer'] })
+  kind: string;
+  @ApiProperty({ type: String, nullable: true }) transferId: string | null;
+  @ApiProperty({ type: String, nullable: true }) transferState: string | null;
+  @ApiProperty({ type: String, nullable: true }) dealId: string | null;
+  @ApiProperty({ type: String, nullable: true }) login: string | null;
+  @ApiProperty({ description: 'Signed as MT5 holds it: + into the account. A money string.' })
+  amount: string;
+  @ApiProperty() at: string;
+}
+
 /**
  * The §12.2 reconciliation report.
  *
@@ -3543,6 +3557,20 @@ export class ReconciliationReportDto {
     example: '24995.35000000',
   })
   totalDifference: string;
+
+  @NotClientField('the nested mismatches, whose own shape carries no client attribute')
+  @ApiProperty({
+    type: () => TransferMt5MismatchDto,
+    isArray: true,
+    description:
+      'Transfers and MT5 deals that disagree over the last week (a sample of up to 20; the count ' +
+      'is exact): a settled transfer with no MT5 deal, or an MT5 deal whose transfer is not settled.',
+  })
+  transferMismatches: TransferMt5MismatchDto[];
+
+  @NotClientField('a platform-wide integrity figure, not an attribute of any person')
+  @ApiProperty({ description: 'How many transfers disagree with MT5 over the last week.' })
+  transferMismatchCount: number;
 
   @NotClientField('a platform-wide integrity figure, not an attribute of any person')
   @ApiProperty({

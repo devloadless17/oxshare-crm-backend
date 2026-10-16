@@ -457,7 +457,12 @@ export class HostedDepositsService implements OnModuleDestroy {
         `The provider reports ${result.amount ?? '?'} ${result.currency} for this deposit, but ` +
           `it was created for ${expectedAsset}. Nothing has been credited — confirm what ` +
           'actually arrived before settling it by hand.',
-        { reported: result.amount, reportedCurrency: result.currency },
+        /*
+         * NOT `reported`: that becomes `provider_amount_received`, which "Credit what arrived"
+         * credits 1:1 in the WALLET's currency — 1,000 TRX would credit 1,000 USD (audit R2-5,
+         * 16 Oct 2026). Another asset needs a person to convert it; the sentence says what came.
+         */
+        { reportedOtherAsset: result.amount, reportedCurrency: result.currency },
       );
       await this.logEvent(
         tx,

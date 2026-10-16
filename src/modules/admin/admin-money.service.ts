@@ -2164,7 +2164,7 @@ export class AdminMoneyService {
     }
 
     const arabic = composeReasonArabic({ note: reason, noteAr: reasonAr });
-    const failed = await this.transfers.fail(id, reason.trim(), arabic, { byPerson: true });
+    const failed = await this.transfers.fail(id, reason.trim(), arabic, { byAdminId: actor.id });
 
     /*
      * Audited with BOTH sides and the reason, because this is the one operation

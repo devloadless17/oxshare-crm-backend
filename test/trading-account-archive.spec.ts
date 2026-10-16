@@ -139,6 +139,19 @@ describe('the money rule: nothing that holds anything is hidden', () => {
     );
   });
 
+  it('refuses while a transfer to or from it is still moving (audit R3-11)', async () => {
+    onMt5('8100010');
+    const id = await account('8100010');
+    const { rows: w } = await ctx.db.execute<{ id: string }>(sql`
+      INSERT INTO wallets (user_id, currency, balance) VALUES (${clientId}, 'USD', '0')
+      ON CONFLICT (user_id, currency, kind) DO UPDATE SET balance = wallets.balance RETURNING id`);
+    await ctx.db.execute(sql`
+      INSERT INTO transfers (user_id, wallet_id, trading_account_id, direction, amount, currency, origin)
+      VALUES (${clientId}, ${w[0].id}, ${id}, 'account_to_wallet', '10', 'USD', 'client')`);
+    await expect(accounts.setAccountArchived(id, true, ADMIN)).rejects.toThrow(/still in progress/);
+    await ctx.db.execute(sql`DELETE FROM transfers WHERE trading_account_id = ${id}`);
+  });
+
   it('refuses an account with an open position', async () => {
     onMt5('8100002');
     POSITIONS['8100002'] = [{ ticket: 1 } as Mt5Position];

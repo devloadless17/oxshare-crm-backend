@@ -3,6 +3,7 @@ import {
   clientErrorLogLine,
   pathOnly,
   scrub,
+  scrubStack,
 } from '../src/modules/client-errors/client-error-report';
 
 /** A crash report must never carry a person into the log. */
@@ -29,5 +30,15 @@ describe('client crash reports keep no personal data', () => {
     );
     expect(line).toMatchObject({ path: '/auth/register', message: 'x for [email]' });
     expect(line.stack).toContain('user [digits]');
+  });
+
+  it('keeps the code positions in stack frames, which name no one', () => {
+    const stack =
+      'NotFoundError: code 123456 for a@b.co\n' +
+      '    at iR (https://portal.oxshare.com/_next/static/chunks/37bd.js?dpl=380234356f06:31:204567)';
+    expect(scrubStack(stack)).toBe(
+      'NotFoundError: code [digits] for [email]\n' +
+        '    at iR (https://portal.oxshare.com/_next/static/chunks/37bd.js?dpl=380234356f06:31:204567)',
+    );
   });
 });
