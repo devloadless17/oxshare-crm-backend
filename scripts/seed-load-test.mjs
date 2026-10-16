@@ -133,6 +133,8 @@ async function purge() {
       'ledger_entries',
       `wallet_id IN (SELECT w.id FROM wallets w JOIN users u ON u.id = w.user_id WHERE u.email LIKE '%@${SEED_DOMAIN}')`,
     ],
+    // Transfers before transactions: a transfer names the deposit that funded it (0226, RESTRICT).
+    ['transfers', `user_id IN (SELECT id FROM users WHERE email LIKE '%@${SEED_DOMAIN}')`],
     ['transactions', `user_id IN (SELECT id FROM users WHERE email LIKE '%@${SEED_DOMAIN}')`],
     [
       'kyc_submission_attempts',
@@ -146,8 +148,6 @@ async function purge() {
       'client_tag_assignments',
       `user_id IN (SELECT id FROM users WHERE email LIKE '%@${SEED_DOMAIN}')`,
     ],
-    // After the ledger, before the accounts and wallets both of its keys point at.
-    ['transfers', `user_id IN (SELECT id FROM users WHERE email LIKE '%@${SEED_DOMAIN}')`],
     ['trading_accounts', `login LIKE 'SEED-%'`],
     ['wallets', `user_id IN (SELECT id FROM users WHERE email LIKE '%@${SEED_DOMAIN}')`],
     ['users', `email LIKE '%@${SEED_DOMAIN}'`],

@@ -36,6 +36,13 @@ import { parseLocale } from '../../common/i18n/locale';
 type TransactionRow = typeof transactions.$inferSelect;
 
 /** The deposit commands: request, the desk's decisions, the credit, and the onward transfer. */
+/** The desk member behind a hand-made movement, and the reason they gave (0227). */
+export interface DeskAttribution {
+  adminId: string;
+  reason: string;
+  reasonAr?: string | null;
+}
+
 export class DepositCommands {
   private readonly logger = new Logger(DepositCommands.name);
 
@@ -768,7 +775,15 @@ export class DepositCommands {
          * event is coming, and the money is in the wallet the moment this
          * commits.
          */
-        { state: 'success', reviewedBy: adminId, reviewedAt: now, settledAt: now },
+        {
+          state: 'success',
+          reviewedBy: adminId,
+          reviewedAt: now,
+          // The approval, kept on the record beside the final decider (0227).
+          approvedByAdminId: adminId,
+          approvedAt: now,
+          settledAt: now,
+        },
         dbTx,
       );
       if (!updated) {
@@ -995,6 +1010,11 @@ export class DepositCommands {
       currency: Currency;
       provider: string;
       providerRef: string;
+      /**
+       * Who on the desk made it, and why (0227): the row carries them, so a statement or an
+       * accountant never needs the audit log to explain a hand-made movement.
+       */
+      desk: DeskAttribution;
     },
     withinTx?: WithinTransaction,
   ) {
@@ -1016,6 +1036,11 @@ export class DepositCommands {
           channelCode: 'adjustment',
           providerEnvironment: 'live',
           settledAt: new Date(),
+          // Made and decided at once, by the desk member who made it (0227).
+          reviewedBy: params.desk.adminId,
+          reviewedAt: new Date(),
+          deskReason: params.desk.reason,
+          deskReasonAr: params.desk.reasonAr ?? null,
         })
         .onConflictDoNothing({ target: [transactions.provider, transactions.providerRef] })
         .returning();
@@ -1072,6 +1097,11 @@ export class DepositCommands {
       currency: Currency;
       provider: string;
       providerRef: string;
+      /**
+       * Who on the desk made it, and why (0227): the row carries them, so a statement or an
+       * accountant never needs the audit log to explain a hand-made movement.
+       */
+      desk: DeskAttribution;
     },
     withinTx?: WithinTransaction,
   ) {
@@ -1119,6 +1149,11 @@ export class DepositCommands {
           channelCode: 'adjustment',
           providerEnvironment: 'live',
           settledAt: new Date(),
+          // Made and decided at once, by the desk member who made it (0227).
+          reviewedBy: params.desk.adminId,
+          reviewedAt: new Date(),
+          deskReason: params.desk.reason,
+          deskReasonAr: params.desk.reasonAr ?? null,
         })
         .onConflictDoNothing({ target: [transactions.provider, transactions.providerRef] })
         .returning();
@@ -1195,6 +1230,11 @@ export class DepositCommands {
         direction: 'wallet_to_account',
         amount: tx.amount,
         currency: tx.currency,
+        /*
+         * The deposit IS where this money came from (0226), and it keys the transfer
+         * (`deposit:<id>`), so a retried chain converges on the transfer it already made.
+         */
+        provenance: { origin: 'deposit', sourceTransactionId: tx.id },
       });
 
       /*

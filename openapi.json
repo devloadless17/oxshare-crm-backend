@@ -18931,10 +18931,6 @@
             "type": "string",
             "description": "Arabic for `rejectionReason`: written with the decision, else the configured reason’s, else the system sentence’s. Absent when there is none (show the English)."
           },
-          "reviewedBy": {
-            "type": "string",
-            "nullable": true
-          },
           "reviewedAt": {
             "format": "date-time",
             "type": "string",
@@ -28257,6 +28253,23 @@
             "nullable": true
           },
           "reviewedBy": {
+            "type": "string",
+            "nullable": true
+          },
+          "approvedByAdminId": {
+            "type": "string",
+            "nullable": true
+          },
+          "approvedAt": {
+            "format": "date-time",
+            "type": "string",
+            "nullable": true
+          },
+          "deskReason": {
+            "type": "string",
+            "nullable": true
+          },
+          "deskReasonAr": {
             "type": "string",
             "nullable": true
           },

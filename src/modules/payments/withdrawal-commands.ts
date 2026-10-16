@@ -598,12 +598,17 @@ export class WithdrawalCommands {
               state: 'approved',
               reviewedBy: adminId,
               reviewedAt: now,
+              // Who approved, kept apart from whoever later settles it (0227).
+              approvedByAdminId: adminId,
+              approvedAt: now,
             }
           : {
               /* Paid by hand. Approval records what the operator has done. */
               state: 'success',
               reviewedBy: adminId,
               reviewedAt: now,
+              approvedByAdminId: adminId,
+              approvedAt: now,
               settledAt: now,
             },
         dbTx,

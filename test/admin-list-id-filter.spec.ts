@@ -85,6 +85,7 @@ async function seedClient(tag: 'mine' | 'theirs', login: string) {
       amount: '5.00000000',
       currency: 'USD',
       state: 'settled',
+      origin: 'client',
     })
     .returning();
   const [application] = await db

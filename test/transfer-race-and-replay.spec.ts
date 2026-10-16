@@ -84,6 +84,7 @@ const toAccount = (userId: number, accountId: string, amount: string, requestRef
     amount,
     currency: 'USD',
     requestRef,
+    provenance: { origin: 'client' },
   });
 
 describe('fail cannot undo a settle', () => {

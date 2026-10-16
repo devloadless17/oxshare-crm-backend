@@ -1300,6 +1300,57 @@ they live here:
   and `test/kyc-form-customizable.spec.ts` (details taken off, optional selfie, a tightened form, a
   moved question).
 
+## Every movement records where its money came from (0226–0227, 16 Oct 2026)
+
+The buyer's accountants asked, for every transfer, which account it moved money from and to and where
+the money on a trading account came from. The data did not exist, so it is now WRITTEN by the code
+that moves the money. It is never inferred later.
+
+- **`transfers.origin`** is `client | deposit | desk_credit | desk_wallet | desk_debit`. The
+  `transfer_origin` enum also holds `commission`, which only the money union's commission arm
+  states; a CHECK refuses it on the table.
+  - `source_transaction_id` is the deposit (or the desk's manual credit) whose money the transfer
+    moves.
+  - `requested_by_admin_id` (no FK, like `reviewed_by`) and `desk_reason(_ar)` are set on `desk_*`
+    rows only.
+- **`TransfersService.request` takes a required `provenance: TransferProvenance`**
+  (`modules/payments/transfer-provenance.ts`, discriminated). A new caller that forgets it is a
+  compile error. Each of the five callers states its own: the portal (`client`), the deposit chain
+  (`deposit`, keyed `deposit:<txId>`), and the desk's fund, move and debit.
+- **The database holds the same rules a second time:**
+  - CHECKs tie origin ↔ direction ↔ source, and an admin or reason appears only on `desk_*`.
+  - `UNIQUE (source_transaction_id)`: one deposit funds at most one transfer. A racing or retried
+    chain converges on it (one hold), and `request()` treats either unique index as a replay.
+  - The BEFORE INSERT trigger `transfers_provenance_fill`:
+    - works out the origin from `request_ref` for a writer that states none (the previous build after
+      a rollback, raw SQL);
+    - **refuses a source that is not THIS client's settled deposit of the same currency and amount**
+      (`transfers_source_matches`), so a wrong link can never print another client's deposit on
+      a row.
+  - Provenance is frozen (`transfers_provenance_immutable`, which fires only when a value changes).
+    State updates are unaffected.
+- **Payments (0227):**
+  - `approved_by_admin_id` / `approved_at` keep who APPROVED (approval wrote `reviewed_by`, which
+    the settler then overwrote, hiding the two-person control). `reviewed_by` stays the final
+    decider.
+  - The desk's own credit and debit (`creditDeposit` / `debitAdjustment`) take a required
+    `desk: DeskAttribution` and write `reviewed_by`, `reviewed_at` and `desk_reason(_ar)` in their
+    one transaction.
+  - All of these are frozen once set.
+- **Backfill.** History was classified exactly:
+  - desk origins from the ref prefixes;
+  - a desk credit's source by its shared idempotency key;
+  - who and why from the audit rows;
+  - deposit chains matched one-to-one within settled −2 min…+10 min, with ambiguous rows left
+    `client`.
+
+  Both migrations are re-runnable, which is how `test/transfer-provenance.spec.ts` proves the
+  backfill.
+- **A client never sees which admin decided**: the client `TransactionDto`, `transactionView` and
+  `listForUser` carry no `reviewedBy`. Admin shapes do.
+- A raw fixture INSERT into `transfers` must state `origin`, or the trigger derives `client`.
+  Teardowns delete transfers BEFORE transactions (`source_transaction_id` is RESTRICT).
+
 ## The client's identity RECORD (0151–0153, 0171; 28–30 Sep 2026)
 
 The owner's direction: a client's documents, selfie and verification belong to the CLIENT; KYC is

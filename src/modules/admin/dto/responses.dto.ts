@@ -2274,6 +2274,20 @@ export class WithdrawalRowDto {
   @NotClientField('the ADMIN who decided; an operator identity, never client-owned data')
   @ApiPropertyOptional({ type: String, nullable: true })
   reviewedBy?: string | null;
+  /** Who APPROVED it (0227), kept apart from `reviewedBy` — the final decider. */
+  @NotClientField('the ADMIN who approved; an operator identity, never client-owned data')
+  @ApiPropertyOptional({ type: String, nullable: true })
+  approvedByAdminId?: string | null;
+  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
+  @ApiPropertyOptional({ type: Date, nullable: true })
+  approvedAt?: Date | null;
+  /** Why the desk made it by hand (0227) — a desk debit's reason. Null on a client's request. */
+  @NotClientField('the desk\u2019s own words about the record, not an attribute of the person')
+  @ApiPropertyOptional({ type: String, nullable: true })
+  deskReason?: string | null;
+  @NotClientField('the desk\u2019s own words about the record, not an attribute of the person')
+  @ApiPropertyOptional({ type: String, nullable: true })
+  deskReasonAr?: string | null;
   @NotClientField('a payment-provider reference describing the record rather than the person')
   @ApiPropertyOptional({
     type: String,

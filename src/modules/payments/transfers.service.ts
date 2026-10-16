@@ -12,6 +12,12 @@ import {
 } from '../../common/security/client-scope';
 import { TRANSFER_STALE_MS } from './transfer-staleness';
 import {
+  assertProvenanceFits,
+  depositChainRef,
+  provenanceColumns,
+  type TransferProvenance,
+} from './transfer-provenance';
+import {
   AuthorizationError,
   ConflictError,
   NotFoundError,
@@ -110,9 +116,24 @@ export class TransfersService {
      * (UNIQUE `transfers_request_ref_uq`) instead of moving the money again.
      */
     requestRef?: string;
+    /**
+     * WHERE the money came from, stated by the caller (0226) — required, so a caller that forgets
+     * is a compile error rather than a row reading "client". See `transfer-provenance.ts`.
+     */
+    provenance: TransferProvenance;
   }) {
-    if (params.requestRef) {
-      const existing = await this.findByRequestRef(params.requestRef);
+    assertProvenanceFits(params.direction, params.provenance);
+    /*
+     * A deposit's onward transfer is keyed on the deposit, so a retried chain finds the transfer it
+     * already made instead of holding the money a second time.
+     */
+    const requestRef =
+      params.requestRef ??
+      (params.provenance.origin === 'deposit'
+        ? depositChainRef(params.provenance.sourceTransactionId)
+        : undefined);
+    if (requestRef) {
+      const existing = await this.findByRequestRef(requestRef);
       if (existing) return this.assertSameRequest(existing, params);
     }
     const amount = toDecimal(params.amount);
@@ -354,7 +375,8 @@ export class TransfersService {
             amount: money(amount),
             currency,
             state: 'pending',
-            requestRef: params.requestRef ?? null,
+            requestRef: requestRef ?? null,
+            ...provenanceColumns(params.provenance),
           })
           .returning();
         return row;
@@ -365,8 +387,24 @@ export class TransfersService {
          * hits the UNIQUE index, its transaction (hold included) rolls back, and
          * it answers with the winner's transfer.
          */
-        if (params.requestRef && violatesConstraint(error, 'transfers_request_ref_uq')) {
-          const existing = await this.findByRequestRef(params.requestRef);
+        if (requestRef && violatesConstraint(error, 'transfers_request_ref_uq')) {
+          const existing = await this.findByRequestRef(requestRef);
+          if (existing) return this.assertSameRequest(existing, params);
+        }
+        /*
+         * The same race on the deposit that funds it (0226): one deposit funds at most one
+         * transfer, so the loser answers with the winner's.
+         */
+        const source =
+          'sourceTransactionId' in params.provenance
+            ? params.provenance.sourceTransactionId
+            : undefined;
+        if (source && violatesConstraint(error, 'transfers_source_transaction_uq')) {
+          const [existing] = await this.db
+            .select()
+            .from(transfers)
+            .where(eq(transfers.sourceTransactionId, source))
+            .limit(1);
           if (existing) return this.assertSameRequest(existing, params);
         }
         throw error;
@@ -385,12 +423,19 @@ export class TransfersService {
   /** A key reused for a DIFFERENT movement is refused, never silently matched. */
   private assertSameRequest(
     existing: typeof transfers.$inferSelect,
-    params: { tradingAccountId: string; direction: string; amount: string; userId: number },
+    params: {
+      tradingAccountId: string;
+      direction: string;
+      amount: string;
+      userId: number;
+      provenance: TransferProvenance;
+    },
   ) {
     if (
       existing.userId !== params.userId ||
       existing.tradingAccountId !== params.tradingAccountId ||
       existing.direction !== params.direction ||
+      existing.origin !== params.provenance.origin ||
       !toDecimal(existing.amount).equals(toDecimal(params.amount))
     ) {
       throw new ConflictError(

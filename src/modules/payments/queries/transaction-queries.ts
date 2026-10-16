@@ -1846,7 +1846,10 @@ export class TransactionQueries {
         rejectionReason: row.rejection_reason,
         // The Arabic written with it (0179); the controller falls back to the catalogue.
         ...(row.rejection_reason_ar ? { rejectionReasonAr: row.rejection_reason_ar } : {}),
-        reviewedBy: row.reviewed_by,
+        /*
+         * NO reviewedBy (16 Oct 2026): which administrator decided is the desk's business,
+         * not the client's — the KYC side strips the same field on purpose.
+         */
         reviewedAt: instantOrNull(row.reviewed_at),
         settledAt: instantOrNull(row.settled_at),
         providerPaymentId: row.provider_payment_id,

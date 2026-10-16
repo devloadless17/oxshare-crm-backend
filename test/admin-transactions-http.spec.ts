@@ -206,6 +206,7 @@ beforeAll(async () => {
     state: 'settled',
     settledAt: new Date('2026-08-03T12:05:00Z'),
     createdAt: new Date('2026-08-03T12:00:00Z'),
+    origin: 'client',
   });
   await db.insert(ibWalletTransfers).values({
     userId: client.id,

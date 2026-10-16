@@ -250,6 +250,7 @@ export class AdminMoneyService {
         currency: params.currency,
         provider: MANUAL_ADMIN_PROVIDER,
         providerRef: reference,
+        desk: { adminId: actor.id, reason: reasonText, reasonAr },
       },
       (tx, row) =>
         this.audit.recordWithin(tx, actor.id, 'wallet.credit', 'transaction', row.id, {
@@ -344,6 +345,7 @@ export class AdminMoneyService {
         currency: params.currency,
         provider: MANUAL_ADMIN_PROVIDER,
         providerRef: reference,
+        desk: { adminId: actor.id, reason: reasonText, reasonAr },
       },
       (tx, row) =>
         this.audit.recordWithin(tx, actor.id, 'wallet.debit', 'transaction', row.id, {
@@ -591,7 +593,13 @@ export class AdminMoneyService {
      */
     if (!isDeposit) {
       const debited = await this.debitTradingAccount(
-        { account, amount: params.amount, reason: reasonText, reference },
+        {
+          account,
+          amount: params.amount,
+          reason: reasonText,
+          reasonAr: composeReasonArabic({ note: reasonText, noteAr: params.reasonAr }),
+          reference,
+        },
         actor,
       );
       if (source === 'wallet') return debited;
@@ -599,7 +607,14 @@ export class AdminMoneyService {
     }
 
     if (source === 'wallet') {
-      return this.moveWalletToAccount(account, params.amount, reasonText, reference, actor);
+      return this.moveWalletToAccount(
+        account,
+        params.amount,
+        reasonText,
+        reference,
+        actor,
+        composeReasonArabic({ note: reasonText, noteAr: params.reasonAr }),
+      );
     }
 
     /*
@@ -651,6 +666,8 @@ export class AdminMoneyService {
      */
     let transfer: Awaited<ReturnType<TransferExecutor['execute']>> | null = null;
     let transferError: string | null = null;
+    // The transfer this funding made, even when executing it threw (it is then still pending).
+    let transferId: string | null = null;
 
     try {
       const pending = await this.transfers.request({
@@ -667,6 +684,14 @@ export class AdminMoneyService {
          * the client's wallet money to MT5 a SECOND time.
          */
         requestRef: reference ? `admin-fund:${reference}` : undefined,
+        // New money from the desk: its credit, who, and why (0226).
+        provenance: {
+          origin: 'desk_credit',
+          sourceTransactionId: credit.transaction.id,
+          adminId: actor.id,
+          reason: reasonText,
+          reasonAr: composeReasonArabic({ note: reasonText, noteAr: params.reasonAr }),
+        },
       });
 
       /*
@@ -676,6 +701,7 @@ export class AdminMoneyService {
        * and when MT5 is unreachable it leaves the transfer PENDING for the
        * resume scheduler rather than failing it.
        */
+      transferId = pending.id;
       transfer = (await this.transferExecutor.execute(pending.id)) ?? null;
 
       this.logger.log(
@@ -712,7 +738,7 @@ export class AdminMoneyService {
         amount: credit.transaction.amount,
         currency: account.currency,
         transactionId: credit.transaction.id,
-        transferId: transfer?.id ?? null,
+        transferId,
         transferState: transfer?.state ?? null,
         transferError,
         reason: reasonText,
@@ -775,6 +801,8 @@ export class AdminMoneyService {
       account: { id: string; userId: number; currency: string; login: string | null };
       amount: string;
       reason: string;
+      /** Its Arabic, as the desk typed it or composed (0179) — recorded on the transfer (0226). */
+      reasonAr?: string | null;
       reference: string;
     },
     actor: AuthenticatedAdmin,
@@ -799,6 +827,12 @@ export class AdminMoneyService {
       amount: params.amount,
       currency: account.currency,
       requestRef: params.reference ? `admin-debit:${params.reference}` : undefined,
+      provenance: {
+        origin: 'desk_debit',
+        adminId: actor.id,
+        reason: params.reason,
+        reasonAr: params.reasonAr ?? null,
+      },
     });
 
     /*
@@ -856,6 +890,7 @@ export class AdminMoneyService {
     reason: string,
     reference: string,
     actor: AuthenticatedAdmin,
+    reasonAr?: string | null,
   ) {
     const pending = await this.transfers.request({
       userId: account.userId,
@@ -864,6 +899,7 @@ export class AdminMoneyService {
       amount,
       currency: account.currency,
       requestRef: reference ? `admin-move:${reference}` : undefined,
+      provenance: { origin: 'desk_wallet', adminId: actor.id, reason, reasonAr: reasonAr ?? null },
     });
     const transfer = (await this.transferExecutor.execute(pending.id)) ?? null;
 
