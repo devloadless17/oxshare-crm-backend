@@ -8,12 +8,15 @@ import type { TransferOrigin } from '../transfer-provenance';
  *
  *   wallet           a client wallet: its number (the console's identifier), kind and currency
  *   trading_account  an MT5 account: its login and Live/Demo — never the client's nickname for it
- *   method           the rail it crossed the platform on (a deposit's source, a withdrawal's
- *                    destination); the destination TEXT itself stays in the masked `destination`
+ *   external         OUTSIDE the platform: where a deposit's money came from, where a
+ *                    withdrawal's went. A PLACE, never the rail: the method it crossed on is
+ *                    the row's own `method` (the owner's call, 16 Oct 2026 — ledgers and bank
+ *                    statements keep the counterparty and the payment method apart). The payout
+ *                    destination TEXT stays in the masked `destination`.
  *   company          the desk's own money: new money credited in, or money taken out by hand
  */
 export interface MovementEnd {
-  kind: 'wallet' | 'trading_account' | 'method' | 'company';
+  kind: 'wallet' | 'trading_account' | 'external' | 'company';
   walletId?: string | null;
   walletNumber?: string | null;
   walletKind?: string | null;
@@ -21,9 +24,16 @@ export interface MovementEnd {
   tradingAccountId?: string | null;
   login?: string | null;
   environment?: string | null;
-  methodLabel?: string | null;
-  providerCode?: string | null;
-  channelCode?: string | null;
+}
+
+/** The rail a payment crossed the platform on — its own attribute, never an end. */
+export interface MovementMethod {
+  label: string | null;
+  providerCode: string | null;
+  /** The channel, e.g. a network (TRC20). */
+  channelCode: string | null;
+  /** The provider's environment when it is not live (a sandbox payment). */
+  environment: string | null;
 }
 
 /** A desk member, by name only — `admins.view` keeps the directory narrow, so never an email. */
@@ -125,26 +135,30 @@ export function movementDetails(row: MovementDetailRow) {
     login: row.account_login,
     environment: row.account_environment,
   };
-  const method: MovementEnd = {
-    kind: 'method',
-    methodLabel: row.method_label ?? row.method_name ?? null,
-    providerCode: row.route_provider,
-    channelCode: row.route_channel,
-    environment: row.provider_environment,
-  };
+  const external: MovementEnd = { kind: 'external' };
+  // Only a payment crosses the platform's edge; a transfer or a commission move has no method.
+  const method: MovementMethod | null =
+    row.kind === 'payment'
+      ? {
+          label: row.method_label ?? row.method_name ?? null,
+          providerCode: row.route_provider,
+          channelCode: row.route_channel,
+          environment: row.provider_environment,
+        }
+      : null;
   const company: MovementEnd = { kind: 'company' };
 
   let from: MovementEnd;
   let to: MovementEnd;
   switch (type) {
     case 'deposit':
-      [from, to] = [method, wallet];
+      [from, to] = [external, wallet];
       break;
     case 'desk_credit':
       [from, to] = [company, wallet];
       break;
     case 'withdrawal':
-      [from, to] = [wallet, method];
+      [from, to] = [wallet, external];
       break;
     case 'desk_debit':
       [from, to] = [wallet, company];
@@ -200,6 +214,7 @@ export function movementDetails(row: MovementDetailRow) {
     effect,
     from,
     to,
+    method,
     onward,
     origin: row.transfer_origin,
     source,
@@ -235,8 +250,8 @@ export function movementDetailCells(d: MovementDetails) {
         return `${end.walletKind === 'commission' ? 'Commission wallet' : 'Wallet'} ${end.currency ?? ''} ${end.walletNumber ?? ''}`.trim();
       case 'trading_account':
         return `MT5 ${end.login ?? '(no login)'}${end.environment ? ` (${end.environment})` : ''}`;
-      case 'method':
-        return end.methodLabel ?? end.providerCode ?? 'Payment method';
+      case 'external':
+        return 'External';
       case 'company':
         return 'Company (desk)';
     }
@@ -273,12 +288,7 @@ export function movementDetailCells(d: MovementDetails) {
     providerRequestAmount: d.providerRequestAmount,
     providerAmountReceived: d.providerAmountReceived,
     providerStatus: d.providerStatus,
-    network:
-      d.from.kind === 'method'
-        ? d.from.channelCode
-        : d.to.kind === 'method'
-          ? d.to.channelCode
-          : null,
+    network: d.method?.channelCode ?? null,
     providerPayoutId: d.providerPayoutId,
   };
 }

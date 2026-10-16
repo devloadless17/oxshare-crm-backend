@@ -29779,7 +29779,7 @@
             "enum": [
               "wallet",
               "trading_account",
-              "method",
+              "external",
               "company"
             ]
           },
@@ -29813,9 +29813,17 @@
           "environment": {
             "type": "string",
             "nullable": true,
-            "description": "live or demo; a provider’s environment on a method end."
-          },
-          "methodLabel": {
+            "description": "live or demo, on a trading account end."
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      "MovementMethodDto": {
+        "type": "object",
+        "properties": {
+          "label": {
             "type": "string",
             "nullable": true,
             "description": "The method’s desk label."
@@ -29828,10 +29836,18 @@
             "type": "string",
             "nullable": true,
             "description": "The channel, e.g. a network."
+          },
+          "environment": {
+            "type": "string",
+            "nullable": true,
+            "description": "The provider environment (e.g. sandbox); live is the norm."
           }
         },
         "required": [
-          "kind"
+          "label",
+          "providerCode",
+          "channelCode",
+          "environment"
         ]
       },
       "MovementOnwardDto": {
@@ -30100,6 +30116,16 @@
           "to": {
             "$ref": "#/components/schemas/MovementEndDto"
           },
+          "method": {
+            "nullable": true,
+            "description": "The rail a PAYMENT crossed on; null for a transfer or a commission move.",
+            "type": "object",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/MovementMethodDto"
+              }
+            ]
+          },
           "onward": {
             "nullable": true,
             "type": "object",
@@ -30237,6 +30263,7 @@
           "effect",
           "from",
           "to",
+          "method",
           "onward",
           "origin",
           "source",

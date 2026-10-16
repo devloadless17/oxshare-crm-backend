@@ -1087,6 +1087,25 @@ describe('the Transfers page (16 Oct 2026): its own key, its own rows, nothing e
       'commission_to_wallet',
       'transfer_to_account',
     ]);
+
+    // Ends are PLACES; the rail is the row's own `method` — never an end (16 Oct 2026).
+    const all = (await session.get(`${LIST}?userId=${unionClientId}`).expect(200)).body as {
+      items: {
+        type: string;
+        from: { kind: string };
+        to: { kind: string };
+        method: { label: string | null; providerCode: string | null } | null;
+      }[];
+    };
+    const byType = (type: string) => all.items.find((row) => row.type === type);
+    expect(byType('deposit')).toMatchObject({ from: { kind: 'external' }, to: { kind: 'wallet' } });
+    expect(byType('deposit')?.method?.providerCode).toBeTruthy();
+    expect(byType('withdrawal')).toMatchObject({
+      from: { kind: 'wallet' },
+      to: { kind: 'external' },
+    });
+    expect(byType('transfer_to_account')?.method).toBeNull();
+    expect(byType('commission_to_wallet')?.method).toBeNull();
   });
 });
 
