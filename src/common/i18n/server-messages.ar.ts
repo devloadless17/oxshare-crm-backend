@@ -1174,4 +1174,9 @@ export const SERVER_MESSAGES_AR: Readonly<Record<string, string>> = {
     'لدى هذا الحساب {1} صفقات مفتوحة على MT5. لا تؤرشفه إلا بعد إغلاقها.',
   'This account still has a {1} of {2} {3} {4}. Archive it only once it is empty, or the client loses sight of that money.':
     'لا يزال لهذا الحساب {1} بقيمة {2} {3} {4}. لا تؤرشفه إلا بعد أن يصبح فارغاً، وإلا فلن يرى العميل هذا المال.',
+  // ── A person's release waits for MT5 (audit R1-1, 16 Oct 2026) ───────────────────
+  'MT5 shows this transfer as applied (deal {1}), so its hold cannot be released. It will be completed automatically.':
+    'يُظهر MT5 أن هذا التحويل قد نُفِّذ (الصفقة {1})، لذا لا يمكن تحرير المبلغ المحجوز. سيُستكمل تلقائياً.',
+  'MT5 was asked to apply this transfer moments ago and may still confirm it. Try again in {1} minute(s).':
+    'طُلب من MT5 تنفيذ هذا التحويل قبل لحظات وقد يؤكده بعد. أعد المحاولة بعد {1} دقيقة.',
 };

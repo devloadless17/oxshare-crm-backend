@@ -112,6 +112,22 @@ export class TransferExecutor {
     const credit = transfer.direction === 'wallet_to_account';
     const amount = credit ? transfer.amount : `-${transfer.amount}`;
 
+    /*
+     * MT5 ALREADY APPLIED IT (audit R1-2/R3-2, 16 Oct 2026): an earlier call posted the deal and
+     * only the answer was lost. The bridge would answer 409 on this key for ever, so the deal
+     * itself is the proof: settle from it instead of asking again.
+     */
+    const applied = await this.transfers.appliedMt5Deal(transfer);
+    if (applied) {
+      this.logger.log(`Transfer ${transferId} found on MT5 as deal ${applied}; settling from it`);
+      return this.transfers.settle(transferId);
+    }
+
+    // The claim: stamped under the row lock, so a person's release either sees it or wins first.
+    if (!(await this.transfers.markBridgeCall(transferId))) {
+      return (await this.transfers.findById(transferId)) ?? transfer;
+    }
+
     try {
       const result = await this.bridge.balance({
         login: account.login,

@@ -1611,6 +1611,13 @@
       "when": 1791899563401,
       "tag": "0228_transfers_view",
       "breakpoints": true
+    },
+    {
+      "idx": 231,
+      "version": "7",
+      "when": 1791899623401,
+      "tag": "0229_transfer_bridge_call",
+      "breakpoints": true
     }
   ]
 }
