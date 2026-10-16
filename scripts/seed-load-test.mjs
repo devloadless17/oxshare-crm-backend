@@ -388,7 +388,19 @@ async function main() {
    * the seeded users is correct on the first run and the tenth.
    */
   let userIds = [];
-  const countries = ['LB', 'AE', 'SA', 'EG', 'JO', 'TR', 'GB', 'DE', 'FR', 'NG'];
+  // `users.country` references `countries(name)` since 0193 — the NAME, not the ISO code.
+  const countries = [
+    'Lebanon',
+    'United Arab Emirates',
+    'Saudi Arabia',
+    'Egypt',
+    'Jordan',
+    'Türkiye',
+    'United Kingdom',
+    'Germany',
+    'France',
+    'Nigeria',
+  ];
   const statuses = ['active', 'active', 'active', 'pending', 'suspended'];
 
   await step('users', async () => {
