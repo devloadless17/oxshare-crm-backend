@@ -1,8 +1,13 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsIn, IsOptional, IsString, MaxLength } from 'class-validator';
+import { IsIn, IsISO8601, IsOptional, IsString, Matches, MaxLength } from 'class-validator';
 
 export const CLIENT_ERROR_APPS = ['portal', 'admin'] as const;
-export const CLIENT_ERROR_BOUNDARIES = ['page', 'global'] as const;
+/**
+ * Where the frontend caught it: an error screen (`page`, `global`), or the
+ * window's own listeners for an error no screen caught (`uncaught`) and a
+ * promise nobody handled (`rejection`).
+ */
+export const CLIENT_ERROR_BOUNDARIES = ['page', 'global', 'uncaught', 'rejection'] as const;
 
 /**
  * What a frontend's error screen sends when it is shown. Every field is capped
@@ -50,4 +55,21 @@ export class ClientErrorReportDto {
   @IsString()
   @MaxLength(100)
   build?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'When it happened on the device. A report kept on a phone that had no connection is sent on its next page load, so this can be well before the log line.',
+  })
+  @IsOptional()
+  @IsISO8601()
+  @MaxLength(40)
+  occurredAt?: string;
+
+  @ApiPropertyOptional({
+    description: 'Made on the device, once per report, so a report sent twice reads as one.',
+  })
+  @IsOptional()
+  @IsString()
+  @Matches(/^[A-Za-z0-9-]{1,64}$/)
+  id?: string;
 }

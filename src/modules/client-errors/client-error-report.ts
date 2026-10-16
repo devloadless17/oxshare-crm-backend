@@ -39,9 +39,15 @@ export function pathOnly(path: string): string {
 export function clientErrorLogLine(
   dto: ClientErrorReportDto,
   userAgent: string | undefined,
+  receivedAt: Date = new Date(),
 ): Record<string, unknown> {
   return {
     kind: 'client.crash',
+    id: dto.id,
+    occurredAt: dto.occurredAt,
+    // A report kept on a phone with no connection arrives on its next page
+    // load. Say how late, so its log time is not mistaken for the crash's.
+    sentLateSeconds: lateBy(dto.occurredAt, receivedAt),
     app: dto.app,
     boundary: dto.boundary,
     path: pathOnly(dto.path),
@@ -52,4 +58,13 @@ export function clientErrorLogLine(
     stack: dto.stack ? scrubStack(dto.stack) : undefined,
     userAgent: userAgent?.slice(0, 300),
   };
+}
+
+/** Seconds between the crash and its arrival, when that is over a minute. */
+function lateBy(occurredAt: string | undefined, receivedAt: Date): number | undefined {
+  if (!occurredAt) return undefined;
+  const at = Date.parse(occurredAt);
+  if (Number.isNaN(at)) return undefined;
+  const seconds = Math.round((receivedAt.getTime() - at) / 1000);
+  return seconds > 60 ? seconds : undefined;
 }
