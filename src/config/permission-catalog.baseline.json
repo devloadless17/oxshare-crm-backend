@@ -141,6 +141,7 @@
     "trading.withdraw",
     "transactions.view",
     "transfers.abandon",
+    "transfers.view",
     "wallets.create",
     "wallets.credit",
     "wallets.debit",

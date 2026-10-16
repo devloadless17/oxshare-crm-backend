@@ -31,10 +31,15 @@ import {
   RequirePermissions,
   type AuthenticatedAdmin,
 } from './guards/admin.guard';
-import { enumQuery, searchQuery, uuidQuery } from '../../common/query-params';
+import { enumListQuery, enumQuery, searchQuery, uuidQuery } from '../../common/query-params';
+import { MOVEMENT_TYPES } from '../payments/movement-type';
 import { ApiDateRangeQueries, dateRangeQuery } from '../../common/date-range';
 import { ClientRefPipe } from '../../common/client-ref.pipe';
-import { transactionDirectionEnum, transactionStateEnum } from '../../database/schema';
+import {
+  transactionDirectionEnum,
+  transactionStateEnum,
+  transferOriginEnum,
+} from '../../database/schema';
 import { ScopedToClients } from './guards/client-scope.decorator';
 import { Audited } from './guards/audited.decorator';
 
@@ -57,6 +62,30 @@ function FinancialFilterQueries() {
       description:
         'payment = crossed the platform boundary through a provider; transfer = wallet ⇄ ' +
         'trading account; commission_transfer = partner earnings to their main wallet.',
+    }),
+    ApiQuery({
+      name: 'type',
+      required: false,
+      description:
+        'Accounting types, comma-separated: ' +
+        MOVEMENT_TYPES.join(', ') +
+        '. A desk credit or debit is the desk’s own money (route manual:adjustment), never a ' +
+        'client’s deposit or withdrawal; the three transfer types never leave the platform.',
+    }),
+    ApiQuery({
+      name: 'origin',
+      required: false,
+      description:
+        'Where a transfer’s money came from, comma-separated: ' +
+        transferOriginEnum.enumValues.join(', ') +
+        '. Only transfers carry one, so a payment never matches.',
+    }),
+    ApiQuery({
+      name: 'account',
+      required: false,
+      description:
+        'One trading account’s transfers: its id or its MT5 login. An unknown or out-of-territory ' +
+        'account answers an empty list, never "not found".',
     }),
     ApiQuery({ name: 'state', required: false, enum: transactionStateEnum.enumValues }),
     ApiQuery({ name: 'userId', required: false, description: 'Narrow to one client (UUID).' }),
@@ -105,6 +134,42 @@ function FinancialFilterQueries() {
   );
 }
 
+/** The Transfers routes' filters: the Financial ones a transfer can match. */
+function TransferFilterQueries() {
+  return applyDecorators(
+    ApiQuery({
+      name: 'direction',
+      required: false,
+      enum: transactionDirectionEnum.enumValues,
+      description:
+        'Wallet-side, like Financial: withdrawal = wallet → trading account, deposit = into the ' +
+        'wallet (from an account, or commission → main wallet).',
+    }),
+    ApiQuery({ name: 'state', required: false, enum: transactionStateEnum.enumValues }),
+    ApiQuery({ name: 'userId', required: false, description: 'Narrow to one client.' }),
+    ApiQuery({ name: 'currency', required: false, description: 'A currency code.' }),
+    ApiQuery({
+      name: 'q',
+      required: false,
+      description: 'A Portal ID (exact) or free text over the client’s email, name or phone.',
+    }),
+    ApiDateRangeQueries(),
+    ApiQuery({
+      name: 'origin',
+      required: false,
+      description:
+        'Where the money came from, comma-separated: ' + transferOriginEnum.enumValues.join(', '),
+    }),
+    ApiQuery({
+      name: 'account',
+      required: false,
+      description:
+        'One trading account: its id or MT5 login. Unknown or out of territory is an empty list.',
+    }),
+    ApiQuery({ name: 'id', required: false, description: 'One transfer by its uuid.' }),
+  );
+}
+
 const METHOD_KEY = /^[A-Za-z0-9_.-]{1,100}$/;
 
 /** `?method=a,b` → the keys, or a 400 naming the parameter. */
@@ -146,6 +211,12 @@ function DeskDepositQueries() {
 interface RawFilterParams {
   direction?: string;
   kind?: string;
+  /** Accounting types, comma-separated (movement-type.ts). */
+  type?: string;
+  /** Transfer origins, comma-separated (0226). */
+  origin?: string;
+  /** One trading account: its id or its MT5 login. */
+  account?: string;
   state?: string;
   userId?: number;
   currency?: string;
@@ -213,7 +284,11 @@ export class AdminFinancialController {
 
     return {
       direction: enumQuery(raw.direction, transactionDirectionEnum.enumValues, 'direction'),
-      kind: enumQuery(raw.kind, TRANSACTION_KINDS, 'kind'),
+      kinds: enumListQuery(raw.kind, TRANSACTION_KINDS, 'kind'),
+      types: enumListQuery(raw.type, MOVEMENT_TYPES, 'type'),
+      origins: enumListQuery(raw.origin, transferOriginEnum.enumValues, 'origin'),
+      // Resolved to an id here; an unknown login is an ordinary empty list, never "not found".
+      tradingAccountId: await this.money.accountFilterId(raw.account),
       state: enumQuery(raw.state, transactionStateEnum.enumValues, 'state'),
       userId: raw.userId,
       currency,
@@ -289,6 +364,9 @@ export class AdminFinancialController {
     @Query('decidedBy') decidedBy?: string,
     @Query('method') method?: string,
     @Query('id') id?: string,
+    @Query('type') type?: string,
+    @Query('origin') origin?: string,
+    @Query('account') account?: string,
   ) {
     const chosen = exportFormat(format);
     const query = await this.filters({
@@ -304,6 +382,9 @@ export class AdminFinancialController {
       decidedBy,
       method,
       id,
+      type,
+      origin,
+      account,
     });
 
     this.audit.record(req.admin.id, 'export.transactions', 'transaction_list', req.admin.id, {
@@ -365,6 +446,9 @@ export class AdminFinancialController {
     @Query('decidedBy') decidedBy?: string,
     @Query('method') method?: string,
     @Query('id') id?: string,
+    @Query('type') type?: string,
+    @Query('origin') origin?: string,
+    @Query('account') account?: string,
   ) {
     return this.money.transactionsSummary(
       await this.filters({
@@ -380,7 +464,191 @@ export class AdminFinancialController {
         decidedBy,
         method,
         id,
+        type,
+        origin,
+        account,
       }),
+      req.admin,
+    );
+  }
+
+  // ── The Transfers page (`/transfers`) — on its OWN key (16 Oct 2026) ─────
+  /*
+   * Every move between a client's own accounts — wallet ⇄ trading account, commission wallet →
+   * main wallet — with where its money came from (0226). `transfers.view` is what a transfers
+   * reader is given; the platform-wide `transactions.view` also admits. The kinds are FORCED to the
+   * transfer kinds in the SERVICE (and the export batch), never trusted from the query: that is the
+   * wall between a transfers reader and every payment on the platform.
+   */
+  @Get('transfers/export')
+  @Throttle({ default: { ttl: 60_000, limit: EXPORT_RATE_LIMIT } })
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('transfers.view', 'transactions.view')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Export the filtered transfers as CSV',
+    description:
+      'The same filters as GET /admin/transfers, over every matching row. Amounts are the exact ' +
+      'decimal strings the ledger holds (§6.1).',
+  })
+  @ApiOkResponse({
+    description: 'A CSV file. `Content-Disposition` names it `transfers-<YYYY-MM-DD>.csv`.',
+    content: { 'text/csv': { schema: { type: 'string', format: 'binary' } } },
+  })
+  @ApiQuery({ name: 'format', required: false, enum: ['csv'] })
+  @TransferFilterQueries()
+  @ScopedToClients(
+    'AdminExportService.transferBatch → TransactionsService.listAllForExport, the same per-arm clientScopePredicate the list applies.',
+  )
+  @Audited('export.transfers')
+  async exportTransfers(
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+    @Res() res: Response,
+    @Query('format') format?: string,
+    @Query('direction') direction?: string,
+    @Query('state') state?: string,
+    @Query('userId', ClientRefPipe) userId?: number,
+    @Query('currency') currency?: string,
+    @Query('q') q?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('origin') origin?: string,
+    @Query('account') account?: string,
+    @Query('id') id?: string,
+  ) {
+    const chosen = exportFormat(format);
+    const query = await this.filters({
+      direction,
+      state,
+      userId,
+      currency,
+      q,
+      from,
+      to,
+      origin,
+      account,
+      id,
+    });
+    this.audit.record(req.admin.id, 'export.transfers', 'transfer_list', req.admin.id, {
+      format: chosen,
+      filters: query,
+    });
+    // Keyset-chained under one snapshot instant — see `exportTransactions`.
+    const startedAt = new Date();
+    let after: { createdAt: string; id: string } | undefined;
+    await streamCsv(
+      res,
+      'transfers',
+      chosen,
+      this.exports.transactionColumns,
+      async (_offset, limit) => {
+        const rows = await this.exports.transferBatch(query, req.admin, limit, startedAt, after);
+        const last = rows[rows.length - 1];
+        if (last) after = { createdAt: last.cursorCreatedAt, id: last.id };
+        return rows;
+      },
+    );
+  }
+
+  @Get('transfers/summary')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('transfers.view', 'transactions.view')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'Totals over the filtered transfers, per currency, type and settlement (strings)',
+  })
+  @ApiOkResponse({ type: AdminTransactionsSummaryDto })
+  @TransferFilterQueries()
+  @ScopedToClients(
+    'TransactionsService.summarizeForAdmin aggregates over the same scoped union, kinds forced.',
+  )
+  async transfersSummary(
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+    @Query('direction') direction?: string,
+    @Query('state') state?: string,
+    @Query('userId', ClientRefPipe) userId?: number,
+    @Query('currency') currency?: string,
+    @Query('q') q?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('origin') origin?: string,
+    @Query('account') account?: string,
+    @Query('id') id?: string,
+  ) {
+    return this.money.transfersSummary(
+      await this.filters({ direction, state, userId, currency, q, from, to, origin, account, id }),
+      req.admin,
+    );
+  }
+
+  @Get('transfers')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('transfers.view', 'transactions.view')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary:
+      'Every transfer between a client’s own accounts, with where its money came from ' +
+      '(amounts are strings)',
+  })
+  @ApiOkResponse({ type: AdminTransactionListResponseDto })
+  @TransferFilterQueries()
+  @ApiQuery({ name: 'page', required: false, description: 'Legacy offset paging. Prefer cursor.' })
+  @ApiQuery({ name: 'limit', required: false })
+  @ApiQuery({ name: 'cursor', required: false, description: 'Opaque keyset cursor (R-2.4).' })
+  @ApiQuery({
+    name: 'dir',
+    required: false,
+    enum: ['next', 'prev', 'last'],
+    description: 'prev: the page before ?cursor. last: the final page (no cursor).',
+  })
+  @ApiQuery({ name: 'sort', required: false, enum: Object.keys(ADMIN_TRANSACTION_SORT_COLUMNS) })
+  @ApiQuery({ name: 'order', required: false, enum: ['asc', 'desc'] })
+  @ApiQuery({ name: 'facet', required: false, enum: ['direction', 'type'] })
+  @ScopedToClients(
+    'AdminMoneyService.listTransfers → TransactionsService.listAllForAdmin, the per-arm clientScopePredicate the Financial list applies; kinds forced.',
+  )
+  async listTransfers(
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+    @Query('direction') direction?: string,
+    @Query('state') state?: string,
+    @Query('userId', ClientRefPipe) userId?: number,
+    @Query('currency') currency?: string,
+    @Query('q') q?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('origin') origin?: string,
+    @Query('account') account?: string,
+    @Query('id') id?: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('cursor') cursor?: string,
+    @Query('dir') dir?: string,
+    @Query('sort') sort?: string,
+    @Query('order') order?: string,
+    @Query('facet') facet?: string,
+  ) {
+    return this.money.listTransfers(
+      {
+        ...(await this.filters({
+          direction,
+          state,
+          userId,
+          currency,
+          q,
+          from,
+          to,
+          origin,
+          account,
+          id,
+        })),
+        page,
+        limit,
+        cursor,
+        dir,
+        sort,
+        order,
+        facet: enumQuery(facet, ['direction', 'type'] as const, 'facet'),
+      },
       req.admin,
     );
   }
@@ -563,6 +831,10 @@ export class AdminFinancialController {
     @Query('decidedBy') decidedBy?: string,
     @Query('method') method?: string,
     @Query('id') id?: string,
+    @Query('type') type?: string,
+    @Query('origin') origin?: string,
+    @Query('account') account?: string,
+    @Query('facet') facet?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('cursor') cursor?: string,
@@ -585,6 +857,9 @@ export class AdminFinancialController {
           decidedBy,
           method,
           id,
+          type,
+          origin,
+          account,
         })),
         page,
         limit,
@@ -594,6 +869,7 @@ export class AdminFinancialController {
         // mapping lives — the listWithdrawals rule.
         sort,
         order,
+        facet: enumQuery(facet, ['direction', 'type'] as const, 'facet'),
       },
       req.admin,
     );

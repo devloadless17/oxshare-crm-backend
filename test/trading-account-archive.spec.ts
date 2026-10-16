@@ -162,6 +162,22 @@ describe('the money rule: nothing that holds anything is hidden', () => {
     await expect(accounts.setAccountArchived(id, true, ADMIN)).resolves.toMatchObject({ id });
   });
 
+  it('answers an account outside the reader’s territory as not found, and changes nothing', async () => {
+    onMt5('8100006');
+    const id = await account('8100006');
+    const nobodysDesk = {
+      ...ADMIN,
+      clientScope: { unrestricted: false, tagIds: [] },
+    } as unknown as AuthenticatedAdmin;
+    await expect(accounts.setAccountArchived(id, true, nobodysDesk)).rejects.toBeInstanceOf(
+      NotFoundError,
+    );
+    await expect(accounts.setAccountArchived(id, false, nobodysDesk)).rejects.toBeInstanceOf(
+      NotFoundError,
+    );
+    expect(await trading.listMine(clientId)).toHaveLength(1);
+  });
+
   it('refuses an admin without trading.archive', async () => {
     onMt5('8100005');
     const id = await account('8100005');

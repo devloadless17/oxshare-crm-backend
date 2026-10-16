@@ -1346,10 +1346,65 @@ that moves the money. It is never inferred later.
 
   Both migrations are re-runnable, which is how `test/transfer-provenance.spec.ts` proves the
   backfill.
+
 - **A client never sees which admin decided**: the client `TransactionDto`, `transactionView` and
   `listForUser` carry no `reviewedBy`. Admin shapes do.
 - A raw fixture INSERT into `transfers` must state `origin`, or the trigger derives `client`.
   Teardowns delete transfers BEFORE transactions (`source_transaction_id` is RESTRICT).
+
+### Every movement EXPLAINS itself: one read model (0228, 16 Oct 2026)
+
+Every admin money surface (Financial, Transfers, the client profile, the record panel, both
+CSVs) reads the SAME server fields. No screen classifies, guesses or adds money.
+
+- **Accounting type is the server's** (`modules/payments/movement-type.ts`, a pure module plus
+  its SQL twins `unionTypeCase` / `totalsTypeCase`):
+
+  | type                   | rule                                                     | effect   |
+  | ---------------------- | -------------------------------------------------------- | -------- |
+  | `deposit`              | payment, deposit, route ≠ `manual:adjustment`            | in       |
+  | `desk_credit`          | payment, deposit, route = `manual:adjustment` (the desk) | in       |
+  | `withdrawal`           | payment, withdrawal, route ≠ `manual:adjustment`         | out      |
+  | `desk_debit`           | payment, withdrawal, route = `manual:adjustment`         | out      |
+  | `transfer_to_account`  | transfer, wallet side "withdrawal"                       | internal |
+  | `transfer_to_wallet`   | transfer, wallet side "deposit"                          | internal |
+  | `commission_to_wallet` | commission_transfer                                      | internal |
+
+  Route is a key of the stored totals, so type counts and type totals come from the totals,
+  never a live scan. Buckets: `settled` (success) · `inProgress` (pending/approved) ·
+  `notCompleted` (rejected/failure). **Never summed across currencies or across buckets.**
+
+- **The summary** (`summarizeForAdmin`) returns `accounting[]` (currency × type × bucket),
+  `effects[]` (currency × effect × bucket) and `net[]` (settled in − out per currency,
+  decimal.js), beside the old `rows`/`directions`.
+- **Details are added AFTER the page is cut** (`MOVEMENT_DETAIL_COLUMNS` / `_JOINS`: key and
+  unique-index lookups only; admins by NAME, never email). Every row carries `type`, `effect`,
+  `from`/`to` (`wallet` with its number · `trading_account` with login and Live/Demo · `method` ·
+  `company`), `origin`, `source` (the deposit a transfer moves), `onward` (a deposit aimed at an
+  account: its transfer, or "never moved", which used to be one log line), `requestedBy`,
+  `approvedBy`, `decidedBy`, `deskReason(Ar)` and the provider money fields. The payout
+  destination stays only in the masked `destination`. `movementDetails()`
+  (`queries/movement-details.ts`) is the one mapper, and the CSV appends `MOVEMENT_DETAIL_CSV`
+  from it, so list = export = panel. The original CSV columns are unchanged and in order.
+- **The union** appends `transfer_origin` as the LAST column of every arm, with identical types
+  in every arm, or Merge Append is lost.
+- **Filters:** `?type=` (CSV), `?origin=` (CSV), `?account=` (an MT5 login or account id).
+  `accountFilterId` resolves the account first; an unknown, malformed-but-plausible or
+  out-of-scope account becomes the NIL uuid, which returns an ordinary empty page, so the filter
+  never reveals that an account exists. Only an impossible format is a 400. Origin and account
+  read live rows (capped facets).
+- **`?id=` on one record** adds `ledger`, its postings, but only for a `ledger.view` holder.
+- **Transfers** (`GET /admin/transfers`, `/summary`, `/export`, in `admin-financial.controller.ts`)
+  answer to `transfers.view` OR `transactions.view`. **The kinds are forced in the SERVICE and
+  the export batch** (`transfer` + `commission_transfer`): that is the only wall between the two
+  keys, so a `transfers.view`-only reader can never read a payment by `?id=` or `?type=`. The
+  export is audited `export.transfers`. The stuck count (`transfers/stuck`) accepts either key.
+- **0228** creates `transfers.view` (opens `/transfers`; `transfers.abandon` requires it) and
+  carries it, by the 0207 pattern, to every role, admin, pending invite and API key holding
+  `transactions.view` or `transfers.abandon`, and to nobody else.
+- Pinned by `test/movement-totals.spec.ts` (totals = live recount, per type and effect) and
+  `test/admin-transactions-http.spec.ts` (the Transfers wall, scope, masking, the export audit,
+  ledger postings).
 
 ## The client's identity RECORD (0151–0153, 0171; 28–30 Sep 2026)
 

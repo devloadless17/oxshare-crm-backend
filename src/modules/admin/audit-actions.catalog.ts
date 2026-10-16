@@ -845,6 +845,7 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
    * block above says gets recorded.
    */
   { action: 'export.transactions', label: 'Financial transactions exported', group: 'Exports' },
+  { action: 'export.transfers', label: 'Transfers exported', group: 'Exports' },
   {
     action: 'export.trading_accounts',
     label: 'Trading accounts exported',

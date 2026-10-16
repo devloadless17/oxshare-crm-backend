@@ -1604,6 +1604,13 @@
       "when": 1791899463401,
       "tag": "0227_payment_provenance",
       "breakpoints": true
+    },
+    {
+      "idx": 230,
+      "version": "7",
+      "when": 1791899563401,
+      "tag": "0228_transfers_view",
+      "breakpoints": true
     }
   ]
 }

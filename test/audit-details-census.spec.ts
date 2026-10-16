@@ -186,6 +186,7 @@ const WRITES_DETAILS: readonly string[] = [
   'export.ledger',
   'export.trading_accounts',
   'export.transactions',
+  'export.transfers',
   'export.wallets',
   'export.withdrawals',
   'external_link.create',

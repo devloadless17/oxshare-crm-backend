@@ -122,6 +122,29 @@ export function enumQuery<T extends string>(
 }
 
 /**
+ * An optional comma-separated list of enum values (`?type=deposit,desk_credit`) — `enumQuery`'s
+ * sibling for a filter that takes ANY of several. Each value is checked; duplicates collapse; an
+ * absent or empty list is no filter.
+ */
+export function enumListQuery<T extends string>(
+  value: string | undefined,
+  allowed: readonly T[],
+  field: string,
+): T[] | undefined {
+  if (value === undefined || value.trim() === '') return undefined;
+  const values = [
+    ...new Set(
+      value
+        .split(',')
+        .map((part) => part.trim())
+        .filter(Boolean),
+    ),
+  ];
+  for (const one of values) enumQuery(one, allowed, field);
+  return values.length ? (values as T[]) : undefined;
+}
+
+/**
  * An optional `uuid`-valued QUERY parameter — the query-string sibling of
  * `UuidParam`, for the same 500 (`invalid input syntax for type uuid`) on the
  * same class of typo. Absent is not invalid: an omitted filter is no filter.

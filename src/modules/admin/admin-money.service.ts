@@ -17,6 +17,7 @@ import {
   DEFAULT_WITHDRAWAL_SORT,
   MANUAL_ADMIN_PROVIDER,
   TransactionsService,
+  transferKindsFor,
   WITHDRAWAL_SORT_COLUMNS,
   type AdminMovementsFilter,
 } from '../payments/transactions.service';
@@ -29,7 +30,7 @@ import { UsersStore } from '../../store/users.store';
 import { EmailService } from '../email/email.service';
 import { MoneyRuleError, NotFoundError, ValidationError } from '../../common/errors/domain-errors';
 import { AdminAuditService } from './admin-audit.service';
-import { assertActorCan, assertActorCanAny } from '../../common/security/actor';
+import { actorHasPermission, assertActorCan, assertActorCanAny } from '../../common/security/actor';
 import { decodeCursor, twoWayPaging } from '../../common/pagination';
 import { enumQuery } from '../../common/query-params';
 import { ledgerEntryTypeEnum, tradingAccounts } from '../../database/schema';
@@ -1912,6 +1913,8 @@ export class AdminMoneyService {
       dir?: string;
       sort?: string;
       order?: string;
+      /** Which second facet the list counts (`direction` | `type`). */
+      facet?: 'direction' | 'type';
     },
     actor: AuthenticatedAdmin,
   ) {
@@ -1993,11 +1996,58 @@ export class AdminMoneyService {
      * silently and only a restricted operator can tell; the HTTP spec's
      * masking cases are the other half of the fix.
      */
+    /*
+     * ONE record (a detail panel, `?id=`): the ledger postings it made, beside it — for a reader
+     * who may read the ledger (`ledger.view`), and nobody else (16 Oct 2026).
+     */
+    const items =
+      query.id && page.items.length === 1 && actorHasPermission(actor, 'ledger.view')
+        ? await Promise.all(
+            page.items.map(async (item) => ({
+              ...item,
+              ledger: await this.transactions.ledgerPostingsFor({
+                id: item.id,
+                kind: item.kind,
+                walletId: item.walletId,
+                fromWalletId: item.from.walletId ?? null,
+              }),
+            })),
+          )
+        : page.items;
     return {
       ...page,
-      items: page.items,
+      items,
       maskedFields: maskedFieldsFor('financial', actor.fieldMask),
     };
+  }
+
+  /** A money list's `account` filter, resolved without ever saying whether the account exists. */
+  accountFilterId(raw: string | undefined): Promise<string | undefined> {
+    return this.transactions.accountFilterId(raw);
+  }
+
+  /**
+   * THE TRANSFERS PAGE — `GET /admin/transfers` (16 Oct 2026): every move between a client's own
+   * accounts — wallet ⇄ trading account, commission wallet → main wallet — on its own key,
+   * `transfers.view`, or the platform-wide `transactions.view`. The kinds are FORCED here, whatever
+   * the caller passed: this is the wall between a transfers reader and every payment.
+   */
+  async listTransfers(
+    query: Parameters<AdminMoneyService['listTransactions']>[0],
+    actor: AuthenticatedAdmin,
+  ) {
+    assertActorCanAny(actor, ['transfers.view', 'transactions.view'], 'list transfers');
+    return this.movementPage({ ...query, kinds: transferKindsFor(query.origins) }, actor);
+  }
+
+  /** The Transfers page's tiles: the same forced kinds as its list. */
+  async transfersSummary(query: Omit<AdminMovementsFilter, 'scope'>, actor: AuthenticatedAdmin) {
+    assertActorCanAny(actor, ['transfers.view', 'transactions.view'], 'summarise transfers');
+    return this.transactions.summarizeForAdmin({
+      ...query,
+      kinds: transferKindsFor(query.origins),
+      scope: actor.clientScope,
+    });
   }
 
   async transactionsSummary(query: Omit<AdminMovementsFilter, 'scope'>, actor: AuthenticatedAdmin) {
@@ -2040,7 +2090,8 @@ export class AdminMoneyService {
    * threshold. This class holds no `db` of its own by design.
    */
   async stuckTransfers(actor: AuthenticatedAdmin) {
-    assertActorCan(actor, 'transactions.view', 'see stuck transfers');
+    // Either key: the Transfers page shows the same banner (16 Oct 2026).
+    assertActorCanAny(actor, ['transfers.view', 'transactions.view'], 'see stuck transfers');
     return await this.transfers.countStuck(actor.clientScope);
   }
 

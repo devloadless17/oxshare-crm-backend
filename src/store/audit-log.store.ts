@@ -104,6 +104,7 @@ export const NON_CLIENT_SUBJECT_TYPES = [
   'trading_account_list',
   'trading_products',
   'transaction_list',
+  'transfer_list',
   'wallet_list',
   'withdrawal_method',
   'withdrawal_queue',

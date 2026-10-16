@@ -20,6 +20,14 @@
  */
 export const SERVER_MESSAGES_AR: Readonly<Record<string, string>> = {
   // ── Labels and values captured inside sentences ──────────────────────────────
+  // What a trading account still holds, and where (archiving it, 16 Oct 2026).
+  balance: 'رصيد',
+  credit: 'رصيد ائتماني',
+  equity: 'حقوق ملكية',
+  'in the CRM': 'في النظام',
+  'on MT5': 'على MT5',
+  'wallet to account': 'من المحفظة إلى الحساب',
+  'account to wallet': 'من الحساب إلى المحفظة',
   'First name': 'الاسم الأول',
   'Last name': 'اسم العائلة',
   'Date of birth': 'تاريخ الميلاد',
@@ -1154,6 +1162,10 @@ export const SERVER_MESSAGES_AR: Readonly<Record<string, string>> = {
     'مدفوعات USDT مشغولة الآن. يُرجى المحاولة مرة أخرى بعد نحو {1} دقيقة.',
   'USDT payments are busy right now. Please try again in about {1} minutes.':
     'مدفوعات USDT مشغولة الآن. يُرجى المحاولة مرة أخرى بعد نحو {1} دقائق.',
+  // ── Archiving a trading account; a transfer's provenance (16 Oct 2026) ───────
+  'account must be a trading account id or an MT5 login.':
+    'يجب أن يكون الحساب معرّف حساب تداول أو رقم دخول MT5.',
+  'A {1} transfer moves money {2}, not {3}.': 'تحويل من نوع {1} ينقل المال {2}، وليس {3}.',
   'This account belongs to no client, so there is nobody to hide it from.':
     'هذا الحساب غير مرتبط بأي عميل، فلا يوجد من يُخفى عنه.',
   'This account has {1} open position on MT5. Archive it only once they are closed.':
