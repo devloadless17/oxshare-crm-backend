@@ -377,6 +377,13 @@ describe('hosted deposits that credit what ARRIVED', () => {
     expect(closed.state).toBe('failure');
     expect(closed.needsAttention).toBe(false);
     expect(await balance(userId)).toBe('0.00000000');
+
+    // A person's close is FINAL: the provider still reporting the original payment confirmed
+    // never credits money the desk says was returned (audit R2-4).
+    provider({ amount: '100.00' });
+    await deposits.settleRow(await row(txId), 'poll');
+    expect((await row(txId)).state).toBe('failure');
+    expect(await balance(userId)).toBe('0.00000000');
   });
 
   it('a flagged deposit is never re-judged by the sweep (it used to re-page every run)', async () => {
