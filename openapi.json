@@ -13560,6 +13560,24 @@
             }
           },
           {
+            "name": "settledFrom",
+            "required": false,
+            "in": "query",
+            "description": "The SETTLED period (audit R4-1, month-end): only movements whose settled_at falls in [settledFrom, settledTo]. A date or an instant, like from/to. Read live.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "settledTo",
+            "required": false,
+            "in": "query",
+            "description": "End of the settled period.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "attention",
             "required": false,
             "in": "query",
@@ -13739,6 +13757,24 @@
             "required": false,
             "in": "query",
             "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "settledFrom",
+            "required": false,
+            "in": "query",
+            "description": "The SETTLED period (audit R4-1, month-end): only movements whose settled_at falls in [settledFrom, settledTo]. A date or an instant, like from/to. Read live.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "settledTo",
+            "required": false,
+            "in": "query",
+            "description": "End of the settled period.",
             "schema": {
               "type": "string"
             }
@@ -13926,6 +13962,24 @@
             }
           },
           {
+            "name": "settledFrom",
+            "required": false,
+            "in": "query",
+            "description": "The SETTLED period (audit R4-1, month-end): only movements whose settled_at falls in [settledFrom, settledTo]. A date or an instant, like from/to. Read live.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "settledTo",
+            "required": false,
+            "in": "query",
+            "description": "End of the settled period.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "origin",
             "required": false,
             "in": "query",
@@ -14055,6 +14109,24 @@
             }
           },
           {
+            "name": "settledFrom",
+            "required": false,
+            "in": "query",
+            "description": "The SETTLED period (audit R4-1, month-end): only movements whose settled_at falls in [settledFrom, settledTo]. A date or an instant, like from/to. Read live.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "settledTo",
+            "required": false,
+            "in": "query",
+            "description": "End of the settled period.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "origin",
             "required": false,
             "in": "query",
@@ -14178,6 +14250,24 @@
             "required": false,
             "in": "query",
             "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "settledFrom",
+            "required": false,
+            "in": "query",
+            "description": "The SETTLED period (audit R4-1, month-end): only movements whose settled_at falls in [settledFrom, settledTo]. A date or an instant, like from/to. Read live.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "settledTo",
+            "required": false,
+            "in": "query",
+            "description": "End of the settled period.",
             "schema": {
               "type": "string"
             }
@@ -14367,6 +14457,22 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "settledFrom",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "settledTo",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -14435,6 +14541,22 @@
             "required": false,
             "in": "query",
             "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "settledFrom",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "settledTo",
+            "required": true,
+            "in": "query",
             "schema": {
               "type": "string"
             }
@@ -14623,6 +14745,24 @@
             "required": false,
             "in": "query",
             "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "settledFrom",
+            "required": false,
+            "in": "query",
+            "description": "The SETTLED period (audit R4-1, month-end): only movements whose settled_at falls in [settledFrom, settledTo]. A date or an instant, like from/to. Read live.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "settledTo",
+            "required": false,
+            "in": "query",
+            "description": "End of the settled period.",
             "schema": {
               "type": "string"
             }

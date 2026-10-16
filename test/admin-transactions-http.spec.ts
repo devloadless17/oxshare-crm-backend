@@ -456,6 +456,20 @@ describe('filters', () => {
     expect(body.items[0].kind).toBe('transfer');
   });
 
+  it('the SETTLED period lists what settled in it — never what is still pending (audit R4-1)', async () => {
+    // Settled on the 3rd: the transfer alone, whatever day it was requested.
+    const third = await get('settledFrom=2026-08-03&settledTo=2026-08-03');
+    expect(third.items.map((row) => row.kind)).toEqual(['transfer']);
+    // The 1st–4th: the deposit, the transfer and the commission move — the pending withdrawal
+    // has settled nowhere, so no settled period holds it.
+    const span = await get('settledFrom=2026-08-01&settledTo=2026-08-04');
+    expect(span.items.map((row) => row.kind).sort()).toEqual([
+      'commission_transfer',
+      'payment',
+      'transfer',
+    ]);
+  });
+
   it('a from after every movement returns nothing rather than everything', async () => {
     expect((await get('from=2027-01-01')).total).toBe(0);
   });
@@ -474,6 +488,8 @@ describe('validation — a typo is a 400 with a sentence, never a 500', () => {
   it('rejects an unknown kind', () => expect400('kind=magic'));
   it('rejects a non-UUID userId', () => expect400('userId=abc'));
   it('rejects a malformed date', () => expect400('from=yesterday'));
+  it('refuses a settled period that ends before it starts', () =>
+    expect400('settledFrom=2026-08-04&settledTo=2026-08-01'));
   it('rejects an impossible date', () => expect400('to=2026-02-31'));
   it('rejects an unknown sort key rather than silently ignoring it', () =>
     expect400('sort=provider'));

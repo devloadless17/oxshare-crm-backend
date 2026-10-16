@@ -1625,6 +1625,13 @@
       "when": 1791899683401,
       "tag": "0230_transfer_released_by",
       "breakpoints": true
+    },
+    {
+      "idx": 233,
+      "version": "7",
+      "when": 1791899743401,
+      "tag": "0231_settled_period_indexes",
+      "breakpoints": true
     }
   ]
 }

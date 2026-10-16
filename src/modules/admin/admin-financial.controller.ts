@@ -54,6 +54,14 @@ import { Audited } from './guards/audited.decorator';
  */
 function FinancialFilterQueries() {
   return applyDecorators(
+    ApiQuery({
+      name: 'settledFrom',
+      required: false,
+      description:
+        'The SETTLED period (audit R4-1, month-end): only movements whose settled_at falls in ' +
+        '[settledFrom, settledTo]. A date or an instant, like from/to. Read live.',
+    }),
+    ApiQuery({ name: 'settledTo', required: false, description: 'End of the settled period.' }),
     ApiQuery({ name: 'direction', required: false, enum: transactionDirectionEnum.enumValues }),
     ApiQuery({
       name: 'kind',
@@ -138,6 +146,14 @@ function FinancialFilterQueries() {
 function TransferFilterQueries() {
   return applyDecorators(
     ApiQuery({
+      name: 'settledFrom',
+      required: false,
+      description:
+        'The SETTLED period (audit R4-1, month-end): only movements whose settled_at falls in ' +
+        '[settledFrom, settledTo]. A date or an instant, like from/to. Read live.',
+    }),
+    ApiQuery({ name: 'settledTo', required: false, description: 'End of the settled period.' }),
+    ApiQuery({
       name: 'direction',
       required: false,
       enum: transactionDirectionEnum.enumValues,
@@ -209,6 +225,9 @@ function DeskDepositQueries() {
 
 /** The raw strings the routes hand to `filters()` — one name per query param. */
 interface RawFilterParams {
+  /** The SETTLED period (audit R4-1): what settled between these dates, for month-end. */
+  settledFrom?: string;
+  settledTo?: string;
   direction?: string;
   kind?: string;
   /** Accounting types, comma-separated (movement-type.ts). */
@@ -294,6 +313,10 @@ export class AdminFinancialController {
       currency,
       q: searchQuery(raw.q),
       ...dateRangeQuery(raw.from, raw.to),
+      settled: dateRangeQuery(raw.settledFrom, raw.settledTo, {
+        from: 'settledFrom',
+        to: 'settledTo',
+      }),
       // `true` or absent — anything else is a 400, like every enum filter here.
       attention: enumQuery(raw.attention, ['true'] as const, 'attention') ? true : undefined,
       deskDecided: enumQuery(raw.decidedBy, ['desk'] as const, 'decidedBy') ? true : undefined,
@@ -360,6 +383,8 @@ export class AdminFinancialController {
     @Query('q') q?: string,
     @Query('from') from?: string,
     @Query('to') to?: string,
+    @Query('settledFrom') settledFrom?: string,
+    @Query('settledTo') settledTo?: string,
     @Query('attention') attention?: string,
     @Query('decidedBy') decidedBy?: string,
     @Query('method') method?: string,
@@ -378,6 +403,8 @@ export class AdminFinancialController {
       q,
       from,
       to,
+      settledFrom,
+      settledTo,
       attention,
       decidedBy,
       method,
@@ -442,6 +469,8 @@ export class AdminFinancialController {
     @Query('q') q?: string,
     @Query('from') from?: string,
     @Query('to') to?: string,
+    @Query('settledFrom') settledFrom?: string,
+    @Query('settledTo') settledTo?: string,
     @Query('attention') attention?: string,
     @Query('decidedBy') decidedBy?: string,
     @Query('method') method?: string,
@@ -460,6 +489,8 @@ export class AdminFinancialController {
         q,
         from,
         to,
+        settledFrom,
+        settledTo,
         attention,
         decidedBy,
         method,
@@ -512,6 +543,8 @@ export class AdminFinancialController {
     @Query('q') q?: string,
     @Query('from') from?: string,
     @Query('to') to?: string,
+    @Query('settledFrom') settledFrom?: string,
+    @Query('settledTo') settledTo?: string,
     @Query('origin') origin?: string,
     @Query('account') account?: string,
     @Query('id') id?: string,
@@ -525,6 +558,8 @@ export class AdminFinancialController {
       q,
       from,
       to,
+      settledFrom,
+      settledTo,
       origin,
       account,
       id,
@@ -571,12 +606,27 @@ export class AdminFinancialController {
     @Query('q') q?: string,
     @Query('from') from?: string,
     @Query('to') to?: string,
+    @Query('settledFrom') settledFrom?: string,
+    @Query('settledTo') settledTo?: string,
     @Query('origin') origin?: string,
     @Query('account') account?: string,
     @Query('id') id?: string,
   ) {
     return this.money.transfersSummary(
-      await this.filters({ direction, state, userId, currency, q, from, to, origin, account, id }),
+      await this.filters({
+        direction,
+        state,
+        userId,
+        currency,
+        q,
+        from,
+        to,
+        settledFrom,
+        settledTo,
+        origin,
+        account,
+        id,
+      }),
       req.admin,
     );
   }
@@ -616,6 +666,8 @@ export class AdminFinancialController {
     @Query('q') q?: string,
     @Query('from') from?: string,
     @Query('to') to?: string,
+    @Query('settledFrom') settledFrom?: string,
+    @Query('settledTo') settledTo?: string,
     @Query('origin') origin?: string,
     @Query('account') account?: string,
     @Query('id') id?: string,
@@ -637,6 +689,8 @@ export class AdminFinancialController {
           q,
           from,
           to,
+          settledFrom,
+          settledTo,
           origin,
           account,
           id,
@@ -691,6 +745,8 @@ export class AdminFinancialController {
     @Query('q') q?: string,
     @Query('from') from?: string,
     @Query('to') to?: string,
+    @Query('settledFrom') settledFrom?: string,
+    @Query('settledTo') settledTo?: string,
   ) {
     const chosen = exportFormat(format);
     const query = await this.filters({
@@ -700,6 +756,8 @@ export class AdminFinancialController {
       q,
       from,
       to,
+      settledFrom,
+      settledTo,
     });
     this.audit.record(req.admin.id, 'export.deposits', 'transaction_list', req.admin.id, {
       format: chosen,
@@ -750,6 +808,8 @@ export class AdminFinancialController {
     @Query('q') q?: string,
     @Query('from') from?: string,
     @Query('to') to?: string,
+    @Query('settledFrom') settledFrom?: string,
+    @Query('settledTo') settledTo?: string,
     @Query('id') id?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
@@ -767,6 +827,8 @@ export class AdminFinancialController {
           q,
           from,
           to,
+          settledFrom,
+          settledTo,
           id,
         })),
         page,
@@ -827,6 +889,8 @@ export class AdminFinancialController {
     @Query('q') q?: string,
     @Query('from') from?: string,
     @Query('to') to?: string,
+    @Query('settledFrom') settledFrom?: string,
+    @Query('settledTo') settledTo?: string,
     @Query('attention') attention?: string,
     @Query('decidedBy') decidedBy?: string,
     @Query('method') method?: string,
@@ -853,6 +917,8 @@ export class AdminFinancialController {
           q,
           from,
           to,
+          settledFrom,
+          settledTo,
           attention,
           decidedBy,
           method,
