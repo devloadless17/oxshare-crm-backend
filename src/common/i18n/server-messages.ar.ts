@@ -1154,4 +1154,12 @@ export const SERVER_MESSAGES_AR: Readonly<Record<string, string>> = {
     'مدفوعات USDT مشغولة الآن. يُرجى المحاولة مرة أخرى بعد نحو {1} دقيقة.',
   'USDT payments are busy right now. Please try again in about {1} minutes.':
     'مدفوعات USDT مشغولة الآن. يُرجى المحاولة مرة أخرى بعد نحو {1} دقائق.',
+  'This account belongs to no client, so there is nobody to hide it from.':
+    'هذا الحساب غير مرتبط بأي عميل، فلا يوجد من يُخفى عنه.',
+  'This account has {1} open position on MT5. Archive it only once they are closed.':
+    'لدى هذا الحساب {1} صفقة مفتوحة على MT5. لا تؤرشفه إلا بعد إغلاقها.',
+  'This account has {1} open positions on MT5. Archive it only once they are closed.':
+    'لدى هذا الحساب {1} صفقات مفتوحة على MT5. لا تؤرشفه إلا بعد إغلاقها.',
+  'This account still has a {1} of {2} {3} {4}. Archive it only once it is empty, or the client loses sight of that money.':
+    'لا يزال لهذا الحساب {1} بقيمة {2} {3} {4}. لا تؤرشفه إلا بعد أن يصبح فارغاً، وإلا فلن يرى العميل هذا المال.',
 };

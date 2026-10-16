@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { clientErrorLogLine, pathOnly, scrub } from '../src/modules/client-errors/client-error-report';
+import {
+  clientErrorLogLine,
+  pathOnly,
+  scrub,
+} from '../src/modules/client-errors/client-error-report';
 
 /** A crash report must never carry a person into the log. */
 describe('client crash reports keep no personal data', () => {
