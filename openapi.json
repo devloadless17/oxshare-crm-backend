@@ -12968,7 +12968,7 @@
     },
     "/v1/admin/reconciliation": {
       "get": {
-        "description": "Answers with the LAST completed check and the time it was made (`checkedAt`): the hourly job runs it, and it reads every ledger entry, so running it per page view cost the size of the ledger. `?fresh=true` runs it now. The check: every wallet balance against the sum of its own ledger. Wallet balances ONLY — a confirmed commission accrual that was never credited is a separate alert (UNPAID_CONFIRMED_ACCRUAL), not part of this report. Read-only — a discrepancy is reported, never repaired, because an automatic correction would write a compensating entry for a cause nobody has diagnosed. Whole-platform: an admin scoped to a client territory is refused, because a reconciliation over a fragment is meaningless and the full report names clients outside their territory.",
+        "description": "Answers with the LAST completed check and the time it was made (`checkedAt`): the hourly job runs it, and it reads every ledger entry, so running it per page view cost the size of the ledger. `?fresh=true` runs it now. The check: every wallet balance against the sum of its own ledger; every transfer of the last week against MT5; deposits stranded in a wallet; and confirmed commission never credited (UNPAID_CONFIRMED_ACCRUAL). Read-only — a discrepancy is reported, never repaired, because an automatic correction would write a compensating entry for a cause nobody has diagnosed. Whole-platform: an admin scoped to a client territory is refused, because a reconciliation over a fragment is meaningless and the full report names clients outside their territory.",
         "operationId": "AdminMoneyController_reconcile",
         "parameters": [
           {
@@ -29700,6 +29700,31 @@
           "settledAt"
         ]
       },
+      "UnpaidAccrualDto": {
+        "type": "object",
+        "properties": {
+          "accrualId": {
+            "type": "string"
+          },
+          "amount": {
+            "type": "string",
+            "description": "A money string."
+          },
+          "currency": {
+            "type": "string"
+          },
+          "confirmedAt": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": [
+          "accrualId",
+          "amount",
+          "currency",
+          "confirmedAt"
+        ]
+      },
       "ReconciliationReportDto": {
         "type": "object",
         "properties": {
@@ -29749,6 +29774,17 @@
             "type": "number",
             "description": "How many deposits are stranded in the wallet."
           },
+          "unpaidAccruals": {
+            "description": "Commission confirmed but never credited (a sample of up to 20).",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UnpaidAccrualDto"
+            }
+          },
+          "unpaidAccrualCount": {
+            "type": "number",
+            "description": "How many confirmed accruals no ledger entry paid."
+          },
           "balanced": {
             "type": "boolean",
             "description": "True when nothing is wrong. Read this rather than testing the array length — it is the field the service decides, and a future check can make it false without adding a wallet discrepancy."
@@ -29764,6 +29800,8 @@
           "transferMismatchCount",
           "strandedDeposits",
           "strandedDepositCount",
+          "unpaidAccruals",
+          "unpaidAccrualCount",
           "balanced"
         ]
       },

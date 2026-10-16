@@ -48,6 +48,12 @@ export interface ReconciliationReport {
    */
   strandedDeposits: StrandedDeposit[];
   strandedDepositCount: number;
+  /**
+   * Commission CONFIRMED but never credited (audit R1-3): an accrual marked paid with no ledger
+   * entry behind it — a partner told they were paid who was not.
+   */
+  unpaidAccruals: UnpaidAccrual[];
+  unpaidAccrualCount: number;
   balanced: boolean;
 }
 
@@ -65,6 +71,14 @@ export interface TransferMt5Mismatch {
   /** Signed, as MT5 holds it: + into the account, − out of it. */
   amount: string;
   at: string;
+}
+
+/** A confirmed commission accrual that no ledger entry paid (audit R1-3). */
+export interface UnpaidAccrual {
+  accrualId: string;
+  amount: string;
+  currency: string;
+  confirmedAt: string | null;
 }
 
 /** A deposit aimed at a trading account whose money never left the wallet (audit R1-4). */
@@ -203,14 +217,21 @@ export class ReconciliationService {
   }
 
   private async check(): Promise<ReconciliationReport> {
-    const [summary, walletDiscrepancies, walletsChecked, transferMismatches, strandedDeposits] =
-      await Promise.all([
-        this.summariseDiscrepancies(),
-        this.findWalletDiscrepancies(),
-        this.countWallets(),
-        this.findTransferMismatches(),
-        this.findStrandedDeposits(),
-      ]);
+    const [
+      summary,
+      walletDiscrepancies,
+      walletsChecked,
+      transferMismatches,
+      strandedDeposits,
+      unpaidAccruals,
+    ] = await Promise.all([
+      this.summariseDiscrepancies(),
+      this.findWalletDiscrepancies(),
+      this.countWallets(),
+      this.findTransferMismatches(),
+      this.findStrandedDeposits(),
+      this.findUnpaidAccruals(),
+    ]);
 
     const report: ReconciliationReport = {
       checkedAt: new Date().toISOString(),
@@ -222,6 +243,8 @@ export class ReconciliationService {
       transferMismatchCount: transferMismatches.length,
       strandedDeposits: strandedDeposits.slice(0, SAMPLE_LIMIT),
       strandedDepositCount: strandedDeposits.length,
+      unpaidAccruals: unpaidAccruals.slice(0, SAMPLE_LIMIT),
+      unpaidAccrualCount: unpaidAccruals.length,
       /*
        * Decided by the COUNT, never by the sample's length. The sample is
        * capped, so `walletDiscrepancies.length === 0` would read as balanced
@@ -230,7 +253,10 @@ export class ReconciliationService {
        * agreement that stops being true later.
        */
       balanced:
-        summary.count === 0 && transferMismatches.length === 0 && strandedDeposits.length === 0,
+        summary.count === 0 &&
+        transferMismatches.length === 0 &&
+        strandedDeposits.length === 0 &&
+        unpaidAccruals.length === 0,
     };
 
     this.last = report;
@@ -399,6 +425,27 @@ export class ReconciliationService {
     }));
   }
 
+  /** Confirmed accruals with no ledger entry: commission a partner was told is paid, and is not. */
+  private async findUnpaidAccruals(): Promise<UnpaidAccrual[]> {
+    const { rows } = await this.db.execute<{
+      id: string;
+      amount: string;
+      currency: string;
+      confirmed_at: string | null;
+    }>(sql`
+      SELECT a.id::text, a.amount::text, a.currency, a.confirmed_at::text
+        FROM ib_accruals a
+       WHERE a.status = 'confirmed' AND a.ledger_entry_id IS NULL
+       ORDER BY a.confirmed_at DESC NULLS LAST
+       LIMIT 1000`);
+    return rows.map((row) => ({
+      accrualId: row.id,
+      amount: money(row.amount),
+      currency: row.currency,
+      confirmedAt: row.confirmed_at,
+    }));
+  }
+
   /** Settled deposits aimed at an account, a quarter-hour old, that no transfer took on. */
   private async findStrandedDeposits(): Promise<StrandedDeposit[]> {
     const { rows } = await this.db.execute<{
@@ -459,6 +506,15 @@ export class ReconciliationService {
    * the line an alert should fire on (§12.3).
    */
   private report(report: ReconciliationReport): void {
+    if (report.unpaidAccrualCount > 0) {
+      raiseAlert(
+        this.logger,
+        ALERT_KINDS.UNPAID_CONFIRMED_ACCRUAL,
+        'page',
+        `${report.unpaidAccrualCount} confirmed commission accrual(s) were never credited to a wallet`,
+        { unpaidAccrualCount: report.unpaidAccrualCount },
+      );
+    }
     if (report.strandedDepositCount > 0) {
       raiseAlert(
         this.logger,
@@ -501,7 +557,8 @@ export class ReconciliationService {
        */
       this.logger.log(
         `Reconciliation OK — ${report.walletsChecked} wallet(s) balance to the cent against ` +
-          'their ledgers. (Wallet balances only: unpaid accruals are checked separately.)',
+          'their ledgers; every transfer matches MT5, no deposit is stranded and every confirmed ' +
+          'commission was credited.',
       );
       return;
     }

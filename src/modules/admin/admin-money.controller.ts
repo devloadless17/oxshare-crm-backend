@@ -865,8 +865,8 @@ export class AdminMoneyController {
       'hourly job runs it, and it reads every ledger entry, so running it per page view cost ' +
       'the size of the ledger. `?fresh=true` runs it now. ' +
       'The check: every wallet balance against the sum of its own ' +
-      'ledger. Wallet balances ONLY — a confirmed commission accrual that was never credited ' +
-      'is a separate alert (UNPAID_CONFIRMED_ACCRUAL), not part of this report. ' +
+      'ledger; every transfer of the last week against MT5; deposits stranded in a wallet; and ' +
+      'confirmed commission never credited (UNPAID_CONFIRMED_ACCRUAL). ' +
       'Read-only — a discrepancy is reported, never repaired, because an automatic correction ' +
       'would write a compensating entry for a cause nobody has diagnosed. Whole-platform: an ' +
       'admin scoped to a client territory is refused, because a reconciliation over a fragment ' +

@@ -3545,6 +3545,15 @@ export class WalletDiscrepancyDto {
   difference: string;
 }
 
+/** Commission confirmed but never credited (audit R1-3). */
+@NoClientFields('a description of the RECORD: an accrual id, an amount')
+export class UnpaidAccrualDto {
+  @ApiProperty() accrualId: string;
+  @ApiProperty({ description: 'A money string.' }) amount: string;
+  @ApiProperty() currency: string;
+  @ApiProperty({ type: String, nullable: true }) confirmedAt: string | null;
+}
+
 /** A deposit aimed at a trading account whose money never left the wallet (audit R1-4). */
 @NoClientFields('a description of the RECORD: a transaction id, an MT5 login, an amount')
 export class StrandedDepositDto {
@@ -3650,6 +3659,18 @@ export class ReconciliationReportDto {
   @NotClientField('a platform-wide integrity figure, not an attribute of any person')
   @ApiProperty({ description: 'How many deposits are stranded in the wallet.' })
   strandedDepositCount: number;
+
+  @NotClientField('the nested accruals, whose own shape carries no client attribute')
+  @ApiProperty({
+    type: () => UnpaidAccrualDto,
+    isArray: true,
+    description: 'Commission confirmed but never credited (a sample of up to 20).',
+  })
+  unpaidAccruals: UnpaidAccrualDto[];
+
+  @NotClientField('a platform-wide integrity figure, not an attribute of any person')
+  @ApiProperty({ description: 'How many confirmed accruals no ledger entry paid.' })
+  unpaidAccrualCount: number;
 
   @NotClientField('a platform-wide integrity figure, not an attribute of any person')
   @ApiProperty({
