@@ -229,4 +229,25 @@ describe('the provider event log', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ outcome: 'applied', source: 'poll', reason: null });
   });
+
+  it('a later APPLIED delivery replaces an earlier "ignored" one — never the reverse (audit R3-12)', async () => {
+    const fact = {
+      providerCode: 'rival',
+      eventType: 'payout.completed' as const,
+      subjectId: 'po-adopted-later',
+      source: 'webhook' as const,
+    };
+    await events.append({
+      ...fact,
+      outcome: 'ignored',
+      reason: 'No withdrawal carries this payout',
+    });
+    await events.append({ ...fact, source: 'poll', outcome: 'applied' });
+    await events.append({ ...fact, outcome: 'ignored', reason: 'duplicate' });
+
+    const row = (await events.recent('rival', 50)).find(
+      (r) => r.eventKey === 'payout.completed:po-adopted-later',
+    );
+    expect(row).toMatchObject({ outcome: 'applied', source: 'poll', reason: null });
+  });
 });
