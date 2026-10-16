@@ -525,6 +525,27 @@ describe('filters', () => {
     expect(body.items.map((row) => row.id)).toEqual([aimed.id]);
   });
 
+  it('several states at once, and an amount range, inclusive (audit R4-G3)', async () => {
+    // The union client holds a success deposit, a pending withdrawal, a settled transfer and a
+    // commission move: success + pending is everything but nothing else.
+    const both = await get('state=success,pending');
+    expect(both.items.map((row) => row.state).sort()).toEqual(
+      both.items
+        .map((row) => row.state)
+        .filter((s) => s === 'success' || s === 'pending')
+        .sort(),
+    );
+    expect(both.items.some((row) => row.state === 'pending')).toBe(true);
+    expect(both.items.some((row) => row.state === 'success')).toBe(true);
+    // Amounts 100.12345678, 40, 25.5 and 7.75: [25.5, 100.12345678] holds three, inclusive.
+    const ranged = await get('amountMin=25.5&amountMax=100.12345678');
+    expect(ranged.items.map((row) => row.amount).sort()).toEqual([
+      '100.12345678',
+      '25.50000000',
+      '40.00000000',
+    ]);
+  });
+
   it('a from after every movement returns nothing rather than everything', async () => {
     expect((await get('from=2027-01-01')).total).toBe(0);
   });
@@ -543,6 +564,10 @@ describe('validation — a typo is a 400 with a sentence, never a 500', () => {
   it('rejects an unknown kind', () => expect400('kind=magic'));
   it('rejects a non-UUID userId', () => expect400('userId=abc'));
   it('rejects a malformed date', () => expect400('from=yesterday'));
+  it('refuses an amount range that is not a decimal, or runs backwards', async () => {
+    await expect400('amountMin=1e5');
+    await expect400('amountMin=50&amountMax=10');
+  });
   it('refuses a settled period that ends before it starts', () =>
     expect400('settledFrom=2026-08-04&settledTo=2026-08-01'));
   it('rejects an impossible date', () => expect400('to=2026-02-31'));

@@ -1,3 +1,4 @@
+import Decimal from 'decimal.js';
 import { Throttle } from '@nestjs/throttler';
 // Part of the `admin` controller surface, split by concern — see the header of
 // admin-money.controller.ts for why several controllers share one @Controller
@@ -62,6 +63,16 @@ function FinancialFilterQueries() {
         '[settledFrom, settledTo]. A date or an instant, like from/to. Read live.',
     }),
     ApiQuery({ name: 'settledTo', required: false, description: 'End of the settled period.' }),
+    ApiQuery({
+      name: 'amountMin',
+      required: false,
+      description: 'Lowest amount, inclusive — a decimal string (audit R4-G3).',
+    }),
+    ApiQuery({
+      name: 'amountMax',
+      required: false,
+      description: 'Highest amount, inclusive — a decimal string.',
+    }),
     ApiQuery({ name: 'direction', required: false, enum: transactionDirectionEnum.enumValues }),
     ApiQuery({
       name: 'kind',
@@ -95,7 +106,13 @@ function FinancialFilterQueries() {
         'One trading account’s transfers: its id or its MT5 login. An unknown or out-of-territory ' +
         'account answers an empty list, never "not found".',
     }),
-    ApiQuery({ name: 'state', required: false, enum: transactionStateEnum.enumValues }),
+    ApiQuery({
+      name: 'state',
+      required: false,
+      description:
+        'One state, or several comma-separated (audit R4-G3): ' +
+        transactionStateEnum.enumValues.join(', '),
+    }),
     ApiQuery({ name: 'userId', required: false, description: 'Narrow to one client (UUID).' }),
     ApiQuery({
       name: 'currency',
@@ -154,6 +171,16 @@ function TransferFilterQueries() {
     }),
     ApiQuery({ name: 'settledTo', required: false, description: 'End of the settled period.' }),
     ApiQuery({
+      name: 'amountMin',
+      required: false,
+      description: 'Lowest amount, inclusive — a decimal string (audit R4-G3).',
+    }),
+    ApiQuery({
+      name: 'amountMax',
+      required: false,
+      description: 'Highest amount, inclusive — a decimal string.',
+    }),
+    ApiQuery({
       name: 'direction',
       required: false,
       enum: transactionDirectionEnum.enumValues,
@@ -161,7 +188,13 @@ function TransferFilterQueries() {
         'Wallet-side, like Financial: withdrawal = wallet → trading account, deposit = into the ' +
         'wallet (from an account, or commission → main wallet).',
     }),
-    ApiQuery({ name: 'state', required: false, enum: transactionStateEnum.enumValues }),
+    ApiQuery({
+      name: 'state',
+      required: false,
+      description:
+        'One state, or several comma-separated (audit R4-G3): ' +
+        transactionStateEnum.enumValues.join(', '),
+    }),
     ApiQuery({ name: 'userId', required: false, description: 'Narrow to one client.' }),
     ApiQuery({ name: 'currency', required: false, description: 'A currency code.' }),
     ApiQuery({
@@ -212,7 +245,13 @@ function methodKeysQuery(raw: string | undefined): string[] | undefined {
 /** The deposit desk's filters — its rows are fixed (deposits a person decides). */
 function DeskDepositQueries() {
   return applyDecorators(
-    ApiQuery({ name: 'state', required: false, enum: transactionStateEnum.enumValues }),
+    ApiQuery({
+      name: 'state',
+      required: false,
+      description:
+        'One state, or several comma-separated (audit R4-G3): ' +
+        transactionStateEnum.enumValues.join(', '),
+    }),
     ApiQuery({
       name: 'q',
       required: false,
@@ -225,6 +264,9 @@ function DeskDepositQueries() {
 
 /** The raw strings the routes hand to `filters()` — one name per query param. */
 interface RawFilterParams {
+  /** An amount range, inclusive (audit R4-G3). */
+  amountMin?: string;
+  amountMax?: string;
   /** The SETTLED period (audit R4-1): what settled between these dates, for month-end. */
   settledFrom?: string;
   settledTo?: string;
@@ -308,7 +350,9 @@ export class AdminFinancialController {
       origins: enumListQuery(raw.origin, transferOriginEnum.enumValues, 'origin'),
       // Resolved to an id here; an unknown login is an ordinary empty list, never "not found".
       tradingAccountId: await this.money.accountFilterId(raw.account),
-      state: enumQuery(raw.state, transactionStateEnum.enumValues, 'state'),
+      // One state, or several at once (`?state=pending,approved`, audit R4-G3).
+      ...statesOf(enumListQuery(raw.state, transactionStateEnum.enumValues, 'state')),
+      ...amountRangeOf(raw.amountMin, raw.amountMax),
       userId: raw.userId,
       currency,
       q: searchQuery(raw.q),
@@ -385,6 +429,8 @@ export class AdminFinancialController {
     @Query('to') to?: string,
     @Query('settledFrom') settledFrom?: string,
     @Query('settledTo') settledTo?: string,
+    @Query('amountMin') amountMin?: string,
+    @Query('amountMax') amountMax?: string,
     @Query('attention') attention?: string,
     @Query('decidedBy') decidedBy?: string,
     @Query('method') method?: string,
@@ -405,6 +451,8 @@ export class AdminFinancialController {
       to,
       settledFrom,
       settledTo,
+      amountMin,
+      amountMax,
       attention,
       decidedBy,
       method,
@@ -471,6 +519,8 @@ export class AdminFinancialController {
     @Query('to') to?: string,
     @Query('settledFrom') settledFrom?: string,
     @Query('settledTo') settledTo?: string,
+    @Query('amountMin') amountMin?: string,
+    @Query('amountMax') amountMax?: string,
     @Query('attention') attention?: string,
     @Query('decidedBy') decidedBy?: string,
     @Query('method') method?: string,
@@ -491,6 +541,8 @@ export class AdminFinancialController {
         to,
         settledFrom,
         settledTo,
+        amountMin,
+        amountMax,
         attention,
         decidedBy,
         method,
@@ -545,6 +597,8 @@ export class AdminFinancialController {
     @Query('to') to?: string,
     @Query('settledFrom') settledFrom?: string,
     @Query('settledTo') settledTo?: string,
+    @Query('amountMin') amountMin?: string,
+    @Query('amountMax') amountMax?: string,
     @Query('origin') origin?: string,
     @Query('account') account?: string,
     @Query('id') id?: string,
@@ -560,6 +614,8 @@ export class AdminFinancialController {
       to,
       settledFrom,
       settledTo,
+      amountMin,
+      amountMax,
       origin,
       account,
       id,
@@ -608,6 +664,8 @@ export class AdminFinancialController {
     @Query('to') to?: string,
     @Query('settledFrom') settledFrom?: string,
     @Query('settledTo') settledTo?: string,
+    @Query('amountMin') amountMin?: string,
+    @Query('amountMax') amountMax?: string,
     @Query('origin') origin?: string,
     @Query('account') account?: string,
     @Query('id') id?: string,
@@ -623,6 +681,8 @@ export class AdminFinancialController {
         to,
         settledFrom,
         settledTo,
+        amountMin,
+        amountMax,
         origin,
         account,
         id,
@@ -668,6 +728,8 @@ export class AdminFinancialController {
     @Query('to') to?: string,
     @Query('settledFrom') settledFrom?: string,
     @Query('settledTo') settledTo?: string,
+    @Query('amountMin') amountMin?: string,
+    @Query('amountMax') amountMax?: string,
     @Query('origin') origin?: string,
     @Query('account') account?: string,
     @Query('id') id?: string,
@@ -691,6 +753,8 @@ export class AdminFinancialController {
           to,
           settledFrom,
           settledTo,
+          amountMin,
+          amountMax,
           origin,
           account,
           id,
@@ -747,6 +811,8 @@ export class AdminFinancialController {
     @Query('to') to?: string,
     @Query('settledFrom') settledFrom?: string,
     @Query('settledTo') settledTo?: string,
+    @Query('amountMin') amountMin?: string,
+    @Query('amountMax') amountMax?: string,
   ) {
     const chosen = exportFormat(format);
     const query = await this.filters({
@@ -758,6 +824,8 @@ export class AdminFinancialController {
       to,
       settledFrom,
       settledTo,
+      amountMin,
+      amountMax,
     });
     this.audit.record(req.admin.id, 'export.deposits', 'transaction_list', req.admin.id, {
       format: chosen,
@@ -810,6 +878,8 @@ export class AdminFinancialController {
     @Query('to') to?: string,
     @Query('settledFrom') settledFrom?: string,
     @Query('settledTo') settledTo?: string,
+    @Query('amountMin') amountMin?: string,
+    @Query('amountMax') amountMax?: string,
     @Query('id') id?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
@@ -829,6 +899,8 @@ export class AdminFinancialController {
           to,
           settledFrom,
           settledTo,
+          amountMin,
+          amountMax,
           id,
         })),
         page,
@@ -891,6 +963,8 @@ export class AdminFinancialController {
     @Query('to') to?: string,
     @Query('settledFrom') settledFrom?: string,
     @Query('settledTo') settledTo?: string,
+    @Query('amountMin') amountMin?: string,
+    @Query('amountMax') amountMax?: string,
     @Query('attention') attention?: string,
     @Query('decidedBy') decidedBy?: string,
     @Query('method') method?: string,
@@ -919,6 +993,8 @@ export class AdminFinancialController {
           to,
           settledFrom,
           settledTo,
+          amountMin,
+          amountMax,
           attention,
           decidedBy,
           method,
@@ -940,4 +1016,50 @@ export class AdminFinancialController {
       req.admin,
     );
   }
+}
+
+/** One state stays `state` (the stored totals and the tabs read it); several become `states`. */
+function statesOf(states: (typeof transactionStateEnum.enumValues)[number][] | undefined): {
+  state?: (typeof transactionStateEnum.enumValues)[number];
+  states?: typeof states;
+} {
+  if (!states?.length) return {};
+  return states.length === 1 ? { state: states[0] } : { states };
+}
+
+const AMOUNT = /^\d{1,20}(\.\d{1,8})?$/;
+
+/** An amount range as decimal strings — never parsed into a number (§6.1). */
+function amountRangeOf(
+  min: string | undefined,
+  max: string | undefined,
+): { amountMin?: string; amountMax?: string } {
+  const range: { amountMin?: string; amountMax?: string } = {};
+  for (const [field, raw] of [
+    ['amountMin', min],
+    ['amountMax', max],
+  ] as const) {
+    const value = raw?.trim();
+    if (!value) continue;
+    if (!AMOUNT.test(value)) {
+      throw new BadRequestException({
+        code: 'VALIDATION_FAILED',
+        message: [`${field} must be a positive decimal with at most 8 decimal places`],
+        fields: { [field]: 'must be a positive decimal with at most 8 decimal places' },
+      });
+    }
+    range[field] = value;
+  }
+  if (
+    range.amountMin &&
+    range.amountMax &&
+    new Decimal(range.amountMin).greaterThan(new Decimal(range.amountMax))
+  ) {
+    throw new BadRequestException({
+      code: 'VALIDATION_FAILED',
+      message: ['amountMax must not be below amountMin'],
+      fields: { amountMax: 'must not be below amountMin' },
+    });
+  }
+  return range;
 }

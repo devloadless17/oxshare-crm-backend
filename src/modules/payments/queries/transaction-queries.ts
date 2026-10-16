@@ -232,6 +232,14 @@ export interface AdminMovementsFilter {
    */
   tradingAccountId?: string;
   state?: MovementState;
+  /** SEVERAL states at once (`?state=a,b`, audit R4-G3); `state` stays the single-state form. */
+  states?: readonly MovementState[];
+  /**
+   * An amount range, inclusive, as decimal strings validated at the edge (audit R4-G3). Read
+   * live: the stored totals do not key by amount.
+   */
+  amountMin?: string;
+  amountMax?: string;
   currency?: string;
   /** Free text over the client's email and name — see `listForAdmin.q`. */
   q?: string;
@@ -327,6 +335,8 @@ export function movementTotalsSource(
   if (filter.origins?.length || filter.tradingAccountId) return undefined;
   // The stored totals key by CREATION day; a settled period reads the rows (audit R4-1).
   if (filter.settled?.from || filter.settled?.until) return undefined;
+  // No total is kept per amount (audit R4-G3).
+  if (filter.amountMin || filter.amountMax) return undefined;
   /*
    * The daily totals are UTC days: they answer a period only when it starts and
    * ends on UTC midnights. A viewer's own "today" in Beirut does not, so it reads
@@ -452,6 +462,14 @@ export function movementTotalsQuery(
     conditions.push(sql`direction = ${filter.direction}`);
   }
   if (shape !== 'state' && filter.state) conditions.push(sql`state = ${filter.state}`);
+  if (shape !== 'state' && filter.states?.length) {
+    conditions.push(
+      sql`state IN (${sql.join(
+        filter.states.map((state) => sql`${state}`),
+        sql`, `,
+      )})`,
+    );
+  }
   if (totals === 'daily') {
     if (filter.from) conditions.push(sql`day >= ${utcDate(filter.from)}::date`);
     if (filter.until) conditions.push(sql`day < ${utcDate(filter.until)}::date`);
@@ -2375,6 +2393,17 @@ export class TransactionQueries {
           OR combined.destination_trading_account_id = ${filter.tradingAccountId}::uuid)`);
       }
       if (!omit.state && filter.state) conditions.push(sql`combined.state = ${filter.state}`);
+      if (!omit.state && filter.states?.length) {
+        conditions.push(
+          sql`combined.state IN (${sql.join(
+            filter.states.map((state) => sql`${state}`),
+            sql`, `,
+          )})`,
+        );
+      }
+      // Inclusive, on the NUMERIC column: a decimal comparison, never a float (§6.1).
+      if (filter.amountMin) conditions.push(sql`combined.amount >= ${filter.amountMin}::numeric`);
+      if (filter.amountMax) conditions.push(sql`combined.amount <= ${filter.amountMax}::numeric`);
       if (filter.currency) conditions.push(sql`combined.currency = ${filter.currency}`);
       if (filter.attention) conditions.push(sql`combined.needs_attention`);
       /*
@@ -2659,7 +2688,11 @@ export class TransactionQueries {
       groupCounts['all'] = Math.min(groupCounts['all'], TOTAL_CAP);
     }
 
-    const total = filter.state ? (counts[filter.state] ?? 0) : counts['all'];
+    const total = filter.state
+      ? (counts[filter.state] ?? 0)
+      : filter.states?.length
+        ? filter.states.reduce((sum, state) => sum + (counts[state] ?? 0), 0)
+        : counts['all'];
 
     /*
      * Relabelled before `buildCursorPage` for the reason `listForAdmin`
