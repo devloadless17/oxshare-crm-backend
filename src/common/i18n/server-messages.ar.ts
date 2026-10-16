@@ -1179,4 +1179,6 @@ export const SERVER_MESSAGES_AR: Readonly<Record<string, string>> = {
     'يُظهر MT5 أن هذا التحويل قد نُفِّذ (الصفقة {1})، لذا لا يمكن تحرير المبلغ المحجوز. سيُستكمل تلقائياً.',
   'MT5 was asked to apply this transfer moments ago and may still confirm it. Try again in {1} minute(s).':
     'طُلب من MT5 تنفيذ هذا التحويل قبل لحظات وقد يؤكده بعد. أعد المحاولة بعد {1} دقيقة.',
+  'This payout never reached the provider, so marking it resolved would send it again automatically. Resend it, cancel it, or finish it by hand instead.':
+    'لم يصل هذا الدفع إلى مزوّد الخدمة، لذا فإن وضعه كمحلول سيعيد إرساله تلقائياً. أعد إرساله أو ألغِه أو أنهِه يدوياً بدلاً من ذلك.',
 };

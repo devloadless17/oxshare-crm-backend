@@ -331,12 +331,12 @@
       },
       {
         "key": "withdrawals.settle",
-        "label": "Approve and pay withdrawals",
+        "label": "Approve and pay withdrawals, and resend a payout",
         "requires": ["withdrawals.view"]
       },
       {
         "key": "withdrawals.approve",
-        "label": "Reject or cancel withdrawals, and resend a payout",
+        "label": "Reject or cancel withdrawals",
         "requires": ["withdrawals.view"]
       }
     ],
