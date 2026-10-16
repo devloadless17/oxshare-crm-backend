@@ -690,7 +690,7 @@ export class AdminExportService {
    * feature — the defect `test/admin-export.spec.ts` exists to catch.
    */
   async walletBatch(
-    query: { userId?: number; currency?: string },
+    query: { userId?: number; currency?: string; q?: string },
     actor: AuthenticatedAdmin,
     offset: number,
     limit: number,

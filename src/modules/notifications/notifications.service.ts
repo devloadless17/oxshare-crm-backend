@@ -128,25 +128,88 @@ export class NotificationsService implements NotificationDispatchPort {
 
   async notifyAdmins(task: AdminTaskInput): Promise<void> {
     const spec = adminNotificationSpec(task.kind);
-    try {
-      const recipients = await this.resolveAdminRecipients(spec.permissions, task.subject.clientId);
-      await this.store.insertAdminTask(recipients, {
-        kind: task.kind,
-        params: task.params,
-        dedupeKey: task.dedupeKey,
-        subjectKind: spec.subjectKind,
-        subjectId: task.subject.id,
-        subjectUserId: task.subject.clientId,
-        stillOpen: spec.stillOpen,
-      });
-    } catch (error) {
-      // Never throws — see the port. The polled work-queue badges remain the
-      // durable signal; this row is the per-item ping on top.
-      this.logger.error(
-        `Could not fan out the '${task.kind}' task: ` +
-          `${error instanceof Error ? error.message : String(error)}`,
-      );
+    /*
+     * A few tries before giving up (audit R3-7, 17 Oct 2026): this runs after the item's own
+     * commit, so a connection blip used to lose the task for good. A task that still fails is
+     * re-offered by `notifications.refan` only if some row of it exists; the polled queue
+     * badges stay the durable signal.
+     */
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        const recipients = await this.resolveAdminRecipients(
+          spec.permissions,
+          task.subject.clientId,
+        );
+        await this.store.insertAdminTask(recipients, {
+          kind: task.kind,
+          params: task.params,
+          dedupeKey: task.dedupeKey,
+          subjectKind: spec.subjectKind,
+          subjectId: task.subject.id,
+          subjectUserId: task.subject.clientId,
+          stillOpen: spec.stillOpen,
+        });
+        return;
+      } catch (error) {
+        if (attempt < FANOUT_ATTEMPTS) {
+          await new Promise((resolve) => setTimeout(resolve, 250 * 4 ** (attempt - 1)));
+          continue;
+        }
+        // Never throws — see the port.
+        this.logger.error(
+          `Could not fan out the '${task.kind}' task after ${FANOUT_ATTEMPTS} attempts: ` +
+            `${error instanceof Error ? error.message : String(error)}`,
+        );
+        return;
+      }
     }
+  }
+
+  /**
+   * Re-offer every OPEN admin task to the admins who hold its permission NOW (audit R3-7, 0233):
+   * an admin granted the permission after the task was raised, or replacing one who left, sees
+   * the work already waiting. Only admins who do not hold it yet are offered it (keyless tasks
+   * included), and a task whose item was handled meanwhile is refused by `insertAdminTask`'s
+   * still-open check.
+   */
+  @ScheduledJob('notifications.refan')
+  async refan(): Promise<void> {
+    await this.leases.run('notifications.refan', 10 * 60_000, async () => {
+      await this.refanOnce();
+    });
+  }
+
+  /** One pass of `refan`; public for the specs. */
+  async refanOnce(): Promise<number> {
+    let offered = 0;
+    for (const task of await this.store.openAdminTasks()) {
+      if (!isAdminNotificationKind(task.kind)) continue;
+      const spec = adminNotificationSpec(task.kind);
+      try {
+        const holders = new Set(task.holders);
+        const missing = (
+          await this.resolveAdminRecipients(spec.permissions, task.subjectUserId)
+        ).filter((adminId) => !holders.has(adminId));
+        if (missing.length === 0) continue;
+        offered += await this.store.insertAdminTask(missing, {
+          kind: task.kind,
+          params: task.params,
+          dedupeKey: task.dedupeKey ?? undefined,
+          subjectKind: spec.subjectKind,
+          subjectId: task.subjectId,
+          subjectUserId: task.subjectUserId,
+          stillOpen: spec.stillOpen,
+        });
+      } catch (error) {
+        this.logger.error(
+          `Could not re-offer the '${task.kind}' task ${task.dedupeKey}: ` +
+            `${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+    if (offered > 0)
+      this.logger.log(`Re-offered ${offered} open admin task(s) to current holders.`);
+    return offered;
   }
 
   /**
@@ -390,6 +453,9 @@ export class NotificationsService implements NotificationDispatchPort {
     }
   }
 }
+
+/** How many times one task's fan-out is tried before it is logged as lost. */
+const FANOUT_ATTEMPTS = 3;
 
 /** The session, reduced to what decides visibility. Rebuilt per request. */
 function readerOf(admin: AdminFeedPrincipal): AdminFeedReader {

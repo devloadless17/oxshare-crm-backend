@@ -470,6 +470,82 @@ describe('filters', () => {
     ]);
   });
 
+  it('finds a movement by what an operator holds for IT, not only by its client (audit R4-2)', async () => {
+    const db = ctx.db.db;
+    const [dep] = await db
+      .select({ id: transactions.id })
+      .from(transactions)
+      .where(eq(transactions.providerRef, 'fin-union-dep'));
+    // The reference the provider or the desk gave it.
+    expect((await get('q=fin-union-dep')).items.map((row) => row.id)).toEqual([dep.id]);
+    // Its own id, as a ledger row or a support thread quotes it.
+    const [moved] = await db
+      .select({ id: transfers.id })
+      .from(transfers)
+      .where(eq(transfers.userId, unionClientId));
+    expect((await get(`q=${moved.id}`)).items.map((row) => row.id)).toEqual([moved.id]);
+    // The MT5 login: that account's transfers.
+    const byLogin = await get('q=5109001');
+    expect(byLogin.items.map((row) => row.id)).toContain(moved.id);
+    // The wallet number: the movements on that wallet.
+    const [main] = await db
+      .select({ number: wallets.walletNumber })
+      .from(wallets)
+      .where(sql`${wallets.userId} = ${unionClientId} AND ${wallets.kind} = 'main'`);
+    const byWallet = await get(`q=${main.number}`);
+    expect(byWallet.items.map((row) => row.id)).toEqual(expect.arrayContaining([dep.id, moved.id]));
+  });
+
+  it('?account= also lists a DEPOSIT aimed at that account — the one that never moved (audit R4-3)', async () => {
+    const db = ctx.db.db;
+    const { client, main } = await seedClient('fin-aimed@oxshare-e2e.test', 'Aimed', 'Deposit');
+    const [account] = await db
+      .insert(tradingAccounts)
+      .values({ userId: client.id, login: '5109077', environment: 'live', currency: 'USD' })
+      .returning();
+    const [aimed] = await db
+      .insert(transactions)
+      .values({
+        userId: client.id,
+        walletId: main.id,
+        direction: 'deposit',
+        amount: '30.00000000',
+        currency: 'USD',
+        state: 'success',
+        provider: 'manual_test',
+        ...legacyRoute('manual_test', 'deposit'),
+        providerRef: 'fin-aimed-dep',
+        destinationTradingAccountId: account.id,
+        createdAt: new Date('2026-08-07T09:00:00Z'),
+        settledAt: new Date('2026-08-07T09:01:00Z'),
+      })
+      .returning();
+    const session = await actingAs(ctx, 'admin', FULL);
+    const body = (await session.get(`${LIST}?account=5109077`).expect(200)).body as ListBody;
+    expect(body.items.map((row) => row.id)).toEqual([aimed.id]);
+  });
+
+  it('several states at once, and an amount range, inclusive (audit R4-G3)', async () => {
+    // The union client holds a success deposit, a pending withdrawal, a settled transfer and a
+    // commission move: success + pending is everything but nothing else.
+    const both = await get('state=success,pending');
+    expect(both.items.map((row) => row.state).sort()).toEqual(
+      both.items
+        .map((row) => row.state)
+        .filter((s) => s === 'success' || s === 'pending')
+        .sort(),
+    );
+    expect(both.items.some((row) => row.state === 'pending')).toBe(true);
+    expect(both.items.some((row) => row.state === 'success')).toBe(true);
+    // Amounts 100.12345678, 40, 25.5 and 7.75: [25.5, 100.12345678] holds three, inclusive.
+    const ranged = await get('amountMin=25.5&amountMax=100.12345678');
+    expect(ranged.items.map((row) => row.amount).sort()).toEqual([
+      '100.12345678',
+      '25.50000000',
+      '40.00000000',
+    ]);
+  });
+
   it('a from after every movement returns nothing rather than everything', async () => {
     expect((await get('from=2027-01-01')).total).toBe(0);
   });
@@ -488,6 +564,10 @@ describe('validation — a typo is a 400 with a sentence, never a 500', () => {
   it('rejects an unknown kind', () => expect400('kind=magic'));
   it('rejects a non-UUID userId', () => expect400('userId=abc'));
   it('rejects a malformed date', () => expect400('from=yesterday'));
+  it('refuses an amount range that is not a decimal, or runs backwards', async () => {
+    await expect400('amountMin=1e5');
+    await expect400('amountMin=50&amountMax=10');
+  });
   it('refuses a settled period that ends before it starts', () =>
     expect400('settledFrom=2026-08-04&settledTo=2026-08-01'));
   it('rejects an impossible date', () => expect400('to=2026-02-31'));
@@ -690,6 +770,27 @@ describe('THE LEAK TEST: territory holds on every surface', () => {
     expect(body.counts['pending'] ?? 0).toBe(0);
     expect(body.directionCounts['all']).toBe(1);
     expect(body.directionCounts['withdrawal'] ?? 0).toBe(0);
+  });
+
+  it('reports what the providers charged on settled payments, apart from the net (audit R4-G2)', async () => {
+    await ctx.db.db
+      .update(transactions)
+      .set({ providerFee: '1.25000000' })
+      .where(eq(transactions.providerRef, 'fin-union-dep'));
+    try {
+      const session = await actingAs(ctx, 'admin', FULL);
+      const body = (await session.get(`${SUMMARY}?userId=${unionClientId}`).expect(200)).body as {
+        fees: { currency: string; direction: string; count: number; total: string }[];
+      };
+      expect(body.fees).toEqual([
+        { currency: 'USD', direction: 'deposit', count: 1, total: '1.25000000' },
+      ]);
+    } finally {
+      await ctx.db.db
+        .update(transactions)
+        .set({ providerFee: null })
+        .where(eq(transactions.providerRef, 'fin-union-dep'));
+    }
   });
 
   it('summary: the out-of-scope amount is absent from the totals', async () => {

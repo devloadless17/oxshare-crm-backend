@@ -2,7 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { and, count, eq, isNull, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
-import { positions, tradingAccounts, transactions, users } from '../../database/schema';
+import { positions, tradingAccounts, transactions, transfers, users } from '../../database/schema';
 import { WalletService } from '../wallet/wallet.service';
 import { TradingService } from './trading.service';
 import type { DashboardDto } from './dto/dashboard.dto';
@@ -221,14 +221,22 @@ export class DashboardService {
         .from(positions)
         .where(and(eq(positions.userId, userId), eq(positions.status, 'open'))),
       /*
-       * `pending` only — not `approved`. The distinction is who is being waited
-       * on: a pending transaction is one WE have not acted on, which is the
-       * thing worth surfacing to a client. An approved one is already moving.
+       * EVERYTHING still in progress (audit R3-13, 17 Oct 2026): a payment not yet decided or
+       * already approved and on its way (a payout with the provider), and a transfer MT5 has not
+       * confirmed. Counting `pending` payments alone told a client "0" beside a transfer their
+       * own recent list showed as pending.
        */
       this.db
-        .select({ value: count() })
-        .from(transactions)
-        .where(and(eq(transactions.userId, userId), eq(transactions.state, 'pending'))),
+        .select({
+          value: sql<number>`(
+            (SELECT count(*) FROM ${transactions}
+              WHERE ${transactions.userId} = ${userId}
+                AND ${transactions.state} IN ('pending', 'approved'))
+            + (SELECT count(*) FROM ${transfers}
+              WHERE ${transfers.userId} = ${userId} AND ${transfers.state} = 'pending')
+          )::int`,
+        })
+        .from(sql`(SELECT 1) AS one`),
       /*
        * Zero for a client who is not a partner, which is correct rather than a
        * missing value: they have introduced nobody. The partner SCREEN is where

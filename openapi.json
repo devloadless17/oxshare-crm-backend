@@ -12968,7 +12968,7 @@
     },
     "/v1/admin/reconciliation": {
       "get": {
-        "description": "Answers with the LAST completed check and the time it was made (`checkedAt`): the hourly job runs it, and it reads every ledger entry, so running it per page view cost the size of the ledger. `?fresh=true` runs it now. The check: every wallet balance against the sum of its own ledger. Wallet balances ONLY — a confirmed commission accrual that was never credited is a separate alert (UNPAID_CONFIRMED_ACCRUAL), not part of this report. Read-only — a discrepancy is reported, never repaired, because an automatic correction would write a compensating entry for a cause nobody has diagnosed. Whole-platform: an admin scoped to a client territory is refused, because a reconciliation over a fragment is meaningless and the full report names clients outside their territory.",
+        "description": "Answers with the LAST completed check and the time it was made (`checkedAt`): the hourly job runs it, and it reads every ledger entry, so running it per page view cost the size of the ledger. `?fresh=true` runs it now. The check: every wallet balance against the sum of its own ledger; every transfer of the last week against MT5; deposits stranded in a wallet; and confirmed commission never credited (UNPAID_CONFIRMED_ACCRUAL). Read-only — a discrepancy is reported, never repaired, because an automatic correction would write a compensating entry for a cause nobody has diagnosed. Whole-platform: an admin scoped to a client territory is refused, because a reconciliation over a fragment is meaningless and the full report names clients outside their territory.",
         "operationId": "AdminMoneyController_reconcile",
         "parameters": [
           {
@@ -13098,6 +13098,62 @@
           }
         ],
         "summary": "Export the filtered ledger as CSV",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/ledger/statement": {
+      "get": {
+        "description": "Per currency and wallet kind, from the ledger, with opening + movements = closing checked (audit R4-G1). Without `from`, it is the client liabilities at `to` (or now). Scoped: a desk sees the money of its own clients.",
+        "operationId": "AdminMoneyController_ledgerStatement",
+        "parameters": [
+          {
+            "name": "from",
+            "required": false,
+            "in": "query",
+            "description": "Earliest posted time, inclusive: a date-time with offset (2026-10-06T00:00:00+03:00) or a date (YYYY-MM-DD, a UTC day).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "to",
+            "required": false,
+            "in": "query",
+            "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "currency",
+            "required": false,
+            "in": "query",
+            "description": "One currency code.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LedgerStatementResponseDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "The period statement: client money held at the start, every posting, held at the end",
         "tags": [
           "admin"
         ]
@@ -13503,14 +13559,8 @@
             "name": "state",
             "required": false,
             "in": "query",
+            "description": "One state, or several comma-separated (audit R4-G3): pending, approved, success, failure, rejected",
             "schema": {
-              "enum": [
-                "pending",
-                "approved",
-                "success",
-                "failure",
-                "rejected"
-              ],
               "type": "string"
             }
           },
@@ -13573,6 +13623,24 @@
             "required": false,
             "in": "query",
             "description": "End of the settled period.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "amountMin",
+            "required": false,
+            "in": "query",
+            "description": "Lowest amount, inclusive — a decimal string (audit R4-G3).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "amountMax",
+            "required": false,
+            "in": "query",
+            "description": "Highest amount, inclusive — a decimal string.",
             "schema": {
               "type": "string"
             }
@@ -13705,14 +13773,8 @@
             "name": "state",
             "required": false,
             "in": "query",
+            "description": "One state, or several comma-separated (audit R4-G3): pending, approved, success, failure, rejected",
             "schema": {
-              "enum": [
-                "pending",
-                "approved",
-                "success",
-                "failure",
-                "rejected"
-              ],
               "type": "string"
             }
           },
@@ -13775,6 +13837,24 @@
             "required": false,
             "in": "query",
             "description": "End of the settled period.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "amountMin",
+            "required": false,
+            "in": "query",
+            "description": "Lowest amount, inclusive — a decimal string (audit R4-G3).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "amountMax",
+            "required": false,
+            "in": "query",
+            "description": "Highest amount, inclusive — a decimal string.",
             "schema": {
               "type": "string"
             }
@@ -13905,14 +13985,8 @@
             "name": "state",
             "required": false,
             "in": "query",
+            "description": "One state, or several comma-separated (audit R4-G3): pending, approved, success, failure, rejected",
             "schema": {
-              "enum": [
-                "pending",
-                "approved",
-                "success",
-                "failure",
-                "rejected"
-              ],
               "type": "string"
             }
           },
@@ -13975,6 +14049,24 @@
             "required": false,
             "in": "query",
             "description": "End of the settled period.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "amountMin",
+            "required": false,
+            "in": "query",
+            "description": "Lowest amount, inclusive — a decimal string (audit R4-G3).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "amountMax",
+            "required": false,
+            "in": "query",
+            "description": "Highest amount, inclusive — a decimal string.",
             "schema": {
               "type": "string"
             }
@@ -14052,14 +14144,8 @@
             "name": "state",
             "required": false,
             "in": "query",
+            "description": "One state, or several comma-separated (audit R4-G3): pending, approved, success, failure, rejected",
             "schema": {
-              "enum": [
-                "pending",
-                "approved",
-                "success",
-                "failure",
-                "rejected"
-              ],
               "type": "string"
             }
           },
@@ -14122,6 +14208,24 @@
             "required": false,
             "in": "query",
             "description": "End of the settled period.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "amountMin",
+            "required": false,
+            "in": "query",
+            "description": "Lowest amount, inclusive — a decimal string (audit R4-G3).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "amountMax",
+            "required": false,
+            "in": "query",
+            "description": "Highest amount, inclusive — a decimal string.",
             "schema": {
               "type": "string"
             }
@@ -14198,14 +14302,8 @@
             "name": "state",
             "required": false,
             "in": "query",
+            "description": "One state, or several comma-separated (audit R4-G3): pending, approved, success, failure, rejected",
             "schema": {
-              "enum": [
-                "pending",
-                "approved",
-                "success",
-                "failure",
-                "rejected"
-              ],
               "type": "string"
             }
           },
@@ -14268,6 +14366,24 @@
             "required": false,
             "in": "query",
             "description": "End of the settled period.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "amountMin",
+            "required": false,
+            "in": "query",
+            "description": "Lowest amount, inclusive — a decimal string (audit R4-G3).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "amountMax",
+            "required": false,
+            "in": "query",
+            "description": "Highest amount, inclusive — a decimal string.",
             "schema": {
               "type": "string"
             }
@@ -14420,14 +14536,8 @@
             "name": "state",
             "required": false,
             "in": "query",
+            "description": "One state, or several comma-separated (audit R4-G3): pending, approved, success, failure, rejected",
             "schema": {
-              "enum": [
-                "pending",
-                "approved",
-                "success",
-                "failure",
-                "rejected"
-              ],
               "type": "string"
             }
           },
@@ -14468,6 +14578,22 @@
           },
           {
             "name": "settledTo",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "amountMin",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "amountMax",
             "required": true,
             "in": "query",
             "schema": {
@@ -14507,14 +14633,8 @@
             "name": "state",
             "required": false,
             "in": "query",
+            "description": "One state, or several comma-separated (audit R4-G3): pending, approved, success, failure, rejected",
             "schema": {
-              "enum": [
-                "pending",
-                "approved",
-                "success",
-                "failure",
-                "rejected"
-              ],
               "type": "string"
             }
           },
@@ -14555,6 +14675,22 @@
           },
           {
             "name": "settledTo",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "amountMin",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "amountMax",
             "required": true,
             "in": "query",
             "schema": {
@@ -14693,14 +14829,8 @@
             "name": "state",
             "required": false,
             "in": "query",
+            "description": "One state, or several comma-separated (audit R4-G3): pending, approved, success, failure, rejected",
             "schema": {
-              "enum": [
-                "pending",
-                "approved",
-                "success",
-                "failure",
-                "rejected"
-              ],
               "type": "string"
             }
           },
@@ -14763,6 +14893,24 @@
             "required": false,
             "in": "query",
             "description": "End of the settled period.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "amountMin",
+            "required": false,
+            "in": "query",
+            "description": "Lowest amount, inclusive — a decimal string (audit R4-G3).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "amountMax",
+            "required": false,
+            "in": "query",
+            "description": "Highest amount, inclusive — a decimal string.",
             "schema": {
               "type": "string"
             }
@@ -15087,7 +15235,7 @@
     },
     "/v1/admin/wallets/export": {
       "get": {
-        "description": "The same `userId` and `currency` filters as GET /admin/wallets, over every matching row rather than one page. Balances are the exact decimal strings the column holds — never rounded, never locale-formatted (§6.1). Client scope applies exactly as it does to the list.",
+        "description": "The same `userId`, `currency` and `q` filters as GET /admin/wallets, over every matching row rather than one page. Balances are the exact decimal strings the column holds — never rounded, never locale-formatted (§6.1). Client scope applies exactly as it does to the list.",
         "operationId": "AdminHoldingsController_exportWallets",
         "parameters": [
           {
@@ -15115,6 +15263,15 @@
             "required": false,
             "in": "query",
             "description": "Exact match on the wallet code.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "q",
+            "required": false,
+            "in": "query",
+            "description": "The same search as the list: the owner’s Portal ID, email, name or phone.",
             "schema": {
               "type": "string"
             }
@@ -15329,7 +15486,7 @@
     },
     "/v1/admin/clients/{id}/transactions": {
       "get": {
-        "description": "`amount` is a decimal string (§6.1), never a number.",
+        "description": "Payments only: wallet ⇄ trading-account transfers and commission moves are NOT here (audit R4-6). For every movement of a client, with its accounting type and both ends, read `GET /admin/transactions?userId=`. `amount` is a decimal string (§6.1), never a number.",
         "operationId": "AdminHoldingsController_listClientTransactions",
         "parameters": [
           {
@@ -15398,7 +15555,7 @@
             "cookie": []
           }
         ],
-        "summary": "One client’s money movements, all directions",
+        "summary": "One client’s PAYMENTS (deposits and withdrawals) — not every movement",
         "tags": [
           "admin"
         ]
@@ -29543,6 +29700,31 @@
           "settledAt"
         ]
       },
+      "UnpaidAccrualDto": {
+        "type": "object",
+        "properties": {
+          "accrualId": {
+            "type": "string"
+          },
+          "amount": {
+            "type": "string",
+            "description": "A money string."
+          },
+          "currency": {
+            "type": "string"
+          },
+          "confirmedAt": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "required": [
+          "accrualId",
+          "amount",
+          "currency",
+          "confirmedAt"
+        ]
+      },
       "ReconciliationReportDto": {
         "type": "object",
         "properties": {
@@ -29592,6 +29774,17 @@
             "type": "number",
             "description": "How many deposits are stranded in the wallet."
           },
+          "unpaidAccruals": {
+            "description": "Commission confirmed but never credited (a sample of up to 20).",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UnpaidAccrualDto"
+            }
+          },
+          "unpaidAccrualCount": {
+            "type": "number",
+            "description": "How many confirmed accruals no ledger entry paid."
+          },
           "balanced": {
             "type": "boolean",
             "description": "True when nothing is wrong. Read this rather than testing the array length — it is the field the service decides, and a future check can make it false without adding a wallet discrepancy."
@@ -29607,7 +29800,113 @@
           "transferMismatchCount",
           "strandedDeposits",
           "strandedDepositCount",
+          "unpaidAccruals",
+          "unpaidAccrualCount",
           "balanced"
+        ]
+      },
+      "LedgerStatementLineDto": {
+        "type": "object",
+        "properties": {
+          "entryType": {
+            "type": "string",
+            "example": "deposit"
+          },
+          "flow": {
+            "type": "string",
+            "enum": [
+              "in",
+              "out"
+            ],
+            "description": "in credits the wallets, out debits them."
+          },
+          "count": {
+            "type": "number"
+          },
+          "total": {
+            "type": "string",
+            "example": "1200.00000000",
+            "description": "Always positive."
+          }
+        },
+        "required": [
+          "entryType",
+          "flow",
+          "count",
+          "total"
+        ]
+      },
+      "LedgerStatementDto": {
+        "type": "object",
+        "properties": {
+          "currency": {
+            "type": "string",
+            "example": "USD"
+          },
+          "walletKind": {
+            "type": "string",
+            "example": "main"
+          },
+          "opening": {
+            "type": "string",
+            "description": "Held at the start; 0 when there is no start."
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LedgerStatementLineDto"
+            }
+          },
+          "movement": {
+            "type": "string",
+            "description": "Σ movements, signed."
+          },
+          "closing": {
+            "type": "string",
+            "description": "Held at the end (or now): the liabilities."
+          }
+        },
+        "required": [
+          "currency",
+          "walletKind",
+          "opening",
+          "lines",
+          "movement",
+          "closing"
+        ]
+      },
+      "LedgerStatementResponseDto": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "nullable": true
+          },
+          "until": {
+            "type": "string",
+            "nullable": true
+          },
+          "statements": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LedgerStatementDto"
+            }
+          },
+          "walletsAgreeWithLedger": {
+            "type": "boolean",
+            "description": "The last reconciliation found every wallet equal to its own ledger — the condition under which these figures are exact."
+          },
+          "reconciledAt": {
+            "type": "string",
+            "description": "When that reconciliation ran."
+          }
+        },
+        "required": [
+          "from",
+          "until",
+          "statements",
+          "walletsAgreeWithLedger",
+          "reconciledAt"
         ]
       },
       "StuckTransfersDto": {
@@ -29983,6 +30282,36 @@
           "total"
         ]
       },
+      "AccountingFeeDto": {
+        "type": "object",
+        "properties": {
+          "currency": {
+            "type": "string",
+            "example": "USD"
+          },
+          "direction": {
+            "type": "string",
+            "enum": [
+              "deposit",
+              "withdrawal"
+            ]
+          },
+          "count": {
+            "type": "number",
+            "description": "Settled payments that carried a fee."
+          },
+          "total": {
+            "type": "string",
+            "example": "12.40000000"
+          }
+        },
+        "required": [
+          "currency",
+          "direction",
+          "count",
+          "total"
+        ]
+      },
       "AdminTransactionsSummaryDto": {
         "type": "object",
         "properties": {
@@ -30015,6 +30344,12 @@
             "items": {
               "$ref": "#/components/schemas/AccountingNetDto"
             }
+          },
+          "fees": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AccountingFeeDto"
+            }
           }
         },
         "required": [
@@ -30022,7 +30357,8 @@
           "directions",
           "accounting",
           "effects",
-          "net"
+          "net",
+          "fees"
         ]
       },
       "MovementEndDto": {

@@ -106,3 +106,24 @@ describe('a deposit aimed at an account that never moved on is reported (audit R
     );
   });
 });
+
+describe('commission confirmed but never credited is reported (audit R1-3)', () => {
+  it('names a confirmed accrual with no ledger entry behind it', async () => {
+    const { rows: u } = await ctx.db.execute<{ id: number }>(sql`
+      INSERT INTO users (email, password_hash, first_name, last_name)
+      VALUES ('unpaid-ib@test.local', 'x', 'Unpaid', 'Partner'),
+             ('unpaid-client@test.local', 'x', 'Some', 'Client')
+      RETURNING id`);
+    const { rows: a } = await ctx.db.execute<{ id: string }>(sql`
+      INSERT INTO ib_accruals (ib_user_id, client_user_id, source_type, source_id, depth,
+                               rate_value, base_amount, amount, currency, status, confirmed_at)
+      VALUES (${u[0].id}, ${u[1].id}, 'deal', gen_random_uuid(), 1, 1, 10, 2.5, 'USD',
+              'confirmed', now())
+      RETURNING id`);
+
+    const report = await new ReconciliationService(ctx.db).run();
+
+    expect(report.unpaidAccruals.map((row) => row.accrualId)).toContain(a[0].id);
+    expect(report.balanced).toBe(false);
+  });
+});

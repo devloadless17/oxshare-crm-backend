@@ -123,7 +123,7 @@ export class AdminHoldingsController {
   @ApiOperation({
     summary: 'Export the filtered wallet list as CSV',
     description:
-      'The same `userId` and `currency` filters as GET /admin/wallets, over every matching row ' +
+      'The same `userId`, `currency` and `q` filters as GET /admin/wallets, over every matching row ' +
       'rather than one page. Balances are the exact decimal strings the column holds — never ' +
       'rounded, never locale-formatted (§6.1). Client scope applies exactly as it does to the ' +
       'list.',
@@ -138,6 +138,11 @@ export class AdminHoldingsController {
   @ApiQuery({ name: 'format', required: false, enum: ['csv'] })
   @ApiQuery({ name: 'userId', required: false, description: 'Wallets of one client.' })
   @ApiQuery({ name: 'currency', required: false, description: 'Exact match on the wallet code.' })
+  @ApiQuery({
+    name: 'q',
+    required: false,
+    description: 'The same search as the list: the owner’s Portal ID, email, name or phone.',
+  })
   @ScopedToClients(
     'AdminExportService.walletBatch → AdminHoldingsService.walletExportBatch, the same clientScopePredicate on wallets.user_id the list applies.',
   )
@@ -154,10 +159,12 @@ export class AdminHoldingsController {
     @Query('format') format?: string,
     @Query('userId', ClientRefPipe) userId?: number,
     @Query('currency') currency?: string,
+    @Query('q') q?: string,
   ) {
     const chosen = exportFormat(format);
-    // Shape-checked, so a typo is a 400 here and on the list alike.
-    const query = { userId: userId, currency };
+    // Shape-checked, so a typo is a 400 here and on the list alike. The SEARCH too (audit R4-5):
+    // a searched list exported as every wallet in the territory was a different file entirely.
+    const query = { userId: userId, currency, q: q?.trim() || undefined };
 
     this.audit.record(req.admin.id, 'export.wallets', 'wallet_list', req.admin.id, {
       format: chosen,
@@ -541,8 +548,11 @@ export class AdminHoldingsController {
   @RequirePermissions('wallets.view')
   @ApiCookieAuth()
   @ApiOperation({
-    summary: 'One client’s money movements, all directions',
-    description: '`amount` is a decimal string (§6.1), never a number.',
+    summary: 'One client’s PAYMENTS (deposits and withdrawals) — not every movement',
+    description:
+      'Payments only: wallet ⇄ trading-account transfers and commission moves are NOT here ' +
+      '(audit R4-6). For every movement of a client, with its accounting type and both ends, read ' +
+      '`GET /admin/transactions?userId=`. `amount` is a decimal string (§6.1), never a number.',
   })
   @ApiOkResponse({ type: ClientTransactionsPageDto })
   @ApiQuery({ name: 'page', required: false, description: 'Legacy offset paging. Prefer cursor.' })

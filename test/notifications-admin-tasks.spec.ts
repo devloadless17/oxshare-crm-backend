@@ -22,6 +22,7 @@ import {
   type NotificationSubjectKind,
 } from '../src/database/schema';
 import { NotificationsService } from '../src/modules/notifications/notifications.service';
+import { NotificationsStore } from '../src/store/notifications.store';
 
 /**
  * ADMIN NOTIFICATIONS ARE TASKS — the owner's rules, through the real HTTP
@@ -604,5 +605,94 @@ describe('the badge is the inbox, cut two ways', () => {
       'transfers',
       'withdrawals',
     ]);
+  });
+});
+
+describe('open tasks reach today’s holders, and a re-raised item gets a new task (0233)', () => {
+  it('a later-granted admin is offered every open task; nobody gets one twice (audit R3-7)', async () => {
+    const service = ctx.app.get(NotificationsService);
+    const waiting = await client('north');
+    await service.notifyAdmins({
+      kind: 'admin.kyc.submitted',
+      params: { userId: waiting },
+      subject: kycOf(waiting),
+    });
+    // A reviewer who joins the desk AFTER the task was raised.
+    const [late] = await ctx.db.db
+      .insert(admins)
+      .values({
+        email: `tasks-late-${Date.now()}@oxshare.com`,
+        passwordHash: 'x',
+        name: 'Tasks Late',
+        role: 'sub_admin' as const,
+        roleId: deskRoleId,
+        permissions: [],
+      })
+      .returning();
+    await ctx.db.db
+      .insert(adminClientTagScopes)
+      .values({ adminId: late.id, tagId: northTagId, createdBy: masterId });
+
+    await service.refanOnce();
+    await service.refanOnce(); // a second pass adds nothing
+
+    const rows = await ctx.db.db
+      .select({ recipientId: notifications.recipientId })
+      .from(notifications)
+      .where(
+        and(eq(notifications.subjectKind, 'kyc'), eq(notifications.subjectId, String(waiting))),
+      );
+    const recipients = rows.map((r) => r.recipientId);
+    expect(recipients).toContain(late.id);
+    expect(new Set(recipients).size, 'somebody holds the task twice').toBe(recipients.length);
+  });
+
+  it('a re-raised item gets a NEW task once the last was handled — never two open at once (audit R3-8)', async () => {
+    const clientId = await client('north');
+    const row = (resolvedAt: Date | null) => ({
+      recipientKind: 'admin' as const,
+      recipientId: masterId,
+      kind: 'withdrawal.payout_attention',
+      dedupeKey: `withdrawal.payout_attention:reraise-${clientId}`,
+      subjectKind: 'transaction' as const,
+      subjectId: `00000000-0000-4000-8000-${String(clientId).padStart(12, '0')}`,
+      subjectUserId: clientId,
+      resolvedAt,
+    });
+    await ctx.db.db.insert(notifications).values(row(new Date())); // handled last week
+    const reraised = await ctx.db.db
+      .insert(notifications)
+      .values(row(null))
+      .onConflictDoNothing()
+      .returning();
+    expect(reraised, 'the re-raised item made no task').toHaveLength(1);
+    const twice = await ctx.db.db
+      .insert(notifications)
+      .values(row(null))
+      .onConflictDoNothing()
+      .returning();
+    expect(twice, 'two open tasks for one item').toHaveLength(0);
+  });
+
+  it('retention never deletes an OPEN admin task, only handled ones (audit R3-9)', async () => {
+    const store = ctx.app.get(NotificationsStore);
+    const clientId = await client('north');
+    const old = new Date(Date.now() - 400 * 24 * 3600_000);
+    const openId = await seedTask(masterId, 'admin.kyc.submitted', kycOf(clientId), old);
+    const handledId = await seedTask(masterId, 'admin.kyc.submitted', kycOf(clientId), old);
+    await ctx.db.db
+      .update(notifications)
+      .set({ resolvedAt: new Date() })
+      .where(eq(notifications.id, handledId));
+
+    await store.pruneOlderThan('admin', 365);
+
+    const left = (
+      await ctx.db.db
+        .select({ id: notifications.id })
+        .from(notifications)
+        .where(sql`${notifications.id} IN (${openId}, ${handledId})`)
+    ).map((r) => r.id);
+    expect(left).toEqual([openId]);
   });
 });

@@ -232,6 +232,14 @@ export interface AdminMovementsFilter {
    */
   tradingAccountId?: string;
   state?: MovementState;
+  /** SEVERAL states at once (`?state=a,b`, audit R4-G3); `state` stays the single-state form. */
+  states?: readonly MovementState[];
+  /**
+   * An amount range, inclusive, as decimal strings validated at the edge (audit R4-G3). Read
+   * live: the stored totals do not key by amount.
+   */
+  amountMin?: string;
+  amountMax?: string;
   currency?: string;
   /** Free text over the client's email and name — see `listForAdmin.q`. */
   q?: string;
@@ -293,6 +301,13 @@ interface MovementArm {
   route: SQL | null;
   /** The payments arm's two method-key columns (deposit, withdrawal); absent elsewhere. */
   methodKeys?: [SQL, SQL];
+  /** The movement's wallet; given in outer mode, where the admin search reads it. */
+  wallet?: SQL;
+  /**
+   * The trading account a movement names: a transfer's account, and the account a DEPOSIT was
+   * aimed at (audit R4-3) — given in outer mode.
+   */
+  accounts?: [SQL, SQL];
 }
 
 /**
@@ -320,6 +335,8 @@ export function movementTotalsSource(
   if (filter.origins?.length || filter.tradingAccountId) return undefined;
   // The stored totals key by CREATION day; a settled period reads the rows (audit R4-1).
   if (filter.settled?.from || filter.settled?.until) return undefined;
+  // No total is kept per amount (audit R4-G3).
+  if (filter.amountMin || filter.amountMax) return undefined;
   /*
    * The daily totals are UTC days: they answer a period only when it starts and
    * ends on UTC midnights. A viewer's own "today" in Beirut does not, so it reads
@@ -445,6 +462,14 @@ export function movementTotalsQuery(
     conditions.push(sql`direction = ${filter.direction}`);
   }
   if (shape !== 'state' && filter.state) conditions.push(sql`state = ${filter.state}`);
+  if (shape !== 'state' && filter.states?.length) {
+    conditions.push(
+      sql`state IN (${sql.join(
+        filter.states.map((state) => sql`${state}`),
+        sql`, `,
+      )})`,
+    );
+  }
   if (totals === 'daily') {
     if (filter.from) conditions.push(sql`day >= ${utcDate(filter.from)}::date`);
     if (filter.until) conditions.push(sql`day < ${utcDate(filter.until)}::date`);
@@ -498,6 +523,14 @@ export interface AccountingLine {
 }
 
 /** A summary's money per currency × effect × settlement bucket (16 Oct 2026). */
+/** Provider fees on settled payments, per currency and direction (audit R4-G2). */
+export interface FeeTotal {
+  currency: string;
+  direction: string;
+  count: number;
+  total: string;
+}
+
 export interface EffectTotal {
   currency: string;
   effect: MovementEffect;
@@ -650,6 +683,41 @@ function depositEvidenceSearch(q: string): SQL | undefined {
   }
   if (matches.length === 0) return undefined;
   return sql.join(matches, sql` UNION `);
+}
+
+const UUID_TERM = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** `wallet_number()`'s alphabet (0090): 12 characters, no i, l, o or u. */
+const WALLET_NUMBER_TERM = /^[0-9a-hjkmnp-tv-z]{12}$/i;
+const LOGIN_TERM = /^[0-9]{3,12}$/;
+/** A provider's id or reference: one token, no spaces, short enough to be one. */
+const PROVIDER_ID_TERM = /^[A-Za-z0-9._:-]{4,100}$/;
+
+/**
+ * What an operator may HOLD for one MOVEMENT rather than for a client (audit R4-2, 16 Oct 2026):
+ * the movement's own id (a ledger row, a support thread), the reference the provider or the desk
+ * gave it, the provider's payment or payout id, a wallet number, or an MT5 login. Each is an EXACT
+ * match through its own index, so a search quoting any of them finds the movement instead of
+ * reading as "no such movement". `ids` are movement ids (unique across every arm: uuids).
+ */
+function movementIdentifierSearch(q: string): {
+  ids?: SQL;
+  walletNumber?: string;
+  login?: string;
+} {
+  const ids: SQL[] = [];
+  if (UUID_TERM.test(q)) ids.push(sql`SELECT ${q.toLowerCase()}::uuid AS id`);
+  if (PROVIDER_ID_TERM.test(q)) {
+    ids.push(
+      sql`SELECT pi.id FROM transactions pi WHERE pi.provider_ref IN (${q}, ${q.toUpperCase()})`,
+    );
+    ids.push(sql`SELECT pi.id FROM transactions pi WHERE pi.provider_payment_id = ${q}`);
+    ids.push(sql`SELECT pi.id FROM transactions pi WHERE pi.provider_payout_id = ${q}`);
+  }
+  return {
+    ids: ids.length ? sql.join(ids, sql` UNION `) : undefined,
+    walletNumber: WALLET_NUMBER_TERM.test(q) ? q.toLowerCase() : undefined,
+    login: LOGIN_TERM.test(q) ? q : undefined,
+  };
 }
 
 /*
@@ -1505,6 +1573,11 @@ export class TransactionQueries {
           // NULL on the arms with no route, so no route list can match them.
           route: sql`(movements.direction, movements.route_provider, movements.route_channel)`,
           methodKeys: [sql`movements.method_key`, sql`movements.withdrawal_method_key`],
+          wallet: sql`movements.wallet_id`,
+          accounts: [
+            sql`movements.trading_account_id`,
+            sql`movements.destination_trading_account_id`,
+          ],
         })
       : undefined;
     /*
@@ -2146,6 +2219,7 @@ export class TransactionQueries {
      */
     const q = filter.q?.trim() || undefined;
     const evidence = q ? depositEvidenceSearch(q) : undefined;
+    const named = q ? movementIdentifierSearch(q) : {};
     const searched = q
       ? sql`searched AS MATERIALIZED (SELECT users.id FROM users WHERE ${clientIdentitySearch(q)})`
       : undefined;
@@ -2168,7 +2242,7 @@ export class TransactionQueries {
         )
       : undefined;
     const cte = this.movementsCte(
-      ({ owner, id, payments, isPayment, route, methodKeys }) => {
+      ({ owner, id, payments, isPayment, route, methodKeys, wallet, accounts }) => {
         const conditions: SQL[] = [];
         // A person decides it (0168) — only a payment can be one.
         if (deskRoutes) conditions.push(route ? sql`${route} IN (${deskRoutes})` : sql`FALSE`);
@@ -2194,11 +2268,22 @@ export class TransactionQueries {
         // Validated as a uuid at the edge; every arm's id column is a uuid.
         if (filter.id) conditions.push(sql`${id} = ${filter.id}::uuid`);
         if (searched) {
-          const byClient = sql`${owner} = ANY(ARRAY(SELECT searched.id FROM searched))`;
+          // The client it names, OR a deposit's evidence, OR an identifier of the movement itself.
+          const matches: SQL[] = [sql`${owner} = ANY(ARRAY(SELECT searched.id FROM searched))`];
+          if (payments && evidence) {
+            matches.push(sql`(${isPayment} AND ${id} = ANY(ARRAY(${evidence})))`);
+          }
+          if (named.ids) matches.push(sql`${id} = ANY(ARRAY(${named.ids}))`);
+          if (named.walletNumber && wallet) {
+            matches.push(sql`${wallet} = ANY(ARRAY(
+              SELECT wn.id FROM wallets wn WHERE wn.wallet_number = ${named.walletNumber}))`);
+          }
+          if (named.login && accounts) {
+            const ids = sql`ARRAY(SELECT la.id FROM trading_accounts la WHERE la.login = ${named.login})`;
+            matches.push(sql`(${accounts[0]} = ANY(${ids}) OR ${accounts[1]} = ANY(${ids}))`);
+          }
           conditions.push(
-            payments && evidence
-              ? sql`(${byClient} OR (${isPayment} AND ${id} = ANY(ARRAY(${evidence}))))`
-              : byClient,
+            matches.length === 1 ? matches[0] : sql`(${sql.join(matches, sql` OR `)})`,
           );
         }
         return whereOf(conditions);
@@ -2311,9 +2396,22 @@ export class TransactionQueries {
         );
       }
       if (filter.tradingAccountId) {
-        conditions.push(sql`combined.trading_account_id = ${filter.tradingAccountId}::uuid`);
+        // A transfer on it, or a DEPOSIT aimed at it — the one that "never moved" (audit R4-3).
+        conditions.push(sql`(combined.trading_account_id = ${filter.tradingAccountId}::uuid
+          OR combined.destination_trading_account_id = ${filter.tradingAccountId}::uuid)`);
       }
       if (!omit.state && filter.state) conditions.push(sql`combined.state = ${filter.state}`);
+      if (!omit.state && filter.states?.length) {
+        conditions.push(
+          sql`combined.state IN (${sql.join(
+            filter.states.map((state) => sql`${state}`),
+            sql`, `,
+          )})`,
+        );
+      }
+      // Inclusive, on the NUMERIC column: a decimal comparison, never a float (§6.1).
+      if (filter.amountMin) conditions.push(sql`combined.amount >= ${filter.amountMin}::numeric`);
+      if (filter.amountMax) conditions.push(sql`combined.amount <= ${filter.amountMax}::numeric`);
       if (filter.currency) conditions.push(sql`combined.currency = ${filter.currency}`);
       if (filter.attention) conditions.push(sql`combined.needs_attention`);
       /*
@@ -2598,7 +2696,11 @@ export class TransactionQueries {
       groupCounts['all'] = Math.min(groupCounts['all'], TOTAL_CAP);
     }
 
-    const total = filter.state ? (counts[filter.state] ?? 0) : counts['all'];
+    const total = filter.state
+      ? (counts[filter.state] ?? 0)
+      : filter.states?.length
+        ? filter.states.reduce((sum, state) => sum + (counts[state] ?? 0), 0)
+        : counts['all'];
 
     /*
      * Relabelled before `buildCursorPage` for the reason `listForAdmin`
@@ -2743,6 +2845,7 @@ export class TransactionQueries {
     accounting: AccountingLine[];
     effects: EffectTotal[];
     net: { currency: string; total: string }[];
+    fees: FeeTotal[];
   }> {
     await this.assertSearchNarrow(filter.q);
     const { countSource, conditionsFor, whereOf } = this.adminMovements(filter);
@@ -2840,6 +2943,34 @@ export class TransactionQueries {
       total: money(sum.toFixed(8)),
     }));
 
+    /*
+     * What the providers CHARGED on the settled payments in this set (audit R4-G2), per currency
+     * and direction — never folded into the net: who bore a fee depends on the route, and the
+     * client's wallet already moved by what the ledger says. Read live from each payment's own
+     * row; the union's constant `kind` prunes every other arm.
+     */
+    const feeRows = (
+      await this.db.execute(sql`
+        WITH counted AS (${countSource}${whereOf([
+          ...conditionsFor(),
+          sql`combined.kind = 'payment'`,
+          sql`combined.state = 'success'`,
+        ])})
+        SELECT counted.currency, counted.direction::text AS direction, count(*)::int AS value,
+               coalesce(sum(t.provider_fee), 0)::text AS total
+          FROM counted
+          JOIN transactions t ON t.id = counted.id
+         WHERE t.provider_fee IS NOT NULL
+         GROUP BY 1, 2
+         ORDER BY 1, 2`)
+    ).rows as unknown as { currency: string; direction: string; value: number; total: string }[];
+    const fees: FeeTotal[] = feeRows.map((row) => ({
+      currency: row.currency,
+      direction: row.direction,
+      count: row.value,
+      total: money(row.total),
+    }));
+
     const allRows = grouped.rows as unknown as {
       direction: string;
       kind: MovementKind | null;
@@ -2873,6 +3004,7 @@ export class TransactionQueries {
       accounting,
       effects,
       net,
+      fees,
     };
   }
 }

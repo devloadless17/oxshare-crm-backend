@@ -717,10 +717,54 @@ export class NotificationsStore {
         and(
           eq(notifications.recipientKind, recipientKind),
           sql`${notifications.createdAt} < now() - make_interval(days => ${days})`,
+          // An admin TASK still open is somebody's work, however old: never pruned (audit R3-9).
+          recipientKind === 'admin' ? isNotNull(notifications.resolvedAt) : undefined,
         ),
       )
       .returning({ id: notifications.id });
     return deleted.length;
+  }
+
+  /**
+   * Every OPEN admin task, once per item (kind, subject and key), with the admins who already
+   * hold it: what `notifications.refan` re-offers to the admins entitled to it now (0233). A
+   * keyless task (a KYC submission) is matched by its subject, so nobody gets it twice.
+   */
+  async openAdminTasks(): Promise<
+    {
+      kind: string;
+      params: Record<string, unknown>;
+      dedupeKey: string | null;
+      subjectKind: string;
+      subjectId: string;
+      subjectUserId: number;
+      holders: string[];
+    }[]
+  > {
+    const { rows } = await this.db.execute<{
+      kind: string;
+      params: Record<string, unknown> | null;
+      dedupe_key: string | null;
+      subject_kind: string;
+      subject_id: string;
+      subject_user_id: number;
+      holders: string[];
+    }>(sql`
+      SELECT kind, subject_kind, subject_id, subject_user_id, dedupe_key,
+             (array_agg(params ORDER BY created_at))[1] AS params,
+             array_agg(recipient_id) AS holders
+        FROM notifications
+       WHERE recipient_kind = 'admin' AND resolved_at IS NULL AND subject_id IS NOT NULL
+       GROUP BY kind, subject_kind, subject_id, subject_user_id, dedupe_key`);
+    return rows.map((row) => ({
+      kind: row.kind,
+      params: row.params ?? {},
+      dedupeKey: row.dedupe_key,
+      subjectKind: row.subject_kind,
+      subjectId: row.subject_id,
+      subjectUserId: row.subject_user_id,
+      holders: row.holders,
+    }));
   }
 
   /**

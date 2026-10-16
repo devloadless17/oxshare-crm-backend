@@ -5561,9 +5561,10 @@ export const notifications = pgTable(
       'notifications_subject_kind_ck',
       sql`${t.subjectKind} IS NULL OR ${t.subjectKind} IN ('transaction', 'kyc', 'ib_application', 'transfer', 'ib_accrual')`,
     ),
+    // Unique among OPEN rows (0233): a re-raised item gets a new task once the last was handled.
     uniqueIndex('notifications_recipient_dedupe_uq')
       .on(t.recipientKind, t.recipientId, t.dedupeKey)
-      .where(sql`${t.dedupeKey} IS NOT NULL`),
+      .where(sql`${t.dedupeKey} IS NOT NULL AND ${t.resolvedAt} IS NULL`),
     /* The admin Inbox and badge: still somebody's work — unresolved, read or
        not. Reading never takes a task out (0189). */
     index('notifications_admin_inbox_idx')

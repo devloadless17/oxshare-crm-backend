@@ -11,6 +11,7 @@ import { Throttle } from '@nestjs/throttler';
 // tag and the generated types.gen.ts is unchanged.
 
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -64,6 +65,7 @@ import {
 } from './dto/requests/money.dto';
 import {
   LedgerListResponseDto,
+  LedgerStatementResponseDto,
   ReconciliationReportDto,
   StuckTransfersDto,
   WithdrawalListResponseDto,
@@ -863,8 +865,8 @@ export class AdminMoneyController {
       'hourly job runs it, and it reads every ledger entry, so running it per page view cost ' +
       'the size of the ledger. `?fresh=true` runs it now. ' +
       'The check: every wallet balance against the sum of its own ' +
-      'ledger. Wallet balances ONLY — a confirmed commission accrual that was never credited ' +
-      'is a separate alert (UNPAID_CONFIRMED_ACCRUAL), not part of this report. ' +
+      'ledger; every transfer of the last week against MT5; deposits stranded in a wallet; and ' +
+      'confirmed commission never credited (UNPAID_CONFIRMED_ACCRUAL). ' +
       'Read-only — a discrepancy is reported, never repaired, because an automatic correction ' +
       'would write a compensating entry for a cause nobody has diagnosed. Whole-platform: an ' +
       'admin scoped to a client territory is refused, because a reconciliation over a fragment ' +
@@ -965,6 +967,47 @@ export class AdminMoneyController {
    * separate from `wallets.delete` because adding money and removing an account
    * are not one power); reading every money movement earns the same treatment.
    */
+  @Get('ledger/statement')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('ledger.view')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'The period statement: client money held at the start, every posting, held at the end',
+    description:
+      'Per currency and wallet kind, from the ledger, with opening + movements = closing checked ' +
+      '(audit R4-G1). Without `from`, it is the client liabilities at `to` (or now). Scoped: a ' +
+      'desk sees the money of its own clients.',
+  })
+  @ApiQuery({ name: 'currency', required: false, description: 'One currency code.' })
+  @ApiOkResponse({ type: LedgerStatementResponseDto })
+  @ApiDateRangeQueries('posted')
+  @ScopedToClients('ledgerStatement applies the predicate to wallets.user_id.')
+  async ledgerStatement(
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('currency') currency?: string,
+  ) {
+    const code = currency?.trim().toUpperCase() || undefined;
+    if (code && !/^[A-Z0-9]{2,10}$/.test(code)) {
+      throw new BadRequestException({
+        code: 'VALIDATION_FAILED',
+        message: ['currency must be a currency code'],
+        fields: { currency: 'must be a currency code' },
+      });
+    }
+    const [statement, report] = await Promise.all([
+      this.money.ledgerStatement(dateRangeQuery(from, to), code, req.admin),
+      this.reconciliation.latest(),
+    ]);
+    // A verdict, never the discrepancies themselves: those are platform-wide and unscoped.
+    return {
+      ...statement,
+      walletsAgreeWithLedger: report.discrepancyCount === 0,
+      reconciledAt: report.checkedAt,
+    };
+  }
+
   @Get('ledger')
   @UseGuards(PermissionsGuard)
   @RequirePermissions('ledger.view')

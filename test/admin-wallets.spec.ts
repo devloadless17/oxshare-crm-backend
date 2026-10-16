@@ -551,6 +551,14 @@ describe('the CSV export', () => {
     expect(res.text).not.toContain('wallets-theirs@oxshare-e2e.test');
   });
 
+  it('a searched list exports only what the search found (audit R4-5)', async () => {
+    const session = await actingAs(ctx, 'admin', MASTER);
+    const res = await session.get('/v1/admin/wallets/export?q=wallets-mine@oxshare-e2e.test');
+    expect(res.status).toBe(200);
+    expect(res.text).toContain('wallets-mine@oxshare-e2e.test');
+    expect(res.text).not.toContain('wallets-theirs@oxshare-e2e.test');
+  });
+
   it('400s on a format it cannot write, rather than renaming a CSV', async () => {
     const session = await actingAs(ctx, 'admin', MASTER);
     const res = await session.get('/v1/admin/wallets/export?format=xlsx');

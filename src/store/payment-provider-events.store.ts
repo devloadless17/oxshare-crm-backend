@@ -97,7 +97,14 @@ export class PaymentProviderEventsStore {
             transactionId: sql`COALESCE(${row.transactionId}::uuid, ${paymentProviderEvents.transactionId})`,
             receivedAt: sql`now()`,
           },
-          setWhere: eq(paymentProviderEvents.outcome, 'failed'),
+          /*
+           * A failed record is retried; and a delivery that was APPLIED replaces an earlier one
+           * that was not (audit R3-12, 17 Oct 2026) — a payout reported before it was adopted was
+           * logged "ignored" and stayed so after a later report settled it, with no transaction.
+           * An applied record is never overwritten.
+           */
+          setWhere: sql`${paymentProviderEvents.outcome} = 'failed'
+            OR (excluded.outcome = 'applied' AND ${paymentProviderEvents.outcome} <> 'applied')`,
         });
     } catch (error) {
       this.logger.warn(

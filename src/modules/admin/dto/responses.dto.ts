@@ -2929,6 +2929,16 @@ export class AccountingNetDto {
 @NoClientFields(
   'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
 )
+export class AccountingFeeDto {
+  @ApiProperty({ example: 'USD' }) currency: string;
+  @ApiProperty({ enum: ['deposit', 'withdrawal'] }) direction: string;
+  @ApiProperty({ description: 'Settled payments that carried a fee.' }) count: number;
+  @ApiProperty({ type: 'string', example: '12.40000000' }) total: string;
+}
+
+@NoClientFields(
+  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
+)
 export class AdminTransactionsSummaryDto {
   @ApiProperty({ type: [AdminTransactionSummaryRowDto] })
   rows: AdminTransactionSummaryRowDto[];
@@ -2947,6 +2957,50 @@ export class AdminTransactionsSummaryDto {
   /** Settled money in − settled money out, per currency (internal moves excluded). */
   @ApiProperty({ type: [AccountingNetDto] })
   net: AccountingNetDto[];
+  /**
+   * What the providers CHARGED on the settled payments in this set (audit R4-G2), per currency
+   * and direction. Never part of `net`: who bore a fee depends on the route.
+   */
+  @ApiProperty({ type: [AccountingFeeDto] })
+  fees: AccountingFeeDto[];
+}
+
+/** One posting type in a statement period, one way (audit R4-G1). */
+@NoClientFields('a platform-wide accounting figure, not an attribute of any person')
+export class LedgerStatementLineDto {
+  @ApiProperty({ example: 'deposit' }) entryType: string;
+  @ApiProperty({ enum: ['in', 'out'], description: 'in credits the wallets, out debits them.' })
+  flow: string;
+  @ApiProperty() count: number;
+  @ApiProperty({ type: 'string', example: '1200.00000000', description: 'Always positive.' })
+  total: string;
+}
+
+/** Client money per currency and wallet kind over a period, from the ledger (audit R4-G1). */
+@NoClientFields('a platform-wide accounting figure, not an attribute of any person')
+export class LedgerStatementDto {
+  @ApiProperty({ example: 'USD' }) currency: string;
+  @ApiProperty({ example: 'main' }) walletKind: string;
+  @ApiProperty({ type: 'string', description: 'Held at the start; 0 when there is no start.' })
+  opening: string;
+  @ApiProperty({ type: [LedgerStatementLineDto] }) lines: LedgerStatementLineDto[];
+  @ApiProperty({ type: 'string', description: 'Σ movements, signed.' }) movement: string;
+  @ApiProperty({ type: 'string', description: 'Held at the end (or now): the liabilities.' })
+  closing: string;
+}
+
+@NoClientFields('a platform-wide accounting figure, not an attribute of any person')
+export class LedgerStatementResponseDto {
+  @ApiProperty({ type: String, nullable: true }) from: string | null;
+  @ApiProperty({ type: String, nullable: true }) until: string | null;
+  @ApiProperty({ type: [LedgerStatementDto] }) statements: LedgerStatementDto[];
+  @ApiProperty({
+    description:
+      'The last reconciliation found every wallet equal to its own ledger — the condition under ' +
+      'which these figures are exact.',
+  })
+  walletsAgreeWithLedger: boolean;
+  @ApiProperty({ description: 'When that reconciliation ran.' }) reconciledAt: string;
 }
 
 // ── Client holdings: wallets and trading accounts ───────────────────────────
@@ -3491,6 +3545,15 @@ export class WalletDiscrepancyDto {
   difference: string;
 }
 
+/** Commission confirmed but never credited (audit R1-3). */
+@NoClientFields('a description of the RECORD: an accrual id, an amount')
+export class UnpaidAccrualDto {
+  @ApiProperty() accrualId: string;
+  @ApiProperty({ description: 'A money string.' }) amount: string;
+  @ApiProperty() currency: string;
+  @ApiProperty({ type: String, nullable: true }) confirmedAt: string | null;
+}
+
 /** A deposit aimed at a trading account whose money never left the wallet (audit R1-4). */
 @NoClientFields('a description of the RECORD: a transaction id, an MT5 login, an amount')
 export class StrandedDepositDto {
@@ -3596,6 +3659,18 @@ export class ReconciliationReportDto {
   @NotClientField('a platform-wide integrity figure, not an attribute of any person')
   @ApiProperty({ description: 'How many deposits are stranded in the wallet.' })
   strandedDepositCount: number;
+
+  @NotClientField('the nested accruals, whose own shape carries no client attribute')
+  @ApiProperty({
+    type: () => UnpaidAccrualDto,
+    isArray: true,
+    description: 'Commission confirmed but never credited (a sample of up to 20).',
+  })
+  unpaidAccruals: UnpaidAccrualDto[];
+
+  @NotClientField('a platform-wide integrity figure, not an attribute of any person')
+  @ApiProperty({ description: 'How many confirmed accruals no ledger entry paid.' })
+  unpaidAccrualCount: number;
 
   @NotClientField('a platform-wide integrity figure, not an attribute of any person')
   @ApiProperty({
