@@ -228,3 +228,21 @@ describe("a person's release never pays twice", () => {
     expect((await transfers.findById(t.id)).state).toBe('failed');
   });
 });
+
+describe('a debit never dips into money held for a transfer', () => {
+  it('refuses in plain words beyond what is available — never a constraint 500 (audit R1-5)', async () => {
+    const { userId, accountId } = await setup('held@test.local');
+    await toAccount(userId, accountId, '800'); // pending: 800 of the 1000 is held
+    await expect(
+      wallets.post({
+        userId,
+        currency: 'USD',
+        amount: '-300',
+        entryType: 'withdrawal',
+        referenceType: 'transaction',
+        referenceId: `held-${userId}`,
+      }),
+    ).rejects.toThrow(/available/);
+    expect(await walletOf(userId)).toEqual({ balance: '1000.00000000', onHold: '800.00000000' });
+  });
+});

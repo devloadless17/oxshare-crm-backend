@@ -238,6 +238,20 @@ export class WalletService {
       );
     }
 
+    /*
+     * A debit may not dip into money HELD for a transfer in progress: the database refuses it
+     * (`wallets_hold_within_balance`), and that refusal reached the client as a bare 500 (audit
+     * R1-5, 16 Oct 2026). Said here, in the client's terms, before the write.
+     */
+    const held = toDecimal(wallet.onHold);
+    if (amount.lessThan(0) && newBalance.lessThan(held)) {
+      throw new MoneyRuleError(
+        `Insufficient available balance: ${displayMoney(money(toDecimal(wallet.balance).minus(held)), currency)} ` +
+          `is available (${displayMoney(wallet.onHold, currency)} is held for a transfer in progress), ` +
+          `and this needs ${displayMoney(amount.abs().toString(), currency)}.`,
+      );
+    }
+
     // 3. Append the ledger entry. A conflict means this cause already posted.
     const [entry] = await tx
       .insert(ledgerEntries)
