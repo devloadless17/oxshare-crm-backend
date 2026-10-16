@@ -177,6 +177,23 @@ function isPayloadTooLarge(exception: unknown): boolean {
 }
 
 /**
+ * The CLIENT closed the connection before its request finished: nothing failed here.
+ *
+ * A phone that loses signal, locks its screen or switches app mid-upload drops
+ * the connection, and the body parser fails the request. body-parser marks that
+ * (`type: 'request.aborted'`); multer raises a bare `Error('Request aborted')`
+ * with no marker at all, so the REQUEST is asked instead: Node records that it
+ * was aborted. Matching multer's prose would break on an upgrade nobody connects
+ * to it.
+ */
+export function clientClosedRequest(exception: unknown, request: unknown): boolean {
+  const e = exception as { type?: unknown } | null;
+  if (e && typeof e === 'object' && e.type === 'request.aborted') return true;
+  const req = request as { aborted?: unknown; readableAborted?: unknown } | null;
+  return !!req && (req.aborted === true || req.readableAborted === true);
+}
+
+/**
  * Finds the Postgres error code, wherever the driver stack has buried it.
  *
  * This USED to read `exception.code` directly, and that stopped working the day
@@ -341,6 +358,26 @@ export class AllExceptionsFilter implements ExceptionFilter {
     const response = http.getResponse<Response>();
     const request = http.getRequest<Request & { id?: string }>();
     const requestId = request.id ?? 'unknown';
+
+    /*
+     * ── THE CLIENT LEFT; THE SERVER DID NOT FAIL ────────────────────────────
+     *
+     * Logged as a 500 until 17 Oct 2026: eight KYC uploads in an afternoon, all
+     * one iPhone on a weak line whose owner switched app mid-upload, read as eight
+     * server errors, so the error count said the API was failing when it was not.
+     * Now a warning with the status the proxies already use for it (499), and
+     * nothing is sent: there is nobody left to read it. The exception's own
+     * message stays in the line, so nothing is hidden.
+     */
+    if (clientClosedRequest(exception, request)) {
+      this.logger.warn(
+        `${request.method} ${safeLogPath(request.url)} → 499 CLIENT_CLOSED_REQUEST: ${
+          exception instanceof Error ? exception.message : String(exception)
+        }`,
+      );
+      if (!response.headersSent) response.status(499).end();
+      return;
+    }
 
     const classified = this.classify(exception);
     const { status, fields } = classified;
