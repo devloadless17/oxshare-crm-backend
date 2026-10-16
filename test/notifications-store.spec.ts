@@ -315,7 +315,7 @@ describe('retention', () => {
 });
 
 describe('retention is per audience', () => {
-  it('keeps an admin task for its year while pruning what is older', async () => {
+  it('keeps an admin task for its year, and an OPEN one for ever, while pruning what is older', async () => {
     const userId = await kycSubject('task-retention@oxshare-e2e.test', 'submitted');
     await store.insertAdminTask([ADMIN_1], {
       kind: 'admin.kyc.resubmitted',
@@ -336,6 +336,12 @@ describe('retention is per audience', () => {
 
     await ctx.db.execute(sql`
       UPDATE notifications SET created_at = now() - interval '400 days'
+       WHERE kind = 'admin.kyc.resubmitted' AND subject_id = ${String(userId)}`);
+    // Still OPEN after the year: somebody's work, never pruned (audit R3-9, 0233).
+    expect(await store.pruneOlderThan('admin', 365)).toBe(0);
+    // Handled, it goes.
+    await ctx.db.execute(sql`
+      UPDATE notifications SET resolved_at = now()
        WHERE kind = 'admin.kyc.resubmitted' AND subject_id = ${String(userId)}`);
     expect(await store.pruneOlderThan('admin', 365)).toBe(1);
   });

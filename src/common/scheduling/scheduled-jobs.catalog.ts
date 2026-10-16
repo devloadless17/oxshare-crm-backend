@@ -110,6 +110,14 @@ export const SCHEDULED_JOBS = [
     max: 86_400,
   },
   {
+    key: 'notifications.refan',
+    group: 'system',
+    runsOn: 'crm',
+    defaultSeconds: 900,
+    min: 300,
+    max: 86_400,
+  },
+  {
     key: 'notifications.prune',
     group: 'system',
     runsOn: 'crm',
