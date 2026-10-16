@@ -1522,6 +1522,31 @@
         ]
       }
     },
+    "/v1/client-errors": {
+      "post": {
+        "operationId": "ClientErrorsController_report",
+        "parameters": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClientErrorReportDto"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": ""
+          }
+        },
+        "summary": "Report a crash a frontend's error screen caught",
+        "tags": [
+          "client-errors"
+        ]
+      }
+    },
     "/v1/platforms": {
       "get": {
         "description": "Always returns every platform the portal offers, in presentation order. A platform the operator has not configured has a null url — which the portal renders as \"not available yet\" rather than as a link that goes nowhere.",
@@ -16254,6 +16279,54 @@
           "peerTrusted",
           "forwardedChain",
           "proxyHeaders"
+        ]
+      },
+      "ClientErrorReportDto": {
+        "type": "object",
+        "properties": {
+          "app": {
+            "type": "string",
+            "enum": [
+              "portal",
+              "admin"
+            ]
+          },
+          "boundary": {
+            "type": "string",
+            "enum": [
+              "page",
+              "global"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "description": "The error name, e.g. TypeError or ChunkLoadError."
+          },
+          "message": {
+            "type": "string"
+          },
+          "stack": {
+            "type": "string"
+          },
+          "digest": {
+            "type": "string",
+            "description": "Next's digest, present only for a server-rendered error."
+          },
+          "path": {
+            "type": "string",
+            "description": "The page PATH only. The query string is never sent."
+          },
+          "build": {
+            "type": "string",
+            "description": "The build the tab is running (its deployment id)."
+          }
+        },
+        "required": [
+          "app",
+          "boundary",
+          "name",
+          "message",
+          "path"
         ]
       },
       "PlatformLinkDto": {
