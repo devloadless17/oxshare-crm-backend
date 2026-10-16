@@ -1183,4 +1183,6 @@ export const SERVER_MESSAGES_AR: Readonly<Record<string, string>> = {
     'لم يصل هذا الدفع إلى مزوّد الخدمة، لذا فإن وضعه كمحلول سيعيد إرساله تلقائياً. أعد إرساله أو ألغِه أو أنهِه يدوياً بدلاً من ذلك.',
   'Insufficient available balance: {1} is available ({2} is held for a transfer in progress), and this needs {3}.':
     'الرصيد المتاح غير كافٍ: المتاح {1} (و{2} محجوز لتحويل قيد التنفيذ)، وهذه العملية تحتاج إلى {3}.',
+  'A transfer to or from this account is still in progress. Archive it once that transfer has finished.':
+    'لا يزال تحويل من هذا الحساب أو إليه قيد التنفيذ. أرشفه بعد انتهاء ذلك التحويل.',
 };

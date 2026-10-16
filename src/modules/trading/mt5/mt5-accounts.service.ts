@@ -3,7 +3,7 @@ import Decimal from 'decimal.js';
 import { and, eq, isNotNull, isNull, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../../database/database.module';
 import type { Db } from '../../../database/db';
-import { currencies, mt5Deals, tradingAccounts, users } from '../../../database/schema';
+import { currencies, mt5Deals, tradingAccounts, transfers, users } from '../../../database/schema';
 import { Mt5BridgeClient, assertBridgeConfigured } from './mt5-bridge.client';
 import { AdminAuditService } from '../../admin/admin-audit.service';
 import { EmailService } from '../../email/email.service';
@@ -990,6 +990,23 @@ export class Mt5AccountsService {
     }
     if (archived === (account.archivedAt !== null)) {
       return { id: account.id, archivedAt: account.archivedAt };
+    }
+
+    if (archived) {
+      /*
+       * Money still moving to or from it: the resume job would land it on an account the client
+       * can no longer see (audit R3-11, 16 Oct 2026). Archive once the transfer has finished.
+       */
+      const [moving] = await this.db
+        .select({ id: transfers.id })
+        .from(transfers)
+        .where(and(eq(transfers.tradingAccountId, account.id), eq(transfers.state, 'pending')))
+        .limit(1);
+      if (moving) {
+        throw new ValidationError(
+          'A transfer to or from this account is still in progress. Archive it once that transfer has finished.',
+        );
+      }
     }
 
     if (archived && account.environment === 'live') {
