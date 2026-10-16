@@ -15486,7 +15486,7 @@
     },
     "/v1/admin/clients/{id}/transactions": {
       "get": {
-        "description": "`amount` is a decimal string (§6.1), never a number.",
+        "description": "Payments only: wallet ⇄ trading-account transfers and commission moves are NOT here (audit R4-6). For every movement of a client, with its accounting type and both ends, read `GET /admin/transactions?userId=`. `amount` is a decimal string (§6.1), never a number.",
         "operationId": "AdminHoldingsController_listClientTransactions",
         "parameters": [
           {
@@ -15555,7 +15555,7 @@
             "cookie": []
           }
         ],
-        "summary": "One client’s money movements, all directions",
+        "summary": "One client’s PAYMENTS (deposits and withdrawals) — not every movement",
         "tags": [
           "admin"
         ]
