@@ -470,6 +470,61 @@ describe('filters', () => {
     ]);
   });
 
+  it('finds a movement by what an operator holds for IT, not only by its client (audit R4-2)', async () => {
+    const db = ctx.db.db;
+    const [dep] = await db
+      .select({ id: transactions.id })
+      .from(transactions)
+      .where(eq(transactions.providerRef, 'fin-union-dep'));
+    // The reference the provider or the desk gave it.
+    expect((await get('q=fin-union-dep')).items.map((row) => row.id)).toEqual([dep.id]);
+    // Its own id, as a ledger row or a support thread quotes it.
+    const [moved] = await db
+      .select({ id: transfers.id })
+      .from(transfers)
+      .where(eq(transfers.userId, unionClientId));
+    expect((await get(`q=${moved.id}`)).items.map((row) => row.id)).toEqual([moved.id]);
+    // The MT5 login: that account's transfers.
+    const byLogin = await get('q=5109001');
+    expect(byLogin.items.map((row) => row.id)).toContain(moved.id);
+    // The wallet number: the movements on that wallet.
+    const [main] = await db
+      .select({ number: wallets.walletNumber })
+      .from(wallets)
+      .where(sql`${wallets.userId} = ${unionClientId} AND ${wallets.kind} = 'main'`);
+    const byWallet = await get(`q=${main.number}`);
+    expect(byWallet.items.map((row) => row.id)).toEqual(expect.arrayContaining([dep.id, moved.id]));
+  });
+
+  it('?account= also lists a DEPOSIT aimed at that account — the one that never moved (audit R4-3)', async () => {
+    const db = ctx.db.db;
+    const { client, main } = await seedClient('fin-aimed@oxshare-e2e.test', 'Aimed', 'Deposit');
+    const [account] = await db
+      .insert(tradingAccounts)
+      .values({ userId: client.id, login: '5109077', environment: 'live', currency: 'USD' })
+      .returning();
+    const [aimed] = await db
+      .insert(transactions)
+      .values({
+        userId: client.id,
+        walletId: main.id,
+        direction: 'deposit',
+        amount: '30.00000000',
+        currency: 'USD',
+        state: 'success',
+        provider: 'manual_test',
+        ...legacyRoute('manual_test', 'deposit'),
+        providerRef: 'fin-aimed-dep',
+        destinationTradingAccountId: account.id,
+        createdAt: new Date('2026-08-07T09:00:00Z'),
+        settledAt: new Date('2026-08-07T09:01:00Z'),
+      })
+      .returning();
+    const session = await actingAs(ctx, 'admin', FULL);
+    const body = (await session.get(`${LIST}?account=5109077`).expect(200)).body as ListBody;
+    expect(body.items.map((row) => row.id)).toEqual([aimed.id]);
+  });
+
   it('a from after every movement returns nothing rather than everything', async () => {
     expect((await get('from=2027-01-01')).total).toBe(0);
   });

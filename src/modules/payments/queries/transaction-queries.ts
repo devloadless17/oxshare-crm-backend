@@ -293,6 +293,13 @@ interface MovementArm {
   route: SQL | null;
   /** The payments arm's two method-key columns (deposit, withdrawal); absent elsewhere. */
   methodKeys?: [SQL, SQL];
+  /** The movement's wallet; given in outer mode, where the admin search reads it. */
+  wallet?: SQL;
+  /**
+   * The trading account a movement names: a transfer's account, and the account a DEPOSIT was
+   * aimed at (audit R4-3) — given in outer mode.
+   */
+  accounts?: [SQL, SQL];
 }
 
 /**
@@ -650,6 +657,41 @@ function depositEvidenceSearch(q: string): SQL | undefined {
   }
   if (matches.length === 0) return undefined;
   return sql.join(matches, sql` UNION `);
+}
+
+const UUID_TERM = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** `wallet_number()`'s alphabet (0090): 12 characters, no i, l, o or u. */
+const WALLET_NUMBER_TERM = /^[0-9a-hjkmnp-tv-z]{12}$/i;
+const LOGIN_TERM = /^[0-9]{3,12}$/;
+/** A provider's id or reference: one token, no spaces, short enough to be one. */
+const PROVIDER_ID_TERM = /^[A-Za-z0-9._:-]{4,100}$/;
+
+/**
+ * What an operator may HOLD for one MOVEMENT rather than for a client (audit R4-2, 16 Oct 2026):
+ * the movement's own id (a ledger row, a support thread), the reference the provider or the desk
+ * gave it, the provider's payment or payout id, a wallet number, or an MT5 login. Each is an EXACT
+ * match through its own index, so a search quoting any of them finds the movement instead of
+ * reading as "no such movement". `ids` are movement ids (unique across every arm: uuids).
+ */
+function movementIdentifierSearch(q: string): {
+  ids?: SQL;
+  walletNumber?: string;
+  login?: string;
+} {
+  const ids: SQL[] = [];
+  if (UUID_TERM.test(q)) ids.push(sql`SELECT ${q.toLowerCase()}::uuid AS id`);
+  if (PROVIDER_ID_TERM.test(q)) {
+    ids.push(
+      sql`SELECT pi.id FROM transactions pi WHERE pi.provider_ref IN (${q}, ${q.toUpperCase()})`,
+    );
+    ids.push(sql`SELECT pi.id FROM transactions pi WHERE pi.provider_payment_id = ${q}`);
+    ids.push(sql`SELECT pi.id FROM transactions pi WHERE pi.provider_payout_id = ${q}`);
+  }
+  return {
+    ids: ids.length ? sql.join(ids, sql` UNION `) : undefined,
+    walletNumber: WALLET_NUMBER_TERM.test(q) ? q.toLowerCase() : undefined,
+    login: LOGIN_TERM.test(q) ? q : undefined,
+  };
 }
 
 /*
@@ -1505,6 +1547,11 @@ export class TransactionQueries {
           // NULL on the arms with no route, so no route list can match them.
           route: sql`(movements.direction, movements.route_provider, movements.route_channel)`,
           methodKeys: [sql`movements.method_key`, sql`movements.withdrawal_method_key`],
+          wallet: sql`movements.wallet_id`,
+          accounts: [
+            sql`movements.trading_account_id`,
+            sql`movements.destination_trading_account_id`,
+          ],
         })
       : undefined;
     /*
@@ -2146,6 +2193,7 @@ export class TransactionQueries {
      */
     const q = filter.q?.trim() || undefined;
     const evidence = q ? depositEvidenceSearch(q) : undefined;
+    const named = q ? movementIdentifierSearch(q) : {};
     const searched = q
       ? sql`searched AS MATERIALIZED (SELECT users.id FROM users WHERE ${clientIdentitySearch(q)})`
       : undefined;
@@ -2168,7 +2216,7 @@ export class TransactionQueries {
         )
       : undefined;
     const cte = this.movementsCte(
-      ({ owner, id, payments, isPayment, route, methodKeys }) => {
+      ({ owner, id, payments, isPayment, route, methodKeys, wallet, accounts }) => {
         const conditions: SQL[] = [];
         // A person decides it (0168) — only a payment can be one.
         if (deskRoutes) conditions.push(route ? sql`${route} IN (${deskRoutes})` : sql`FALSE`);
@@ -2194,11 +2242,22 @@ export class TransactionQueries {
         // Validated as a uuid at the edge; every arm's id column is a uuid.
         if (filter.id) conditions.push(sql`${id} = ${filter.id}::uuid`);
         if (searched) {
-          const byClient = sql`${owner} = ANY(ARRAY(SELECT searched.id FROM searched))`;
+          // The client it names, OR a deposit's evidence, OR an identifier of the movement itself.
+          const matches: SQL[] = [sql`${owner} = ANY(ARRAY(SELECT searched.id FROM searched))`];
+          if (payments && evidence) {
+            matches.push(sql`(${isPayment} AND ${id} = ANY(ARRAY(${evidence})))`);
+          }
+          if (named.ids) matches.push(sql`${id} = ANY(ARRAY(${named.ids}))`);
+          if (named.walletNumber && wallet) {
+            matches.push(sql`${wallet} = ANY(ARRAY(
+              SELECT wn.id FROM wallets wn WHERE wn.wallet_number = ${named.walletNumber}))`);
+          }
+          if (named.login && accounts) {
+            const ids = sql`ARRAY(SELECT la.id FROM trading_accounts la WHERE la.login = ${named.login})`;
+            matches.push(sql`(${accounts[0]} = ANY(${ids}) OR ${accounts[1]} = ANY(${ids}))`);
+          }
           conditions.push(
-            payments && evidence
-              ? sql`(${byClient} OR (${isPayment} AND ${id} = ANY(ARRAY(${evidence}))))`
-              : byClient,
+            matches.length === 1 ? matches[0] : sql`(${sql.join(matches, sql` OR `)})`,
           );
         }
         return whereOf(conditions);
@@ -2311,7 +2370,9 @@ export class TransactionQueries {
         );
       }
       if (filter.tradingAccountId) {
-        conditions.push(sql`combined.trading_account_id = ${filter.tradingAccountId}::uuid`);
+        // A transfer on it, or a DEPOSIT aimed at it — the one that "never moved" (audit R4-3).
+        conditions.push(sql`(combined.trading_account_id = ${filter.tradingAccountId}::uuid
+          OR combined.destination_trading_account_id = ${filter.tradingAccountId}::uuid)`);
       }
       if (!omit.state && filter.state) conditions.push(sql`combined.state = ${filter.state}`);
       if (filter.currency) conditions.push(sql`combined.currency = ${filter.currency}`);
