@@ -13560,6 +13560,24 @@
             }
           },
           {
+            "name": "settledFrom",
+            "required": false,
+            "in": "query",
+            "description": "The SETTLED period (audit R4-1, month-end): only movements whose settled_at falls in [settledFrom, settledTo]. A date or an instant, like from/to. Read live.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "settledTo",
+            "required": false,
+            "in": "query",
+            "description": "End of the settled period.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "attention",
             "required": false,
             "in": "query",
@@ -13739,6 +13757,24 @@
             "required": false,
             "in": "query",
             "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "settledFrom",
+            "required": false,
+            "in": "query",
+            "description": "The SETTLED period (audit R4-1, month-end): only movements whose settled_at falls in [settledFrom, settledTo]. A date or an instant, like from/to. Read live.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "settledTo",
+            "required": false,
+            "in": "query",
+            "description": "End of the settled period.",
             "schema": {
               "type": "string"
             }
@@ -13926,6 +13962,24 @@
             }
           },
           {
+            "name": "settledFrom",
+            "required": false,
+            "in": "query",
+            "description": "The SETTLED period (audit R4-1, month-end): only movements whose settled_at falls in [settledFrom, settledTo]. A date or an instant, like from/to. Read live.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "settledTo",
+            "required": false,
+            "in": "query",
+            "description": "End of the settled period.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "origin",
             "required": false,
             "in": "query",
@@ -14055,6 +14109,24 @@
             }
           },
           {
+            "name": "settledFrom",
+            "required": false,
+            "in": "query",
+            "description": "The SETTLED period (audit R4-1, month-end): only movements whose settled_at falls in [settledFrom, settledTo]. A date or an instant, like from/to. Read live.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "settledTo",
+            "required": false,
+            "in": "query",
+            "description": "End of the settled period.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "origin",
             "required": false,
             "in": "query",
@@ -14178,6 +14250,24 @@
             "required": false,
             "in": "query",
             "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "settledFrom",
+            "required": false,
+            "in": "query",
+            "description": "The SETTLED period (audit R4-1, month-end): only movements whose settled_at falls in [settledFrom, settledTo]. A date or an instant, like from/to. Read live.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "settledTo",
+            "required": false,
+            "in": "query",
+            "description": "End of the settled period.",
             "schema": {
               "type": "string"
             }
@@ -14367,6 +14457,22 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "settledFrom",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "settledTo",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
           }
         ],
         "responses": {
@@ -14435,6 +14541,22 @@
             "required": false,
             "in": "query",
             "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "settledFrom",
+            "required": true,
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "settledTo",
+            "required": true,
+            "in": "query",
             "schema": {
               "type": "string"
             }
@@ -14623,6 +14745,24 @@
             "required": false,
             "in": "query",
             "description": "End of the period: a date-time with offset is EXCLUSIVE; a date (YYYY-MM-DD) includes that whole UTC day.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "settledFrom",
+            "required": false,
+            "in": "query",
+            "description": "The SETTLED period (audit R4-1, month-end): only movements whose settled_at falls in [settledFrom, settledTo]. A date or an instant, like from/to. Read live.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "settledTo",
+            "required": false,
+            "in": "query",
+            "description": "End of the settled period.",
             "schema": {
               "type": "string"
             }
@@ -29359,6 +29499,40 @@
           "at"
         ]
       },
+      "StrandedDepositDto": {
+        "type": "object",
+        "properties": {
+          "transactionId": {
+            "type": "string"
+          },
+          "userId": {
+            "type": "number",
+            "description": "The client’s Portal ID."
+          },
+          "login": {
+            "type": "string",
+            "nullable": true
+          },
+          "amount": {
+            "type": "string",
+            "description": "A money string."
+          },
+          "currency": {
+            "type": "string"
+          },
+          "settledAt": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "transactionId",
+          "userId",
+          "login",
+          "amount",
+          "currency",
+          "settledAt"
+        ]
+      },
       "ReconciliationReportDto": {
         "type": "object",
         "properties": {
@@ -29397,6 +29571,17 @@
             "type": "number",
             "description": "How many transfers disagree with MT5 over the last week."
           },
+          "strandedDeposits": {
+            "description": "Deposits aimed at a trading account that settled into the wallet but never moved on (last 30 days; a sample of up to 20, the count is exact).",
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StrandedDepositDto"
+            }
+          },
+          "strandedDepositCount": {
+            "type": "number",
+            "description": "How many deposits are stranded in the wallet."
+          },
           "balanced": {
             "type": "boolean",
             "description": "True when nothing is wrong. Read this rather than testing the array length — it is the field the service decides, and a future check can make it false without adding a wallet discrepancy."
@@ -29410,6 +29595,8 @@
           "totalDifference",
           "transferMismatches",
           "transferMismatchCount",
+          "strandedDeposits",
+          "strandedDepositCount",
           "balanced"
         ]
       },

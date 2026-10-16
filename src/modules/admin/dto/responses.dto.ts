@@ -3491,6 +3491,17 @@ export class WalletDiscrepancyDto {
   difference: string;
 }
 
+/** A deposit aimed at a trading account whose money never left the wallet (audit R1-4). */
+@NoClientFields('a description of the RECORD: a transaction id, an MT5 login, an amount')
+export class StrandedDepositDto {
+  @ApiProperty() transactionId: string;
+  @ApiProperty({ description: 'The client’s Portal ID.' }) userId: number;
+  @ApiProperty({ type: String, nullable: true }) login: string | null;
+  @ApiProperty({ description: 'A money string.' }) amount: string;
+  @ApiProperty() currency: string;
+  @ApiProperty() settledAt: string;
+}
+
 /** A transfer and MT5 disagree (audit R3-1, 16 Oct 2026). */
 @NoClientFields('a description of the RECORD: transfer and deal ids, an MT5 login, an amount')
 export class TransferMt5MismatchDto {
@@ -3571,6 +3582,20 @@ export class ReconciliationReportDto {
   @NotClientField('a platform-wide integrity figure, not an attribute of any person')
   @ApiProperty({ description: 'How many transfers disagree with MT5 over the last week.' })
   transferMismatchCount: number;
+
+  @NotClientField('the nested deposits, whose own shape carries no client attribute')
+  @ApiProperty({
+    type: () => StrandedDepositDto,
+    isArray: true,
+    description:
+      'Deposits aimed at a trading account that settled into the wallet but never moved on ' +
+      '(last 30 days; a sample of up to 20, the count is exact).',
+  })
+  strandedDeposits: StrandedDepositDto[];
+
+  @NotClientField('a platform-wide integrity figure, not an attribute of any person')
+  @ApiProperty({ description: 'How many deposits are stranded in the wallet.' })
+  strandedDepositCount: number;
 
   @NotClientField('a platform-wide integrity figure, not an attribute of any person')
   @ApiProperty({

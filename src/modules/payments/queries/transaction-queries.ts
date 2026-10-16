@@ -239,6 +239,11 @@ export interface AdminMovementsFilter {
   from?: Date;
   until?: Date;
   /**
+   * The SETTLED period (audit R4-1, 16 Oct 2026): `[from, until)` on `settled_at`, so a closed
+   * month's settled figure never moves. Read live — the stored totals key only by creation day.
+   */
+  settled?: { from?: Date; until?: Date };
+  /**
    * Only payments a PERSON must reconcile (`needs_attention`, 0173) — where an
    * attention task's link lands, and the desk's "what is flagged" view. The
    * transfer arms carry no flag, so they never match.
@@ -313,6 +318,8 @@ export function movementTotalsSource(
   if (filter.methods?.length) return undefined;
   // No total is kept per transfer origin or per trading account (0226): read the rows.
   if (filter.origins?.length || filter.tradingAccountId) return undefined;
+  // The stored totals key by CREATION day; a settled period reads the rows (audit R4-1).
+  if (filter.settled?.from || filter.settled?.until) return undefined;
   /*
    * The daily totals are UTC days: they answer a period only when it starts and
    * ends on UTC midnights. A viewer's own "today" in Beirut does not, so it reads
@@ -2316,6 +2323,7 @@ export class TransactionQueries {
        * same day the daily totals (0165) count.
        */
       conditions.push(...withinRange(sql`combined.created_at`, filter));
+      conditions.push(...withinRange(sql`combined.settled_at`, filter.settled));
       return conditions;
     };
 

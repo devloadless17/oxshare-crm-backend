@@ -42,6 +42,12 @@ export interface ReconciliationReport {
   /** Transfers ↔ MT5 deals over the last week (a sample; the count is exact). */
   transferMismatches: TransferMt5Mismatch[];
   transferMismatchCount: number;
+  /**
+   * Deposits the client aimed at a trading account that settled into the wallet but never moved
+   * on (audit R1-4): the money waits in the wallet while the client looks for it on MT5.
+   */
+  strandedDeposits: StrandedDeposit[];
+  strandedDepositCount: number;
   balanced: boolean;
 }
 
@@ -59,6 +65,16 @@ export interface TransferMt5Mismatch {
   /** Signed, as MT5 holds it: + into the account, − out of it. */
   amount: string;
   at: string;
+}
+
+/** A deposit aimed at a trading account whose money never left the wallet (audit R1-4). */
+export interface StrandedDeposit {
+  transactionId: string;
+  userId: number;
+  login: string | null;
+  amount: string;
+  currency: string;
+  settledAt: string;
 }
 
 /** How far back the transfer ↔ MT5 check looks, and how long a deal may take to arrive. */
@@ -187,12 +203,14 @@ export class ReconciliationService {
   }
 
   private async check(): Promise<ReconciliationReport> {
-    const [summary, walletDiscrepancies, walletsChecked, transferMismatches] = await Promise.all([
-      this.summariseDiscrepancies(),
-      this.findWalletDiscrepancies(),
-      this.countWallets(),
-      this.findTransferMismatches(),
-    ]);
+    const [summary, walletDiscrepancies, walletsChecked, transferMismatches, strandedDeposits] =
+      await Promise.all([
+        this.summariseDiscrepancies(),
+        this.findWalletDiscrepancies(),
+        this.countWallets(),
+        this.findTransferMismatches(),
+        this.findStrandedDeposits(),
+      ]);
 
     const report: ReconciliationReport = {
       checkedAt: new Date().toISOString(),
@@ -202,6 +220,8 @@ export class ReconciliationService {
       totalDifference: summary.total,
       transferMismatches: transferMismatches.slice(0, SAMPLE_LIMIT),
       transferMismatchCount: transferMismatches.length,
+      strandedDeposits: strandedDeposits.slice(0, SAMPLE_LIMIT),
+      strandedDepositCount: strandedDeposits.length,
       /*
        * Decided by the COUNT, never by the sample's length. The sample is
        * capped, so `walletDiscrepancies.length === 0` would read as balanced
@@ -209,7 +229,8 @@ export class ReconciliationService {
        * mismatches it would be right for the wrong reason, which is the kind of
        * agreement that stops being true later.
        */
-      balanced: summary.count === 0 && transferMismatches.length === 0,
+      balanced:
+        summary.count === 0 && transferMismatches.length === 0 && strandedDeposits.length === 0,
     };
 
     this.last = report;
@@ -378,6 +399,36 @@ export class ReconciliationService {
     }));
   }
 
+  /** Settled deposits aimed at an account, a quarter-hour old, that no transfer took on. */
+  private async findStrandedDeposits(): Promise<StrandedDeposit[]> {
+    const { rows } = await this.db.execute<{
+      id: string;
+      user_id: number;
+      login: string | null;
+      amount: string;
+      currency: string;
+      settled_at: string;
+    }>(sql`
+      SELECT t.id::text, t.user_id, ta.login, t.amount::text, t.currency, t.settled_at::text
+        FROM transactions t
+        LEFT JOIN trading_accounts ta ON ta.id = t.destination_trading_account_id
+       WHERE t.direction = 'deposit'
+         AND t.state = 'success'
+         AND t.destination_trading_account_id IS NOT NULL
+         AND t.settled_at > now() - interval '30 days'
+         AND t.settled_at < now() - ${DEAL_GRACE}
+         AND NOT EXISTS (SELECT 1 FROM transfers tr WHERE tr.source_transaction_id = t.id)
+       ORDER BY t.settled_at DESC`);
+    return rows.map((row) => ({
+      transactionId: row.id,
+      userId: row.user_id,
+      login: row.login,
+      amount: money(row.amount),
+      currency: row.currency,
+      settledAt: row.settled_at,
+    }));
+  }
+
   private async summariseDiscrepancies(): Promise<{ count: number; total: string }> {
     const rows = await this.db.execute<{ n: number; total: string }>(sql`
       SELECT COUNT(*)::int                        AS n,
@@ -408,6 +459,15 @@ export class ReconciliationService {
    * the line an alert should fire on (§12.3).
    */
   private report(report: ReconciliationReport): void {
+    if (report.strandedDepositCount > 0) {
+      raiseAlert(
+        this.logger,
+        ALERT_KINDS.RECONCILIATION_MISMATCH,
+        'page',
+        `${report.strandedDepositCount} deposit(s) aimed at a trading account never moved on from the wallet`,
+        { strandedDepositCount: report.strandedDepositCount },
+      );
+    }
     if (report.transferMismatchCount > 0) {
       raiseAlert(
         this.logger,

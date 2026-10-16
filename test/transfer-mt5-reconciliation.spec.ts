@@ -67,3 +67,42 @@ describe('the reconciliation report checks every transfer against MT5', () => {
     expect(report.transferMismatches.some((m) => m.transferId === matched)).toBe(false);
   });
 });
+
+describe('a deposit aimed at an account that never moved on is reported (audit R1-4)', () => {
+  it('names a settled deposit no transfer took, and not one that moved', async () => {
+    const { rows: u } = await ctx.db.execute<{ id: number }>(sql`
+      INSERT INTO users (email, password_hash, first_name, last_name)
+      VALUES ('stranded@test.local', 'x', 'Stranded', 'Client') RETURNING id`);
+    const userId = u[0].id;
+    const { rows: w } = await ctx.db.execute<{ id: string }>(sql`
+      INSERT INTO wallets (user_id, currency, balance) VALUES (${userId}, 'USD', '0') RETURNING id`);
+    const { rows: a } = await ctx.db.execute<{ id: string }>(sql`
+      INSERT INTO trading_accounts (user_id, login, environment, currency, balance, status)
+      VALUES (${userId}, '7700002', 'live', 'USD', '0', 'active') RETURNING id`);
+    const deposit = async (ref: string) =>
+      (
+        await ctx.db.execute<{ id: string }>(sql`
+          INSERT INTO transactions (user_id, wallet_id, direction, amount, currency, state,
+                                    provider, provider_ref, destination_trading_account_id,
+                                    settled_at, created_at)
+          VALUES (${userId}, ${w[0].id}, 'deposit', '60', 'USD', 'success', 'manual_test', ${ref},
+                  ${a[0].id}, now() - interval '1 hour', now() - interval '1 hour')
+          RETURNING id`)
+      ).rows[0].id;
+    const stranded = await deposit('stranded-1');
+    const moved = await deposit('moved-1');
+    await ctx.db.execute(sql`
+      INSERT INTO transfers (user_id, wallet_id, trading_account_id, direction, amount, currency,
+                             state, settled_at, origin, source_transaction_id, request_ref)
+      VALUES (${userId}, ${w[0].id}, ${a[0].id}, 'wallet_to_account', '60', 'USD', 'settled',
+              now(), 'deposit', ${moved}, ${`deposit:${moved}`})`);
+
+    const report = await new ReconciliationService(ctx.db).run();
+    const ids = report.strandedDeposits.map((d) => d.transactionId);
+    expect(ids).toContain(stranded);
+    expect(ids).not.toContain(moved);
+    expect(report.strandedDeposits.find((d) => d.transactionId === stranded)?.login).toBe(
+      '7700002',
+    );
+  });
+});
