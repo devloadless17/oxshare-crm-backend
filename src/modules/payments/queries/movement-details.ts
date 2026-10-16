@@ -286,6 +286,7 @@ export function movementDetailCells(d: MovementDetails) {
     providerFee: d.providerFee,
     providerNetAmount: d.providerNetAmount,
     providerRequestAmount: d.providerRequestAmount,
+    requestedAmount: d.requestedAmount,
     providerAmountReceived: d.providerAmountReceived,
     providerStatus: d.providerStatus,
     network: d.method?.channelCode ?? null,
@@ -315,7 +316,9 @@ export const MOVEMENT_DETAIL_CSV: readonly CsvColumn<{ details: MovementDetails 
   { header: 'Provider fee', value: (r) => movementDetailCells(r.details).providerFee },
   { header: 'Net amount', value: (r) => movementDetailCells(r.details).providerNetAmount },
   {
-    header: 'Requested amount',
+    // What the PROVIDER was asked for — a payout grossed up by its fee (audit R4-4: it was headed
+    // "Requested amount", which an accountant reads as what the client asked for).
+    header: 'Amount asked of provider',
     value: (r) => movementDetailCells(r.details).providerRequestAmount,
   },
   {
@@ -325,4 +328,6 @@ export const MOVEMENT_DETAIL_CSV: readonly CsvColumn<{ details: MovementDetails 
   { header: 'Provider status', value: (r) => movementDetailCells(r.details).providerStatus },
   { header: 'Network', value: (r) => movementDetailCells(r.details).network },
   { header: 'Payout ID', value: (r) => movementDetailCells(r.details).providerPayoutId },
+  // What a hosted deposit's link ASKED for, when what arrived differs — a short payment shows.
+  { header: 'Deposit link amount', value: (r) => movementDetailCells(r.details).requestedAmount },
 ];
