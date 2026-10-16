@@ -772,6 +772,27 @@ describe('THE LEAK TEST: territory holds on every surface', () => {
     expect(body.directionCounts['withdrawal'] ?? 0).toBe(0);
   });
 
+  it('reports what the providers charged on settled payments, apart from the net (audit R4-G2)', async () => {
+    await ctx.db.db
+      .update(transactions)
+      .set({ providerFee: '1.25000000' })
+      .where(eq(transactions.providerRef, 'fin-union-dep'));
+    try {
+      const session = await actingAs(ctx, 'admin', FULL);
+      const body = (await session.get(`${SUMMARY}?userId=${unionClientId}`).expect(200)).body as {
+        fees: { currency: string; direction: string; count: number; total: string }[];
+      };
+      expect(body.fees).toEqual([
+        { currency: 'USD', direction: 'deposit', count: 1, total: '1.25000000' },
+      ]);
+    } finally {
+      await ctx.db.db
+        .update(transactions)
+        .set({ providerFee: null })
+        .where(eq(transactions.providerRef, 'fin-union-dep'));
+    }
+  });
+
   it('summary: the out-of-scope amount is absent from the totals', async () => {
     const session = await actingAs(ctx, 'admin', SCOPED);
     const res = await session.get(SUMMARY).expect(200);

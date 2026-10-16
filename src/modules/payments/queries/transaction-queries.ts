@@ -523,6 +523,14 @@ export interface AccountingLine {
 }
 
 /** A summary's money per currency × effect × settlement bucket (16 Oct 2026). */
+/** Provider fees on settled payments, per currency and direction (audit R4-G2). */
+export interface FeeTotal {
+  currency: string;
+  direction: string;
+  count: number;
+  total: string;
+}
+
 export interface EffectTotal {
   currency: string;
   effect: MovementEffect;
@@ -2837,6 +2845,7 @@ export class TransactionQueries {
     accounting: AccountingLine[];
     effects: EffectTotal[];
     net: { currency: string; total: string }[];
+    fees: FeeTotal[];
   }> {
     await this.assertSearchNarrow(filter.q);
     const { countSource, conditionsFor, whereOf } = this.adminMovements(filter);
@@ -2934,6 +2943,34 @@ export class TransactionQueries {
       total: money(sum.toFixed(8)),
     }));
 
+    /*
+     * What the providers CHARGED on the settled payments in this set (audit R4-G2), per currency
+     * and direction — never folded into the net: who bore a fee depends on the route, and the
+     * client's wallet already moved by what the ledger says. Read live from each payment's own
+     * row; the union's constant `kind` prunes every other arm.
+     */
+    const feeRows = (
+      await this.db.execute(sql`
+        WITH counted AS (${countSource}${whereOf([
+          ...conditionsFor(),
+          sql`combined.kind = 'payment'`,
+          sql`combined.state = 'success'`,
+        ])})
+        SELECT counted.currency, counted.direction::text AS direction, count(*)::int AS value,
+               coalesce(sum(t.provider_fee), 0)::text AS total
+          FROM counted
+          JOIN transactions t ON t.id = counted.id
+         WHERE t.provider_fee IS NOT NULL
+         GROUP BY 1, 2
+         ORDER BY 1, 2`)
+    ).rows as unknown as { currency: string; direction: string; value: number; total: string }[];
+    const fees: FeeTotal[] = feeRows.map((row) => ({
+      currency: row.currency,
+      direction: row.direction,
+      count: row.value,
+      total: money(row.total),
+    }));
+
     const allRows = grouped.rows as unknown as {
       direction: string;
       kind: MovementKind | null;
@@ -2967,6 +3004,7 @@ export class TransactionQueries {
       accounting,
       effects,
       net,
+      fees,
     };
   }
 }

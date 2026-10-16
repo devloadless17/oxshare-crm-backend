@@ -2929,6 +2929,16 @@ export class AccountingNetDto {
 @NoClientFields(
   'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
 )
+export class AccountingFeeDto {
+  @ApiProperty({ example: 'USD' }) currency: string;
+  @ApiProperty({ enum: ['deposit', 'withdrawal'] }) direction: string;
+  @ApiProperty({ description: 'Settled payments that carried a fee.' }) count: number;
+  @ApiProperty({ type: 'string', example: '12.40000000' }) total: string;
+}
+
+@NoClientFields(
+  'an administrative or configuration shape - no client-owned field on it; the client-carrying shapes in this file are marked field by field',
+)
 export class AdminTransactionsSummaryDto {
   @ApiProperty({ type: [AdminTransactionSummaryRowDto] })
   rows: AdminTransactionSummaryRowDto[];
@@ -2947,6 +2957,12 @@ export class AdminTransactionsSummaryDto {
   /** Settled money in − settled money out, per currency (internal moves excluded). */
   @ApiProperty({ type: [AccountingNetDto] })
   net: AccountingNetDto[];
+  /**
+   * What the providers CHARGED on the settled payments in this set (audit R4-G2), per currency
+   * and direction. Never part of `net`: who bore a fee depends on the route.
+   */
+  @ApiProperty({ type: [AccountingFeeDto] })
+  fees: AccountingFeeDto[];
 }
 
 // ── Client holdings: wallets and trading accounts ───────────────────────────
