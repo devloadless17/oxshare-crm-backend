@@ -16998,7 +16998,9 @@
             "type": "string",
             "enum": [
               "page",
-              "global"
+              "global",
+              "uncaught",
+              "rejection"
             ]
           },
           "name": {
@@ -17022,6 +17024,14 @@
           "build": {
             "type": "string",
             "description": "The build the tab is running (its deployment id)."
+          },
+          "occurredAt": {
+            "type": "string",
+            "description": "When it happened on the device. A report kept on a phone that had no connection is sent on its next page load, so this can be well before the log line."
+          },
+          "id": {
+            "type": "string",
+            "description": "Made on the device, once per report, so a report sent twice reads as one."
           }
         },
         "required": [

@@ -41,4 +41,26 @@ describe('client crash reports keep no personal data', () => {
         '    at iR (https://portal.oxshare.com/_next/static/chunks/37bd.js?dpl=380234356f06:31:204567)',
     );
   });
+
+  it('says how late a report kept on the phone arrived', () => {
+    const base = {
+      app: 'portal',
+      boundary: 'uncaught',
+      name: 'TypeError',
+      message: 'x',
+      path: '/kyc',
+    } as const;
+    const received = new Date('2026-10-17T10:00:00Z');
+    expect(
+      clientErrorLogLine(
+        { ...base, occurredAt: '2026-10-17T08:00:00Z', id: 'r-1' },
+        'UA',
+        received,
+      ),
+    ).toMatchObject({ id: 'r-1', occurredAt: '2026-10-17T08:00:00Z', sentLateSeconds: 7200 });
+    expect(
+      clientErrorLogLine({ ...base, occurredAt: '2026-10-17T09:59:30Z' }, 'UA', received)
+        .sentLateSeconds,
+    ).toBeUndefined();
+  });
 });
