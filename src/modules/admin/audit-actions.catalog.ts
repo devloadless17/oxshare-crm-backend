@@ -255,6 +255,12 @@ export const AUDIT_ACTIONS: readonly AuditActionDefinition[] = [
   { action: 'trading.account_create', label: 'MT5 account opened', group: 'Compliance' },
   { action: 'trading.account_link', label: 'Existing MT5 account linked', group: 'Compliance' },
   { action: 'trading.account_product', label: 'Trading account product set', group: 'Compliance' },
+  { action: 'trading.account_archive', label: 'Trading account archived', group: 'Compliance' },
+  {
+    action: 'trading.account_unarchive',
+    label: 'Trading account restored',
+    group: 'Compliance',
+  },
   { action: 'trading.accounts_sync', label: 'MT5 accounts synced', group: 'Compliance' },
   {
     action: 'settings.jobs.update',

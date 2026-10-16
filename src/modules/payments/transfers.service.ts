@@ -187,7 +187,12 @@ export class TransfersService {
       .select()
       .from(tradingAccounts)
       .where(
-        and(eq(tradingAccounts.id, params.tradingAccountId), eq(tradingAccounts.userId, user.id)),
+        and(
+          eq(tradingAccounts.id, params.tradingAccountId),
+          eq(tradingAccounts.userId, user.id),
+          // An archived account is hidden from the client and moves no money (0225).
+          isNull(tradingAccounts.archivedAt),
+        ),
       )
       .limit(1);
     if (!account) throw new NotFoundError('Trading account not found.');

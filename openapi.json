@@ -6258,6 +6258,19 @@
             }
           },
           {
+            "name": "archived",
+            "required": false,
+            "in": "query",
+            "description": "`exclude`: the accounts the client sees; `only`: the ones archived (hidden from the client). Absent: both.",
+            "schema": {
+              "enum": [
+                "exclude",
+                "only"
+              ],
+              "type": "string"
+            }
+          },
+          {
             "name": "client",
             "required": false,
             "in": "query",
@@ -6537,6 +6550,79 @@
           }
         ],
         "summary": "Set a trading account's product",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/trading-accounts/{id}/archive": {
+      "post": {
+        "description": "The client no longer sees it in the portal and no money moves to or from it. The MT5 login is untouched. Refused while MT5 reports a balance, credit, equity or open position.",
+        "operationId": "Mt5AccountsController_archive",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TradingAccountArchiveDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Archive a client's trading account",
+        "tags": [
+          "admin"
+        ]
+      }
+    },
+    "/v1/admin/trading-accounts/{id}/unarchive": {
+      "post": {
+        "operationId": "Mt5AccountsController_unarchive",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TradingAccountArchiveDto"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "cookie": []
+          }
+        ],
+        "summary": "Show an archived trading account to its client again",
         "tags": [
           "admin"
         ]
@@ -22163,6 +22249,24 @@
           "productId"
         ]
       },
+      "TradingAccountArchiveDto": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "archivedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          }
+        },
+        "required": [
+          "id",
+          "archivedAt"
+        ]
+      },
       "Mt5GroupCommissionTierDto": {
         "type": "object",
         "properties": {
@@ -29668,6 +29772,11 @@
               "closed"
             ]
           },
+          "archivedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
           "createdAt": {
             "format": "date-time",
             "type": "string"
@@ -29701,6 +29810,7 @@
           "currency",
           "balance",
           "status",
+          "archivedAt",
           "createdAt",
           "updatedAt",
           "user"

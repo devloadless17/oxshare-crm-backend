@@ -134,6 +134,7 @@
     "tags.delete",
     "tags.edit",
     "tags.view",
+    "trading.archive",
     "trading.create",
     "trading.deposit",
     "trading.view",

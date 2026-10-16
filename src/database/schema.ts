@@ -3351,6 +3351,16 @@ export const tradingAccounts = pgTable(
     tier: varchar('tier', { length: 50 }),
     leverage: integer('leverage'),
     status: tradingAccountStatusEnum('status').notNull().default('active'),
+    /*
+     * Hidden from the CLIENT by an administrator (0225), nothing else: the MT5
+     * login is untouched. Every client read leaves an archived account out and
+     * no money moves to or from one; it still counts toward a product's cap.
+     * Archiving is refused while MT5 says the account holds anything.
+     */
+    archivedAt: timestamp('archived_at', { withTimezone: true }),
+    archivedByAdminId: uuid('archived_by_admin_id').references(() => admins.id, {
+      onDelete: 'set null',
+    }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },

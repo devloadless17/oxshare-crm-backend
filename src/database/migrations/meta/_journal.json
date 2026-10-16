@@ -1583,6 +1583,13 @@
       "when": 1791899163401,
       "tag": "0224_per_admin_network_access",
       "breakpoints": true
+    },
+    {
+      "idx": 227,
+      "version": "7",
+      "when": 1791899263401,
+      "tag": "0225_trading_account_archive",
+      "breakpoints": true
     }
   ]
 }

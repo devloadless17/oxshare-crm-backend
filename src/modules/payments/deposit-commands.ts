@@ -7,7 +7,7 @@ import { readProofDetails } from '../../common/payments/proof-fields';
 import { payToSnapshot } from '../../common/payments/pay-to-fields';
 import Decimal from 'decimal.js';
 import { randomBytes } from 'crypto';
-import { and, desc, eq } from 'drizzle-orm';
+import { and, desc, eq, isNull } from 'drizzle-orm';
 import { tradingAccounts, transactions, users, wallets } from '../../database/schema';
 import { TransfersService } from './transfers.service';
 import { TransferExecutor } from './transfer-executor.service';
@@ -407,7 +407,14 @@ export class DepositCommands {
     const [account] = await this.db
       .select()
       .from(tradingAccounts)
-      .where(and(eq(tradingAccounts.id, accountId), eq(tradingAccounts.userId, userId)))
+      .where(
+        and(
+          eq(tradingAccounts.id, accountId),
+          eq(tradingAccounts.userId, userId),
+          // Archived by the desk: hidden from the client, takes no money (0225).
+          isNull(tradingAccounts.archivedAt),
+        ),
+      )
       .limit(1);
     if (!account) throw new NotFoundError('Trading account not found.');
     if (account.environment !== 'live') {

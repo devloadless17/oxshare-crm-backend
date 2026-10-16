@@ -490,6 +490,7 @@ export class AdminMoneyService {
         login: tradingAccounts.login,
         environment: tradingAccounts.environment,
         status: tradingAccounts.status,
+        archivedAt: tradingAccounts.archivedAt,
       })
       .from(tradingAccounts)
       .where(
@@ -557,6 +558,11 @@ export class AdminMoneyService {
     if (account.status !== 'active') {
       throw new ValidationError(
         `That trading account is ${account.status} and cannot be used to move money.`,
+      );
+    }
+    if (account.archivedAt) {
+      throw new ValidationError(
+        'That trading account is archived, so its client cannot see it. Restore it first.',
       );
     }
     if (user.verificationLevel < 1) {

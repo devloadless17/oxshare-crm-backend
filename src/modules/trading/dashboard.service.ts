@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, count, eq, sql } from 'drizzle-orm';
+import { and, count, eq, isNull, sql } from 'drizzle-orm';
 import { DRIZZLE_DB } from '../../database/database.module';
 import type { Db } from '../../database/db';
 import { positions, tradingAccounts, transactions, users } from '../../database/schema';
@@ -205,11 +205,17 @@ export class DashboardService {
       this.db
         .select({ value: count() })
         .from(tradingAccounts)
-        .where(eq(tradingAccounts.userId, userId)),
+        .where(and(eq(tradingAccounts.userId, userId), isNull(tradingAccounts.archivedAt))),
       this.db
         .select({ value: count() })
         .from(tradingAccounts)
-        .where(and(eq(tradingAccounts.userId, userId), eq(tradingAccounts.environment, 'live'))),
+        .where(
+          and(
+            eq(tradingAccounts.userId, userId),
+            eq(tradingAccounts.environment, 'live'),
+            isNull(tradingAccounts.archivedAt),
+          ),
+        ),
       this.db
         .select({ value: count() })
         .from(positions)

@@ -289,7 +289,8 @@ export class TradingService {
       .leftJoin(PRODUCT_BY_ID, eq(PRODUCT_BY_ID.id, tradingAccounts.productId))
       .leftJoin(tradingProductGroups, PRODUCT_GROUP_JOIN_ON)
       .leftJoin(PRODUCT_BY_GROUP, eq(PRODUCT_BY_GROUP.id, tradingProductGroups.productId))
-      .where(eq(tradingAccounts.userId, userId))
+      // An account the desk archived is not the client's to see (0225).
+      .where(and(eq(tradingAccounts.userId, userId), isNull(tradingAccounts.archivedAt)))
       .orderBy(asc(tradingAccounts.environment), desc(tradingAccounts.createdAt));
 
     /*
@@ -355,7 +356,14 @@ export class TradingService {
       .leftJoin(PRODUCT_BY_ID, eq(PRODUCT_BY_ID.id, tradingAccounts.productId))
       .leftJoin(tradingProductGroups, PRODUCT_GROUP_JOIN_ON)
       .leftJoin(PRODUCT_BY_GROUP, eq(PRODUCT_BY_GROUP.id, tradingProductGroups.productId))
-      .where(and(eq(tradingAccounts.id, accountId), eq(tradingAccounts.userId, userId)))
+      .where(
+        and(
+          eq(tradingAccounts.id, accountId),
+          eq(tradingAccounts.userId, userId),
+          // Archived reads exactly like missing (0225), and gates every detail read.
+          isNull(tradingAccounts.archivedAt),
+        ),
+      )
       .limit(1);
 
     if (!row) throw new NotFoundError('Trading account not found.');
@@ -514,6 +522,7 @@ export class TradingService {
            * takes the budget from an account they are actually trading.
            */
           eq(tradingAccounts.status, 'active'),
+          isNull(tradingAccounts.archivedAt),
           or(isNull(tradingAccounts.balanceSyncedAt), lt(tradingAccounts.balanceSyncedAt, cutoff)),
         ),
       )

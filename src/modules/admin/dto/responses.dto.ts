@@ -2946,6 +2946,10 @@ export class TradingAccountRowDto {
   @NotClientField('a lifecycle state or classification the desk acts on, not client-owned data')
   @ApiProperty({ enum: ['active', 'suspended', 'closed'] })
   status: string;
+  /** Hidden from the client by the desk (0225); NULL = the client sees it. */
+  @NotClientField('a timestamp the system recorded, describing the record rather than the client')
+  @ApiProperty({ type: String, format: 'date-time', nullable: true })
+  archivedAt: Date | null;
   @NotClientField('a timestamp the system recorded, describing the record rather than the client')
   @ApiProperty()
   createdAt: Date;
