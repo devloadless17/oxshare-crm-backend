@@ -2965,6 +2965,44 @@ export class AdminTransactionsSummaryDto {
   fees: AccountingFeeDto[];
 }
 
+/** One posting type in a statement period, one way (audit R4-G1). */
+@NoClientFields('a platform-wide accounting figure, not an attribute of any person')
+export class LedgerStatementLineDto {
+  @ApiProperty({ example: 'deposit' }) entryType: string;
+  @ApiProperty({ enum: ['in', 'out'], description: 'in credits the wallets, out debits them.' })
+  flow: string;
+  @ApiProperty() count: number;
+  @ApiProperty({ type: 'string', example: '1200.00000000', description: 'Always positive.' })
+  total: string;
+}
+
+/** Client money per currency and wallet kind over a period, from the ledger (audit R4-G1). */
+@NoClientFields('a platform-wide accounting figure, not an attribute of any person')
+export class LedgerStatementDto {
+  @ApiProperty({ example: 'USD' }) currency: string;
+  @ApiProperty({ example: 'main' }) walletKind: string;
+  @ApiProperty({ type: 'string', description: 'Held at the start; 0 when there is no start.' })
+  opening: string;
+  @ApiProperty({ type: [LedgerStatementLineDto] }) lines: LedgerStatementLineDto[];
+  @ApiProperty({ type: 'string', description: 'Σ movements, signed.' }) movement: string;
+  @ApiProperty({ type: 'string', description: 'Held at the end (or now): the liabilities.' })
+  closing: string;
+}
+
+@NoClientFields('a platform-wide accounting figure, not an attribute of any person')
+export class LedgerStatementResponseDto {
+  @ApiProperty({ type: String, nullable: true }) from: string | null;
+  @ApiProperty({ type: String, nullable: true }) until: string | null;
+  @ApiProperty({ type: [LedgerStatementDto] }) statements: LedgerStatementDto[];
+  @ApiProperty({
+    description:
+      'The last reconciliation found every wallet equal to its own ledger — the condition under ' +
+      'which these figures are exact.',
+  })
+  walletsAgreeWithLedger: boolean;
+  @ApiProperty({ description: 'When that reconciliation ran.' }) reconciledAt: string;
+}
+
 // ── Client holdings: wallets and trading accounts ───────────────────────────
 //
 // Both carry a `NUMERIC(28,8)` balance, and both declare it as a STRING with an

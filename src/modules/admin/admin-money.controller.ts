@@ -11,6 +11,7 @@ import { Throttle } from '@nestjs/throttler';
 // tag and the generated types.gen.ts is unchanged.
 
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -64,6 +65,7 @@ import {
 } from './dto/requests/money.dto';
 import {
   LedgerListResponseDto,
+  LedgerStatementResponseDto,
   ReconciliationReportDto,
   StuckTransfersDto,
   WithdrawalListResponseDto,
@@ -965,6 +967,47 @@ export class AdminMoneyController {
    * separate from `wallets.delete` because adding money and removing an account
    * are not one power); reading every money movement earns the same treatment.
    */
+  @Get('ledger/statement')
+  @UseGuards(PermissionsGuard)
+  @RequirePermissions('ledger.view')
+  @ApiCookieAuth()
+  @ApiOperation({
+    summary: 'The period statement: client money held at the start, every posting, held at the end',
+    description:
+      'Per currency and wallet kind, from the ledger, with opening + movements = closing checked ' +
+      '(audit R4-G1). Without `from`, it is the client liabilities at `to` (or now). Scoped: a ' +
+      'desk sees the money of its own clients.',
+  })
+  @ApiQuery({ name: 'currency', required: false, description: 'One currency code.' })
+  @ApiOkResponse({ type: LedgerStatementResponseDto })
+  @ApiDateRangeQueries('posted')
+  @ScopedToClients('ledgerStatement applies the predicate to wallets.user_id.')
+  async ledgerStatement(
+    @Req() req: Request & { admin: AuthenticatedAdmin },
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Query('currency') currency?: string,
+  ) {
+    const code = currency?.trim().toUpperCase() || undefined;
+    if (code && !/^[A-Z0-9]{2,10}$/.test(code)) {
+      throw new BadRequestException({
+        code: 'VALIDATION_FAILED',
+        message: ['currency must be a currency code'],
+        fields: { currency: 'must be a currency code' },
+      });
+    }
+    const [statement, report] = await Promise.all([
+      this.money.ledgerStatement(dateRangeQuery(from, to), code, req.admin),
+      this.reconciliation.latest(),
+    ]);
+    // A verdict, never the discrepancies themselves: those are platform-wide and unscoped.
+    return {
+      ...statement,
+      walletsAgreeWithLedger: report.discrepancyCount === 0,
+      reconciledAt: report.checkedAt,
+    };
+  }
+
   @Get('ledger')
   @UseGuards(PermissionsGuard)
   @RequirePermissions('ledger.view')

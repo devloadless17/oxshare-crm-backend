@@ -1,3 +1,4 @@
+import { ledgerStatement } from '../wallet/ledger-statement';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import type { DateRange } from '../../common/date-range';
 import { and, eq } from 'drizzle-orm';
@@ -1808,6 +1809,21 @@ export class AdminMoneyService {
     const notFound = () => new NotFoundError('Withdrawal not found.');
     if (!owner) throw notFound();
     await this.visibility.assertVisible(owner, scope, notFound);
+  }
+
+  /**
+   * The period statement (audit R4-G1): per currency and wallet kind, opening, every posting by
+   * type, and closing — from the ledger, with the balance checked. No start = client liabilities
+   * at the end. Scoped like the ledger: a desk sees the money of its own clients.
+   */
+  async ledgerStatement(range: DateRange, currency: string | undefined, actor: AuthenticatedAdmin) {
+    assertActorCan(actor, 'ledger.view', 'view the ledger statement');
+    const statements = await ledgerStatement(this.db, actor.clientScope, range, currency);
+    return {
+      from: range.from?.toISOString() ?? null,
+      until: range.until?.toISOString() ?? null,
+      statements,
+    };
   }
 
   async listLedger(
