@@ -297,27 +297,28 @@ describe('the database holds the same rules', () => {
     ).rejects.toThrow(/transfers_origin_admin_ck/);
   });
 
-  it('works out the origin for a writer that states none, from the ref it writes', async () => {
+  it('works out the origin for a writer that states none — and refuses a desk one with no who or why', async () => {
     const userId = await client('p-old@test.local');
     const tradingAccountId = await account(userId);
-    const creditId = await deposit(userId, '7.00', { provider: 'manual_admin', ref: 'old-key' });
-    const [fund] = await insertTransfer(', request_ref', `, 'admin-fund:old-key'`, [
-      userId,
-      tradingAccountId,
-      'wallet_to_account',
-      '7.00',
-    ]);
-    expect(await transferRow(fund.id)).toMatchObject({
-      origin: 'desk_credit',
-      source_transaction_id: creditId,
-    });
-    const [move] = await insertTransfer(', request_ref', `, 'admin-move:other'`, [
-      userId,
-      tradingAccountId,
-      'wallet_to_account',
-      '1.00',
-    ]);
-    expect((await transferRow(move.id)).origin).toBe('desk_wallet');
+    await deposit(userId, '7.00', { provider: 'manual_admin', ref: 'old-key' });
+    // A desk ref is recognised as the desk's — and then REFUSED for naming nobody and no reason
+    // (0234, audit R1-6): a desk transfer always says who asked for it and why.
+    await expect(
+      insertTransfer(', request_ref', `, 'admin-fund:old-key'`, [
+        userId,
+        tradingAccountId,
+        'wallet_to_account',
+        '7.00',
+      ]),
+    ).rejects.toThrow(/transfers_desk_who_why|name the administrator/);
+    await expect(
+      insertTransfer(', request_ref', `, 'admin-move:other'`, [
+        userId,
+        tradingAccountId,
+        'wallet_to_account',
+        '1.00',
+      ]),
+    ).rejects.toThrow(/transfers_desk_who_why|name the administrator/);
     const [plain] = await insertTransfer('', '', [
       userId,
       tradingAccountId,
