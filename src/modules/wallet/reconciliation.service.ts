@@ -39,8 +39,31 @@ export interface ReconciliationReport {
   discrepancyCount: number;
   /** Sum of the absolute differences — the size of the problem, not its shape. */
   totalDifference: string;
+  /** Transfers ↔ MT5 deals over the last week (a sample; the count is exact). */
+  transferMismatches: TransferMt5Mismatch[];
+  transferMismatchCount: number;
   balanced: boolean;
 }
+
+/**
+ * A transfer and MT5 disagree (audit R3-1, 16 Oct 2026): a settled transfer with no MT5 deal, or
+ * an MT5 deal the CRM tagged `CRM transfer <id>` whose transfer is not settled — the second is
+ * money the client holds twice (or lost).
+ */
+export interface TransferMt5Mismatch {
+  kind: 'settled_without_deal' | 'deal_without_settled_transfer';
+  transferId: string | null;
+  transferState: string | null;
+  dealId: string | null;
+  login: string | null;
+  /** Signed, as MT5 holds it: + into the account, − out of it. */
+  amount: string;
+  at: string;
+}
+
+/** How far back the transfer ↔ MT5 check looks, and how long a deal may take to arrive. */
+const TRANSFER_WINDOW = sql`interval '7 days'`;
+const DEAL_GRACE = sql`interval '15 minutes'`;
 
 /**
  * How many mismatched wallets the report carries and the log names.
@@ -164,10 +187,11 @@ export class ReconciliationService {
   }
 
   private async check(): Promise<ReconciliationReport> {
-    const [summary, walletDiscrepancies, walletsChecked] = await Promise.all([
+    const [summary, walletDiscrepancies, walletsChecked, transferMismatches] = await Promise.all([
       this.summariseDiscrepancies(),
       this.findWalletDiscrepancies(),
       this.countWallets(),
+      this.findTransferMismatches(),
     ]);
 
     const report: ReconciliationReport = {
@@ -176,6 +200,8 @@ export class ReconciliationService {
       walletDiscrepancies,
       discrepancyCount: summary.count,
       totalDifference: summary.total,
+      transferMismatches: transferMismatches.slice(0, SAMPLE_LIMIT),
+      transferMismatchCount: transferMismatches.length,
       /*
        * Decided by the COUNT, never by the sample's length. The sample is
        * capped, so `walletDiscrepancies.length === 0` would read as balanced
@@ -183,7 +209,7 @@ export class ReconciliationService {
        * mismatches it would be right for the wrong reason, which is the kind of
        * agreement that stops being true later.
        */
-      balanced: summary.count === 0,
+      balanced: summary.count === 0 && transferMismatches.length === 0,
     };
 
     this.last = report;
@@ -295,6 +321,63 @@ export class ReconciliationService {
    * errors as nearly balanced, which is the one summary that must not be
    * reassuring.
    */
+  /**
+   * Every transfer of the last week against MT5's own record of it. The executor tags each deal
+   * `CRM transfer <id>`, which MT5 cuts to 31 characters (the id's first 18), so a deal is matched
+   * by that prefix, the account's login and the signed amount. Deals still arriving (the bridge's
+   * push, or its 5-minute sweep) get a grace period.
+   */
+  private async findTransferMismatches(): Promise<TransferMt5Mismatch[]> {
+    const { rows } = await this.db.execute<{
+      kind: TransferMt5Mismatch['kind'];
+      transfer_id: string | null;
+      transfer_state: string | null;
+      deal_id: string | null;
+      login: string | null;
+      amount: string;
+      at: string;
+    }>(sql`
+      WITH recent AS (
+        SELECT t.id, t.state, ta.login, t.settled_at, t.created_at,
+               CASE WHEN t.direction = 'wallet_to_account' THEN t.amount ELSE -t.amount END AS signed,
+               'CRM transfer ' || left(t.id::text, 18) AS tag
+          FROM transfers t
+          JOIN trading_accounts ta ON ta.id = t.trading_account_id
+         WHERE t.created_at > now() - ${TRANSFER_WINDOW} - interval '1 day'
+      ),
+      deals AS (
+        SELECT d.mt5_deal_id, d.login, d.profit, d.comment, d.dealt_at
+          FROM mt5_deals d
+         WHERE d.comment LIKE 'CRM transfer %'
+           AND d.dealt_at > now() - ${TRANSFER_WINDOW}
+           AND d.dealt_at < now() - ${DEAL_GRACE}
+      )
+      SELECT 'settled_without_deal' AS kind, r.id::text AS transfer_id, r.state::text AS transfer_state,
+             NULL::text AS deal_id, r.login, r.signed::text AS amount, r.settled_at::text AS at
+        FROM recent r
+       WHERE r.state = 'settled'
+         AND r.settled_at > now() - ${TRANSFER_WINDOW}
+         AND r.settled_at < now() - ${DEAL_GRACE}
+         AND NOT EXISTS (SELECT 1 FROM mt5_deals d
+                          WHERE d.comment = r.tag AND d.login = r.login AND d.profit = r.signed)
+      UNION ALL
+      SELECT 'deal_without_settled_transfer', r.id::text, r.state::text, d.mt5_deal_id, d.login,
+             d.profit::text, d.dealt_at::text
+        FROM deals d
+        LEFT JOIN recent r ON r.tag = d.comment AND r.login = d.login AND r.signed = d.profit
+       WHERE r.id IS NULL OR r.state <> 'settled'
+       ORDER BY at DESC`);
+    return rows.map((row) => ({
+      kind: row.kind,
+      transferId: row.transfer_id,
+      transferState: row.transfer_state,
+      dealId: row.deal_id,
+      login: row.login,
+      amount: money(row.amount),
+      at: row.at,
+    }));
+  }
+
   private async summariseDiscrepancies(): Promise<{ count: number; total: string }> {
     const rows = await this.db.execute<{ n: number; total: string }>(sql`
       SELECT COUNT(*)::int                        AS n,
@@ -325,6 +408,20 @@ export class ReconciliationService {
    * the line an alert should fire on (§12.3).
    */
   private report(report: ReconciliationReport): void {
+    if (report.transferMismatchCount > 0) {
+      raiseAlert(
+        this.logger,
+        ALERT_KINDS.RECONCILIATION_MISMATCH,
+        'page',
+        `${report.transferMismatchCount} transfer(s) disagree with MT5 over the last week`,
+        { transferMismatchCount: report.transferMismatchCount },
+      );
+      for (const m of report.transferMismatches) {
+        this.logger.warn(
+          `  ${m.kind}: transfer ${m.transferId ?? '-'} (${m.transferState ?? '-'}) deal ${m.dealId ?? '-'} login ${m.login ?? '-'} amount ${m.amount}`,
+        );
+      }
+    }
     if (report.balanced) {
       /*
        * Says only what was actually checked.
@@ -348,6 +445,9 @@ export class ReconciliationService {
       );
       return;
     }
+
+    // Only the transfers disagreed: their alert above is the whole story.
+    if (report.discrepancyCount === 0) return;
 
     /*
      * ONE alert for the whole run, never one per wallet.
