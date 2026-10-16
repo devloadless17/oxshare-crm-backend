@@ -367,6 +367,20 @@ describe('hosted deposits that credit what ARRIVED', () => {
     expect(await balance(userId)).toBe('50.00000000');
   });
 
+  it('a WRONG-coin deposit cannot be credited 1:1 as the wallet currency (audit R2-5)', async () => {
+    const { userId, txId } = await hostedDeposit('100', 'INV-wrong-coin');
+    provider({ amount: '1000.00', currency: 'TRX' });
+    await deposits.settleRow(await row(txId), 'poll');
+    const flagged = await row(txId);
+    expect(flagged.needsAttention).toBe(true);
+    expect(flagged.providerAmountReceived).toBeNull();
+
+    await expect(deposits.creditReceived(txId, DESK_ACTOR, 'credit it')).rejects.toThrow(
+      /never reported an amount/,
+    );
+    expect(await balance(userId)).toBe('0.00000000');
+  });
+
   it('the desk finishes a flagged deposit — close without credit', async () => {
     const { userId, txId } = await hostedDeposit('100', 'INV-desk-close');
     provider({ amount: '100.00', currency: 'USDT-ERC20' });
