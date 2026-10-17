@@ -1039,6 +1039,8 @@ export class AuthService {
       surface: 'portal',
       jti,
       token: providedRefreshToken,
+      // A device that lost its new token is recognised by its browser (verify()).
+      userAgent: device?.userAgent ?? null,
     });
 
     if (verdict.outcome === 'reused') {

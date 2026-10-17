@@ -263,3 +263,109 @@ describe('two rotations inside one millisecond', () => {
     ).toBe('reused');
   });
 });
+
+/**
+ * A portal device that LOST its new token (LOST_ROTATION_GRACE_MS).
+ *
+ * Production, 16–17 Oct 2026: every "replayed token" sign-out had a replacement
+ * nobody ever used, and the same browser came back hours later. Each case below
+ * attempts the thing the rule must still refuse, not just the one it admits.
+ */
+describe('a portal device that lost its new token', () => {
+  const PHONE = 'Mozilla/5.0 (Linux; Android 10; K) Chrome/155.0.0.0 Mobile Safari/537.36';
+  const HOUR = 60 * 60 * 1000;
+
+  async function loginOn(surface: 'portal' | 'admin'): Promise<Held> {
+    const jti = randomUUID();
+    const token = `token-${randomUUID()}`;
+    const { familyId } = await service.record({
+      surface,
+      subjectId: surface === 'portal' ? subjectId : randomUUID(),
+      jti,
+      token,
+      expiresAt: expires(),
+      device: { userAgent: PHONE, ip: null },
+    });
+    mintedTokens.set(jti, token);
+    return { jti, token, familyId };
+  }
+
+  /** A rotation issued to PHONE, as production records it. */
+  async function rotateOn(current: Held, surface: 'portal' | 'admin' = 'portal'): Promise<Held> {
+    const jtiNext = randomUUID();
+    const nextToken = `token-${randomUUID()}`;
+    const [row] = await ctx.db
+      .select({ subjectId: refreshTokens.subjectId })
+      .from(refreshTokens)
+      .where(eq(refreshTokens.id, current.jti))
+      .limit(1);
+    const rotated = await service.rotate({
+      surface,
+      jti: current.jti,
+      familyId: current.familyId,
+      subjectId: row.subjectId,
+      jtiNext,
+      nextToken,
+      expiresAt: expires(),
+      device: { userAgent: PHONE, ip: null },
+    });
+    expect(rotated, 'a rotation that should have succeeded returned null').not.toBeNull();
+    mintedTokens.set(jtiNext, nextToken);
+    return { jti: jtiNext, token: nextToken, familyId: current.familyId };
+  }
+
+  const familyBurned = async (familyId: string) =>
+    (await ctx.db.select().from(refreshTokens).where(eq(refreshTokens.familyId, familyId))).every(
+      (r) => r.revokedAt !== null,
+    );
+
+  it('recovers the SAME browser hours later, once; a second replay still burns', async () => {
+    const t0 = await loginOn('portal');
+    const lost = await rotateOn(t0); // the phone never kept this one
+    await backdateUse(t0.jti, 3 * HOUR);
+
+    const verdict = await service.verify({ surface: 'portal', ...t0, userAgent: PHONE });
+    expect(verdict).toMatchObject({ outcome: 'retried', successorJti: lost.jti });
+
+    // The recovery renews from the unused replacement, exactly like the 30 s retry.
+    await rotateOn({ ...lost, token: tokenOf(lost.jti) });
+    // The old token is now behind a USED replacement: presenting it again is theft.
+    const again = await service.verify({ surface: 'portal', ...t0, userAgent: PHONE });
+    expect(again.outcome).toBe('reused');
+    expect(await familyBurned(t0.familyId)).toBe(true);
+  });
+
+  it('ends the session for a DIFFERENT browser', async () => {
+    const t0 = await loginOn('portal');
+    await rotateOn(t0);
+    await backdateUse(t0.jti, 3 * HOUR);
+    const verdict = await service.verify({ surface: 'portal', ...t0, userAgent: 'curl/8.5.0' });
+    expect(verdict.outcome).toBe('reused');
+    expect(await familyBurned(t0.familyId)).toBe(true);
+  });
+
+  it('ends the session once the owner USED the replacement', async () => {
+    const t0 = await loginOn('portal');
+    const t1 = await rotateOn(t0);
+    await rotateOn(t1); // the owner carried on
+    await backdateUse(t0.jti, 3 * HOUR);
+    const verdict = await service.verify({ surface: 'portal', ...t0, userAgent: PHONE });
+    expect(verdict.outcome).toBe('reused');
+  });
+
+  it('never applies to a STAFF session', async () => {
+    const t0 = await loginOn('admin');
+    await rotateOn(t0, 'admin');
+    await backdateUse(t0.jti, 3 * HOUR);
+    const verdict = await service.verify({ surface: 'admin', ...t0, userAgent: PHONE });
+    expect(verdict.outcome).toBe('reused');
+  });
+
+  it('ends the session past seven days', async () => {
+    const t0 = await loginOn('portal');
+    await rotateOn(t0);
+    await backdateUse(t0.jti, 8 * 24 * HOUR);
+    const verdict = await service.verify({ surface: 'portal', ...t0, userAgent: PHONE });
+    expect(verdict.outcome).toBe('reused');
+  });
+});

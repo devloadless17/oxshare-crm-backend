@@ -67,6 +67,24 @@ export type RefreshVerdict =
 const RETRY_GRACE_MS = 30_000;
 
 /**
+ * A PORTAL device that LOST its new token: how long after a rotation its old
+ * token still counts as that device coming back, rather than as theft.
+ *
+ * Measured in production (16–17 Oct 2026): every portal sign-out for "a rotated
+ * token was replayed" had the same signature. The rotation succeeded and its
+ * reply left the server in about 10 ms; the replacement was NEVER used by
+ * anyone; and the SAME browser came back with the old token 49 minutes to 10
+ * hours later. Phones and browsers write a new cookie to disk lazily, so an app
+ * closed or killed soon after a renewal reopens holding the previous token. A
+ * thief's victim, by contrast, carries on with the replacement, which marks it
+ * used, and that still ends the session (the successor test in `verify()`).
+ *
+ * Seven days covers every observed case with room to spare. Past it, a device
+ * that slept that long signs in again, as before.
+ */
+const LOST_ROTATION_GRACE_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
  * Refresh-token families, and what to do when one is replayed.
  *
  * PLATFORM-CONVENTIONS R-3.3. Rotation alone — mint a new token, invalidate the
@@ -149,6 +167,12 @@ export class RefreshTokensService {
     surface: AuthSurface;
     jti: string;
     token: string;
+    /**
+     * The requesting browser, for the lost-rotation case (LOST_ROTATION_GRACE_MS).
+     * Absent means "unknown", and an unknown browser is never graced past the
+     * thirty-second retry window.
+     */
+    userAgent?: string | null;
   }): Promise<RefreshVerdict> {
     const [row] = await this.db
       .select()
@@ -195,8 +219,51 @@ export class RefreshTokensService {
        * them gets replayed, and the family dies.
        */
       const chain = await this.chainStateOf(row.familyId, { id: row.id, usedAt: row.usedAt });
-      const withinGrace = Date.now() - row.usedAt.getTime() <= RETRY_GRACE_MS;
-      if (withinGrace && chain.liveJti && !chain.consumedAfterPresented) {
+      const sinceRotation = Date.now() - row.usedAt.getTime();
+      const withinGrace = sinceRotation <= RETRY_GRACE_MS;
+      /*
+       * Past the thirty seconds: the SAME portal browser coming back after
+       * losing its new token (LOST_ROTATION_GRACE_MS). All of these, or it is
+       * reuse exactly as before:
+       *
+       *  - the CLIENT portal. Staff sessions keep the strict rule: they are the
+       *    more valuable accounts, and the console signs idle staff out anyway;
+       *  - the replacement was never used (`!consumedAfterPresented`, below):
+       *    an owner who carried on has used it, and a replay then still burns;
+       *  - the browser presenting it is the one the replacement was issued to.
+       *    A user agent is easy to copy, so this is a coarse check that keeps a
+       *    different browser out; the successor test is the protection that
+       *    carries the weight, as it does for the thirty-second window;
+       *  - within seven days.
+       *
+       * What this admits, knowingly: someone who copied a token straight out of
+       * the device's cookie store, from the same browser, before the owner next
+       * opens the app. They hold the session until the owner returns, and the
+       * owner's next renewal then finds two branches and ends it. Copying an
+       * HttpOnly cookie off a device already means that device is compromised.
+       */
+      const lostRotation =
+        params.surface === 'portal' &&
+        !withinGrace &&
+        sinceRotation <= LOST_ROTATION_GRACE_MS &&
+        !!params.userAgent &&
+        chain.liveUserAgent === params.userAgent;
+      if ((withinGrace || lostRotation) && chain.liveJti && !chain.consumedAfterPresented) {
+        if (lostRotation) {
+          // A stable marker, so production checks can count these recoveries.
+          this.logger.warn(
+            `LOST_ROTATION_RECOVERED on the ${params.surface} surface for subject ` +
+              `${row.subjectId}: the same browser came back ${Math.round(sinceRotation / 1000)} s ` +
+              'after a renewal whose replacement it never used. Renewing from the unused ' +
+              'replacement instead of ending the session.',
+          );
+          return {
+            outcome: 'retried',
+            familyId: row.familyId,
+            subjectId: row.subjectId,
+            successorJti: chain.liveJti,
+          };
+        }
         this.logger.log(
           `Refresh token retried on the ${params.surface} surface for subject ` +
             `${row.subjectId}: the rotation at ${row.usedAt.toISOString()} evidently did not ` +
@@ -271,13 +338,19 @@ export class RefreshTokensService {
   private async chainStateOf(
     familyId: string,
     presented: { id: string; usedAt: Date },
-  ): Promise<{ liveJti: string | null; consumedAfterPresented: boolean }> {
+  ): Promise<{
+    liveJti: string | null;
+    /** The browser the live replacement was issued to (LOST_ROTATION_GRACE_MS). */
+    liveUserAgent: string | null;
+    consumedAfterPresented: boolean;
+  }> {
     const rows = await this.db
       .select({
         id: refreshTokens.id,
         usedAt: refreshTokens.usedAt,
         revokedAt: refreshTokens.revokedAt,
         expiresAt: refreshTokens.expiresAt,
+        userAgent: refreshTokens.userAgent,
       })
       .from(refreshTokens)
       .where(eq(refreshTokens.familyId, familyId));
@@ -299,7 +372,11 @@ export class RefreshTokensService {
       (r) => r.id !== presented.id && r.usedAt !== null && r.usedAt >= presented.usedAt,
     );
 
-    return { liveJti: live?.id ?? null, consumedAfterPresented };
+    return {
+      liveJti: live?.id ?? null,
+      liveUserAgent: live?.userAgent ?? null,
+      consumedAfterPresented,
+    };
   }
 
   /**
